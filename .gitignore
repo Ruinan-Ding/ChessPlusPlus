@@ -1,0 +1,29 @@
+# Node/Angular
+node_modules/
+/dist/
+/tmp/
+/.angular/
+npm-debug.log
+yarn-error.log
+
+# Python/Django
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.sqlite3
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# System files
+.DS_Store
+Thumbs.db
