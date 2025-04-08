@@ -1,0 +1,79 @@
+<div class="lobby-container">
+  <div class="header">
+    <h1>ChessPlusPlus Lobby</h1>
+    <div class="user-info">
+      <div class="username-display">
+        <span>Playing as: <strong>{{ username }}</strong></span>
+        <button class="btn-small" (click)="toggleChangeUsername()">Change</button>
+      </div>
+      <div class="change-username" *ngIf="showChangeUsername">
+        <input 
+          type="text" 
+          [(ngModel)]="newUsername" 
+          placeholder="New username" 
+          (keyup.enter)="changeUsername()"
+        >
+        <button (click)="changeUsername()">Save</button>
+        <button (click)="showChangeUsername = false">Cancel</button>
+      </div>
+      <button class="setup-btn" (click)="openSetup()">Configure Setup</button>
+      <app-connection-status></app-connection-status>
+    </div>
+  </div>
+  
+  <div class="lobby-content">
+    <div class="users-panel">
+      <h2>Online Users</h2>
+      <div class="users-list">
+        <div 
+          class="user-item" 
+          *ngFor="let user of users"
+          (contextmenu)="openUserMenu($event, user)"
+        >
+          <span class="status-dot" [ngClass]="{'online': user.status === 'online', 'in-game': user.status === 'in-game'}"></span>
+          <span class="username">{{ user.username }}</span>
+          <span class="user-status">{{ user.status === 'online' ? 'Available' : 'In Game' }}</span>
+        </div>
+      </div>
+    </div>
+    
+    <div class="chat-panel">
+      <div class="chat-messages">
+        <div 
+          class="message-item" 
+          *ngFor="let message of messages"
+          [ngClass]="{'system-message': message.type === 'system'}"
+        >
+          <div class="message-header">
+            <span class="message-username">{{ message.username }}</span>
+            <span class="message-time">{{ message.timestamp | date:'shortTime' }}</span>
+          </div>
+          <div class="message-content">
+            {{ message.content }}
+          </div>
+        </div>
+      </div>
+      <div class="chat-input">
+        <input 
+          type="text" 
+          [(ngModel)]="messageContent" 
+          placeholder="Type a message..." 
+          (keyup.enter)="sendMessage()"
+        >
+        <button (click)="sendMessage()">Send</button>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Challenge Dialog -->
+  <div class="challenge-dialog" *ngIf="activeChallenge">
+    <div class="challenge-content">
+      <p><strong>{{ activeChallenge.challenger }}</strong> has challenged you to a game!</p>
+      <p>Time remaining: {{ activeChallenge.timeLeft }} seconds</p>
+      <div class="challenge-actions">
+        <button class="accept-btn" (click)="respondToChallenge('accept')">Accept</button>
+        <button class="decline-btn" (click)="respondToChallenge('decline')">Decline</button>
+      </div>
+    </div>
+  </div>
+</div><p>lobby works!</p>

@@ -1,7 +1,7 @@
 import json
-from channels.generic.websocket import AsyncWebsocketConsumer
-from datetime import datetime
 import uuid
+from datetime import datetime
+from channels.generic.websocket import AsyncWebsocketConsumer
 
 class GameConsumer(AsyncWebsocketConsumer):
     # Keep track of connected users
@@ -31,7 +31,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'type': 'connection_established',
             'message': 'Connected to game server'
         }))
-
+    
     async def disconnect(self, close_code):
         # If this was a logged-in user, update user list
         if self.username and self.room_name == 'lobby':
@@ -56,7 +56,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             self.room_group_name,
             self.channel_name
         )
-
+    
     # Receive message from WebSocket
     async def receive(self, text_data):
         try:
@@ -111,6 +111,37 @@ class GameConsumer(AsyncWebsocketConsumer):
                         'timestamp': data.get('timestamp')
                     }
                 )
+                
+            elif message_type == 'change_username':
+                old_username = data.get('oldUsername')
+                new_username = data.get('newUsername')
+                
+                # Check if new username already exists
+                if new_username in self.connected_users:
+                    # Send error to the requesting user
+                    await self.send(text_data=json.dumps({
+                        'type': 'username_error',
+                        'error': 'This username is already taken.'
+                    }))
+                else:
+                    # Update username in connected users
+                    if old_username in self.connected_users:
+                        user_data = self.connected_users.pop(old_username)
+                        self.connected_users[new_username] = user_data
+                        self.username = new_username
+                        
+                        # Notify all users about the name change
+                        await self.channel_layer.group_send(
+                            self.room_group_name,
+                            {
+                                'type': 'username_changed',
+                                'oldUsername': old_username,
+                                'newUsername': new_username
+                            }
+                        )
+                        
+                        # Send updated user list
+                        await self.update_user_list()
                 
             elif message_type == 'game_challenge':
                 challenger = data.get('challenger')
@@ -193,13 +224,17 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self.channel_layer.group_send(
                     self.room_group_name,
                     {
-                        'type': 'game_message',
+                        'type': 'echo_message',
                         'message': data
                     }
                 )
                 
         except json.JSONDecodeError:
-            print("Error: Invalid JSON format")
+            # Handle invalid JSON
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Invalid JSON format'
+            }))
     
     async def update_user_list(self):
         # Create a list of users
@@ -208,7 +243,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         
         # Send user list to all clients in the lobby
         await self.channel_layer.group_send(
-            self.room_group_name,  # FIXED: Use the correct room group
+            self.room_group_name,
             {
                 'type': 'user_list',
                 'users': users
@@ -234,6 +269,14 @@ class GameConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'user_list',
             'users': event['users']
+        }))
+    
+    # Handler for username changes
+    async def username_changed(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'username_changed',
+            'oldUsername': event['oldUsername'],
+            'newUsername': event['newUsername']
         }))
     
     # Handler for chat messages
@@ -267,8 +310,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'type': 'challenge_declined',
             'username': event['username']
         }))
-        
-    # General message handler
-    async def game_message(self, event):
-        message = event['message']
-        await self.send(text_data=json.dumps(message))
+    
+    # Echo handler for testing
+    async def echo_message(self, event):
+        await self.send(text_data=json.dumps(event['message']))

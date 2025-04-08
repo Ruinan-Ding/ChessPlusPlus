@@ -40,10 +40,7 @@ export class ConnectionStatusComponent implements OnInit, OnDestroy {
   constructor(private wsService: WebsocketService) {}
 
   ngOnInit(): void {
-    // Connect to the WebSocket server
-    this.wsService.connect();
-    
-    // Subscribe to connection status updates
+    // Don't connect here, just subscribe to status updates
     this.subscription = this.wsService.connectionStatus$.subscribe(
       (status: boolean) => {
         this.isConnected = status;
@@ -52,10 +49,11 @@ export class ConnectionStatusComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
-    // Clean up subscription and disconnect WebSocket
+    // Clean up subscription but don't disconnect
     if (this.subscription) {
       this.subscription.unsubscribe();
     }
-    this.wsService.disconnect();
+    // Remove this line - don't disconnect when the status component is destroyed
+    // this.wsService.disconnect();
   }
 }
