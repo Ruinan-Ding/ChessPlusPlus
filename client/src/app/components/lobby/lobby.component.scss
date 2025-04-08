@@ -1,0 +1,299 @@
+/* filepath: c:\Users\Ruina\Documents\ChessPlusPlus\client\src\app\components\lobby\lobby.component.scss */
+.lobby-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: Arial, sans-serif;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #ddd;
+  
+  h1 {
+    margin: 0;
+    color: #2c3e50;
+  }
+  
+  .user-info {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+  }
+  
+  .username-display {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  
+  .change-username {
+    display: flex;
+    gap: 5px;
+    
+    input {
+      padding: 5px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+  }
+  
+  .setup-btn {
+    padding: 8px 12px;
+    background-color: #3498db;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    
+    &:hover {
+      background-color: #2980b9;
+    }
+  }
+}
+
+.lobby-content {
+  display: flex;
+  flex-grow: 1;
+  gap: 20px;
+  height: calc(100vh - 150px);
+}
+
+.users-panel {
+  width: 250px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 10px;
+  background-color: #f8f9fa;
+  
+  h2 {
+    margin-top: 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #ddd;
+    font-size: 1.2rem;
+  }
+  
+  .users-list {
+    overflow-y: auto;
+    height: calc(100% - 50px);
+  }
+  
+  .user-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 5px;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    
+    &:hover {
+      background-color: #f1f1f1;
+    }
+    
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      
+      &.online {
+        background-color: #2ecc71;
+      }
+      
+      &.in-game {
+        background-color: #e74c3c;
+      }
+    }
+    
+    .username {
+      flex-grow: 1;
+    }
+    
+    .user-status {
+      font-size: 0.8rem;
+      color: #7f8c8d;
+    }
+  }
+}
+
+.chat-panel {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background-color: white;
+  
+  .chat-messages {
+    flex-grow: 1;
+    padding: 15px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  
+  .message-item {
+    padding: 10px;
+    background-color: #f8f9fa;
+    border-radius: 4px;
+    max-width: 80%;
+    
+    &.system-message {
+      background-color: #e8f4f8;
+      font-style: italic;
+      align-self: center;
+      
+      .message-username {
+        color: #3498db;
+        font-weight: bold;
+      }
+    }
+  }
+  
+  .message-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 5px;
+    
+    .message-username {
+      font-weight: bold;
+      color: #2c3e50;
+    }
+    
+    .message-time {
+      font-size: 0.8rem;
+      color: #7f8c8d;
+    }
+  }
+  
+  .chat-input {
+    display: flex;
+    padding: 10px;
+    border-top: 1px solid #ddd;
+    
+    input {
+      flex-grow: 1;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      margin-right: 10px;
+    }
+    
+    button {
+      padding: 8px 15px;
+      background-color: #3498db;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      
+      &:hover {
+        background-color: #2980b9;
+      }
+    }
+  }
+}
+
+.btn-small {
+  padding: 3px 8px;
+  background-color: #f8f9fa;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  
+  &:hover {
+    background-color: #e9ecef;
+  }
+}
+
+.challenge-dialog {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  
+  .challenge-content {
+    background-color: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    width: 300px;
+    text-align: center;
+    
+    p {
+      margin: 10px 0;
+    }
+  }
+  
+  .challenge-actions {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin-top: 20px;
+    
+    button {
+      padding: 8px 20px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    
+    .accept-btn {
+      background-color: #2ecc71;
+      color: white;
+      
+      &:hover {
+        background-color: #27ae60;
+      }
+    }
+    
+    .decline-btn {
+      background-color: #e74c3c;
+      color: white;
+      
+      &:hover {
+        background-color: #c0392b;
+      }
+    }
+  }
+}
+
+.user-context-menu {
+  position: absolute;
+  background-color: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 5px 0;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  z-index: 100;
+  
+  button {
+    display: block;
+    width: 100%;
+    padding: 8px 15px;
+    background: none;
+    border: none;
+    text-align: left;
+    cursor: pointer;
+    
+    &:hover {
+      background-color: #f1f1f1;
+    }
+  }
+}
