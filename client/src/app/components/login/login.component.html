@@ -1,1 +1,23 @@
-<p>login works!</p>
+<div class="login-container">
+  <h2>Welcome to ChessPlusPlus</h2>
+  <div class="login-form">
+    <div class="form-group">
+      <label for="username">Enter your username:</label>
+      <input 
+        type="text" 
+        id="username" 
+        [(ngModel)]="username" 
+        placeholder="Username" 
+        class="form-control"
+        maxlength="24"
+        (keyup.enter)="login()"
+      >
+      <div class="char-counter" [ngClass]="{'near-limit': username.length > 20}">
+        {{ username.length }}/24
+      </div>
+    </div>
+    <button (click)="login()" [disabled]="!username.trim()" class="login-button">
+      Enter Lobby
+    </button>
+  </div>
+</div>

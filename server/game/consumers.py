@@ -65,23 +65,48 @@ class GameConsumer(AsyncWebsocketConsumer):
             
             # Handle different message types
             if message_type == 'join_lobby':
-                self.username = data.get('username')
-                self.connected_users[self.username] = {
-                    'channel_name': self.channel_name,
-                    'status': 'online'
-                }
+                username = data.get('username')
                 
-                # Notify others that user has joined
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        'type': 'user_joined',
-                        'username': self.username
+                # Check if username is already taken by another connection
+                if username in self.connected_users and self.connected_users[username]['channel_name'] != self.channel_name:
+                    # Username already taken, send error
+                    await self.send(text_data=json.dumps({
+                        'type': 'username_error',
+                        'error': 'This username is already taken. Please choose another.',
+                        'oldUsername': username
+                    }))
+                else:
+                    # If this connection had a previous username, remove it
+                    if self.username and self.username in self.connected_users:
+                        # Notify others that user has left with old name
+                        await self.channel_layer.group_send(
+                            self.room_group_name,
+                            {
+                                'type': 'user_left',
+                                'username': self.username
+                            }
+                        )
+                        # Remove old username entry
+                        del self.connected_users[self.username]
+                    
+                    # Username is available - update to new username
+                    self.username = username
+                    self.connected_users[self.username] = {
+                        'channel_name': self.channel_name,
+                        'status': 'online'
                     }
-                )
-                
-                # Send updated user list
-                await self.update_user_list()
+                    
+                    # Notify others that user has joined
+                    await self.channel_layer.group_send(
+                        self.room_group_name,
+                        {
+                            'type': 'user_joined',
+                            'username': self.username
+                        }
+                    )
+                    
+                    # Send updated user list
+                    await self.update_user_list()
                 
             elif message_type == 'leave_lobby':
                 username = data.get('username')
@@ -116,12 +141,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 old_username = data.get('oldUsername')
                 new_username = data.get('newUsername')
                 
-                # Check if new username already exists
+                # Check if the new username already exists
                 if new_username in self.connected_users:
                     # Send error to the requesting user
                     await self.send(text_data=json.dumps({
                         'type': 'username_error',
-                        'error': 'This username is already taken.'
+                        'error': f'The username "{new_username}" is already taken. Please choose another.'
                     }))
                 else:
                     # Update username in connected users
@@ -211,6 +236,15 @@ class GameConsumer(AsyncWebsocketConsumer):
                         }))
                         
                     elif response == 'decline':
+                        # Make sure both users remain 'online' (not 'in-game')
+                        if username in self.connected_users:
+                            self.connected_users[username]['status'] = 'online'
+                        if challenger in self.connected_users:
+                            self.connected_users[challenger]['status'] = 'online'
+                            
+                        # Send updated user list
+                        await self.update_user_list()
+                        
                         # Notify challenger that challenge was declined
                         await self.channel_layer.send(
                             challenger_channel,
