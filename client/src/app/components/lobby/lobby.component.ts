@@ -4,23 +4,24 @@ import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
 import { Subscription } from 'rxjs';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
+import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
 
 interface User {
   username: string;
-  status: string;
+  status: string; // e.g., 'online', 'in-game'
 }
 
 interface ChatMessage {
   username: string;
   content: string;
   timestamp: string;
-  type?: string; // For system messages
+  type?: string; // Optional, e.g., 'system' for system messages
 }
 
 @Component({
   selector: 'app-lobby',
   standalone: true,
-  imports: [CommonModule, FormsModule, ConnectionStatusComponent],
+  imports: [CommonModule, FormsModule, ConnectionStatusComponent, ConnectionDialogComponent],
   templateUrl: './lobby.component.html',
   styleUrls: ['./lobby.component.scss']
 })
