@@ -56,9 +56,17 @@
           class="message-item" 
           *ngFor="let message of messages"
           [ngClass]="{'system-message': message.type === 'system'}"
+          (contextmenu)="message.username !== 'System' && message.username !== username ? openUserMenu($event, { username: message.username, status: 'online' }) : null"
         >
           <div class="message-header">
             <span class="message-username">{{ message.username }}</span>
+            <button 
+              *ngIf="message.username !== 'System' && message.username !== username"
+              class="action-button" 
+              (click)="openUserMenu($event, { username: message.username, status: 'online' })"
+            >
+              ⋮
+            </button>
             <span class="message-time">{{ message.timestamp | date:'shortTime' }}</span>
           </div>
           <div class="message-content">
