@@ -55,7 +55,10 @@
         <div 
           class="message-item" 
           *ngFor="let message of messages"
-          [ngClass]="{'system-message': message.type === 'system'}"
+          [ngClass]="{
+            'system-message': message.type === 'system',
+            'my-message': message.username === username
+          }"
           (contextmenu)="message.username !== 'System' && message.username !== username ? openUserMenu($event, { username: message.username, status: 'online' }) : null"
         >
           <div class="message-header">

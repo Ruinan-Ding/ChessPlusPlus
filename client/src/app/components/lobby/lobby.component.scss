@@ -211,9 +211,9 @@
   
   .message-item {
     padding: 10px;
-    background-color: #f8f9fa;
-    border-radius: 4px;
-    max-width: 80%;
+    margin: 5px 0;
+    border-radius: 10px;
+    background-color: #f1f1f1;
     
     &.system-message {
       background-color: #e8f4f8;
@@ -225,12 +225,31 @@
         font-weight: bold;
       }
     }
+    
+    &.my-message {
+      text-align: right;
+      background-color: #e0f7fa;
+      border-radius: 10px 10px 0 10px;
+      margin-left: auto;
+    }
+    
+    .message-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px; /* Add spacing between elements */
+    }
+    
+    .message-content {
+      margin-top: 5px;
+    }
   }
   
   .message-header {
     display: flex;
     justify-content: space-between;
     margin-bottom: 5px;
+    gap: 10px; /* Add spacing between elements */
     
     .message-username {
       font-weight: bold;
