@@ -244,37 +244,35 @@ export class LobbyComponent implements OnInit, OnDestroy {
     }, 100);
   }
   
-  challengeUser(opponent: string): void {
-    this.wsService.sendMessage({
-      type: 'game_challenge',
-      challenger: this.username,
-      opponent: opponent
-    });
-    
-    this.addSystemMessage(`You have challenged ${opponent} to a game.`);
-  }
-  
-  handleGameChallenge(message: any): void {
+  async handleGameChallenge(message: any): Promise<void> {
     // Clear any existing challenge
     if (this.activeChallenge?.intervalId) {
       clearInterval(this.activeChallenge.intervalId);
     }
-    
+
     // Set up the new challenge
     this.activeChallenge = {
       challenger: message.challenger,
       challengeId: message.challenge_id,
-      timeLeft: 30
+      timeLeft: 5 // Change countdown to 5 seconds
     };
-    
+
+    // Update the status of both users to 'yellow' (challenging)
+    this.users = this.users.map(user => {
+      if (user.username === message.challenger || user.username === this.username) {
+        return { ...user, status: 'challenging' };
+      }
+      return user;
+    });
+
     // Add system message
     this.addSystemMessage(`${message.challenger} has challenged you to a game. You have 30 seconds to accept.`);
-    
+
     // Start countdown
     this.activeChallenge.intervalId = setInterval(() => {
       if (this.activeChallenge) {
         this.activeChallenge.timeLeft--;
-        
+
         if (this.activeChallenge.timeLeft <= 0) {
           // Time expired, auto-decline
           this.respondToChallenge('decline');
@@ -282,28 +280,65 @@ export class LobbyComponent implements OnInit, OnDestroy {
       }
     }, 1000);
   }
-  
+
+  challengeUser(opponent: string): void {
+    // Prevent challenging if already in a challenge or in-game
+    if (this.activeChallenge || this.users.some(user => user.username === this.username && user.status === 'in-game')) return;
+
+    this.wsService.sendMessage({
+      type: 'game_challenge',
+      challenger: this.username,
+      opponent: opponent
+    });
+
+    // Update the status of both users to 'yellow' (challenging) for the challenger
+    this.users = this.users.map(user => {
+      if (user.username === opponent || user.username === this.username) {
+        return { ...user, status: 'challenging' };
+      }
+      return user;
+    });
+
+    this.addSystemMessage(`You have challenged ${opponent} to a game.`);
+  }
+
   respondToChallenge(response: 'accept' | 'decline'): void {
     if (!this.activeChallenge) return;
-    
+
     this.wsService.sendMessage({
       type: 'challenge_response',
       response: response,
       username: this.username,
       challenger: this.activeChallenge.challenger
     });
-    
+
     // Clear challenge
     if (this.activeChallenge.intervalId) {
       clearInterval(this.activeChallenge.intervalId);
     }
-    
+
     if (response === 'accept') {
       this.addSystemMessage(`You accepted ${this.activeChallenge.challenger}'s challenge.`);
+
+      // Keep both users in 'in-game' status
+      this.users = this.users.map(user => {
+        if (user.username === this.activeChallenge?.challenger || user.username === this.username) {
+          return { ...user, status: 'in-game' };
+        }
+        return user;
+      });
     } else {
       this.addSystemMessage(`You declined ${this.activeChallenge.challenger}'s challenge.`);
+
+      // Reset the status of both users to 'online'
+      this.users = this.users.map(user => {
+        if (user.username === this.activeChallenge?.challenger || user.username === this.username) {
+          return { ...user, status: 'online' };
+        }
+        return user;
+      });
     }
-    
+
     this.activeChallenge = null;
   }
   

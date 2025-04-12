@@ -35,7 +35,11 @@
           [ngClass]="{'current-user': user.username === username}"
           (contextmenu)="openUserMenu($event, user)"
         >
-          <span class="status-dot" [ngClass]="{'online': user.status === 'online', 'in-game': user.status === 'in-game'}"></span>
+          <span class="status-dot" [ngClass]="{
+            'online': user.status === 'online',
+            'in-game': user.status === 'in-game',
+            'challenging': user.status === 'challenging'
+          }"></span>
           <span class="username" [title]="user.username">
             {{ user.username }}
             <span *ngIf="user.username === username" class="current-user-tag">(You)</span>
