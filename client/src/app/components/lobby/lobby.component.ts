@@ -4,23 +4,24 @@ import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
 import { Subscription } from 'rxjs';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
+import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
 
 interface User {
   username: string;
-  status: string;
+  status: string; // e.g., 'online', 'in-game'
 }
 
 interface ChatMessage {
   username: string;
   content: string;
   timestamp: string;
-  type?: string; // For system messages
+  type?: string; // Optional, e.g., 'system' for system messages
 }
 
 @Component({
   selector: 'app-lobby',
   standalone: true,
-  imports: [CommonModule, FormsModule, ConnectionStatusComponent],
+  imports: [CommonModule, FormsModule, ConnectionStatusComponent, ConnectionDialogComponent],
   templateUrl: './lobby.component.html',
   styleUrls: ['./lobby.component.scss']
 })
@@ -98,7 +99,27 @@ export class LobbyComponent implements OnInit, OnDestroy {
           break;
           
         case 'username_error':
+          // Handle username error when trying to join the lobby
           alert(message.error);
+          
+          // If we get back our old attempted username, remove it
+          if (message.oldUsername && message.oldUsername === this.username) {
+            // Clear the rejected username from localStorage
+            localStorage.removeItem('username');
+            
+            // Generate a new random username
+            const newRandomName = this.generateRandomUsername();
+            this.username = newRandomName;
+            localStorage.setItem('username', newRandomName);
+            
+            // Try joining again with the new random username
+            this.wsService.sendMessage({
+              type: 'join_lobby',
+              username: newRandomName
+            });
+            
+            this.addSystemMessage(`System assigned you a new username: ${newRandomName}`);
+          }
           break;
           
         case 'game_challenge':
@@ -156,14 +177,15 @@ export class LobbyComponent implements OnInit, OnDestroy {
       this.showChangeUsername = false;
       return;
     }
-    
+
+    // Send the request to change the username
     this.wsService.sendMessage({
       type: 'change_username',
       oldUsername: this.username,
       newUsername: this.newUsername
     });
-    
-    this.showChangeUsername = false;
+
+    // Keep the UI open until the server confirms or rejects the change
   }
   
   toggleChangeUsername(): void {
@@ -177,13 +199,27 @@ export class LobbyComponent implements OnInit, OnDestroy {
     // Don't allow challenging yourself or users who aren't available
     if (user.username === this.username || user.status !== 'online') return;
     
+    // Remove any existing menus first
+    const existingMenus = document.querySelectorAll('.user-context-menu');
+    existingMenus.forEach(menu => document.body.removeChild(menu));
+    
     // Create the context menu
     const menu = document.createElement('div');
     menu.className = 'user-context-menu';
     menu.innerHTML = `<button>Challenge</button>`;
     menu.style.position = 'absolute';
-    menu.style.left = `${event.pageX}px`;
-    menu.style.top = `${event.pageY}px`;
+    
+    // Position the menu differently based on event source
+    if (event.target instanceof HTMLButtonElement && event.target.classList.contains('action-button')) {
+      // If clicked from the three-dots button, position relative to the button
+      const rect = (event.target as HTMLElement).getBoundingClientRect();
+      menu.style.left = `${rect.left}px`;
+      menu.style.top = `${rect.bottom + 5}px`;
+    } else {
+      // Otherwise, use mouse coordinates (right-click)
+      menu.style.left = `${event.pageX}px`;
+      menu.style.top = `${event.pageY}px`;
+    }
     
     // Add event listener for challenge button
     menu.querySelector('button')?.addEventListener('click', () => {
@@ -208,37 +244,35 @@ export class LobbyComponent implements OnInit, OnDestroy {
     }, 100);
   }
   
-  challengeUser(opponent: string): void {
-    this.wsService.sendMessage({
-      type: 'game_challenge',
-      challenger: this.username,
-      opponent: opponent
-    });
-    
-    this.addSystemMessage(`You have challenged ${opponent} to a game.`);
-  }
-  
-  handleGameChallenge(message: any): void {
+  async handleGameChallenge(message: any): Promise<void> {
     // Clear any existing challenge
     if (this.activeChallenge?.intervalId) {
       clearInterval(this.activeChallenge.intervalId);
     }
-    
+
     // Set up the new challenge
     this.activeChallenge = {
       challenger: message.challenger,
       challengeId: message.challenge_id,
-      timeLeft: 30
+      timeLeft: 5 // Change countdown to 5 seconds
     };
-    
+
+    // Update the status of both users to 'yellow' (challenging)
+    this.users = this.users.map(user => {
+      if (user.username === message.challenger || user.username === this.username) {
+        return { ...user, status: 'challenging' };
+      }
+      return user;
+    });
+
     // Add system message
     this.addSystemMessage(`${message.challenger} has challenged you to a game. You have 30 seconds to accept.`);
-    
+
     // Start countdown
     this.activeChallenge.intervalId = setInterval(() => {
       if (this.activeChallenge) {
         this.activeChallenge.timeLeft--;
-        
+
         if (this.activeChallenge.timeLeft <= 0) {
           // Time expired, auto-decline
           this.respondToChallenge('decline');
@@ -246,28 +280,65 @@ export class LobbyComponent implements OnInit, OnDestroy {
       }
     }, 1000);
   }
-  
+
+  challengeUser(opponent: string): void {
+    // Prevent challenging if already in a challenge or in-game
+    if (this.activeChallenge || this.users.some(user => user.username === this.username && user.status === 'in-game')) return;
+
+    this.wsService.sendMessage({
+      type: 'game_challenge',
+      challenger: this.username,
+      opponent: opponent
+    });
+
+    // Update the status of both users to 'yellow' (challenging) for the challenger
+    this.users = this.users.map(user => {
+      if (user.username === opponent || user.username === this.username) {
+        return { ...user, status: 'challenging' };
+      }
+      return user;
+    });
+
+    this.addSystemMessage(`You have challenged ${opponent} to a game.`);
+  }
+
   respondToChallenge(response: 'accept' | 'decline'): void {
     if (!this.activeChallenge) return;
-    
+
     this.wsService.sendMessage({
       type: 'challenge_response',
       response: response,
       username: this.username,
       challenger: this.activeChallenge.challenger
     });
-    
+
     // Clear challenge
     if (this.activeChallenge.intervalId) {
       clearInterval(this.activeChallenge.intervalId);
     }
-    
+
     if (response === 'accept') {
       this.addSystemMessage(`You accepted ${this.activeChallenge.challenger}'s challenge.`);
+
+      // Keep both users in 'in-game' status
+      this.users = this.users.map(user => {
+        if (user.username === this.activeChallenge?.challenger || user.username === this.username) {
+          return { ...user, status: 'in-game' };
+        }
+        return user;
+      });
     } else {
       this.addSystemMessage(`You declined ${this.activeChallenge.challenger}'s challenge.`);
+
+      // Reset the status of both users to 'online'
+      this.users = this.users.map(user => {
+        if (user.username === this.activeChallenge?.challenger || user.username === this.username) {
+          return { ...user, status: 'online' };
+        }
+        return user;
+      });
     }
-    
+
     this.activeChallenge = null;
   }
   

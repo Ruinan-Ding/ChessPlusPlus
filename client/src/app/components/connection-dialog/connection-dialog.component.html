@@ -1,0 +1,20 @@
+<div class="connection-dialog-overlay" *ngIf="isReconnecting || connectionFailed">
+  <div class="connection-dialog">
+    <div *ngIf="isReconnecting" class="reconnecting-info">
+      <div class="spinner"></div>
+      <h2>Connection Lost</h2>
+      <p>Attempting to reconnect... ({{ attemptCount }}/{{ maxAttempts }})</p>
+    </div>
+    
+    <div *ngIf="connectionFailed" class="failed-info">
+      <div class="error-icon">❌</div>
+      <h2>Connection Failed</h2>
+      <p>Could not connect to the server after multiple attempts.</p>
+      <p>Please check if the server is running and try again.</p>
+      <div class="button-group">
+        <button class="retry-button" (click)="retry()">Retry Connection</button>
+        <button class="login-button" (click)="goToLogin()">Back to Login</button>
+      </div>
+    </div>
+  </div>
+</div>

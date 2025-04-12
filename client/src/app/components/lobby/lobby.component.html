@@ -11,8 +11,12 @@
           type="text" 
           [(ngModel)]="newUsername" 
           placeholder="New username" 
+          maxlength="24" 
           (keyup.enter)="changeUsername()"
         >
+        <div class="char-counter" [ngClass]="{'near-limit': newUsername.length > 20}">
+          {{ newUsername.length }}/24
+        </div>
         <button (click)="changeUsername()">Save</button>
         <button (click)="showChangeUsername = false">Cancel</button>
       </div>
@@ -28,11 +32,24 @@
         <div 
           class="user-item" 
           *ngFor="let user of users"
+          [ngClass]="{'current-user': user.username === username}"
           (contextmenu)="openUserMenu($event, user)"
         >
-          <span class="status-dot" [ngClass]="{'online': user.status === 'online', 'in-game': user.status === 'in-game'}"></span>
-          <span class="username">{{ user.username }}</span>
+          <span class="status-dot" [ngClass]="{
+            'online': user.status === 'online',
+            'in-game': user.status === 'in-game',
+            'challenging': user.status === 'challenging'
+          }"></span>
+          <span class="username" [title]="user.username">
+            {{ user.username }}
+            <span *ngIf="user.username === username" class="current-user-tag">(You)</span>
+          </span>
           <span class="user-status">{{ user.status === 'online' ? 'Available' : 'In Game' }}</span>
+          <button 
+            class="action-button" 
+            (click)="openUserMenu($event, user)" 
+            [disabled]="user.username === username || user.status !== 'online'"
+          >⋮</button>
         </div>
       </div>
     </div>
@@ -42,10 +59,21 @@
         <div 
           class="message-item" 
           *ngFor="let message of messages"
-          [ngClass]="{'system-message': message.type === 'system'}"
+          [ngClass]="{
+            'system-message': message.type === 'system',
+            'my-message': message.username === username
+          }"
+          (contextmenu)="message.username !== 'System' && message.username !== username ? openUserMenu($event, { username: message.username, status: 'online' }) : null"
         >
           <div class="message-header">
             <span class="message-username">{{ message.username }}</span>
+            <button 
+              *ngIf="message.username !== 'System' && message.username !== username"
+              class="action-button" 
+              (click)="openUserMenu($event, { username: message.username, status: 'online' })"
+            >
+              ⋮
+            </button>
             <span class="message-time">{{ message.timestamp | date:'shortTime' }}</span>
           </div>
           <div class="message-content">
@@ -76,4 +104,7 @@
       </div>
     </div>
   </div>
-</div><p>lobby works!</p>
+  
+  <!-- Add the connection dialog component -->
+  <app-connection-dialog></app-connection-dialog>
+</div>
