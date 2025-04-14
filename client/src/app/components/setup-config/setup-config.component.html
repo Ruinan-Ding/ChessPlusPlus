@@ -1,7 +1,10 @@
 <div class="setup-container">
   <div class="header">
     <button class="back-button" (click)="onBack()">Back to Lobby</button>
-    <button class="save-button" [disabled]="!hasUnsavedChanges" (click)="saveConfig()">Save Configuration</button>
+    <div class="save-section">
+      <button class="save-button" [disabled]="!hasUnsavedChanges" (click)="saveConfig()">Save Configuration</button>
+      <span class="save-success" *ngIf="savedSuccessfully">Saved!</span>
+    </div>
   </div>
 
   <div class="config-section">
@@ -19,6 +22,7 @@
         (ngModelChange)="onConfigChange()"
         placeholder="Paste your JSON configuration here..."
         rows="10"
+        spellcheck="false"
       ></textarea>
     </div>
   </div>

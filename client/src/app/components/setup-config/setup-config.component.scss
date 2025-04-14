@@ -4,6 +4,40 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
+
+  .header {
+    .save-section {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+
+      .save-success {
+        color: #28a745;
+        font-weight: 500;
+        animation: fadeOut 2s forwards;
+      }
+    }
+  }
+
+  .json-section {
+    textarea {
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+      tab-size: 2;
+      background-color: #f8f9fa;
+      
+      &:focus {
+        outline: none;
+        border-color: #007bff;
+        box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+      }
+    }
+  }
+}
+
+@keyframes fadeOut {
+  0% { opacity: 1; }
+  75% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 .header {
