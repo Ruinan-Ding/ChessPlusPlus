@@ -1,0 +1,25 @@
+<div class="setup-container">
+  <div class="header">
+    <button class="back-button" (click)="onBack()">Back to Lobby</button>
+    <button class="save-button" [disabled]="!hasUnsavedChanges" (click)="saveConfig()">Save Configuration</button>
+  </div>
+
+  <div class="config-section">
+    <!-- Placeholder for unit/ability configuration UI -->
+    <div class="config-ui">
+      <h3>Units & Abilities Configuration</h3>
+      <p>Configuration UI will be added here</p>
+    </div>
+
+    <!-- JSON configuration textarea -->
+    <div class="json-section">
+      <h3>JSON Configuration</h3>
+      <textarea
+        [(ngModel)]="jsonConfig"
+        (ngModelChange)="onConfigChange()"
+        placeholder="Paste your JSON configuration here..."
+        rows="10"
+      ></textarea>
+    </div>
+  </div>
+</div>
