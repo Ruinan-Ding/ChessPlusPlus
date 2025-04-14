@@ -5,6 +5,7 @@ import { WebsocketService } from '../../services/websocket.service';
 import { Subscription } from 'rxjs';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
 import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
+import { Router } from '@angular/router';
 
 interface User {
   username: string;
@@ -41,7 +42,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
   
   private subscription: Subscription | null = null;
   
-  constructor(private wsService: WebsocketService) {}
+  constructor(private wsService: WebsocketService, private router: Router) {}
   
   ngOnInit(): void {
     // Generate a random username if none exists
@@ -343,8 +344,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
   
   openSetup(): void {
-    // Placeholder for setup configuration
-    alert('Setup configuration will be implemented in a future update.');
+    this.router.navigate(['/setup']);
   }
   
   private generateRandomUsername(): string {
