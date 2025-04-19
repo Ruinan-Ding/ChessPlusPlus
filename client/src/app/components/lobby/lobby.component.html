@@ -38,7 +38,7 @@
           <span class="status-dot" [ngClass]="{
             'online': user.status === 'online',
             'in-game': user.status === 'in-game',
-            'challenging': user.status === 'challenging'
+            'invited': user.status === 'invited'
           }"></span>
           <span class="username" [title]="user.username">
             {{ user.username }}
@@ -48,7 +48,7 @@
           <button 
             class="action-button" 
             (click)="openUserMenu($event, user)" 
-            [disabled]="user.username === username || user.status !== 'online'"
+            [disabled]="user.username === username"
           >⋮</button>
         </div>
       </div>
@@ -93,14 +93,14 @@
     </div>
   </div>
   
-  <!-- Challenge Dialog -->
-  <div class="challenge-dialog" *ngIf="activeChallenge">
-    <div class="challenge-content">
-      <p><strong>{{ activeChallenge.challenger }}</strong> has challenged you to a game!</p>
-      <p>Time remaining: {{ activeChallenge.timeLeft }} seconds</p>
-      <div class="challenge-actions">
-        <button class="accept-btn" (click)="respondToChallenge('accept')">Accept</button>
-        <button class="decline-btn" (click)="respondToChallenge('decline')">Decline</button>
+  <!-- Invite Dialog -->
+  <div class="invite-dialog" *ngIf="activeInvite">
+    <div class="invite-content">
+      <p><strong>{{ activeInvite.inviter }}</strong> has invited you to a game!</p>
+      <p>Time remaining: {{ activeInvite.timeLeft }} seconds</p>
+      <div class="invite-actions">
+        <button class="accept-btn" (click)="respondToInvite('accept')">Accept</button>
+        <button class="decline-btn" (click)="respondToInvite('decline')">Decline</button>
       </div>
     </div>
   </div>

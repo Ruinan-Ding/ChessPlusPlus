@@ -211,9 +211,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                             'created_at': datetime.now().isoformat()
                         }
                         
-                        # Update user statuses
-                        self.connected_users[challenger]['status'] = 'in-game'
-                        self.connected_users[username]['status'] = 'in-game'
+                        # Update user statuses to 'invited' (yellow) instead of 'in-game'
+                        self.connected_users[challenger]['status'] = 'invited'
+                        self.connected_users[username]['status'] = 'invited'
                         
                         # Send updated user list
                         await self.update_user_list()
