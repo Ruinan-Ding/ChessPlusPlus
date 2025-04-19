@@ -5,7 +5,6 @@ import { WebsocketService } from '../../services/websocket.service';
 import { Subscription } from 'rxjs';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
 import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
-import { Router } from '@angular/router';
 
 interface User {
   username: string;
@@ -33,16 +32,16 @@ export class LobbyComponent implements OnInit, OnDestroy {
   messageContent: string = '';
   newUsername: string = '';
   showChangeUsername: boolean = false;
-  activeChallenge: {
-    challenger: string;
-    challengeId: string;
+  activeInvite: {
+    inviter: string;
+    inviteId: string;
     timeLeft: number;
     intervalId?: any;
   } | null = null;
   
   private subscription: Subscription | null = null;
   
-  constructor(private wsService: WebsocketService, private router: Router) {}
+  constructor(private wsService: WebsocketService) {}
   
   ngOnInit(): void {
     // Generate a random username if none exists
@@ -123,17 +122,23 @@ export class LobbyComponent implements OnInit, OnDestroy {
           }
           break;
           
-        case 'game_challenge':
+        case 'game_challenge': // Changed from 'game_invite' to 'game_challenge'
           this.handleGameChallenge(message);
           break;
           
         case 'challenge_accepted':
-          this.addSystemMessage(`${message.username} has accepted your challenge!`);
-          // Will navigate to game component later
+          this.addSystemMessage(`${message.username} has accepted your invitation!`);
+          // Set both users back to "invited" status (yellow) after accepting
+          this.users = this.users.map(user => {
+            if (user.username === message.username || user.username === this.username) {
+              return { ...user, status: 'invited' };
+            }
+            return user;
+          });
           break;
           
         case 'challenge_declined':
-          this.addSystemMessage(`${message.username} has declined your challenge.`);
+          this.addSystemMessage(`${message.username} has declined your invitation.`);
           break;
       }
     });
@@ -155,8 +160,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
     }
     
     // Clear any active challenge timer
-    if (this.activeChallenge?.intervalId) {
-      clearInterval(this.activeChallenge.intervalId);
+    if (this.activeInvite?.intervalId) {
+      clearInterval(this.activeInvite.intervalId);
     }
   }
   
@@ -197,8 +202,44 @@ export class LobbyComponent implements OnInit, OnDestroy {
   openUserMenu(event: MouseEvent, user: User): void {
     event.preventDefault();
     
-    // Don't allow challenging yourself or users who aren't available
-    if (user.username === this.username || user.status !== 'online') return;
+    // Don't allow inviting yourself
+    if (user.username === this.username) return;
+    
+    // Get current user's status
+    const currentUserStatus = this.users.find(u => u.username === this.username)?.status;
+    
+    // Enforce invitation rules:
+    // 1. Yellow CAN invite green (online)
+    // 2. Yellow CANNOT invite yellow (invited)
+    // 3. Green (online) CANNOT invite yellow (invited)
+    let canInvite = false;
+    let disabledReason = '';
+    
+    if (currentUserStatus === 'invited' && user.status === 'invited') {
+      // Yellow CANNOT invite yellow
+      canInvite = false;
+      disabledReason = 'Cannot invite another invited player';
+    } else if (currentUserStatus === 'online' && user.status === 'invited') {
+      // Green CANNOT invite yellow
+      canInvite = false;
+      disabledReason = 'Cannot invite an invited player';
+    } else if (currentUserStatus === 'invited' && user.status === 'online') {
+      // Yellow CAN invite green
+      canInvite = true;
+    } else if (currentUserStatus === 'online' && user.status === 'online') {
+      // Green CAN invite green
+      canInvite = true;
+    } else {
+      // Any other combination
+      canInvite = false;
+      disabledReason = 'Cannot invite this player';
+    }
+    
+    // Also check for active invitations
+    if (this.activeInvite && this.activeInvite.inviter === user.username) {
+      canInvite = false;
+      disabledReason = 'Already invited';
+    }
     
     // Remove any existing menus first
     const existingMenus = document.querySelectorAll('.user-context-menu');
@@ -207,7 +248,11 @@ export class LobbyComponent implements OnInit, OnDestroy {
     // Create the context menu
     const menu = document.createElement('div');
     menu.className = 'user-context-menu';
-    menu.innerHTML = `<button>Challenge</button>`;
+    
+    // Create button based on invitation rules
+    menu.innerHTML = canInvite ? 
+      `<button>Invite</button>` : 
+      `<button disabled>${disabledReason}</button>`;
     menu.style.position = 'absolute';
     
     // Position the menu differently based on event source
@@ -222,9 +267,11 @@ export class LobbyComponent implements OnInit, OnDestroy {
       menu.style.top = `${event.pageY}px`;
     }
     
-    // Add event listener for challenge button
+    // Add event listener for invite button
     menu.querySelector('button')?.addEventListener('click', () => {
-      this.challengeUser(user.username);
+      if (canInvite) {
+        this.inviteUser(user.username);
+      }
       document.body.removeChild(menu);
     });
     
@@ -245,46 +292,62 @@ export class LobbyComponent implements OnInit, OnDestroy {
     }, 100);
   }
   
+  // Check if there's already an active invitation between the current user and the target user
+  alreadyInvited(targetUsername: string): boolean {
+    // If there's an active invite dialog for this user, they're already invited
+    if (this.activeInvite?.inviter === targetUsername) {
+      return true;
+    }
+    
+    // If the target user is already in an invitation with the current user, check the status
+    // Get all users who are in challenging status
+    const challengingUsers = this.users.filter(u => u.status === 'invited');
+    
+    // If both the current user and target user are challenging, and they're the only challenging users, or
+    // the current user has an active invitation from the target user
+    return this.activeInvite?.inviter === targetUsername;
+  }
+  
   async handleGameChallenge(message: any): Promise<void> {
     // Clear any existing challenge
-    if (this.activeChallenge?.intervalId) {
-      clearInterval(this.activeChallenge.intervalId);
+    if (this.activeInvite?.intervalId) {
+      clearInterval(this.activeInvite.intervalId);
     }
 
     // Set up the new challenge
-    this.activeChallenge = {
-      challenger: message.challenger,
-      challengeId: message.challenge_id,
-      timeLeft: 5 // Change countdown to 5 seconds
+    this.activeInvite = {
+      inviter: message.challenger,
+      inviteId: message.challenge_id,
+      timeLeft: 5 // Changed from 30 seconds to 5 seconds
     };
 
-    // Update the status of both users to 'yellow' (challenging)
+    // Update the status of both users to 'yellow' (invited)
     this.users = this.users.map(user => {
       if (user.username === message.challenger || user.username === this.username) {
-        return { ...user, status: 'challenging' };
+        return { ...user, status: 'invited' };
       }
       return user;
     });
 
     // Add system message
-    this.addSystemMessage(`${message.challenger} has challenged you to a game. You have 30 seconds to accept.`);
+    this.addSystemMessage(`${message.challenger} has invited you to a game. You have 5 seconds to accept.`);
 
     // Start countdown
-    this.activeChallenge.intervalId = setInterval(() => {
-      if (this.activeChallenge) {
-        this.activeChallenge.timeLeft--;
+    this.activeInvite.intervalId = setInterval(() => {
+      if (this.activeInvite) {
+        this.activeInvite.timeLeft--;
 
-        if (this.activeChallenge.timeLeft <= 0) {
+        if (this.activeInvite.timeLeft <= 0) {
           // Time expired, auto-decline
-          this.respondToChallenge('decline');
+          this.respondToInvite('decline');
         }
       }
     }, 1000);
   }
 
-  challengeUser(opponent: string): void {
-    // Prevent challenging if already in a challenge or in-game
-    if (this.activeChallenge || this.users.some(user => user.username === this.username && user.status === 'in-game')) return;
+  inviteUser(opponent: string): void {
+    // Only prevent inviting if there's already an active invite dialog
+    if (this.activeInvite) return;
 
     this.wsService.sendMessage({
       type: 'game_challenge',
@@ -292,59 +355,60 @@ export class LobbyComponent implements OnInit, OnDestroy {
       opponent: opponent
     });
 
-    // Update the status of both users to 'yellow' (challenging) for the challenger
+    // Update the status of both users to 'yellow' (invited) for the challenger
     this.users = this.users.map(user => {
       if (user.username === opponent || user.username === this.username) {
-        return { ...user, status: 'challenging' };
+        return { ...user, status: 'invited' };
       }
       return user;
     });
 
-    this.addSystemMessage(`You have challenged ${opponent} to a game.`);
+    this.addSystemMessage(`You have invited ${opponent} to a game.`);
   }
 
-  respondToChallenge(response: 'accept' | 'decline'): void {
-    if (!this.activeChallenge) return;
+  respondToInvite(response: 'accept' | 'decline'): void {
+    if (!this.activeInvite) return;
 
     this.wsService.sendMessage({
-      type: 'challenge_response',
+      type: 'challenge_response', // Changed from 'invite_response' to 'challenge_response' to match server expectation
       response: response,
       username: this.username,
-      challenger: this.activeChallenge.challenger
+      challenger: this.activeInvite.inviter // Changed from 'inviter' to 'challenger' to match server expectation
     });
 
-    // Clear challenge
-    if (this.activeChallenge.intervalId) {
-      clearInterval(this.activeChallenge.intervalId);
+    // Clear invite
+    if (this.activeInvite.intervalId) {
+      clearInterval(this.activeInvite.intervalId);
     }
 
     if (response === 'accept') {
-      this.addSystemMessage(`You accepted ${this.activeChallenge.challenger}'s challenge.`);
+      this.addSystemMessage(`You accepted ${this.activeInvite.inviter}'s invitation.`);
 
-      // Keep both users in 'in-game' status
+      // Set both users back to 'invited' status (yellow) after accepting
       this.users = this.users.map(user => {
-        if (user.username === this.activeChallenge?.challenger || user.username === this.username) {
-          return { ...user, status: 'in-game' };
+        if (user.username === this.activeInvite?.inviter || user.username === this.username) {
+          return { ...user, status: 'invited' };
         }
         return user;
       });
     } else {
-      this.addSystemMessage(`You declined ${this.activeChallenge.challenger}'s challenge.`);
+      this.addSystemMessage(`You declined ${this.activeInvite.inviter}'s invitation.`);
 
       // Reset the status of both users to 'online'
       this.users = this.users.map(user => {
-        if (user.username === this.activeChallenge?.challenger || user.username === this.username) {
+        if (user.username === this.activeInvite?.inviter || user.username === this.username) {
           return { ...user, status: 'online' };
         }
         return user;
       });
     }
 
-    this.activeChallenge = null;
+    this.activeInvite = null;
   }
   
   openSetup(): void {
-    this.router.navigate(['/setup']);
+    // Placeholder for setup configuration
+    alert('Setup configuration will be implemented in a future update.');
   }
   
   private generateRandomUsername(): string {
