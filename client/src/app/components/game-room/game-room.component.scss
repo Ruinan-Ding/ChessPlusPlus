@@ -1,0 +1,565 @@
+.game-room-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  box-sizing: border-box;  // include padding in height calculation
+  overflow: auto;        // allow outer scrolling to prevent clipping
+
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: Arial, sans-serif;
+  
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #ddd;
+    
+    h1 {
+      margin: 0;
+      color: #2c3e50;
+    }
+    
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      
+      .leave-btn {
+        padding: 8px 15px;
+        background-color: #e74c3c;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        
+        &:hover {
+          background-color: #c0392b;
+        }
+      }
+    }
+  }
+  
+  main {
+    display: flex;
+    flex: 1;  // fill remaining height dynamically
+    gap: 20px;
+    min-height: 0;  // allow internal scroll panels to shrink
+  }
+  
+  .chat-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background-color: white;
+    // Constrain height for internal scroll
+    height: 100%;
+    min-height: 0;
+    
+    .chat-tabs {
+      display: flex;
+      border-bottom: 1px solid #ddd;
+      
+      button {
+        flex: 1;
+        padding: 10px;
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-weight: 500;
+        
+        &:hover {
+          background-color: #f5f5f5;
+        }
+        
+        &.active {
+          border-bottom: 3px solid #3498db;
+          color: #3498db;
+        }
+      }
+    }
+    
+    .chat-content {
+      display: flex;
+      flex-direction: column;
+      flex-grow: 1;
+      // Allow children to shrink for overflow
+      min-height: 0;
+      
+      .game-room-messages,
+      .lobby-messages {
+        flex-grow: 1;
+        padding: 15px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        // Ensure scroll container does not expand
+        min-height: 0;
+      }
+      
+      .lobby-user-list {
+        padding: 10px 15px;
+        border-top: 1px solid #ddd;
+        background-color: #fff;
+        flex: 0 0 auto;
+        max-height: 150px;
+        overflow-y: auto;
+      }
+      
+      .message-item {
+        padding: 10px;
+        margin: 5px 0;
+        border-radius: 10px;
+        background-color: #f1f1f1;
+        
+        &.system-message {
+          background-color: #e8f4f8;
+          font-style: italic;
+          align-self: center;
+          
+          .message-username {
+            color: #3498db;
+            font-weight: bold;
+          }
+        }
+        
+        &.my-message {
+          text-align: right;
+          background-color: #e0f7fa;
+          border-radius: 10px 10px 0 10px;
+          margin-left: auto;
+          
+          .message-header {
+            justify-content: flex-end;
+            
+            .message-username {
+              color: #1565C0;
+            }
+            
+            .message-time {
+              margin-left: 8px;
+            }
+          }
+        }
+        
+        .message-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 4px;
+          
+          .message-username {
+            font-weight: 600;
+            font-size: 1.1em;
+            color: #2c3e50;
+          }
+          
+          .message-time {
+            margin-left: auto;
+            color: #666;
+            font-size: 0.8rem;
+          }
+        }
+        
+        .message-content {
+          margin-top: 5px;
+        }
+      }
+      
+      .chat-input {
+        display: flex;
+        padding: 10px;
+        border-top: 1px solid #ddd;
+        
+        input {
+          flex-grow: 1;
+          padding: 8px;
+          border: 1px solid #ddd;
+          border-radius: 4px;
+          margin-right: 10px;
+        }
+        
+        button {
+          padding: 8px 15px;
+          background-color: #3498db;
+          color: white;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          
+          &:hover {
+            background-color: #2980b9;
+          }
+        }
+      }
+    }
+  }
+  
+  .lobby-content {
+    display: flex;
+    flex: 1;
+    height: 100%;
+    gap: 20px;
+    min-height: 0;
+  }
+
+  .lobby-chat {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .users-panel {
+    flex: 0 0 250px;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 10px;
+    background-color: #f8f9fa;
+    max-height: 100%;
+    min-height: 0;
+  }
+
+  .users-panel .users-list {
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  .users-panel .user-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    border-bottom: 1px solid #eee;
+    cursor: context-menu;
+  }
+
+  .status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 8px;
+  }
+  .status-dot.online {
+    background-color: #2ecc71; /* green */
+  }
+  .status-dot.in-game {
+    background-color: #e74c3c; /* red */
+  }
+  .status-dot.invited {
+    background-color: #f1c40f; /* yellow */
+  }
+
+  .username .current-user-tag {
+    margin-left: 5px;
+    font-size: 0.8rem;
+    color: #3498db;
+  }
+
+  .action-button {
+    margin-left: auto;
+    background: none;
+    border: none;
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 2px;
+  }
+  .action-button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .lobby-messages .action-button,
+  .users-panel .action-button {
+    flex-shrink: 0;
+    background-color: #f0f0f0;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 18px;
+    padding: 2px 8px;
+    color: #555;
+    margin-left: 0.5em;
+    transition: background 0.2s, color 0.2s;
+  }
+  .lobby-messages .action-button:hover,
+  .users-panel .action-button:hover {
+    background-color: #e0e0e0;
+    color: #333;
+  }
+  .lobby-messages .action-button:disabled,
+  .users-panel .action-button:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .game-settings-panel {
+    width: 300px;
+    display: flex;
+    flex-direction: column;
+    padding: 15px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background-color: #f8f9fa;
+    // Constrain to main height and enable scrolling inside player list
+    height: 100%;
+    min-height: 0;
+    
+    h3 {
+      margin-top: 0;
+      margin-bottom: 10px;
+      padding-bottom: 5px;
+      border-bottom: 1px solid #ddd;
+      font-size: 1.2rem;
+    }
+    
+    .game-mode-selection,
+    .game-mode-display {
+      .mode-options {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        
+        .radio-option {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          
+          input[type="radio"] {
+            margin: 0;
+            cursor: pointer;
+          }
+          
+          label {
+            cursor: pointer;
+          }
+        }
+        
+        .custom-options {
+          margin-top: 8px;
+          margin-left: 20px;
+          
+          .checkbox-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            
+            input[type="checkbox"] {
+              margin: 0;
+              cursor: pointer;
+            }
+            
+            label {
+              cursor: pointer;
+            }
+          }
+        }
+      }
+    }
+    
+    .game-mode-display {
+      .custom-options-display {
+        margin-top: 5px;
+        font-size: 0.9rem;
+        color: #666;
+      }
+    }
+    
+    .player-list {
+      flex-grow: 1;
+      overflow-y: auto;
+      // Ensure scroll container does not expand
+      min-height: 0;
+      
+      .player-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 5px;
+        border-bottom: 1px solid #eee;
+        
+        .ready-dot {
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          background-color: #ddd;
+          
+          &.joined {
+            background-color: #f1c40f; /* Yellow color for joined players */
+          }
+
+          &.left {
+            background-color: #e74c3c;  // red for left players
+          }
+        }
+        
+        .player-name {
+          flex-grow: 1;
+          
+          .crown-icon {
+            color: #f39c12;
+            margin-left: 5px;
+            font-size: 14px;
+          }
+        }
+        
+        .status-tag {
+          font-size: 0.8rem;
+          color: #3498db;
+
+          &.left-tag {
+            color: #e74c3c; // red tag for left
+            margin-left: 5px;
+          }
+        }
+        
+        .ready-checkmark {
+          color: #2ecc71;
+          font-weight: bold;
+          font-size: 18px;
+        }
+      }
+    }
+    
+    .ready-section {
+      margin-top: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      
+      .ready-btn {
+        width: 100%;
+        padding: 12px;
+        background-color: #2ecc71;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        font-size: 1.1rem;
+        font-weight: bold;
+        cursor: pointer;
+        transition: background-color 0.2s;
+        
+        &:hover {
+          background-color: #27ae60;
+        }
+        
+        &.ready-state {
+          background-color: #e74c3c;
+          
+          &:hover {
+            background-color: #c0392b;
+          }
+        }
+      }
+      
+      .start-game-btn {
+        width: 100%;
+        padding: 12px;
+        background-color: #3498db;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        font-size: 1.1rem;
+        font-weight: bold;
+        cursor: pointer;
+        transition: background-color 0.2s;
+        
+        &:hover {
+          background-color: #2980b9;
+        }
+        
+        &:disabled {
+          background-color: #95a5a6;
+          cursor: not-allowed;
+          opacity: 0.7;
+        }
+      }
+    }
+  }
+  
+  .countdown-popup {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    
+    .countdown-content {
+      background-color: white;
+      border-radius: 8px;
+      padding: 30px;
+      text-align: center;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
+      
+      h2 {
+        margin-top: 0;
+        color: #2c3e50;
+      }
+      
+      .countdown-number {
+        font-size: 5rem;
+        font-weight: bold;
+        margin: 20px 0;
+        color: #e74c3c;
+      }
+      
+      p {
+        margin-bottom: 0;
+        font-size: 1.2rem;
+      }
+    }
+  }
+
+  .game-started-message {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    
+    .game-started-content {
+      background-color: white;
+      border-radius: 8px;
+      padding: 30px;
+      text-align: center;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
+      max-width: 400px;
+      
+      h2 {
+        margin-top: 0;
+        color: #2c3e50;
+      }
+      
+      p {
+        margin: 15px 0;
+        font-size: 1.1rem;
+      }
+      
+      .note {
+        font-style: italic;
+        color: #7f8c8d;
+        font-size: 0.9rem;
+      }
+    }
+  }
+}

@@ -57,8 +57,12 @@ export class WebsocketService {
         this.connectionStatusSubject.next(false);
         
         // Don't try to reconnect if we closed intentionally (code 1000)
-        if (event.code !== 1000) {
+        // Also don't try to reconnect if we were force disconnected by server (code 4000)
+        if (event.code !== 1000 && event.code !== 4000) {
           this.attemptReconnect();
+        } else if (event.code === 4000) {
+          console.log('Forced disconnect from server - another session took over');
+          // We could show a notification here if desired
         }
       };
       
@@ -71,6 +75,14 @@ export class WebsocketService {
         try {
           const data = JSON.parse(event.data);
           console.log('Message received:', data);
+          
+          // Handle force disconnect message from server
+          if (data.type === 'force_disconnect') {
+            console.log('Forced disconnect from server:', data.message);
+            // The connection will be closed by the server immediately after this
+            return;
+          }
+          
           this.messagesSubject.next(data);
         } catch (error) {
           console.error('Error parsing message:', error);

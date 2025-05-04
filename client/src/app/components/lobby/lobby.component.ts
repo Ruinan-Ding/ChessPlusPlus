@@ -5,18 +5,8 @@ import { WebsocketService } from '../../services/websocket.service';
 import { Subscription } from 'rxjs';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
 import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
-
-interface User {
-  username: string;
-  status: string; // e.g., 'online', 'in-game'
-}
-
-interface ChatMessage {
-  username: string;
-  content: string;
-  timestamp: string;
-  type?: string; // Optional, e.g., 'system' for system messages
-}
+import { Router } from '@angular/router';
+import { SharedDataService, ChatMessage, User } from '../../services/shared-data.service';
 
 @Component({
   selector: 'app-lobby',
@@ -26,6 +16,8 @@ interface ChatMessage {
   styleUrls: ['./lobby.component.scss']
 })
 export class LobbyComponent implements OnInit, OnDestroy {
+  // Track if rejoining after leaving game room
+  private isIntentionalDisconnect: boolean = false;
   username: string = '';
   users: User[] = [];
   messages: ChatMessage[] = [];
@@ -40,10 +32,24 @@ export class LobbyComponent implements OnInit, OnDestroy {
   } | null = null;
   
   private subscription: Subscription | null = null;
+  private messagesSubscription: Subscription | null = null;
   
-  constructor(private wsService: WebsocketService) {}
+  constructor(
+    private wsService: WebsocketService,
+    private router: Router,
+    private sharedDataService: SharedDataService
+  ) {}
   
   ngOnInit(): void {
+    // Check if we're coming from a game room with intentional disconnect
+    this.isIntentionalDisconnect = localStorage.getItem('intentionalDisconnect') === 'true';
+    if (this.isIntentionalDisconnect) {
+      localStorage.removeItem('intentionalDisconnect');
+      // Clear any lingering invite state and reset user statuses
+      this.activeInvite = null;
+      this.users = this.users.map((u: User) => ({ ...u, status: 'online' }));
+    }
+    
     // Generate a random username if none exists
     this.username = localStorage.getItem('username') || this.generateRandomUsername();
     localStorage.setItem('username', this.username);
@@ -58,10 +64,19 @@ export class LobbyComponent implements OnInit, OnDestroy {
         // Only send join message when connected
         this.wsService.sendMessage({
           type: 'join_lobby',
-          username: this.username
+          username: this.username,
+          // Add flag to indicate we're rejoining from a game room or setup
+          rejoining: this.isIntentionalDisconnect
         });
         connectionSub.unsubscribe(); // Clean up this temporary subscription
       }
+    });
+    
+    // Subscribe to shared lobby messages for persistence
+    this.messages = this.sharedDataService.getLobbyMessages();
+    this.messagesSubscription = this.sharedDataService.lobbyMessages$.subscribe(msgs => {
+      this.messages = msgs;
+      this.scrollChatToBottom();
     });
     
     // Subscribe to WebSocket messages
@@ -70,7 +85,19 @@ export class LobbyComponent implements OnInit, OnDestroy {
       
       switch (message.type) {
         case 'user_list':
-          this.users = message.users;
+          // Merge server list with any local invited statuses to keep invited users visible
+          const serverUsers: User[] = message.users;
+          this.users = serverUsers.map((u: User) => {
+            const local = this.users.find(x => x.username === u.username);
+            return local && local.status === 'invited' ? { ...u, status: 'invited' } : u;
+          });
+          // Reset all statuses to online if rejoining from a game room
+          if (this.isIntentionalDisconnect) {
+            this.users = this.users.map((u: User) => ({ ...u, status: 'online' }));
+            this.isIntentionalDisconnect = false;
+          }
+          // Store users in the shared service
+          this.sharedDataService.updateLobbyUsers(message.users);
           break;
           
         case 'user_joined':
@@ -82,12 +109,12 @@ export class LobbyComponent implements OnInit, OnDestroy {
           break;
           
         case 'chat_message':
-          this.messages.push({
+          // Only add to shared service; UI will update via subscription
+          this.sharedDataService.addLobbyMessage({
             username: message.username,
             content: message.content,
             timestamp: message.timestamp
           });
-          this.scrollChatToBottom();
           break;
           
         case 'username_changed':
@@ -129,12 +156,18 @@ export class LobbyComponent implements OnInit, OnDestroy {
         case 'challenge_accepted':
           this.addSystemMessage(`${message.username} has accepted your invitation!`);
           // Set both users back to "invited" status (yellow) after accepting
-          this.users = this.users.map(user => {
+          this.users = this.users.map((user: User) => {
             if (user.username === message.username || user.username === this.username) {
               return { ...user, status: 'invited' };
             }
             return user;
           });
+          // Keep lobby connection alive while in game room
+          localStorage.setItem('intentionalDisconnect', 'true');
+          
+          // Navigate to the game room using the game ID
+          const gameId = message.gameId;
+          this.router.navigate(['/game-room', gameId]);
           break;
           
         case 'challenge_declined':
@@ -145,18 +178,28 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
   
   ngOnDestroy(): void {
-    // Send leave message
-    this.wsService.sendMessage({
-      type: 'leave_lobby',
-      username: this.username
-    });
-    
-    // Disconnect
-    this.wsService.disconnect();
+    const intentional = localStorage.getItem('intentionalDisconnect') === 'true';
+    if (intentional) {
+      // Skip leaving lobby to maintain status; clear flag for future
+      localStorage.removeItem('intentionalDisconnect');
+    } else {
+      // Send leave message
+      this.wsService.sendMessage({
+        type: 'leave_lobby',
+        username: this.username
+      });
+      
+      // Disconnect
+      this.wsService.disconnect();
+    }
     
     // Unsubscribe
     if (this.subscription) {
       this.subscription.unsubscribe();
+    }
+    
+    if (this.messagesSubscription) {
+      this.messagesSubscription.unsubscribe();
     }
     
     // Clear any active challenge timer
@@ -322,7 +365,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
     };
 
     // Update the status of both users to 'yellow' (invited)
-    this.users = this.users.map(user => {
+    this.users = this.users.map((user: User) => {
       if (user.username === message.challenger || user.username === this.username) {
         return { ...user, status: 'invited' };
       }
@@ -356,7 +399,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
     });
 
     // Update the status of both users to 'yellow' (invited) for the challenger
-    this.users = this.users.map(user => {
+    this.users = this.users.map((user: User) => {
       if (user.username === opponent || user.username === this.username) {
         return { ...user, status: 'invited' };
       }
@@ -370,10 +413,10 @@ export class LobbyComponent implements OnInit, OnDestroy {
     if (!this.activeInvite) return;
 
     this.wsService.sendMessage({
-      type: 'challenge_response', // Changed from 'invite_response' to 'challenge_response' to match server expectation
+      type: 'challenge_response',
       response: response,
       username: this.username,
-      challenger: this.activeInvite.inviter // Changed from 'inviter' to 'challenger' to match server expectation
+      challenger: this.activeInvite.inviter
     });
 
     // Clear invite
@@ -385,30 +428,35 @@ export class LobbyComponent implements OnInit, OnDestroy {
       this.addSystemMessage(`You accepted ${this.activeInvite.inviter}'s invitation.`);
 
       // Set both users back to 'invited' status (yellow) after accepting
-      this.users = this.users.map(user => {
+      this.users = this.users.map((user: User) => {
         if (user.username === this.activeInvite?.inviter || user.username === this.username) {
           return { ...user, status: 'invited' };
         }
         return user;
       });
+
+      // Removed direct navigation here; will navigate on 'challenge_accepted' event
     } else {
       this.addSystemMessage(`You declined ${this.activeInvite.inviter}'s invitation.`);
 
       // Reset the status of both users to 'online'
-      this.users = this.users.map(user => {
+      this.users = this.users.map((user: User) => {
         if (user.username === this.activeInvite?.inviter || user.username === this.username) {
           return { ...user, status: 'online' };
         }
         return user;
       });
+
+      // Request a fresh user list from the server after declining
+      this.wsService.sendMessage({ type: 'request_user_list' });
     }
 
     this.activeInvite = null;
   }
   
   openSetup(): void {
-    // Placeholder for setup configuration
-    alert('Setup configuration will be implemented in a future update.');
+    // Navigate to the setup configuration page
+    this.router.navigate(['/setup']);
   }
   
   private generateRandomUsername(): string {
@@ -416,13 +464,13 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
   
   private addSystemMessage(content: string): void {
-    this.messages.push({
+    this.sharedDataService.addLobbyMessage({
       username: 'System',
       content: content,
       timestamp: new Date().toISOString(),
       type: 'system'
     });
-    this.scrollChatToBottom();
+    // scrollChatToBottom will be triggered by the subscription
   }
   
   private scrollChatToBottom(): void {
