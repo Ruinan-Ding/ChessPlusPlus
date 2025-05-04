@@ -2,12 +2,15 @@
 .lobby-container {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  height: 100vh; /* Use full viewport height */
   width: 100%;
   max-width: 1200px;
   margin: 0 auto;
   padding: 20px;
   font-family: Arial, sans-serif;
+  overflow-y: auto;
+  box-sizing: border-box;  // include padding in height calculation
+  overflow: hidden;        // prevent outer container scroll
 }
 
 .header {
@@ -86,9 +89,10 @@
 
 .lobby-content {
   display: flex;
-  flex-grow: 1;
+  flex-grow: 1; /* Fill remaining space under header */
   gap: 20px;
-  height: calc(100vh - 150px);
+  height: auto; /* Allow flex to manage height */
+  min-height: 0; /* allow flex children to shrink */
 }
 
 .users-panel {
@@ -97,6 +101,7 @@
   border-radius: 4px;
   padding: 10px;
   background-color: #f8f9fa;
+  min-height: 0; /* allow users-panel to shrink */
   
   h2 {
     margin-top: 0;
@@ -206,6 +211,7 @@
   border: 1px solid #ddd;
   border-radius: 4px;
   background-color: white;
+  min-height: 0; /* allow chat-panel to shrink */
   
   .chat-messages {
     flex-grow: 1;

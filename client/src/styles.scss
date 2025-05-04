@@ -1,1 +1,14 @@
 /* You can add global styles to this file, and also import other style files */
+
+/* Global reset to fill viewport and disable outer scroll */
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: auto; /* Allow scrolling */
+}
+
+app-root {
+  display: block;
+  height: 100%;
+}

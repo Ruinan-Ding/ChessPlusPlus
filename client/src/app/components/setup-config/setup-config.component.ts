@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { ConfigService } from '../../services/config.service';
+import { WebsocketService } from '../../services/websocket.service';
 
 @Component({
   selector: 'app-setup-config',
@@ -15,13 +16,18 @@ export class SetupConfigComponent implements OnInit {
   jsonConfig = '';
   savedConfig = '';
   savedSuccessfully = false;
+  username = '';
   
   constructor(
     private router: Router,
-    private configService: ConfigService
+    private configService: ConfigService,
+    private wsService: WebsocketService
   ) {}
   
   ngOnInit(): void {
+    // Get username from localStorage
+    this.username = localStorage.getItem('username') || '';
+    
     // Initialize with default config
     this.jsonConfig = this.configService.getDefaultConfig();
     this.savedConfig = this.jsonConfig;
@@ -38,17 +44,47 @@ export class SetupConfigComponent implements OnInit {
 
   get hasUnsavedChanges(): boolean {
     try {
-      // If both are valid JSON, compare their parsed form to ignore formatting differences
-      const currentConfig = JSON.stringify(JSON.parse(this.jsonConfig));
-      const savedConfig = JSON.stringify(JSON.parse(this.savedConfig));
-      return currentConfig !== savedConfig;
-    } catch {
-      // If either JSON is invalid, compare as strings
+      // Parse both JSON strings to objects first
+      const currentConfigObj = JSON.parse(this.jsonConfig);
+      const savedConfigObj = JSON.parse(this.savedConfig);
+      
+      // Compare the objects using deep equality
+      return !this.deepEquals(currentConfigObj, savedConfigObj);
+    } catch (error) {
+      // If JSON parsing fails, compare as trimmed strings
       return this.jsonConfig.trim() !== this.savedConfig.trim();
     }
   }
+  
+  // Helper method for deep object comparison
+  private deepEquals(obj1: any, obj2: any): boolean {
+    // If primitives or one is null/undefined, direct comparison
+    if (obj1 === obj2) return true;
+    if (obj1 === null || obj2 === null) return false;
+    if (obj1 === undefined || obj2 === undefined) return false;
+    if (typeof obj1 !== 'object' || typeof obj2 !== 'object') return obj1 === obj2;
+    
+    // Arrays comparison
+    if (Array.isArray(obj1) && Array.isArray(obj2)) {
+      if (obj1.length !== obj2.length) return false;
+      return obj1.every((val, idx) => this.deepEquals(val, obj2[idx]));
+    }
+    
+    // Regular objects comparison
+    const keys1 = Object.keys(obj1);
+    const keys2 = Object.keys(obj2);
+    
+    if (keys1.length !== keys2.length) return false;
+    
+    return keys1.every(key => 
+      keys2.includes(key) && this.deepEquals(obj1[key], obj2[key])
+    );
+  }
 
   onBack(): void {
+    // Set a flag to indicate we're intentionally moving between pages
+    localStorage.setItem('intentionalDisconnect', 'true');
+    
     if (this.hasUnsavedChanges) {
       if (confirm('You have unsaved changes. Do you want to save before going back?')) {
         if (this.saveConfig()) {

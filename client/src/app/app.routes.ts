@@ -20,5 +20,10 @@ export const routes: Routes = [
     path: 'setup',
     loadComponent: () => import('./components/setup-config/setup-config.component').then(m => m.SetupConfigComponent),
     canActivate: [AuthGuard]
+  },
+  {
+    path: 'game-room/:id',
+    loadComponent: () => import('./components/game-room/game-room.component').then(m => m.GameRoomComponent),
+    canActivate: [AuthGuard]
   }
 ];
