@@ -228,9 +228,35 @@ class GameConsumer(AsyncWebsocketConsumer):
                         # Send updated user list
                         await self.update_user_list()
                 
+            elif message_type == 'set_status':
+                username = data.get('username')
+                status = data.get('status')
+                print(f'[set_status] Received for {username}: {status}')
+                if username in self.connected_users and status in ['online', 'configuring']:
+                    prev_status = self.connected_users[username]['status']
+                    self.connected_users[username]['status'] = status
+                    print(f'[set_status] Updated {username} to {status}')
+                    # Only send user_left/user_joined if user is actually removed/added, not for status change
+                    # So do NOT send any such event here
+                    await self.update_user_list()
+
             elif message_type == 'game_challenge':
                 challenger = data.get('challenger')
                 opponent = data.get('opponent')
+
+                # Prevent inviting users who are configuring
+                if opponent in self.connected_users and self.connected_users[opponent]['status'] == 'configuring':
+                    if challenger in self.connected_users:
+                        await self.channel_layer.send(
+                            self.connected_users[challenger]['channel_name'],
+                            {
+                                'type': 'game_room_message',
+                                'username': 'System',
+                                'content': f'{opponent} is configuring setup and cannot be invited right now.',
+                                'timestamp': datetime.now().isoformat()
+                            }
+                        )
+                    return
 
                 # Check if challenger is already in a game room
                 existing_game_id = None
@@ -352,8 +378,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     elif response == 'decline':
                         if username in self.connected_users:
                             self.connected_users[username]['status'] = 'online'
-                        if challenger in self.connected_users:
-                            self.connected_users[challenger]['status'] = 'online'
+                        # Do NOT set challenger (inviter) back to online; keep as 'invited'
                         await self.update_user_list()
                         await self.channel_layer.send(
                             challenger_channel,
@@ -739,11 +764,9 @@ class GameConsumer(AsyncWebsocketConsumer):
             }))
     
     async def update_user_list(self):
-        # Create a list of users
         users = [{'username': username, 'status': user_data['status']} 
                 for username, user_data in self.connected_users.items()]
-        
-        # Send user list to all clients in the lobby
+        print(f'[update_user_list] Users: {users}')
         await self.channel_layer.group_send(
             self.room_group_name,
             {
@@ -751,6 +774,16 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'users': users
             }
         )
+        # Also send to all game rooms (for lobby tab in game room)
+        for game_id, game in self.active_games.items():
+            group_name = f'game_{game_id}'
+            await self.channel_layer.group_send(
+                group_name,
+                {
+                    'type': 'user_list',
+                    'users': users
+                }
+            )
     
     # Handler for user joining
     async def user_joined(self, event):

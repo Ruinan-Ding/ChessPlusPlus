@@ -18,6 +18,7 @@ import { SharedDataService, ChatMessage, User } from '../../services/shared-data
 export class LobbyComponent implements OnInit, OnDestroy {
   // Track if rejoining after leaving game room
   private isIntentionalDisconnect: boolean = false;
+  private keepLobbyConnection: boolean = false;
   username: string = '';
   users: User[] = [];
   messages: ChatMessage[] = [];
@@ -87,9 +88,23 @@ export class LobbyComponent implements OnInit, OnDestroy {
         case 'user_list':
           // Merge server list with any local invited statuses to keep invited users visible
           const serverUsers: User[] = message.users;
+          const previousUsernames = new Set(this.users.map(u => u.username));
+          const newUsernames = new Set(serverUsers.map(u => u.username));
+          // Find truly joined users
+          const joined = serverUsers.filter(u => !previousUsernames.has(u.username));
+          // Find truly left users
+          const left = this.users.filter(u => !newUsernames.has(u.username));
+          // Update users
           this.users = serverUsers.map((u: User) => {
             const local = this.users.find(x => x.username === u.username);
             return local && local.status === 'invited' ? { ...u, status: 'invited' } : u;
+          });
+          // Only show system messages for real joins/leaves
+          joined.forEach(u => {
+            if (u.username !== this.username) this.addSystemMessage(`${u.username} has joined the lobby.`);
+          });
+          left.forEach(u => {
+            if (u.username !== this.username) this.addSystemMessage(`${u.username} has left the lobby.`);
           });
           // Reset all statuses to online if rejoining from a game room
           if (this.isIntentionalDisconnect) {
@@ -101,11 +116,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
           break;
           
         case 'user_joined':
-          this.addSystemMessage(`${message.username} has joined the lobby.`);
-          break;
-          
         case 'user_left':
-          this.addSystemMessage(`${message.username} has left the lobby.`);
+          // Ignore these events, handled above by user_list diff
           break;
           
         case 'chat_message':
@@ -172,15 +184,25 @@ export class LobbyComponent implements OnInit, OnDestroy {
           
         case 'challenge_declined':
           this.addSystemMessage(`${message.username} has declined your invitation.`);
+          // Reset the status of both users to 'online' (green)
+          this.users = this.users.map((user: User) => {
+            if (user.username === message.username || user.username === this.username) {
+              return { ...user, status: 'online' };
+            }
+            return user;
+          });
           break;
       }
     });
   }
   
   ngOnDestroy(): void {
+    if (this.keepLobbyConnection) {
+      // Do not disconnect or send leave message if navigating to setup
+      return;
+    }
     const intentional = localStorage.getItem('intentionalDisconnect') === 'true';
     if (intentional) {
-      // Skip leaving lobby to maintain status; clear flag for future
       localStorage.removeItem('intentionalDisconnect');
     } else {
       // Send leave message
@@ -258,7 +280,10 @@ export class LobbyComponent implements OnInit, OnDestroy {
     let canInvite = false;
     let disabledReason = '';
     
-    if (currentUserStatus === 'invited' && user.status === 'invited') {
+    if (user.status === 'configuring') {
+      canInvite = false;
+      disabledReason = 'Cannot invite while configuring setup';
+    } else if (currentUserStatus === 'invited' && user.status === 'invited') {
       // Yellow CANNOT invite yellow
       canInvite = false;
       disabledReason = 'Cannot invite another invited player';
@@ -455,7 +480,12 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
   
   openSetup(): void {
-    // Navigate to the setup configuration page
+    this.keepLobbyConnection = true;
+    this.wsService.sendMessage({
+      type: 'set_status',
+      username: this.username,
+      status: 'configuring'
+    });
     this.router.navigate(['/setup']);
   }
   

@@ -32,19 +32,22 @@
         <div 
           class="user-item" 
           *ngFor="let user of users"
-          [ngClass]="{'current-user': user.username === username}"
+          [ngClass]="{'current-user': user.username === username, 'configuring-user': user.status === 'configuring'}"
           (contextmenu)="openUserMenu($event, user)"
         >
           <span class="status-dot" [ngClass]="{
             'online': user.status === 'online',
             'in-game': user.status === 'in-game',
-            'invited': user.status === 'invited'
+            'invited': user.status === 'invited',
+            'configuring': user.status === 'configuring'
           }"></span>
           <span class="username" [title]="user.username">
             {{ user.username }}
             <span *ngIf="user.username === username" class="current-user-tag">(You)</span>
           </span>
-          <span class="user-status">{{ user.status === 'online' ? 'Available' : 'In Game' }}</span>
+          <span class="user-status">
+            {{ user.status === 'online' ? 'Available' : (user.status === 'configuring' ? 'Configuring' : 'In Game') }}
+          </span>
           <button 
             class="action-button" 
             (click)="openUserMenu($event, user)" 

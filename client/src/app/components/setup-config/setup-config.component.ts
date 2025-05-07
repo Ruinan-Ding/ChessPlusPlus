@@ -27,6 +27,13 @@ export class SetupConfigComponent implements OnInit {
   ngOnInit(): void {
     // Get username from localStorage
     this.username = localStorage.getItem('username') || '';
+    console.log('SetupConfig ngOnInit: sending set_status configuring');
+    // Set status to configuring
+    this.wsService.sendMessage({
+      type: 'set_status',
+      username: this.username,
+      status: 'configuring'
+    });
     
     // Initialize with default config
     this.jsonConfig = this.configService.getDefaultConfig();
@@ -84,6 +91,13 @@ export class SetupConfigComponent implements OnInit {
   onBack(): void {
     // Set a flag to indicate we're intentionally moving between pages
     localStorage.setItem('intentionalDisconnect', 'true');
+    console.log('SetupConfig onBack: sending set_status online');
+    // Set status to online before returning to lobby
+    this.wsService.sendMessage({
+      type: 'set_status',
+      username: this.username,
+      status: 'online'
+    });
     
     if (this.hasUnsavedChanges) {
       if (confirm('You have unsaved changes. Do you want to save before going back?')) {
