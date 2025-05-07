@@ -37,6 +37,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   gameStarted: boolean = false;
   revealEnabled: boolean = false;
   gameOptions: GameOptions = {};
+  gameFeaturePopupVisible: boolean = false;
   
   private subscription: Subscription | null = null;
   private lobbySocket: WebSocket | null = null;
@@ -307,6 +308,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.addSystemMessage('Game started! Get ready to play!');
         this.players = this.players.map(player => ({ ...player, isReady: false }));
         this.isReady = false;
+        // Show feature popup
+        this.gameFeaturePopupVisible = true;
         break;
 
       case 'game_reset':
@@ -644,5 +647,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   getLobbyUserByUsername(username: string): User | undefined {
     return this.lobbyUsers.find(user => user.username === username);
+  }
+
+  dismissFeaturePopup(): void {
+    this.gameFeaturePopupVisible = false;
   }
 }

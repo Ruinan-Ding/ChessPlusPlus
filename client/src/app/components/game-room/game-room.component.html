@@ -206,4 +206,14 @@
       <p>Get ready to play!</p>
     </div>
   </div>
+
+  <!-- Feature Coming Soon Popup -->
+  <div class="game-started-message" *ngIf="gameFeaturePopupVisible">
+    <div class="game-started-content">
+      <h2>Feature Coming Soon</h2>
+      <p>This feature will be added in a future update.</p>
+      <button (click)="dismissFeaturePopup()">OK</button>
+      <div class="note">Thank you for your patience!</div>
+    </div>
+  </div>
 </div>
