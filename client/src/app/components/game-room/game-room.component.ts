@@ -233,7 +233,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         
       case 'lobby_user_list':
         this.lobbyUsers = message.users;
-        // Update shared lobby user list
+        this.sharedDataService.updateLobbyUsers(message.users);
+        break;
+      case 'user_list':
+        this.lobbyUsers = message.users;
         this.sharedDataService.updateLobbyUsers(message.users);
         break;
         
@@ -249,17 +252,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         break;
         
       case 'lobby_message':
-        const lobbyMsg: ChatMessage = {
-          username: message.username,
-          content: message.content,
-          timestamp: message.timestamp,
-          room: 'lobby',
-          type: message.type === 'system' ? 'system' : undefined
-        };
-        this.lobbyMessages.push(lobbyMsg);
-        // Update shared lobby messages
-        this.sharedDataService.addLobbyMessage(lobbyMsg);
-        this.scrollChatToBottom('lobby');
         break;
         
       case 'player_ready':
@@ -341,6 +333,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         setTimeout(() => {
           this.leaveGameRoom();
         }, 2000);
+        break;
+
+      case 'challenge_declined':
+        this.addSystemMessage(`${message.username} has declined your invitation.`);
+        // Request a fresh user list from the server to ensure real-time sync
+        this.wsService.sendMessage({ type: 'request_user_list' });
         break;
 
       case 'error':
@@ -633,5 +631,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       challenger: this.username,
       opponent: opponent
     });
+
+    // Immediately update local lobbyUsers to show both as invited (yellow)
+    this.lobbyUsers = this.lobbyUsers.map(user => {
+      if (user.username === opponent || user.username === this.username) {
+        return { ...user, status: 'invited' };
+      }
+      return user;
+    });
+    this.sharedDataService.updateLobbyUsers(this.lobbyUsers);
+  }
+
+  getLobbyUserByUsername(username: string): User | undefined {
+    return this.lobbyUsers.find(user => user.username === username);
   }
 }

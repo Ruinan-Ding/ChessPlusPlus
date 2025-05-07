@@ -378,8 +378,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     elif response == 'decline':
                         if username in self.connected_users:
                             self.connected_users[username]['status'] = 'online'
-                        if challenger in self.connected_users:
-                            self.connected_users[challenger]['status'] = 'online'
+                        # Do NOT set challenger (inviter) back to online; keep as 'invited'
                         await self.update_user_list()
                         await self.channel_layer.send(
                             challenger_channel,
@@ -775,6 +774,16 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'users': users
             }
         )
+        # Also send to all game rooms (for lobby tab in game room)
+        for game_id, game in self.active_games.items():
+            group_name = f'game_{game_id}'
+            await self.channel_layer.group_send(
+                group_name,
+                {
+                    'type': 'user_list',
+                    'users': users
+                }
+            )
     
     # Handler for user joining
     async def user_joined(self, event):

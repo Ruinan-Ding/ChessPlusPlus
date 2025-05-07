@@ -184,6 +184,13 @@ export class LobbyComponent implements OnInit, OnDestroy {
           
         case 'challenge_declined':
           this.addSystemMessage(`${message.username} has declined your invitation.`);
+          // Reset the status of both users to 'online' (green)
+          this.users = this.users.map((user: User) => {
+            if (user.username === message.username || user.username === this.username) {
+              return { ...user, status: 'online' };
+            }
+            return user;
+          });
           break;
       }
     });

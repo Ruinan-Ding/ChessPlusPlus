@@ -64,7 +64,7 @@
                   <button 
                     *ngIf="message.username !== 'System' && message.username !== username"
                     class="action-button" 
-                    (click)="openUserMenu($event, { username: message.username, status: 'online' })"
+                    (click)="openUserMenu($event, getLobbyUserByUsername(message.username) || { username: message.username, status: 'online' })"
                     style="order:2; margin-left: 0.5em;"
                   >⋮</button>
                   <span class="message-time" style="order:3; margin-left:auto;">{{ message.timestamp | date:'shortTime' }}</span>
@@ -168,6 +168,7 @@
           <span class="ready-dot joined"></span>
           <span class="player-name">
             {{ player.username }}
+            <span *ngIf="player.username === username" class="current-user-tag">(You)</span>
             <span class="crown-icon" *ngIf="player.isInviter">👑</span>
           </span>
           <span class="ready-checkmark" *ngIf="player.isReady">✓</span>
@@ -189,6 +190,7 @@
           *ngIf="isInviter" 
           class="start-game-btn" 
           (click)="startGame()"
+          [disabled]="!canStartGame()"
         >
           Start Game
         </button>
