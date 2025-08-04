@@ -134,4 +134,15 @@ export class SetupConfigComponent implements OnInit {
     // Only update saved state if there are actual changes
     this.savedSuccessfully = false;
   }
+
+  formatJson(): void {
+    try {
+      const parsed = JSON.parse(this.jsonConfig);
+      this.jsonConfig = JSON.stringify(parsed, null, 2);
+      this.savedSuccessfully = false;
+    } catch (e) {
+      const errorMsg = typeof e === 'object' && e !== null && 'message' in e ? (e as Error).message : String(e);
+      alert('Invalid JSON: ' + errorMsg);
+    }
+  }
 }

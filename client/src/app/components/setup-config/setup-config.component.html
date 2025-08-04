@@ -16,7 +16,10 @@
 
     <!-- JSON configuration textarea -->
     <div class="json-section">
-      <h3>JSON Configuration</h3>
+      <div class="json-header-row">
+        <h3>JSON Configuration</h3>
+        <button class="format-json-btn" (click)="formatJson()">Format JSON</button>
+      </div>
       <textarea
         [(ngModel)]="jsonConfig"
         (ngModelChange)="onConfigChange()"

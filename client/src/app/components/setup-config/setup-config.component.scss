@@ -61,6 +61,46 @@
         box-sizing: border-box;
       }
     }
+    .json-actions {
+      display: flex;
+      align-items: center;
+      margin-bottom: 8px;
+
+      .format-json-btn {
+        background-color: #28a745;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        padding: 8px 16px;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background-color 0.2s;
+        box-shadow: 0 2px 4px rgba(40, 167, 69, 0.08);
+        margin-left: 0;
+        margin-top: 0;
+        margin-bottom: 0;
+
+        &:hover {
+          background-color: #218838;
+        }
+        &:disabled {
+          background-color: #6c757d;
+          cursor: not-allowed;
+        }
+      }
+    }
+  }
+}
+
+.json-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+
+  h3 {
+    margin: 0;
   }
 }
 
