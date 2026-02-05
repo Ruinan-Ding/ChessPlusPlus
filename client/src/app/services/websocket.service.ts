@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
+import { WEBSOCKET_CONFIG } from './websocket.config';
 import { Router } from '@angular/router';
 
 @Injectable({
@@ -17,6 +18,9 @@ export class WebsocketService {
   private reconnectInterval = 3000; // 3 seconds
   private reconnectTimeout: any = null;
   private currentRoomName: string = 'default';
+  private sendQueue: any[] = [];
+  private heartbeatInterval = WEBSOCKET_CONFIG.HEARTBEAT_INTERVAL_MS; // 15s default
+  private heartbeatTimer: any = null;
   
   // Public Observables
   connectionStatus$ = this.connectionStatusSubject.asObservable();
@@ -27,12 +31,36 @@ export class WebsocketService {
 
   constructor(private router: Router) {}
 
+  /**
+   * Get the current connection status value without subscribing
+   */
+  isConnected(): boolean {
+    return this.connectionStatusSubject.value;
+  }
+
   connect(roomName: string = 'default'): void {
-    this.disconnect();
+    console.log(`[WebSocket.connect] Connecting to room: ${roomName}`);
     
-    this.currentRoomName = roomName;
+    // Only disconnect if we're switching rooms or not already connecting to this room
+    // Also check if socket is actually OPEN (not just exists)
+    const isActiveConnection = this.socket && this.socket.readyState === WebSocket.OPEN;
+    
+    if (this.currentRoomName !== roomName || !isActiveConnection) {
+      this.disconnect();
+      this.currentRoomName = roomName;
+    } else {
+      // Already connected to this room, just return
+      console.log(`[WebSocket.connect] Already connected to room: ${roomName}`);
+      return;
+    }
+    
     this.reconnectAttemptsSubject.next(0);
     this.connectionFailedSubject.next(false);
+    
+    // Ensure connection status is false before starting new connection
+    if (this.connectionStatusSubject.value !== false) {
+      this.connectionStatusSubject.next(false);
+    }
     
     this.createSocket(roomName);
   }
@@ -42,18 +70,40 @@ export class WebsocketService {
     this.reconnectingSubject.next(false);
     
     try {
-      this.socket = new WebSocket(`ws://localhost:8000/ws/game/${roomName}/`);
+      const { protocol, hostname } = window.location;
+      const wsProtocol = protocol === 'https:' ? 'wss' : 'ws';
+      const backendPort = WEBSOCKET_CONFIG.BACKEND_PORT;
+      const wsUrl = `${wsProtocol}://${hostname}:${backendPort}/ws/game/${roomName}/`;
+      console.log(`[WebSocket] Attempting to connect to: ${wsUrl}`);
+      this.socket = new WebSocket(wsUrl);
       
       this.socket.onopen = () => {
-        console.log('WebSocket connection established');
+        console.log('[WebSocket] Connection established');
         this.connectionStatusSubject.next(true);
         this.reconnectingSubject.next(false);
         this.reconnectAttemptsSubject.next(0);
         this.connectionFailedSubject.next(false);
+        // start heartbeat after connection established
+        this.startHeartbeat();
+        // Flush any queued messages that were sent while connecting
+        if (this.sendQueue.length) {
+          console.log(`[WebSocket] Flushing ${this.sendQueue.length} queued messages`);
+          while (this.sendQueue.length && this.socket && this.socket.readyState === WebSocket.OPEN) {
+            const queued = this.sendQueue.shift();
+            try {
+              this.socket.send(JSON.stringify(queued));
+            } catch (err) {
+              console.error('[WebSocket] Error sending queued message', err);
+              // Put it back and break to avoid tight loop
+              this.sendQueue.unshift(queued);
+              break;
+            }
+          }
+        }
       };
       
       this.socket.onclose = (event) => {
-        console.log('WebSocket connection closed', event);
+        console.log('[WebSocket] Connection closed', event.code, event.reason);
         this.connectionStatusSubject.next(false);
         
         // Don't try to reconnect if we closed intentionally (code 1000)
@@ -64,34 +114,58 @@ export class WebsocketService {
           console.log('Forced disconnect from server - another session took over');
           // We could show a notification here if desired
         }
+        // stop heartbeat when socket closed
+        this.stopHeartbeat();
       };
       
       this.socket.onerror = (error) => {
-        console.error('WebSocket error:', error);
+        console.error('[WebSocket] Error:', error);
         // The onclose handler will be called after this
       };
       
       this.socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          console.log('Message received:', data);
+          console.log('[WebSocket] Message received:', data);
           
           // Handle force disconnect message from server
           if (data.type === 'force_disconnect') {
-            console.log('Forced disconnect from server:', data.message);
+            console.log('[WebSocket] Forced disconnect from server:', data.message);
             // The connection will be closed by the server immediately after this
             return;
           }
           
           this.messagesSubject.next(data);
         } catch (error) {
-          console.error('Error parsing message:', error);
+          console.error('[WebSocket] Error parsing message:', error);
         }
       };
     } catch (error) {
-      console.error('Error creating WebSocket:', error);
+      console.error('[WebSocket] Error creating WebSocket:', error);
       this.connectionStatusSubject.next(false);
       this.attemptReconnect();
+    }
+  }
+
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      return;
+    }
+    this.heartbeatTimer = setInterval(() => {
+      try {
+        this.sendMessage({ type: 'heartbeat', timestamp: new Date().toISOString() });
+      } catch (err) {
+        console.error('[WebSocket] Heartbeat send failed', err);
+      }
+    }, this.heartbeatInterval);
+    console.log('[WebSocket] Heartbeat started');
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+      console.log('[WebSocket] Heartbeat stopped');
     }
   }
 
@@ -120,10 +194,21 @@ export class WebsocketService {
   }
 
   sendMessage(message: any): void {
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(message));
-    } else {
-      console.error('WebSocket is not connected, cannot send message');
+    try {
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        this.socket.send(JSON.stringify(message));
+      } else {
+        // Queue messages while connecting/reconnecting so UI actions are not lost
+        console.log('[WebSocket] Socket not open, queueing message');
+        this.sendQueue.push(message);
+        // If socket is null and we have a room name, attempt a connect
+        if (!this.socket) {
+          // attempt reconnect in background
+          this.connect(this.currentRoomName);
+        }
+      }
+    } catch (err) {
+      console.error('[WebSocket] Error sending message:', err);
     }
   }
 
@@ -144,6 +229,8 @@ export class WebsocketService {
       }
       this.socket = null;
     }
+    // ensure heartbeat is stopped when explicitly disconnecting
+    this.stopHeartbeat();
   }
   
   // Getter for the current room name (for the ConnectionDialogComponent)

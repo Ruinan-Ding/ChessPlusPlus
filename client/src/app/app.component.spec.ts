@@ -17,13 +17,14 @@ describe('AppComponent', () => {
   it(`should have the 'client' title`, () => {
     const fixture = TestBed.createComponent(AppComponent);
     const app = fixture.componentInstance;
-    expect(app.title).toEqual('client');
+    expect(app.title).toEqual('ChessPlusPlus');
   });
 
   it('should render title', () => {
     const fixture = TestBed.createComponent(AppComponent);
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.querySelector('h1')?.textContent).toContain('Hello, client');
+    // AppComponent now uses a <router-outlet/>; ensure it is present
+    expect(compiled.querySelector('router-outlet')).not.toBeNull();
   });
 });

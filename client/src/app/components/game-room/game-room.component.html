@@ -2,6 +2,7 @@
   <header>
     <h1>Game Room</h1>
     <div class="header-actions">
+      <button class="setup-btn" (click)="openSetup()">Configure Setup</button>
       <button class="leave-btn" (click)="leaveGameRoom()">Leave Room</button>
       <app-connection-status></app-connection-status>
     </div>
@@ -34,6 +35,11 @@
           >
             <div class="message-header">
               <span class="message-username">{{ message.username }}</span>
+              <button 
+                *ngIf="message.username !== 'System' && message.username !== username"
+                class="action-button" 
+                (click)="openUserMenu($event, { username: message.username, status: 'in-game' })"
+              >⋮</button>
               <span class="message-time">{{ message.timestamp | date:'shortTime' }}</span>
             </div>
             <div class="message-content">
@@ -89,14 +95,19 @@
                 <span class="status-dot" [ngClass]="{
                   'online': user.status === 'online',
                   'in-game': user.status === 'in-game',
-                  'invited': user.status === 'invited'
+                  'invited': user.status === 'invited',
+                  'configuring': user.status === 'configuring'
                 }"></span>
                 <span class="username" [title]="user.username">
                   {{ user.username }}
                   <span *ngIf="user.username === username" class="current-user-tag">(You)</span>
                 </span>
                 <span class="user-status-and-action" style="margin-left:auto; display:flex; align-items:center; gap:8px;">
-                  <span class="user-status">{{ user.status === 'online' ? 'Available' : 'In Game' }}</span>
+                  <span class="user-status">
+                    {{ user.status === 'online' ? 'Available' : 
+                       (user.status === 'in-game' ? 'In Game' : 
+                       (user.status === 'configuring' ? 'Configuring' : 'Invited')) }}
+                  </span>
                   <button
                     class="action-button"
                     (click)="openUserMenu($event, user)"
@@ -164,33 +175,44 @@
       <!-- Player List -->
       <div class="player-list">
         <h3>Players</h3>
-        <div class="player-item" *ngFor="let player of players">
-          <span class="ready-dot joined"></span>
+        <div class="player-item" *ngFor="let player of players" (contextmenu)="openUserMenu($event, { username: player.username, status: player.status || 'in-game' })">
+          <span class="ready-dot" [ngClass]="{'ready': player.isReady, 'joined': !player.isReady}"></span>
           <span class="player-name">
             {{ player.username }}
             <span *ngIf="player.username === username" class="current-user-tag">(You)</span>
             <span class="crown-icon" *ngIf="player.isInviter">👑</span>
           </span>
+          <span class="player-status" *ngIf="player.status === 'configuring'" title="Configuring setup">⚙️</span>
           <span class="ready-checkmark" *ngIf="player.isReady">✓</span>
+          <button
+            class="action-button"
+            (click)="openUserMenu($event, { username: player.username, status: player.status || 'in-game' })"
+            [disabled]="player.username === username"
+            *ngIf="player.username !== username"
+          >⋮</button>
         </div>
       </div>
       
-      <!-- Ready Button -->
+      <!-- Ready/Cancel Button with Countdown -->
       <div class="ready-section">
         <button 
           class="ready-btn" 
-          [class.ready-state]="isReady"
+          [class.ready-state]="isReady && !countdownStarted"
           (click)="toggleReady()"
         >
-          {{ isReady ? 'Unready' : 'Ready' }}
+          <ng-container *ngIf="countdownStarted && isReady; else readyLabel">
+            Cancel ({{ countdown }})
+          </ng-container>
+          <ng-template #readyLabel>
+            {{ isReady ? 'Unready' : 'Ready' }}
+          </ng-template>
         </button>
-        
         <!-- Start Game Button (always enabled now) -->
         <button 
           *ngIf="isInviter" 
           class="start-game-btn" 
           (click)="startGame()"
-          [disabled]="!canStartGame()"
+          [disabled]="!canStartGame() || countdownStarted"
         >
           Start Game
         </button>
@@ -198,12 +220,4 @@
     </div>
   </main>
   
-  <!-- Countdown Popup -->
-  <div class="countdown-popup" *ngIf="countdownStarted">
-    <div class="countdown-content">
-      <h2>Game Starting</h2>
-      <div class="countdown-number">{{ countdown }}</div>
-      <p>Get ready to play!</p>
-    </div>
-  </div>
-</div>
+  <!-- Countdown Popup removed: countdown is now inside the Cancel button -->

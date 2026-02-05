@@ -1,7 +1,8 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { WebsocketService } from '../../services/websocket.service';
-import { Subscription } from 'rxjs';
+import { Subscription, Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
 
 @Component({
   selector: 'app-connection-status',
@@ -31,19 +32,27 @@ import { Subscription } from 'rxjs';
       color: red;
       font-weight: bold;
     }
-  `]
+  `],
+  changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class ConnectionStatusComponent implements OnInit, OnDestroy {
   isConnected = false;
   private subscription: Subscription | null = null;
+  private destroy$ = new Subject<void>();
 
-  constructor(private wsService: WebsocketService) {}
+  constructor(
+    private wsService: WebsocketService,
+    private cdr: ChangeDetectorRef
+  ) {}
 
   ngOnInit(): void {
-    // Don't connect here, just subscribe to status updates
-    this.subscription = this.wsService.connectionStatus$.subscribe(
+    // Subscribe to status updates and get current value
+    this.isConnected = this.wsService.isConnected();
+    this.subscription = this.wsService.connectionStatus$.pipe(takeUntil(this.destroy$)).subscribe(
       (status: boolean) => {
+        console.log('Connection status updated:', status);
         this.isConnected = status;
+        this.cdr.markForCheck(); // Trigger change detection
       }
     );
   }
@@ -53,6 +62,8 @@ export class ConnectionStatusComponent implements OnInit, OnDestroy {
     if (this.subscription) {
       this.subscription.unsubscribe();
     }
+    this.destroy$.next();
+    this.destroy$.complete();
     // Remove this line - don't disconnect when the status component is destroyed
     // this.wsService.disconnect();
   }

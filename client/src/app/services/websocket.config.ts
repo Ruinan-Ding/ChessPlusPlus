@@ -1,0 +1,8 @@
+// Centralized WebSocket configuration
+export const WEBSOCKET_CONFIG = {
+  HEARTBEAT_INTERVAL_MS: 15000,
+  RECONNECT_INTERVAL_MS: 3000,
+  MAX_RECONNECT_ATTEMPTS: 5,
+  DEFAULT_ROOM: 'default',
+  BACKEND_PORT: 8000,
+};
