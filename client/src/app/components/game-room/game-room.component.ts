@@ -1,11 +1,14 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
-import { Subscription } from 'rxjs';
+import { Subscription, Subject } from 'rxjs';
+import { takeUntil, take, filter } from 'rxjs/operators';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
 import { ActivatedRoute, Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User } from '../../services/shared-data.service';
+import { LobbyService } from '../../services/lobby.service';
+import { NavigationStateService } from '../../services/navigation-state.service';
 
 interface GameOptions {
   reveal?: boolean;
@@ -13,15 +16,16 @@ interface GameOptions {
 
 @Component({
   selector: 'app-game-room',
-  providers: [WebsocketService],
   standalone: true,
   imports: [CommonModule, FormsModule, ConnectionStatusComponent],
   templateUrl: './game-room.component.html',
-  styleUrls: ['./game-room.component.scss']
+  styleUrls: ['./game-room.component.scss'],
+  changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class GameRoomComponent implements OnInit, OnDestroy {
   gameId: string = '';
   username: string = '';
+  accessToken: string = '';  // Token for secure game room access
   players: User[] = [];
   lobbyUsers: User[] = [];
   gameRoomMessages: ChatMessage[] = [];
@@ -33,34 +37,78 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   isReady: boolean = false;
   countdownStarted: boolean = false;
   countdown: number = 5;
-  countdownInterval: any;
+  countdownValue: number = 3;
+  countdownInterval: ReturnType<typeof setInterval> | null = null;
+  countdownCancelled: boolean = false;
   gameStarted: boolean = false;
   revealEnabled: boolean = false;
   gameOptions: GameOptions = {};
   
   private subscription: Subscription | null = null;
-  private lobbySocket: WebSocket | null = null;
   // Subscriptions for shared lobby data
   private lobbyMessagesSub: Subscription | null = null;
   private lobbyUsersSub: Subscription | null = null;
+  private destroy$ = new Subject<void>();
   
   constructor(
     private wsService: WebsocketService,
     private route: ActivatedRoute,
     private router: Router,
-    private sharedDataService: SharedDataService
+    private sharedDataService: SharedDataService,
+    private navigationState: NavigationStateService,
+    private lobbyService: LobbyService,
+    private cdr: ChangeDetectorRef
   ) {}
   
   ngOnInit(): void {
+    // Only clear messages if not returning from setup
+    const isReturningFromSetup = this.navigationState.getNavigationContext() === 'game-room' && 
+                                  this.navigationState.isIntentionalNavigation();
+    if (isReturningFromSetup) {
+      // Restore chat from localStorage if available
+      const saved = localStorage.getItem('gameRoomMessages');
+      if (saved) {
+        try {
+          this.gameRoomMessages = JSON.parse(saved);
+        } catch {
+          this.gameRoomMessages = [];
+        }
+        localStorage.removeItem('gameRoomMessages');
+      }
+      // Restore game mode and options if available
+      const savedMode = localStorage.getItem('gameRoomMode');
+      if (savedMode === 'default' || savedMode === 'custom') {
+        this.gameMode = savedMode;
+      }
+      const savedReveal = localStorage.getItem('gameRoomReveal');
+      if (savedReveal !== null) {
+        try {
+          this.revealEnabled = JSON.parse(savedReveal);
+        } catch { this.revealEnabled = false; }
+      }
+      const savedOptions = localStorage.getItem('gameRoomOptions');
+      if (savedOptions) {
+        try {
+          this.gameOptions = JSON.parse(savedOptions);
+        } catch { this.gameOptions = {}; }
+      }
+      localStorage.removeItem('gameRoomMode');
+      localStorage.removeItem('gameRoomReveal');
+      localStorage.removeItem('gameRoomOptions');
+    } else {
+      // Clear any prior game room messages to avoid stale system logs
+      this.gameRoomMessages = [];
+    }
+
     // Initialize lobby data from shared service
     this.lobbyMessages = this.sharedDataService.getLobbyMessages();
     this.lobbyUsers = this.sharedDataService.getLobbyUsers();
     // Subscribe to lobby message and user updates (real-time sync)
-    this.lobbyMessagesSub = this.sharedDataService.lobbyMessages$.subscribe(msgs => {
+    this.lobbyMessagesSub = this.sharedDataService.lobbyMessages$.pipe(takeUntil(this.destroy$)).subscribe(msgs => {
       this.lobbyMessages = msgs;
       this.scrollChatToBottom('lobby');
     });
-    this.lobbyUsersSub = this.sharedDataService.lobbyUsers$.subscribe(users => this.lobbyUsers = users);
+    this.lobbyUsersSub = this.sharedDataService.lobbyUsers$.pipe(takeUntil(this.destroy$)).subscribe(users => this.lobbyUsers = users);
 
     // Get username from localStorage
     this.username = localStorage.getItem('username') || '';
@@ -70,83 +118,74 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       return;
     }
 
-    // Now that username is set, setup a separate WebSocket for lobby chat
-    this.lobbySocket = new WebSocket(`ws://localhost:8000/ws/game/lobby/`);
-    this.lobbySocket.onopen = () => {
-      // Join the lobby with valid username
-      this.lobbySocket!.send(JSON.stringify({ type: 'join_lobby', username: this.username }));
-    };
-    this.lobbySocket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === 'chat_message' || data.type === 'system' || data.type === 'user_joined' || data.type === 'user_left' || data.type === 'username_changed') {
-        // Convert system/user events to system chat messages
-        let lobbyMsg: ChatMessage;
-        if (data.type === 'chat_message') {
-          lobbyMsg = {
-            username: data.username,
-            content: data.content,
-            timestamp: data.timestamp,
-            room: 'lobby',
-            type: undefined
-          };
-        } else if (data.type === 'user_joined') {
-          lobbyMsg = {
-            username: 'System',
-            content: `${data.username} has joined the lobby.`,
-            timestamp: new Date().toISOString(),
-            room: 'lobby',
-            type: 'system'
-          };
-        } else if (data.type === 'user_left') {
-          lobbyMsg = {
-            username: 'System',
-            content: `${data.username} has left the lobby.`,
-            timestamp: new Date().toISOString(),
-            room: 'lobby',
-            type: 'system'
-          };
-        } else if (data.type === 'username_changed') {
-          lobbyMsg = {
-            username: 'System',
-            content: `${data.oldUsername} has changed their name to ${data.newUsername}.`,
-            timestamp: new Date().toISOString(),
-            room: 'lobby',
-            type: 'system'
-          };
-        } else {
-          return;
-        }
-        this.sharedDataService.addLobbyMessage(lobbyMsg);
-        this.scrollChatToBottom('lobby');
-      }
-    };
+    // Note: Do NOT connect LobbyService here - we use wsService for all messages
+    // The backend will route lobby chat messages appropriately
 
-    // Get game ID from route parameters
-    this.route.params.subscribe(params => {
+    // Get game ID from route parameters and token from query params
+    this.route.params.pipe(takeUntil(this.destroy$)).subscribe(params => {
       this.gameId = params['id'];
       
-      // Connect to the game room - use just the gameId, not "game/"
-      this.wsService.connect(this.gameId);
-      
-      // Wait for connection to be established before sending join message
-      const connectionSub = this.wsService.connectionStatus$.subscribe(connected => {
-        if (connected) {
-          // Send join message only after connection is established
+      // Extract token from query parameters
+      this.route.queryParams.pipe(take(1)).subscribe(queryParams => {
+        this.accessToken = queryParams['token'] || '';
+        
+        if (!this.accessToken) {
+          console.error('[GameRoom] No access token provided - unauthorized access attempt');
+          this.router.navigate(['/lobby']);
+          return;
+        }
+        
+        console.log('[GameRoom] Connecting to game room:', this.gameId, 'with token');
+        
+        // Check if returning from setup (already connected)
+        const isReturningFromSetup = this.navigationState.getNavigationContext() === 'game-room' && 
+                                      this.navigationState.isIntentionalNavigation();
+        
+        if (isReturningFromSetup) {
+          console.log('[GameRoom] Returning from setup, clearing navigation state');
+          this.navigationState.clearIntentionalNavigation();
+        }
+        
+        // Check if already connected to this game room
+        if (this.wsService.isConnected()) {
+          console.log('[GameRoom] Already connected, sending join_game_room message immediately');
           this.wsService.sendMessage({
             type: 'join_game_room',
             username: this.username,
-            gameId: this.gameId
+            gameId: this.gameId,
+            token: this.accessToken
           });
-          
-          // Get cached lobby messages (without adding the room property)
           this.lobbyMessages = this.sharedDataService.getLobbyMessages();
+        } else {
+          // Connect to the game room - use just the gameId, not "game/"
+          this.wsService.connect(this.gameId);
           
-          connectionSub.unsubscribe();
+          // Wait for connection to be established before sending join message
+          // Use filter to wait for true value, not just take the first emission
+          const connectionSub = this.wsService.connectionStatus$.pipe(
+            filter(connected => connected === true),
+            take(1)
+          ).subscribe(connected => {
+            console.log('[GameRoom] Connection established, sending join_game_room message');
+            
+            // Send join message only after connection is established
+            this.wsService.sendMessage({
+              type: 'join_game_room',
+              username: this.username,
+              gameId: this.gameId,
+              token: this.accessToken
+            });
+            
+            console.log('[GameRoom] join_game_room message sent');
+            
+            // Get cached lobby messages (without adding the room property)
+            this.lobbyMessages = this.sharedDataService.getLobbyMessages();
+          });
         }
       });
       
       // Subscribe to WebSocket messages
-      this.subscription = this.wsService.messages$.subscribe(message => {
+      this.subscription = this.wsService.messages$.pipe(takeUntil(this.destroy$)).subscribe(message => {
         if (!message) return;
         this.handleWebSocketMessage(message);
       });
@@ -154,101 +193,156 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
   
   ngOnDestroy(): void {
-    // Unsubscribe from shared lobby data
-    if (this.lobbyMessagesSub) {
-      this.lobbyMessagesSub.unsubscribe();
-    }
-    if (this.lobbyUsersSub) {
-      this.lobbyUsersSub.unsubscribe();
-    }
+    // Signal teardown to all subscriptions
+    this.destroy$.next();
+    this.destroy$.complete();
 
     // Clear any intervals
-    if (this.countdownInterval) {
+    if (this.countdownInterval !== null) {
       clearInterval(this.countdownInterval);
+      this.countdownInterval = null;
     }
     
-    // Send leave message
-    this.wsService.sendMessage({
-      type: 'leave_game_room',
-      username: this.username,
-      gameId: this.gameId
-    });
+    // Check if we're intentionally navigating back to lobby
+    const isIntentionalNav = this.navigationState.isIntentionalNavigation();
     
-    // Disconnect
-    this.wsService.disconnect();
-    
-    // Unsubscribe
-    if (this.subscription) {
-      this.subscription.unsubscribe();
+    // Only send leave message if not already sent via leaveGameRoom()
+    if (!isIntentionalNav) {
+      this.wsService.sendMessage({
+        type: 'leave_game_room',
+        username: this.username,
+        gameId: this.gameId
+      });
+      this.wsService.disconnect();
     }
 
-    // Close lobby socket when leaving
-    if (this.lobbySocket) {
-      this.lobbySocket.close(1000);
-    }
+    // DO NOT disconnect LobbyService here - if returning to lobby, maintain the connection
+    // The lobby component will handle its own connection lifecycle
+    
+    // No need to manually unsubscribe subscriptions that used takeUntil(this.destroy$)
   }
   
   handleWebSocketMessage(message: any): void {
-    switch (message.type) {
+    // Handle broadcast_message wrapper (unwrap to actual message type)
+    let actualMessage = message;
+    if (message.type === 'broadcast_message' && message.data) {
+      actualMessage = message.data;
+    }
+    switch (actualMessage.type) {
+      case 'game_start_placeholder':
+        // Set all players' status to 'in-game' (red)
+        this.players = this.players.map(player => ({
+          ...player,
+          status: 'in-game'
+        }));
+        // Also update lobbyUsers if present
+        this.lobbyUsers = this.lobbyUsers.map(user =>
+          this.players.some(p => p.username === user.username)
+            ? { ...user, status: 'in-game' }
+            : user
+        );
+        this.cdr.markForCheck();
+        break;
       case 'game_room_joined':
         // Set isInviter flag if this user is the original inviter
-        this.isInviter = message.isInviter;
+        this.isInviter = actualMessage.isInviter;
         break;
-        
       case 'player_list':
-        // Store the players list
-        this.players = message.players;
-        
-        // Manually mark the inviter player based on active_games first player
-        // When we get the player list after joining, we already know if this user is the inviter
-        if (this.isInviter) {
-          // If current user is inviter, mark themselves
-          this.players = this.players.map(player => {
-            if (player.username === this.username) {
-              return { ...player, isInviter: true };
-            }
-            return { ...player, isInviter: false };
-          });
-        } else {
-          // If not inviter, check player list and find the inviter
-          // Typically the first player who created the game
-          if (this.players.length > 0) {
-            const firstPlayer = this.players[0];
-            this.players = this.players.map(player => {
-              if (player.username === firstPlayer.username) {
-                return { ...player, isInviter: true };
-              }
-              return { ...player, isInviter: false };
-            });
-          }
+      case 'player_list_update': {
+        // Handle both message types from backend
+        console.log('[GameRoom] Received player list:', actualMessage);
+        if (!Array.isArray(actualMessage.players)) {
+          console.error('[GameRoom] Invalid player list - missing players array');
+          break;
         }
-        
-        // Remove chat messages from users no longer in the player list
-        const playerUsernames = new Set(this.players.map(p => p.username));
-        this.gameRoomMessages = this.gameRoomMessages.filter(msg => msg.username === 'System' || playerUsernames.has(msg.username));
-        
-        // Check if all players are ready
+        const previousReadyState = new Map(this.players.map(p => [p.username, p.isReady]));
+        this.players = actualMessage.players.map((player: User) => ({
+          ...player,
+          isReady: typeof player.isReady === 'boolean'
+            ? player.isReady
+            : (previousReadyState.get(player.username) ?? false)
+        }));
+        const currentUser = this.players.find(p => p.username === this.username);
+        if (currentUser && typeof currentUser.isInviter !== 'undefined') {
+          this.isInviter = currentUser.isInviter === true;
+        } else if (typeof actualMessage.isInviter !== 'undefined') {
+          this.isInviter = actualMessage.isInviter;
+        }
+        console.log('[GameRoom] Players array:', this.players);
+        console.log('[GameRoom] Current user:', this.username);
+        console.log('[GameRoom] isInviter:', this.isInviter);
+        const playerNames = new Set(this.players.map(p => p.username));
+        this.gameRoomMessages = this.gameRoomMessages.filter(
+          msg => msg.username === 'System' || playerNames.has(msg.username)
+        );
         this.checkAllPlayersReady();
+        this.cdr.markForCheck();
+        break;
+      }
+      case 'game_countdown_cancelled':
+        // Stop the countdown and reset ready state for all players
+        if (this.countdownInterval !== null) {
+          clearInterval(this.countdownInterval);
+          this.countdownInterval = null;
+        }
+        this.countdownStarted = false;
+        this.countdownValue = 3;
+        this.isReady = false;
+        this.players = this.players.map(player => ({ ...player, isReady: false }));
+        this.addSystemMessage('Game countdown cancelled.');
+        this.cdr.markForCheck();
         break;
         
       case 'lobby_user_list':
-        this.lobbyUsers = message.users;
-        this.sharedDataService.updateLobbyUsers(message.users);
+        console.log('[GameRoom] Received lobby_user_list:', actualMessage.users);
+        this.lobbyUsers = actualMessage.users;
+        this.sharedDataService.updateLobbyUsers(actualMessage.users);
+        this.cdr.markForCheck();
         break;
       case 'user_list':
-        this.lobbyUsers = message.users;
-        this.sharedDataService.updateLobbyUsers(message.users);
+        console.log('[GameRoom] Received user_list:', actualMessage.users);
+        this.lobbyUsers = actualMessage.users;
+        this.sharedDataService.updateLobbyUsers(actualMessage.users);
+        this.cdr.markForCheck();
         break;
         
       case 'game_room_message':
-        this.gameRoomMessages.push({
-          username: message.username,
-          content: message.content,
-          timestamp: message.timestamp,
+        // If system message about mode/options, remove prior ones to avoid stale gray messages
+        if (actualMessage.username === 'System' && typeof actualMessage.content === 'string') {
+          const c = actualMessage.content;
+          if (c.includes('Game mode changed') || c.includes('Game options updated')) {
+            this.gameRoomMessages = this.gameRoomMessages.filter(msg => {
+              if (msg.username !== 'System') return true;
+              const mc = msg.content || '';
+              return !mc.includes('Game mode changed') && !mc.includes('Game options updated');
+            });
+          }
+        }
+
+        // Create a new array reference instead of mutating to ensure OnPush change detection works
+        this.gameRoomMessages = [...this.gameRoomMessages, {
+          username: actualMessage.username,
+          content: actualMessage.content,
+          timestamp: actualMessage.timestamp,
           room: 'gameRoom',
-          type: message.type === 'system' ? 'system' : undefined
-        });
+          type: (actualMessage.messageType === 'system' || actualMessage.username === 'System') ? 'system' : undefined
+        }];
         this.scrollChatToBottom('gameRoom');
+        this.cdr.markForCheck();
+        break;
+      
+      case 'chat_message':
+        // Handle lobby chat messages received while in game room
+        console.log('[GameRoom] Received lobby chat_message:', actualMessage);
+        // Only add via sharedDataService - the subscription to lobbyMessages$ will update our local array
+        this.sharedDataService.addLobbyMessage({
+          username: actualMessage.username,
+          content: actualMessage.content,
+          timestamp: actualMessage.timestamp || new Date().toISOString(),
+          room: 'lobby'
+        });
+        this.scrollChatToBottom('lobby');
+        this.cdr.markForCheck();
         break;
         
       case 'lobby_message':
@@ -257,86 +351,114 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       case 'player_ready':
         // Update player ready status
         this.players = this.players.map(player => {
-          if (player.username === message.username) {
+          if (player.username === actualMessage.username) {
             return { ...player, isReady: true };
           }
           return player;
         });
         
         // Check if this is the current user
-        if (message.username === this.username) {
+        if (actualMessage.username === this.username) {
           this.isReady = true;
         }
         
+        // Add system message
+        this.addSystemMessage(`${actualMessage.username} is ready.`);
+        
         // Check if all players are ready
         this.checkAllPlayersReady();
+        this.cdr.markForCheck();
         break;
         
       case 'player_unready':
         // Update player ready status to unready
         this.players = this.players.map(player => {
-          if (player.username === message.username) {
+          if (player.username === actualMessage.username) {
             return { ...player, isReady: false };
           }
           return player;
         });
-        
+
         // Check if this is the current user
-        if (message.username === this.username) {
+        if (actualMessage.username === this.username) {
           this.isReady = false;
         }
+
+        // Only add system message if not silent
+        if (!actualMessage.silent) {
+          this.addSystemMessage(`${actualMessage.username} is not ready.`);
+        }
+        this.cdr.markForCheck();
         break;
         
       case 'game_mode_changed':
-        this.gameMode = message.mode;
+        this.gameMode = actualMessage.mode;
         
         // Update game options if they were included in the message
-        if (message.options) {
-          this.gameOptions = message.options;
+        if (actualMessage.options) {
+          this.gameOptions = actualMessage.options;
           // Update UI to match options
-          this.revealEnabled = message.options.reveal || false;
+          this.revealEnabled = actualMessage.options.reveal || false;
+        } else if (actualMessage.mode === 'default') {
+          // Reset any custom options when returning to default mode
+          this.gameOptions = {};
+          this.revealEnabled = false;
         }
+
+        // Add system message about mode change
+        const modeText = actualMessage.mode === 'default' ? 'Default Mode' : 'Custom Mode';
+        let optionsText = '';
+        if (actualMessage.mode === 'custom' && actualMessage.options) {
+          const optionList = Object.entries(actualMessage.options)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(', ');
+          if (optionList) {
+            optionsText = ` (Options: ${optionList})`;
+          }
+        }
+        this.addSystemMessage(`Game mode changed to ${modeText}${optionsText}`);
+        
+        // Trigger change detection
+        this.cdr.markForCheck();
         break;
         
       case 'game_countdown':
+        // Set all players to ready for the countdown phase
+        this.players = this.players.map(player => ({ ...player, isReady: true }));
+        this.isReady = true;
         this.startCountdown();
+        this.cdr.markForCheck();
         break;
+
+      case 'partner_left':
+        // Other player has left the game room - navigate back to lobby
+        // Do NOT call leaveGameRoom() as that would send another leave_game_room message
+        this.addSystemMessage(`${actualMessage.username} has left the game room. Returning to lobby...`);
         
-      case 'game_started':
-        // Add a system message and unready all players
-        this.addSystemMessage('Game started! Get ready to play!');
-        this.players = this.players.map(player => ({ ...player, isReady: false }));
-        this.isReady = false;
-        break;
-
-      case 'game_reset':
-        // Reset local ready states and notify
-        this.players = this.players.map(player => ({ ...player, isReady: false }));
-        this.isReady = false;
-        // Clear auto-start flag for next round
-        this.gameStarted = false;
-        this.addSystemMessage('Game has been reset. All players need to ready up again.');
-        // Auto-ready inviter so they can start the next game
+        // Only the HOST (inviter/person with crown) gets the cooldown, even when kicked
+        // This prevents the host from spam-inviting
+        console.log('[GameRoom] partner_left: isInviter:', this.isInviter);
         if (this.isInviter) {
-          this.wsService.sendMessage({
-            type: 'player_ready',
-            username: this.username,
-            gameId: this.gameId
-          });
+          this.navigationState.setIntentionalNavigation('none'); // Triggers cooldown
+        } else {
+          this.navigationState.setIntentionalNavigation('lobby'); // No cooldown
         }
-        break;
-
-      case 'host_left':
-        // Notify players the host has left and trigger leaving the room
-        this.addSystemMessage(`Host ${message.username} has left. Closing the room...`);
-        // Give user a moment to read then perform leave sequence
+        
+        // Clear any intervals
+        if (this.countdownInterval !== null) {
+          clearInterval(this.countdownInterval);
+          this.countdownInterval = null;
+        }
+        
+        // Navigate to lobby after a brief delay
         setTimeout(() => {
-          this.leaveGameRoom();
-        }, 2000);
+          console.log('[GameRoom] Partner left, navigating to lobby');
+          this.router.navigate(['/lobby']);
+        }, 300);
         break;
 
       case 'challenge_declined':
-        this.addSystemMessage(`${message.username} has declined your invitation.`);
+        this.addSystemMessage(`${actualMessage.username} has declined your invitation.`);
         // Request a fresh user list from the server to ensure real-time sync
         this.wsService.sendMessage({ type: 'request_user_list' });
         break;
@@ -345,10 +467,24 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // Handle case when game room no longer exists (e.g., host disconnected)
         if (message.message === 'Game room not found') {
           this.addSystemMessage('Game room no longer exists. Returning to lobby...');
+          // Set intentional navigation to prevent ngOnDestroy from sending leave_game_room
+          this.navigationState.setIntentionalNavigation('lobby');
           setTimeout(() => {
             this.wsService.disconnect();
             this.router.navigate(['/lobby']);
-          }, 2000);
+          }, 300);
+        }
+        // Handle token-related errors (unauthorized access attempts)
+        if (message.code === 'INVALID_TOKEN' || message.code === 'TOKEN_EXPIRED' || message.code === 'NOT_IN_GAME') {
+          console.error('[GameRoom] Access denied:', message.message);
+          this.addSystemMessage(`Access denied: ${message.message}. Returning to lobby...`);
+          // Set intentional navigation to prevent ngOnDestroy from sending leave_game_room
+          // (we were never actually in the game, so no leave message should be sent)
+          this.navigationState.setIntentionalNavigation('lobby');
+          setTimeout(() => {
+            this.wsService.disconnect();
+            this.router.navigate(['/lobby']);
+          }, 300);
         }
         break;
     }
@@ -372,9 +508,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       this.messageContent = '';
       return;
     } else {
-      // Send via separate lobby socket
-      this.lobbySocket?.send(JSON.stringify({ type: 'chat_message', username: this.username, content, timestamp }));
-      // Clearing input; message will arrive via onmessage
+      // Send lobby chat via wsService - backend will route to lobby group
+      this.wsService.sendMessage({ 
+        type: 'chat_message', 
+        username: this.username, 
+        content, 
+        timestamp 
+      });
+      // Clear input
       this.messageContent = '';
       return;
     }
@@ -389,17 +530,30 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
   
   toggleReady(): void {
+    // If countdown is active, treat as cancel
+    if (this.countdownStarted) {
+      this.cancelCountdown();
+      return;
+    }
     // Toggle the ready status
     const toggleAction = this.isReady ? 'player_unready' : 'player_ready';
-    
     this.wsService.sendMessage({
       type: toggleAction,
       username: this.username,
       gameId: this.gameId
     });
-    
     // We'll let the server response update our local state
     // instead of updating it directly here
+  }
+
+  cancelCountdown(): void {
+    // Send cancel request to backend so both players' countdowns are stopped and both are unready
+    this.wsService.sendMessage({
+      type: 'cancel_game_countdown',
+      username: this.username,
+      gameId: this.gameId
+    });
+    // Local UI will be reset when backend broadcasts 'game_countdown_cancelled'
   }
   
   changeGameMode(mode: 'default' | 'custom'): void {
@@ -435,8 +589,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       reveal: this.revealEnabled
     };
     
-    // Instead of sending a new message type, use the existing change_game_mode type
-    // This ensures backward compatibility with the server
+    // Send message to server - it will broadcast the change and send system message
     this.wsService.sendMessage({
       type: 'change_game_mode',
       mode: 'custom',
@@ -444,8 +597,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       options: this.gameOptions
     });
     
-    // Add system message about the options change
-    this.addSystemMessage(`Game options updated: Reveal ${this.revealEnabled ? 'enabled' : 'disabled'}`);
+    // Don't add system message here - the server will send it
   }
   
   private checkAllPlayersReady(): void {
@@ -458,14 +610,34 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   
   private startCountdown(): void {
     this.countdownStarted = true;
+    this.countdownCancelled = false;
     this.countdown = 3; // Changed from 5 to 3
-    
+
+    // Clear any previous countdown before starting a new one
+    if (this.countdownInterval !== null) {
+      clearInterval(this.countdownInterval);
+      this.countdownInterval = null;
+    }
+
     this.countdownInterval = setInterval(() => {
+      if (this.countdownCancelled) {
+        clearInterval(this.countdownInterval!);
+        this.countdownInterval = null;
+        this.countdownStarted = false;
+        this.cdr.markForCheck();
+        return;
+      }
       this.countdown--;
-      
+      this.cdr.markForCheck();
       if (this.countdown <= 0) {
-        clearInterval(this.countdownInterval);
+        if (this.countdownInterval !== null) {
+          clearInterval(this.countdownInterval);
+          this.countdownInterval = null;
+        }
         this.countdownStarted = false; // Hide the countdown when it reaches 0
+        this.isReady = false; // Reset button to 'Ready' state after countdown, matching backend
+        this.addSystemMessage('Game started! Placeholder!');
+        this.cdr.markForCheck();
       }
     }, 1000);
   }
@@ -499,30 +671,72 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.scrollChatToBottom(this.activeTab);
   }
   
+  /**
+   * Open the setup configuration screen.
+   * Sets status to 'configuring' and navigates to setup.
+   */
+  openSetup(): void {
+    // Save game mode and options to localStorage before navigating
+    localStorage.setItem('gameRoomMode', this.gameMode);
+    localStorage.setItem('gameRoomReveal', JSON.stringify(this.revealEnabled));
+    localStorage.setItem('gameRoomOptions', JSON.stringify(this.gameOptions));
+    // Set navigation state before navigating - use 'game-room' context to return here
+    this.navigationState.setIntentionalNavigation('game-room');
+
+    // Store game ID and token so setup can return to this game room
+    localStorage.setItem('returnToGameRoom', this.gameId);
+    localStorage.setItem('gameRoomToken', this.accessToken);
+
+    // Always unset readiness when opening setup (silent)
+    this.wsService.sendMessage({
+      type: 'player_unready',
+      username: this.username,
+      gameId: this.gameId,
+      silent: true
+    });
+
+    // Save game room chat to localStorage before navigating
+    localStorage.setItem('gameRoomMessages', JSON.stringify(this.gameRoomMessages));
+
+    // Set status to configuring
+    this.wsService.sendMessage({
+      type: 'set_status',
+      username: this.username,
+      status: 'configuring'
+    });
+
+    // Navigate to setup
+    this.router.navigate(['/setup']);
+  }
+  
   leaveGameRoom(): void {
-    // First, send leave message and properly disconnect
+    // First, send leave message
     this.wsService.sendMessage({
       type: 'leave_game_room',
       username: this.username,
       gameId: this.gameId
     });
     
-    // Set a flag to indicate we're intentionally leaving
-    localStorage.setItem('intentionalDisconnect', 'true');
+    console.log('[GameRoom] Sent leave_game_room message, setting navigation state, isInviter:', this.isInviter);
     
-    // Disconnect the websocket
-    this.wsService.disconnect();
-    
-    // Clear any intervals to avoid memory leaks
-    if (this.countdownInterval) {
-      clearInterval(this.countdownInterval);
+    // Only the HOST (inviter/person with crown) gets the cooldown
+    // This prevents the host from spam-inviting
+    if (this.isInviter) {
+      this.navigationState.setIntentionalNavigation('none'); // Triggers cooldown
+    } else {
+      this.navigationState.setIntentionalNavigation('lobby'); // No cooldown
     }
     
-    // Wait briefly for the server to process the leave message
-    setTimeout(() => {
-      // Navigate to lobby after the leave message has been processed
-      this.router.navigate(['/lobby']);
-    }, 300);
+    // Clear any intervals to avoid memory leaks
+    if (this.countdownInterval !== null) {
+      clearInterval(this.countdownInterval);
+      this.countdownInterval = null;
+    }
+    
+    // Navigate immediately - the server will process the leave asynchronously
+    // DO NOT disconnect - the lobby will reuse the same WebSocket connection
+    console.log('[GameRoom] Navigating to lobby (keeping WebSocket connection)');
+    this.router.navigate(['/lobby']);
   }
 
   /**
@@ -537,17 +751,30 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
   
   /**
-   * Starts the game immediately without countdown
-   * Only the inviter can start the game
+   * Only the inviter can start the game. Sends a request to backend, which will broadcast 'game_countdown' to all players.
+   * The countdown is only started in response to the 'game_countdown' message from backend, ensuring both players are in sync.
    */
   startGame(): void {
     if (!this.isInviter) return;
-    
-    // Immediately start the game
+    // Only send the request to backend. Do NOT start countdown locally.
     this.wsService.sendMessage({
       type: 'start_game',
       gameId: this.gameId
     });
+    // Countdown will be started for all players when 'game_countdown' is received from backend.
+  }
+
+  // Format custom options for display in system messages
+  private formatOptionsText(options: Record<string, any>): string {
+    const parts: string[] = [];
+    Object.entries(options).forEach(([key, value]) => {
+      if (key === 'reveal') {
+        parts.push(`Reveal ${value ? 'enabled' : 'disabled'}`);
+      } else {
+        parts.push(`${key}: ${value}`);
+      }
+    });
+    return parts.length ? ` (${parts.join(', ')})` : '';
   }
   
   // Stub for context menu on lobby user items
@@ -557,27 +784,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // Don't allow inviting yourself
     if (user.username === this.username) return;
 
-    // Get current user's status
-    const currentUserStatus = this.lobbyUsers.find(u => u.username === this.username)?.status;
-
-    // Enforce invitation rules (mirror lobby logic):
-    let canInvite = false;
-    let disabledReason = '';
-
-    if (currentUserStatus === 'invited' && user.status === 'invited') {
-      canInvite = false;
-      disabledReason = 'Cannot invite another invited player';
-    } else if (currentUserStatus === 'online' && user.status === 'invited') {
-      canInvite = false;
-      disabledReason = 'Cannot invite an invited player';
-    } else if (currentUserStatus === 'invited' && user.status === 'online') {
-      canInvite = true;
-    } else if (currentUserStatus === 'online' && user.status === 'online') {
-      canInvite = true;
-    } else {
-      canInvite = false;
-      disabledReason = 'Cannot invite this player';
-    }
+    // When in a game room, you cannot invite anyone
+    const canInvite = false;
+    const disabledReason = "Can't invite while in a game room";
 
     // Remove any existing menus first
     const existingMenus = document.querySelectorAll('.user-context-menu');
@@ -606,7 +815,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (canInvite) {
         this.inviteLobbyUser(user.username);
       }
-      document.body.removeChild(menu);
+      if (document.body.contains(menu)) {
+        document.body.removeChild(menu);
+      }
     });
 
     document.body.appendChild(menu);
@@ -614,7 +825,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // Close menu when clicking elsewhere
     const closeMenu = (e: MouseEvent) => {
       if (!menu.contains(e.target as Node)) {
-        document.body.removeChild(menu);
+        if (document.body.contains(menu)) {
+          document.body.removeChild(menu);
+        }
         document.removeEventListener('click', closeMenu);
       }
     };
@@ -626,11 +839,28 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   inviteLobbyUser(opponent: string): void {
     // Only prevent inviting if there's already an active invite dialog
     // (You may want to add more logic here if needed)
-    this.wsService.sendMessage({
-      type: 'game_challenge',
-      challenger: this.username,
-      opponent: opponent
-    });
+    try {
+      if (this.lobbyService && typeof this.lobbyService.sendMessage === 'function') {
+        this.lobbyService.sendMessage({
+          type: 'game_challenge',
+          challenger: this.username,
+          opponent: opponent
+        });
+      } else {
+        this.wsService.sendMessage({
+          type: 'game_challenge',
+          challenger: this.username,
+          opponent: opponent
+        });
+      }
+    } catch (e) {
+      // fallback
+      this.wsService.sendMessage({
+        type: 'game_challenge',
+        challenger: this.username,
+        opponent: opponent
+      });
+    }
 
     // Immediately update local lobbyUsers to show both as invited (yellow)
     this.lobbyUsers = this.lobbyUsers.map(user => {

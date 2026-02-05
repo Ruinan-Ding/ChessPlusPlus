@@ -257,7 +257,7 @@
     background-color: #2ecc71; /* green */
   }
   .status-dot.in-game {
-    background-color: #e74c3c; /* red */
+    background-color: #f1c40f; /* yellow */
   }
   .status-dot.invited {
     background-color: #f1c40f; /* yellow */
@@ -283,7 +283,9 @@
   }
 
   .lobby-messages .action-button,
-  .users-panel .action-button {
+  .users-panel .action-button,
+  .player-list .action-button,
+  .game-room-messages .action-button {
     flex-shrink: 0;
     background-color: #f0f0f0;
     border: 1px solid #ddd;
@@ -296,12 +298,16 @@
     transition: background 0.2s, color 0.2s;
   }
   .lobby-messages .action-button:hover,
-  .users-panel .action-button:hover {
+  .users-panel .action-button:hover,
+  .player-list .action-button:hover,
+  .game-room-messages .action-button:hover {
     background-color: #e0e0e0;
     color: #333;
   }
   .lobby-messages .action-button:disabled,
-  .users-panel .action-button:disabled {
+  .users-panel .action-button:disabled,
+  .player-list .action-button:disabled,
+  .game-room-messages .action-button:disabled {
     opacity: 0.3;
     cursor: not-allowed;
   }
@@ -396,15 +402,17 @@
           width: 10px;
           height: 10px;
           border-radius: 50%;
-          background-color: #ddd;
-          
-          &.joined {
-            background-color: #f1c40f; /* Yellow color for joined players */
+          background-color: #f1c40f; /* Always yellow for not ready */
+          &.not-ready {
+            background-color: #f1c40f;
           }
+        }
 
-          &.left {
-            background-color: #e74c3c;  // red for left players
-          }
+        .ready-checkmark {
+          color: #2ecc71;
+          font-size: 1.2em;
+          margin-left: 6px;
+          vertical-align: middle;
         }
         
         .player-name {
@@ -415,6 +423,12 @@
             margin-left: 5px;
             font-size: 14px;
           }
+        }
+        
+        .player-status {
+          font-size: 14px;
+          margin-left: 5px;
+          cursor: default;
         }
         
         .status-tag {
@@ -440,6 +454,23 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
+      
+      .setup-btn {
+        width: 100%;
+        padding: 12px;
+        background-color: #9b59b6;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        font-size: 1.1rem;
+        font-weight: bold;
+        cursor: pointer;
+        transition: background-color 0.2s;
+        
+        &:hover {
+          background-color: #8e44ad;
+        }
+      }
       
       .ready-btn {
         width: 100%;

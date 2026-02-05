@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/pyright/main/packages/pyright-internal/src/pyright-internal/schemas/pyrightconfig.schema.json",
+  "exclude": ["**/node_modules", "**/__pycache__", "server/game/tests_disabled"],
+  "reportUnknownMemberType": false,
+  "reportUnknownVariableType": false,
+  "reportMissingImports": false,
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic"
+}

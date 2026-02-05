@@ -1,17 +1,20 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 
+export type UserStatus = 'online' | 'invited' | 'configuring' | 'in-game';
+export type MessageType = 'system' | 'user';
+
 export interface ChatMessage {
   username: string;
   content: string;
   timestamp: string;
-  type?: string;
-  room?: string; // Adding optional room property to identify which chat room the message belongs to
+  type?: MessageType;
+  room?: string; // Optional room property to identify which chat room the message belongs to
 }
 
 export interface User {
   username: string;
-  status: string;
+  status: UserStatus;
   isReady?: boolean;
   isInviter?: boolean;
 }

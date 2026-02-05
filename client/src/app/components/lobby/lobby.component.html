@@ -46,7 +46,9 @@
             <span *ngIf="user.username === username" class="current-user-tag">(You)</span>
           </span>
           <span class="user-status">
-            {{ user.status === 'online' ? 'Available' : (user.status === 'configuring' ? 'Configuring' : 'In Game') }}
+            {{ user.status === 'online' ? 'Available' : 
+               (user.status === 'in-game' ? 'In Game' : 
+               (user.status === 'configuring' ? 'Configuring' : 'Invited')) }}
           </span>
           <button 
             class="action-button" 

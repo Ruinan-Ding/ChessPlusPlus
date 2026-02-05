@@ -139,7 +139,11 @@
       }
       
       &.in-game {
-        background-color: #e74c3c;
+        background-color: #f1c40f; /* Yellow for in-game status */
+      }
+
+      &.configuring {
+        background-color: #f1c40f; /* Yellow for configuring status */
       }
 
       &.challenging {

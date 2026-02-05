@@ -1,46 +1,47 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { ConfigService } from '../../services/config.service';
 import { WebsocketService } from '../../services/websocket.service';
+import { NavigationStateService } from '../../services/navigation-state.service';
+import { Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
 
 @Component({
   selector: 'app-setup-config',
   standalone: true,
   imports: [CommonModule, FormsModule],
   templateUrl: './setup-config.component.html',
-  styleUrls: ['./setup-config.component.scss']
+  styleUrls: ['./setup-config.component.scss'],
+  changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class SetupConfigComponent implements OnInit {
+export class SetupConfigComponent implements OnInit, OnDestroy {
   jsonConfig = '';
   savedConfig = '';
   savedSuccessfully = false;
   username = '';
+  private destroy$ = new Subject<void>();
   
   constructor(
     private router: Router,
     private configService: ConfigService,
-    private wsService: WebsocketService
+    private wsService: WebsocketService,
+    private navigationState: NavigationStateService
   ) {}
   
   ngOnInit(): void {
     // Get username from localStorage
     this.username = localStorage.getItem('username') || '';
-    console.log('SetupConfig ngOnInit: sending set_status configuring');
-    // Set status to configuring
-    this.wsService.sendMessage({
-      type: 'set_status',
-      username: this.username,
-      status: 'configuring'
-    });
+    // Note: The lobby component already sent set_status: configuring before navigating here
+    // So we don't need to send it again
     
     // Initialize with default config
     this.jsonConfig = this.configService.getDefaultConfig();
     this.savedConfig = this.jsonConfig;
     
     // Subscribe to config changes (will be used when UI is implemented)
-    this.configService.config$.subscribe(config => {
+    this.configService.config$.pipe(takeUntil(this.destroy$)).subscribe(config => {
       // Only update if the stringified value is different to avoid cycles
       const newJsonString = JSON.stringify(config, null, 2);
       if (this.jsonConfig !== newJsonString) {
@@ -50,65 +51,72 @@ export class SetupConfigComponent implements OnInit {
   }
 
   get hasUnsavedChanges(): boolean {
-    try {
-      // Parse both JSON strings to objects first
-      const currentConfigObj = JSON.parse(this.jsonConfig);
-      const savedConfigObj = JSON.parse(this.savedConfig);
-      
-      // Compare the objects using deep equality
-      return !this.deepEquals(currentConfigObj, savedConfigObj);
-    } catch (error) {
-      // If JSON parsing fails, compare as trimmed strings
-      return this.jsonConfig.trim() !== this.savedConfig.trim();
-    }
+    // Fast path: string equality (avoids JSON parse when unchanged)
+    if (this.jsonConfig === this.savedConfig) return false;
+
+    // Hash-based comparison to avoid deep recursion on every check
+    const currentHash = this.stableHash(this.jsonConfig);
+    const savedHash = this.stableHash(this.savedConfig);
+    return currentHash !== savedHash;
   }
-  
-  // Helper method for deep object comparison
-  private deepEquals(obj1: any, obj2: any): boolean {
-    // If primitives or one is null/undefined, direct comparison
-    if (obj1 === obj2) return true;
-    if (obj1 === null || obj2 === null) return false;
-    if (obj1 === undefined || obj2 === undefined) return false;
-    if (typeof obj1 !== 'object' || typeof obj2 !== 'object') return obj1 === obj2;
-    
-    // Arrays comparison
-    if (Array.isArray(obj1) && Array.isArray(obj2)) {
-      if (obj1.length !== obj2.length) return false;
-      return obj1.every((val, idx) => this.deepEquals(val, obj2[idx]));
+
+  // Lightweight stable hash for JSON strings; falls back to trimmed string on parse errors
+  private stableHash(jsonString: string): string {
+    try {
+      const parsed = JSON.parse(jsonString);
+      const normalized = JSON.stringify(parsed, Object.keys(parsed).sort());
+      let hash = 0;
+      for (let i = 0; i < normalized.length; i++) {
+        const chr = normalized.charCodeAt(i);
+        hash = (hash << 5) - hash + chr;
+        hash |= 0; // Convert to 32bit integer
+      }
+      return hash.toString();
+    } catch {
+      return jsonString.trim();
     }
-    
-    // Regular objects comparison
-    const keys1 = Object.keys(obj1);
-    const keys2 = Object.keys(obj2);
-    
-    if (keys1.length !== keys2.length) return false;
-    
-    return keys1.every(key => 
-      keys2.includes(key) && this.deepEquals(obj1[key], obj2[key])
-    );
   }
 
   onBack(): void {
-    // Set a flag to indicate we're intentionally moving between pages
-    localStorage.setItem('intentionalDisconnect', 'true');
-    console.log('SetupConfig onBack: sending set_status online');
-    // Set status to online before returning to lobby
-    this.wsService.sendMessage({
-      type: 'set_status',
-      username: this.username,
-      status: 'online'
-    });
+    // Check if we came from a game room
+    const returnToGameRoom = localStorage.getItem('returnToGameRoom');
+    const gameRoomToken = localStorage.getItem('gameRoomToken');
+    
+    // Determine navigation target and state
+    let targetRoute: string[];
+    let queryParams: { token?: string } = {};
+    if (returnToGameRoom) {
+      // Returning to game room - set status back to in-game
+      this.navigationState.setIntentionalNavigation('game-room');
+      targetRoute = ['/game-room', returnToGameRoom];
+      if (gameRoomToken) {
+        queryParams = { token: gameRoomToken };
+      }
+      localStorage.removeItem('returnToGameRoom');
+      localStorage.removeItem('gameRoomToken');
+      
+      // Set status back to in-game
+      this.wsService.sendMessage({
+        type: 'set_status',
+        username: this.username,
+        status: 'in-game'
+      });
+    } else {
+      // Returning to lobby
+      this.navigationState.setIntentionalNavigation('lobby');
+      targetRoute = ['/lobby'];
+    }
     
     if (this.hasUnsavedChanges) {
       if (confirm('You have unsaved changes. Do you want to save before going back?')) {
         if (this.saveConfig()) {
-          this.router.navigate(['/lobby']);
+          this.router.navigate(targetRoute, { queryParams });
         }
       } else {
-        this.router.navigate(['/lobby']);
+        this.router.navigate(targetRoute, { queryParams });
       }
     } else {
-      this.router.navigate(['/lobby']);
+      this.router.navigate(targetRoute, { queryParams });
     }
   }
 
@@ -144,5 +152,10 @@ export class SetupConfigComponent implements OnInit {
       const errorMsg = typeof e === 'object' && e !== null && 'message' in e ? (e as Error).message : String(e);
       alert('Invalid JSON: ' + errorMsg);
     }
+  }
+
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 }
