@@ -2,220 +2,291 @@
   <header>
     <h1>Game Room</h1>
     <div class="header-actions">
-      <button class="setup-btn" (click)="openSetup()">Configure Setup</button>
+      <button class="setup-btn" (click)="openSetup()" [disabled]="countdownStarted">Configure Setup</button>
       <button class="leave-btn" (click)="leaveGameRoom()">Leave Room</button>
       <app-connection-status></app-connection-status>
     </div>
   </header>
 
   <main>
-    <!-- Left side: Chat with tabs -->
-    <div class="chat-panel">
-      <div class="chat-tabs">
-        <button 
-          [class.active]="activeTab === 'gameRoom'"
-          (click)="changeTab('gameRoom')"
-        >Game Room</button>
-        <button 
-          [class.active]="activeTab === 'lobby'"
-          (click)="changeTab('lobby')"
-        >Lobby</button>
+    <!-- Game Board (always shown) -->
+    <div class="game-board-panel">
+      <app-game-board
+        *ngIf="gameStarted"
+        [boardState]="(gameState.state$ | async)?.boardState ?? {}"
+        [radius]="(gameState.state$ | async)?.config?.board?.radius ?? 12"
+        [currentTurn]="(gameState.state$ | async)?.currentTurn ?? ''"
+        [turnNumber]="(gameState.state$ | async)?.turnNumber ?? 0"
+        [username]="username"
+        [myColor]="gameState.myColor(username)"
+        [winner]="(gameState.state$ | async)?.winner ?? ''"
+        [endReason]="(gameState.state$ | async)?.endReason ?? ''"
+        [interactive]="gameState.myColor(username) !== '' && !(gameState.state$ | async)?.endReason"
+        [turnTimeLimit]="(gameState.state$ | async)?.turnTimeLimit ?? 0"
+        [turnStartedAt]="(gameState.state$ | async)?.turnStartedAt ?? ''"
+        [config]="(gameState.state$ | async)?.config"
+        (moveMade)="onPlayerMove($event)"
+      ></app-game-board>
+
+      <!-- Show placeholder when game hasn't started -->
+      <div class="waiting-placeholder" *ngIf="!gameStarted">
+        <p>Waiting for game to start...</p>
       </div>
-      
-      <!-- Game Room Chat -->
-      <div class="chat-content" *ngIf="activeTab === 'gameRoom'">
-        <div class="game-room-messages">
-          <div 
-            class="message-item" 
-            *ngFor="let message of gameRoomMessages"
-            [ngClass]="{
-              'system-message': message.type === 'system',
-              'my-message': message.username === username
-            }"
-          >
-            <div class="message-header">
-              <span class="message-username">{{ message.username }}</span>
-              <button 
-                *ngIf="message.username !== 'System' && message.username !== username"
-                class="action-button" 
-                (click)="openUserMenu($event, { username: message.username, status: 'in-game' })"
-              >⋮</button>
-              <span class="message-time">{{ message.timestamp | date:'shortTime' }}</span>
-            </div>
-            <div class="message-content">
-              {{ message.content }}
-            </div>
-          </div>
-        </div>
-        <div class="chat-input">
-          <input 
-            type="text" 
-            [(ngModel)]="messageContent" 
-            placeholder="Type a message..." 
-            (keyup.enter)="sendMessage()"
-          >
-          <button (click)="sendMessage()">Send</button>
-        </div>
+
+      <!-- Post-game message -->
+      <div class="post-game-message" *ngIf="gameStarted && (gameState.state$ | async)?.endReason">
+        <p *ngIf="(gameState.state$ | async)?.winner === username" class="win-message">🎉 You Won! 🎉</p>
+        <p *ngIf="(gameState.state$ | async)?.winner !== username" class="loss-message">You Lost</p>
       </div>
-      
-      <!-- Lobby Chat -->
-      <div class="chat-content" *ngIf="activeTab === 'lobby'">
-        <div class="lobby-content">
-          <div class="lobby-chat">
-            <div class="lobby-messages">
-              <div class="message-item" *ngFor="let message of lobbyMessages"
-                [ngClass]="{'system-message': message.type === 'system','my-message': message.username === username}">
-                <div class="message-header">
-                  <span class="message-username">{{ message.username }}</span>
-                  <button 
-                    *ngIf="message.username !== 'System' && message.username !== username"
-                    class="action-button" 
-                    (click)="openUserMenu($event, getLobbyUserByUsername(message.username) || { username: message.username, status: 'online' })"
-                    style="order:2; margin-left: 0.5em;"
-                  >⋮</button>
-                  <span class="message-time" style="order:3; margin-left:auto;">{{ message.timestamp | date:'shortTime' }}</span>
-                </div>
-                <div class="message-content">{{ message.content }}</div>
+
+      <!-- Game actions (resign only) -->
+      <div class="game-actions" *ngIf="gameStarted && gameState.isGameActive && gameState.myColor(username)">
+        <button class="resign-btn" (click)="resign()">Resign</button>
+      </div>
+    </div>
+
+    <!-- Bottom section: Settings (left) + Chat (right) -->
+    <div class="bottom-section">
+      <!-- Left: Game Mode and Player Controls -->
+      <div class="game-settings-panel">
+        <!-- Game Mode Selection (only for inviter) -->
+        <div class="game-mode-selection" *ngIf="isInviter">
+          <h3>Game Mode</h3>
+          <div class="mode-options">
+            <div class="radio-option">
+              <input 
+                type="radio" 
+                id="default-mode" 
+                name="game-mode" 
+                [checked]="gameMode === 'default'" 
+                (change)="changeGameMode('default')"
+              >
+              <label for="default-mode">Default Mode</label>
+            </div>
+            <div class="radio-option">
+              <input 
+                type="radio" 
+                id="custom-mode" 
+                name="game-mode" 
+                [checked]="gameMode === 'custom'" 
+                (change)="changeGameMode('custom')"
+              >
+              <label for="custom-mode">Custom Mode</label>
+            </div>
+            
+            <!-- Reveal checkbox (only shown when custom mode is selected, and not waiting) -->
+            <div class="custom-options" *ngIf="gameMode === 'custom'">
+              <!-- Host can toggle reveal (unless waiting for response or other player configuring) -->
+              <div class="checkbox-option" *ngIf="isInviter && !showRevealWaitingModal && !otherPlayerConfiguring">
+                <input 
+                  type="checkbox" 
+                  id="reveal-option" 
+                  [(ngModel)]="revealEnabled"
+                  (change)="updateGameOptions()"
+                >
+                <label for="reveal-option">Reveal</label>
+              </div>
+              
+              <!-- Non-host sees current reveal state -->
+              <div class="reveal-display" *ngIf="!isInviter && !showRevealRequestModal">
+                <strong>Reveal:</strong> {{ revealEnabled ? 'Enabled' : 'Disabled' }}
               </div>
             </div>
-            <div class="chat-input">
-              <input type="text" [(ngModel)]="messageContent" placeholder="Type a message..." (keyup.enter)="sendMessage()">
-              <button (click)="sendMessage()">Send</button>
+          </div>
+        </div>
+        
+        <!-- Game Mode Display (for other players) -->
+        <div class="game-mode-display" *ngIf="!isInviter">
+          <h3>Game Mode</h3>
+          <p>{{ gameMode === 'default' ? 'Default Mode' : 'Custom Mode' }}</p>
+          <p *ngIf="gameMode === 'custom'" class="custom-options-display">
+            Options: <span *ngIf="revealEnabled">Reveal</span><span *ngIf="!revealEnabled">None</span>
+          </p>
+        </div>
+        
+        <!-- Player List -->
+        <div class="player-list">
+          <h3>Players</h3>
+          <div class="player-item" *ngFor="let player of players" (contextmenu)="openUserMenu($event, { username: player.username, status: player.status || 'in-game' })">
+            <span class="ready-dot" [ngClass]="{'ready': player.isReady, 'joined': !player.isReady}"></span>
+            <span class="player-name">
+              {{ player.username }}
+              <span *ngIf="player.username === username" class="current-user-tag">(You)</span>
+              <span class="crown-icon" *ngIf="player.isInviter">👑</span>
+            </span>
+            <span class="player-status" *ngIf="player.status === 'configuring'" title="Configuring setup">⚙️</span>
+            <span class="ready-checkmark" *ngIf="player.isReady">✓</span>
+            <button
+              class="action-button"
+              (click)="openUserMenu($event, { username: player.username, status: player.status || 'in-game' })"
+              [disabled]="player.username === username"
+              *ngIf="player.username !== username"
+            >⋮</button>
+          </div>
+        </div>
+        
+        <!-- Ready/Cancel Button with Countdown -->
+        <div class="ready-section">
+          <button 
+            class="ready-btn" 
+            [class.ready-state]="isReady && !gameStarted"
+            [class.gray]="gameStarted"
+            [disabled]="gameStarted"
+            (click)="toggleReady()"
+          >
+            {{ gameStarted ? 'Ready' : (isReady ? 'Unready' : 'Ready') }}
+          </button>
+          <!-- Start Game Button (always enabled now) -->
+          <button 
+            *ngIf="isInviter" 
+            class="start-game-btn" 
+            (click)="startGame()"
+            [disabled]="!canStartGame() || countdownStarted"
+          >
+            Start Game
+          </button>
+        </div>
+      </div>
+
+      <!-- Right: Game Room Chat with Lobby Tab -->
+      <div class="chat-panel">
+        <div class="chat-tabs">
+          <button 
+            [class.active]="activeTab === 'gameRoom'"
+            (click)="changeTab('gameRoom')"
+          >Game Room</button>
+          <button 
+            [class.active]="activeTab === 'lobby'"
+            (click)="changeTab('lobby')"
+          >Lobby</button>
+        </div>
+        
+        <!-- Game Room Chat -->
+        <div class="chat-content" *ngIf="activeTab === 'gameRoom'">
+          <div class="game-room-messages">
+            <div 
+              class="message-item" 
+              *ngFor="let message of gameRoomMessages"
+              [ngClass]="{
+                'system-message': message.type === 'system',
+                'my-message': message.username === username
+              }"
+            >
+              <div class="message-header">
+                <span class="message-username">{{ message.username }}</span>
+                <button 
+                  *ngIf="message.username !== 'System' && message.username !== username"
+                  class="action-button" 
+                  (click)="openUserMenu($event, { username: message.username, status: 'in-game' })"
+                >⋮</button>
+                <span class="message-time">{{ message.timestamp | date:'shortTime' }}</span>
+              </div>
+              <div class="message-content">
+                {{ message.content }}
+              </div>
             </div>
           </div>
-          <div class="users-panel">
-            <h3>Online Users</h3>
-            <div class="users-list">
-              <div
-                class="user-item"
-                *ngFor="let user of lobbyUsers"
-                [ngClass]="{'current-user': user.username === username}"
-                (contextmenu)="openUserMenu($event, user)"
-              >
-                <span class="status-dot" [ngClass]="{
-                  'online': user.status === 'online',
-                  'in-game': user.status === 'in-game',
-                  'invited': user.status === 'invited',
-                  'configuring': user.status === 'configuring'
-                }"></span>
-                <span class="username" [title]="user.username">
-                  {{ user.username }}
-                  <span *ngIf="user.username === username" class="current-user-tag">(You)</span>
-                </span>
-                <span class="user-status-and-action" style="margin-left:auto; display:flex; align-items:center; gap:8px;">
-                  <span class="user-status">
-                    {{ user.status === 'online' ? 'Available' : 
-                       (user.status === 'in-game' ? 'In Game' : 
-                       (user.status === 'configuring' ? 'Configuring' : 'Invited')) }}
+          <div class="chat-input">
+            <input 
+              type="text" 
+              [(ngModel)]="messageContent" 
+              placeholder="Type a message..." 
+              (keyup.enter)="sendMessage()"
+            >
+            <button (click)="sendMessage()">Send</button>
+          </div>
+        </div>
+        
+        <!-- Lobby Chat -->
+        <div class="chat-content" *ngIf="activeTab === 'lobby'">
+          <div class="lobby-content">
+            <div class="lobby-chat">
+              <div class="lobby-messages">
+                <div class="message-item" *ngFor="let message of lobbyMessages"
+                  [ngClass]="{'system-message': message.type === 'system','my-message': message.username === username}">
+                  <div class="message-header">
+                    <span class="message-username">{{ message.username }}</span>
+                    <button 
+                      *ngIf="message.username !== 'System' && message.username !== username"
+                      class="action-button" 
+                      (click)="openUserMenu($event, getLobbyUserByUsername(message.username) || { username: message.username, status: 'online' })"
+                    >⋮</button>
+                    <span class="message-time">{{ message.timestamp | date:'shortTime' }}</span>
+                  </div>
+                  <div class="message-content">{{ message.content }}</div>
+                </div>
+              </div>
+              <div class="chat-input">
+                <input type="text" [(ngModel)]="messageContent" placeholder="Type a message..." (keyup.enter)="sendMessage()">
+                <button (click)="sendMessage()">Send</button>
+              </div>
+            </div>
+            <div class="users-panel">
+              <h3>Online Users</h3>
+              <div class="users-list">
+                <div
+                  class="user-item"
+                  *ngFor="let user of lobbyUsers"
+                  [ngClass]="{'current-user': user.username === username}"
+                  (contextmenu)="openUserMenu($event, user)"
+                >
+                  <span class="status-dot" [ngClass]="{
+                    'online': user.status === 'online',
+                    'in-game': user.status === 'in-game',
+                    'invited': user.status === 'invited',
+                    'configuring': user.status === 'configuring'
+                  }"></span>
+                  <span class="username" [title]="user.username">
+                    {{ user.username }}
+                    <span *ngIf="user.username === username" class="current-user-tag">(You)</span>
                   </span>
-                  <button
-                    class="action-button"
-                    (click)="openUserMenu($event, user)"
-                    [disabled]="user.username === username"
-                  >⋮</button>
-                </span>
+                  <span class="user-status-and-action">
+                    <span class="user-status">
+                      {{ user.status === 'online' ? 'Available' : 
+                         (user.status === 'in-game' ? 'In Game' : 
+                         (user.status === 'configuring' ? 'Configuring' : 'Invited')) }}
+                    </span>
+                    <button
+                      class="action-button"
+                      (click)="openUserMenu($event, user)"
+                      [disabled]="user.username === username"
+                    >⋮</button>
+                  </span>
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
     </div>
-    
-    <!-- Right side: Game settings and player list -->
-    <div class="game-settings-panel">
-      <!-- Game Mode Selection (only for inviter) -->
-      <div class="game-mode-selection" *ngIf="isInviter">
-        <h3>Game Mode</h3>
-        <div class="mode-options">
-          <div class="radio-option">
-            <input 
-              type="radio" 
-              id="default-mode" 
-              name="game-mode" 
-              [checked]="gameMode === 'default'" 
-              (change)="changeGameMode('default')"
-            >
-            <label for="default-mode">Default Mode</label>
-          </div>
-          <div class="radio-option">
-            <input 
-              type="radio" 
-              id="custom-mode" 
-              name="game-mode" 
-              [checked]="gameMode === 'custom'" 
-              (change)="changeGameMode('custom')"
-            >
-            <label for="custom-mode">Custom Mode</label>
-          </div>
-          
-          <!-- Reveal checkbox (only shown when custom mode is selected) -->
-          <div class="custom-options" *ngIf="gameMode === 'custom'">
-            <div class="checkbox-option">
-              <input 
-                type="checkbox" 
-                id="reveal-option" 
-                [(ngModel)]="revealEnabled"
-                (change)="updateGameOptions()"
-              >
-              <label for="reveal-option">Reveal</label>
-            </div>
-          </div>
+
+    <!-- HOST WAITING MODAL: Blocks everything except leave button -->
+    <div class="reveal-waiting-overlay" *ngIf="showRevealWaitingModal">
+      <div class="reveal-waiting-modal">
+        <div class="modal-content">
+          <h2>Waiting for Opponent</h2>
+          <p class="request-message">Waiting for {{ getOpponentUsername() }} to respond to your Reveal mode request...</p>
+          <div class="countdown-display">{{ revealRequestCountdown }}s</div>
+          <p class="helper-text">You can only leave the room during this time.</p>
         </div>
       </div>
-      
-      <!-- Game Mode Display (for other players) -->
-      <div class="game-mode-display" *ngIf="!isInviter">
-        <h3>Game Mode</h3>
-        <p>{{ gameMode === 'default' ? 'Default Mode' : 'Custom Mode' }}</p>
-        <p *ngIf="gameMode === 'custom'" class="custom-options-display">
-          Options: <span *ngIf="revealEnabled">Reveal</span><span *ngIf="!revealEnabled">None</span>
-        </p>
-      </div>
-      
-      <!-- Player List -->
-      <div class="player-list">
-        <h3>Players</h3>
-        <div class="player-item" *ngFor="let player of players" (contextmenu)="openUserMenu($event, { username: player.username, status: player.status || 'in-game' })">
-          <span class="ready-dot" [ngClass]="{'ready': player.isReady, 'joined': !player.isReady}"></span>
-          <span class="player-name">
-            {{ player.username }}
-            <span *ngIf="player.username === username" class="current-user-tag">(You)</span>
-            <span class="crown-icon" *ngIf="player.isInviter">👑</span>
-          </span>
-          <span class="player-status" *ngIf="player.status === 'configuring'" title="Configuring setup">⚙️</span>
-          <span class="ready-checkmark" *ngIf="player.isReady">✓</span>
-          <button
-            class="action-button"
-            (click)="openUserMenu($event, { username: player.username, status: player.status || 'in-game' })"
-            [disabled]="player.username === username"
-            *ngIf="player.username !== username"
-          >⋮</button>
+    </div>
+
+    <!-- OPPONENT REQUEST MODAL: Popup with Accept/Decline buttons -->
+    <div class="reveal-request-overlay" *ngIf="showRevealRequestModal">
+      <div class="reveal-request-modal">
+        <div class="modal-header">
+          <h2>Reveal Mode Request</h2>
+          <div class="countdown-badge">{{ revealRequestCountdown }}s</div>
         </div>
-      </div>
-      
-      <!-- Ready/Cancel Button with Countdown -->
-      <div class="ready-section">
-        <button 
-          class="ready-btn" 
-          [class.ready-state]="isReady && !countdownStarted"
-          (click)="toggleReady()"
-        >
-          <ng-container *ngIf="countdownStarted && isReady; else readyLabel">
-            Cancel ({{ countdown }})
-          </ng-container>
-          <ng-template #readyLabel>
-            {{ isReady ? 'Unready' : 'Ready' }}
-          </ng-template>
-        </button>
-        <!-- Start Game Button (always enabled now) -->
-        <button 
-          *ngIf="isInviter" 
-          class="start-game-btn" 
-          (click)="startGame()"
-          [disabled]="!canStartGame() || countdownStarted"
-        >
-          Start Game
-        </button>
+        <div class="modal-body">
+          <p><strong>{{ revealRequester }}</strong> is requesting to enable Reveal mode.</p>
+          <p class="info-text">Accept or decline within {{ revealRequestCountdown }} seconds.</p>
+        </div>
+        <div class="modal-footer">
+          <button class="decline-btn" (click)="declineRevealRequest()">Decline</button>
+          <button class="accept-btn" (click)="acceptRevealRequest()">Accept</button>
+        </div>
       </div>
     </div>
   </main>

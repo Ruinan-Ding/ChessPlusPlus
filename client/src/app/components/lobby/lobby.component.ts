@@ -38,7 +38,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
   private messagesSubscription: Subscription | null = null;
   private destroy$ = new Subject<void>();
   
-  // Invite cooldown after decline/timeout/leaving game room
+  // Invite cooldown: 5 seconds from when they JOIN the game room (not from when they leave)
+  private gameRoomJoinTime: number = 0;  // Timestamp when player joined game room
   private inviteCooldownEndTime: number = 0;
   inviteCooldownRemaining: number = 0;
   private inviteCooldownTimerId: ReturnType<typeof setInterval> | null = null;
@@ -66,12 +67,23 @@ export class LobbyComponent implements OnInit, OnDestroy {
     
     console.log(`[Lobby] ngOnInit: isIntentionalNavigation=${this.isRejoiningFromNavigation}, navContext=${navContext}`);
     
-    // If context is 'none', we're returning from a game room - apply invite cooldown
-    // This applies to BOTH the person who left AND the person who was kicked (partner_left)
+    // If context is 'none', we're returning from a game room - apply remaining invite cooldown
+    // Cooldown is 5 seconds from when they JOINED the game room, not from when they left
     if (navContext === 'none' && this.isRejoiningFromNavigation) {
-      console.log('[Lobby] Detected return from game room (context: none) - starting invite cooldown');
-      // Apply invite cooldown when leaving game room
-      this.startInviteCooldown();
+      if (this.gameRoomJoinTime > 0) {
+        console.log('[Lobby] Detected return from game room - applying remaining cooldown');
+        // Calculate remaining cooldown since join time
+        const elapsedSeconds = Math.ceil((Date.now() - this.gameRoomJoinTime) / 1000);
+        const remainingCooldown = Math.max(0, 5 - elapsedSeconds);
+        if (remainingCooldown > 0) {
+          this.startInviteCooldownWithDuration(remainingCooldown);
+        } else {
+          console.log('[Lobby] Cooldown already expired');
+        }
+      } else {
+        console.log('[Lobby] No game room join time recorded, applying full cooldown');
+        this.startInviteCooldown();
+      }
     }
     
     // If context is 'lobby', we're returning from setup - no cooldown needed
@@ -267,6 +279,10 @@ export class LobbyComponent implements OnInit, OnDestroy {
           this.addSystemMessage(`${message.username} has accepted your invitation!`);
           // Clear invitePending since the challenge is now resolved
           this.invitePending = false;
+          // Store the time when player joins game room (for invite cooldown calculation)
+          this.gameRoomJoinTime = Date.now();
+          // Start 5-second invite cooldown for inviter
+          this.startInviteCooldown();
           // Set both users back to "invited" status (yellow) after accepting
           this.users = this.users.map((user: User) => {
             if (user.username === message.username || user.username === this.username) {
@@ -903,7 +919,10 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
 
   private startInviteCooldown(): void {
-    const cooldownSeconds = 5;
+    this.startInviteCooldownWithDuration(5);
+  }
+
+  private startInviteCooldownWithDuration(cooldownSeconds: number): void {
     this.inviteCooldownEndTime = Date.now() + (cooldownSeconds * 1000);
     this.inviteCooldownRemaining = cooldownSeconds;
     if (this.inviteCooldownTimerId) {

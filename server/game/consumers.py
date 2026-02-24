@@ -5,7 +5,8 @@ Uses Django ORM models instead of in-memory class-level dictionaries
 import json
 import logging
 import uuid
-from datetime import datetime
+import asyncio
+import datetime
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.utils import timezone
@@ -16,6 +17,7 @@ from .models import (
     GameChallenge,
     PlayerConnection,
     PlayerReadyStatus,
+    GameState,
 )
 from .validators import (
     ValidationError, validate_required_fields, validate_username,
@@ -26,12 +28,23 @@ from .utils import (
     send_json_response, send_error, broadcast_to_group,
     get_challenge_expiration_time, structured_log, get_idempotency, set_idempotency
 )
+from .engine import load_config, build_initial_board
 
 logger = logging.getLogger('game')
 
 # Global dictionary to track pending countdown tasks per game
 # Key: game_id, Value: asyncio.Task
 _pending_countdown_tasks: dict = {}
+# Set of games that have been cancelled (to prevent race conditions)
+_cancelled_games: set = set()
+
+# Global dictionary to track pending turn-timer tasks per game
+# Key: game_id, Value: asyncio.Task
+_pending_turn_timers: dict = {}
+
+# Global dictionary to track pending reveal mode requests
+# Key: game_id, Value: {'requester': username, 'task': asyncio.Task, 'action': 'enable'|'disable'}
+_pending_reveal_requests: dict = {}
 
 
 class GameConsumer(AsyncWebsocketConsumer):
@@ -182,10 +195,15 @@ class GameConsumer(AsyncWebsocketConsumer):
             game = await self._get_game_by_id(self.game_id)
             if not game:
                 return
-            
-            # If host left, close the game
+
+            # Cancel any pending turn timer for this game
+            self._cancel_turn_timer(self.game_id)
+
+            # If host left, close the game (this will reset both players' statuses to 'online')
             if game.host == self.username:
                 await self._close_game_room(game.game_id, f"{self.username} (host) disconnected")
+                # Broadcast updated user list so others see the status change
+                await self._send_user_list()
             
             # Remove player from ready status
             await self._delete_ready_status(self.game_id, self.username)
@@ -226,10 +244,18 @@ class GameConsumer(AsyncWebsocketConsumer):
             'player_ready': self._handle_player_ready,
             'player_unready': self._handle_player_unready,
             'change_game_mode': self._handle_change_game_mode,
+            'request_reveal_mode': self._handle_request_reveal_mode,
+            'reveal_response': self._handle_reveal_response,
             'start_game': self._handle_start_game,
             'request_user_list': self._handle_request_user_list,
             'heartbeat': self._handle_heartbeat,
             'cancel_game_countdown': self._handle_cancel_game_countdown,
+            # Gameplay handlers (in-game)
+            'make_move': self._handle_make_move,
+            'resign': self._handle_resign,
+            'offer_draw': self._handle_offer_draw,
+            'respond_draw': self._handle_respond_draw,
+            'request_game_state': self._handle_request_game_state,
         }
             
             handler = handlers.get(message_type)
@@ -356,7 +382,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'type': 'chat_message',
                 'username': self.username,
                 'content': data['content'],
-                'timestamp': data.get('timestamp', datetime.now().isoformat())
+                'timestamp': data.get('timestamp', datetime.datetime.now().isoformat())
             })
         except ValidationError as e:
             await send_error(self, e.code, e.message)
@@ -704,7 +730,14 @@ class GameConsumer(AsyncWebsocketConsumer):
             
             # Send player list
             await self._send_game_player_list(game_id, username == game.host)
-            
+
+            # Notify client of join success with game status (for reconnection)
+            await send_json_response(self, {
+                'type': 'join_game_room_success',
+                'gameId': game_id,
+                'gameStatus': game.status,
+            })
+
             logger.info(f"User {username} joined game room {game_id}")
         except ValidationError as e:
             await send_error(self, e.code, e.message)
@@ -776,6 +809,12 @@ class GameConsumer(AsyncWebsocketConsumer):
             # Clean up ready status
             await self._delete_ready_status(game_id, username)
             
+            # If host is leaving, close the game room
+            if username == game.host:
+                # Close the game room (will reset both players to 'online')
+                await self._close_game_room(game_id, f"{username} (host) left the game room")
+                logger.info(f"[leave_game_room] Closed game room {game_id}")
+            
             # Broadcast updated user list to lobby
             logger.info(f"[leave_game_room] Broadcasting updated user list")
             await self._send_user_list()
@@ -797,7 +836,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'type': 'game_room_message',
                     'username': self.username,
                     'content': data['content'],
-                    'timestamp': data.get('timestamp', datetime.now().isoformat())
+                    'timestamp': data.get('timestamp', datetime.datetime.now().isoformat())
                 }
             )
         except ValidationError as e:
@@ -920,6 +959,132 @@ class GameConsumer(AsyncWebsocketConsumer):
         except ValidationError as e:
             await send_error(self, e.code, e.message)
     
+    async def _handle_request_reveal_mode(self, data):
+        """Handle request to enable/disable reveal mode (requires opponent acceptance)"""
+        try:
+            validate_required_fields(data, ['gameId', 'action'])
+            
+            game_id = data.get('gameId', '').strip()
+            action = data.get('action', '').strip().lower()
+            
+            if action not in ['enable', 'disable']:
+                await send_error(self, 'INVALID_ACTION', 'Action must be enable or disable')
+                return
+            
+            # Verify game exists
+            game = await self._get_game_by_id(game_id)
+            if not game:
+                await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
+                return
+            
+            # Only host can request reveal mode changes
+            if self.username != game.host:
+                await send_error(self, 'PERMISSION_DENIED', 'Only the host can request reveal mode changes')
+                return
+            
+            # Get opponent
+            opponent = game.opponent if game.opponent != self.username else game.host
+            if not opponent:
+                await send_error(self, 'NO_OPPONENT', 'Opponent not found')
+                return
+            
+            # Cancel any existing reveal request
+            if game_id in _pending_reveal_requests:
+                old_task = _pending_reveal_requests[game_id].get('task')
+                if old_task:
+                    old_task.cancel()
+            
+            # Create timeout task for 5 seconds
+            async def reveal_timeout():
+                try:
+                    await asyncio.sleep(5)
+                    if game_id in _pending_reveal_requests:
+                        del _pending_reveal_requests[game_id]
+                    # Notify both players of timeout
+                    await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
+                        'type': 'broadcast_message',
+                        'data': {
+                            'type': 'reveal_request_timeout'
+                        }
+                    })
+                except asyncio.CancelledError:
+                    pass
+            
+            # Schedule timeout task
+            timeout_task = asyncio.create_task(reveal_timeout())
+            _pending_reveal_requests[game_id] = {
+                'requester': self.username,
+                'task': timeout_task,
+                'action': action
+            }
+            
+            # Send request to opponent
+            await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
+                'type': 'broadcast_message',
+                'data': {
+                    'type': 'reveal_mode_requested',
+                    'username': self.username,
+                    'action': action
+                }
+            })
+            
+            logger.info(f"Reveal mode {action} requested by {self.username} in game {game_id}")
+        except ValidationError as e:
+            await send_error(self, e.code, e.message)
+        except Exception as e:
+            logger.error(f"Error in _handle_request_reveal_mode: {e}")
+            await send_error(self, 'INTERNAL_ERROR', 'Failed to request reveal mode')
+    
+    async def _handle_reveal_response(self, data):
+        """Handle opponent's response to reveal mode request"""
+        try:
+            validate_required_fields(data, ['gameId', 'accepted'])
+            
+            game_id = data.get('gameId', '').strip()
+            accepted = data.get('accepted', False)
+            
+            # Check if there's a pending request
+            if game_id not in _pending_reveal_requests:
+                await send_error(self, 'NO_PENDING_REQUEST', 'No pending reveal mode request')
+                return
+            
+            request_info = _pending_reveal_requests[game_id]
+            requester = request_info['requester']
+            action = request_info['action']
+            
+            # Cancel the timeout task
+            if request_info.get('task'):
+                request_info['task'].cancel()
+            
+            # Remove request from tracking
+            del _pending_reveal_requests[game_id]
+            
+            # Notify both players of response
+            if accepted:
+                await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
+                    'type': 'broadcast_message',
+                    'data': {
+                        'type': 'reveal_request_accepted',
+                        'username': self.username,
+                        'enabled': action == 'enable'
+                    }
+                })
+                logger.info(f"Reveal mode {action} accepted in game {game_id}")
+            else:
+                await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
+                    'type': 'broadcast_message',
+                    'data': {
+                        'type': 'reveal_request_declined',
+                        'username': self.username
+                    }
+                })
+                logger.info(f"Reveal mode {action} declined in game {game_id}")
+        except ValidationError as e:
+            await send_error(self, e.code, e.message)
+        except Exception as e:
+            logger.error(f"Error in _handle_reveal_response: {e}")
+            await send_error(self, 'INTERNAL_ERROR', 'Failed to handle reveal response')
+    
     async def _handle_start_game(self, data):
         """Handle game start request (placeholder logic)"""
         import asyncio
@@ -953,46 +1118,57 @@ class GameConsumer(AsyncWebsocketConsumer):
             # Broadcast updated user list to lobby and game room
             await self._send_user_list()
             await self._send_game_player_list(game_id, is_inviter=(self.username == game.host))
-            # Broadcast a "game_start_placeholder" event to game room for UI
-            await broadcast_to_group(self.channel_layer, self.room_group_name, {
-                'type': 'game_start_placeholder'
-            })
-            # Broadcast countdown (for UI) -- use direct group_send for perfect sync
-            import datetime
-            logger.info(f"[DEBUG] Sending game_countdown at {datetime.datetime.now().isoformat(timespec='milliseconds')}")
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'game_countdown'
-                }
+            
+            # Initialise game state immediately (no countdown)
+            import random
+            # Randomly assign colours
+            if random.random() < 0.5:
+                p_white, p_black = game.host, game.opponent
+            else:
+                p_white, p_black = game.opponent, game.host
+
+            # Load config (use game_options if it looks like a full config, else default)
+            raw_config = game.game_options if game.game_options and 'board' in game.game_options else None
+            config = load_config(raw_config)
+            board = build_initial_board(config)
+
+            # Persist
+            await self._create_game_state(
+                game_id=game_id,
+                board_state=board.to_dict(),
+                current_turn=p_white,       # white always moves first
+                player_white=p_white,
+                player_black=p_black,
+                config_snapshot=config,
             )
-            logger.info(f"Game {game_id} placeholder start: players set to in-game (red)")
-            
-            # After 3 seconds, reset ready status and set status back to 'in-game' (yellow) in a background task
-            # Store reference to task so it can be cancelled if countdown is cancelled
-            async def post_countdown():
-                try:
-                    await asyncio.sleep(3)
-                    # Check if this task was cancelled
-                    if game_id not in _pending_countdown_tasks:
-                        logger.info(f"Game {game_id} countdown task was cancelled, skipping reset")
-                        return
-                    # Remove from pending tasks before executing
-                    _pending_countdown_tasks.pop(game_id, None)
-                    await self._set_ready_status(game_id, game.host, False)
-                    await self._set_ready_status(game_id, game.opponent, False)
-                    await self._update_player_status(game.host, 'in-game')
-                    await self._update_player_status(game.opponent, 'in-game')
-                    await self._send_user_list()
-                    await self._send_game_player_list(game_id, is_inviter=(self.username == game.host))
-                    logger.info(f"Game {game_id} placeholder: ready status reset, players remain in-game (yellow)")
-                except asyncio.CancelledError:
-                    logger.info(f"Game {game_id} countdown task cancelled")
-                except Exception as e:
-                    logger.error(f"Error in post_countdown for game {game_id}: {e}")
-            
-            task = asyncio.create_task(post_countdown())
-            _pending_countdown_tasks[game_id] = task
+
+            # Update GameRoom status to 'started'
+            await self._update_game_status(game_id, 'started')
+
+            turn_started = timezone.now().isoformat()
+
+            # Broadcast full initial state to both players immediately
+            await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
+                'type': 'broadcast_message',
+                'data': {
+                    'type': 'game_started',
+                    'gameId': game_id,
+                    'boardState': board.to_dict(),
+                    'currentTurn': p_white,
+                    'turnNumber': 1,
+                    'playerWhite': p_white,
+                    'playerBlack': p_black,
+                    'config': config,
+                    'turnStartedAt': turn_started,
+                }
+            })
+
+            # Start turn timer (if configured)
+            time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
+            if time_limit > 0:
+                await self._start_turn_timer(game_id, time_limit)
+
+            logger.info(f"Game {game_id} started immediately: {p_white} (white) vs {p_black} (black)")
         except ValidationError as e:
             await send_error(self, e.code, e.message)
     
@@ -1002,6 +1178,368 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self._send_user_list()
         except Exception as e:
             logger.error(f"Error sending user list: {e}")
+
+    # ==================== Turn Timer ====================
+
+    async def _start_turn_timer(self, game_id: str, time_limit: int):
+        """Start (or restart) the turn timer for the given game.
+
+        If the timer expires the current player loses on time.
+        """
+        self._cancel_turn_timer(game_id)
+
+        if time_limit <= 0:
+            return  # no time limit configured
+
+        async def _timer_task():
+            try:
+                await asyncio.sleep(time_limit)
+                # Timer expired – the current player loses
+                state = await self._get_game_state(game_id)
+                if not state or state.is_finished:
+                    return
+
+                winner = state.player_black if state.current_turn == state.player_white else state.player_white
+
+                await self._update_game_state(
+                    game_id=game_id,
+                    board_state=state.board_state,
+                    current_turn=state.current_turn,
+                    turn_number=state.turn_number,
+                    move_history=state.move_history,
+                    winner=winner,
+                    end_reason='timeout',
+                )
+
+                await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
+                    'type': 'broadcast_message',
+                    'data': {
+                        'type': 'game_over',
+                        'winner': winner,
+                        'endReason': 'timeout',
+                    }
+                })
+                logger.info(f"Turn timer expired in game {game_id} – {winner} wins")
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"Error in turn timer for game {game_id}: {e}", exc_info=True)
+            finally:
+                _pending_turn_timers.pop(game_id, None)
+
+        task = asyncio.create_task(_timer_task())
+        _pending_turn_timers[game_id] = task
+
+    def _cancel_turn_timer(self, game_id: Optional[str]):
+        """Cancel a running turn timer for the given game (if any)."""
+        if game_id is None:
+            return
+        task = _pending_turn_timers.pop(game_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    # ==================== Gameplay Handlers ====================
+
+    async def _handle_make_move(self, data):
+        """Handle a player submitting a move during an active game."""
+        try:
+            validate_required_fields(data, ['from', 'to'])
+
+            if not self.game_id or not self.username:
+                await send_error(self, 'NOT_IN_GAME', 'You are not in an active game')
+                return
+
+            state = await self._get_game_state(self.game_id)
+            if not state:
+                await send_error(self, 'GAME_NOT_STARTED', 'Game state not found')
+                return
+            if state.is_finished:
+                await send_error(self, 'GAME_OVER', 'This game has already ended')
+                return
+            if state.current_turn != self.username:
+                await send_error(self, 'NOT_YOUR_TURN', 'It is not your turn')
+                return
+
+            from_coord = data['from']  # "q,r"
+            to_coord = data['to']      # "q,r"
+
+            from .engine.board import HexBoard, parse_coord
+            from .engine.game_logic import get_legal_moves_filtered, resolve_combat, detect_outcome
+
+            config = state.config_snapshot
+            radius = config.get('board', {}).get('radius', 5)
+            board = HexBoard.from_dict(radius, state.board_state)
+
+            fq, fr = parse_coord(from_coord)
+            tq, tr = parse_coord(to_coord)
+
+            # Validate source piece
+            piece = board.get(fq, fr)
+            if not piece:
+                await send_error(self, 'INVALID_MOVE', 'No piece at source coordinate')
+                return
+
+            my_color = 'white' if self.username == state.player_white else 'black'
+            if piece['color'] != my_color:
+                await send_error(self, 'INVALID_MOVE', 'That piece is not yours')
+                return
+
+            # Full legal move validation
+            legal_dests = get_legal_moves_filtered(board, (fq, fr), config, my_color)
+            if (tq, tr) not in legal_dests:
+                await send_error(self, 'INVALID_MOVE', 'Illegal move for this piece')
+                return
+
+            # Resolve combat (HP-based)
+            combat = resolve_combat(board, (fq, fr), (tq, tr), config)
+
+            # Determine next turn
+            next_player = state.player_black if self.username == state.player_white else state.player_white
+            next_color = 'black' if my_color == 'white' else 'white'
+
+            # Build move record
+            move_record: dict = {
+                'from': from_coord,
+                'to': to_coord,
+                'unit_id': piece['unit_id'],
+                'color': my_color,
+                'turn': state.turn_number,
+                'captured': combat['captured_unit']['unit_id'] if combat['captured_unit'] else None,
+                'attacked': combat['attacked'],
+                'damage_dealt': combat['damage_dealt'],
+                'defender_eliminated': combat['defender_eliminated'],
+                'moved': combat['moved'],
+            }
+            if combat['defender_hp'] is not None:
+                move_record['defender_hp'] = combat['defender_hp']
+
+            new_history = list(state.move_history) + [move_record]
+
+            # Detect elimination (all units of one side destroyed)
+            winner = ''
+            end_reason = ''
+            outcome = detect_outcome(board, next_color, config)
+            if outcome == 'elimination':
+                winner = self.username
+                end_reason = 'elimination'
+
+            # Check max-turns rule
+            max_turns = config.get('rules', {}).get('maxTurns', 0)
+            if not end_reason and max_turns > 0 and state.turn_number >= max_turns:
+                end_reason = 'draw_max_turns'
+
+            # Persist updated state
+            await self._update_game_state(
+                game_id=self.game_id,
+                board_state=board.to_dict(),
+                current_turn=next_player if not end_reason else state.current_turn,
+                turn_number=state.turn_number + 1,
+                move_history=new_history,
+                winner=winner,
+                end_reason=end_reason,
+            )
+
+            # Broadcast the move to both players
+            turn_started = timezone.now().isoformat()
+            move_broadcast: dict = {
+                'type': 'move_made',
+                'move': move_record,
+                'boardState': board.to_dict(),
+                'currentTurn': next_player if not end_reason else '',
+                'turnNumber': state.turn_number + 1,
+                'turnStartedAt': turn_started,
+            }
+
+            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                'type': 'broadcast_message',
+                'data': move_broadcast,
+            })
+
+            if end_reason:
+                self._cancel_turn_timer(self.game_id)
+                await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                    'type': 'broadcast_message',
+                    'data': {
+                        'type': 'game_over',
+                        'winner': winner,
+                        'endReason': end_reason,
+                    }
+                })
+            else:
+                # Restart turn timer for the next player
+                time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
+                if time_limit > 0:
+                    await self._start_turn_timer(self.game_id, time_limit)
+
+            logger.info(f"Move in game {self.game_id}: {from_coord}→{to_coord} by {self.username}")
+        except ValidationError as e:
+            await send_error(self, e.code, e.message)
+        except Exception as e:
+            logger.error(f"Error in _handle_make_move: {e}", exc_info=True)
+            await send_error(self, 'INTERNAL_ERROR', 'Failed to process move')
+
+    async def _handle_resign(self, data):
+        """Handle a player resigning from an active game."""
+        try:
+            if not self.game_id or not self.username:
+                await send_error(self, 'NOT_IN_GAME', 'You are not in an active game')
+                return
+
+            state = await self._get_game_state(self.game_id)
+            if not state or state.is_finished:
+                await send_error(self, 'GAME_OVER', 'Game is not active')
+                return
+
+            winner = state.player_black if self.username == state.player_white else state.player_white
+
+            await self._update_game_state(
+                game_id=self.game_id,
+                board_state=state.board_state,
+                current_turn=state.current_turn,
+                turn_number=state.turn_number,
+                move_history=state.move_history,
+                winner=winner,
+                end_reason='resign',
+            )
+
+            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                'type': 'broadcast_message',
+                'data': {
+                    'type': 'game_over',
+                    'winner': winner,
+                    'endReason': 'resign',
+                    'resignedBy': self.username,
+                }
+            })
+
+            self._cancel_turn_timer(self.game_id)
+            logger.info(f"Player {self.username} resigned in game {self.game_id}")
+        except Exception as e:
+            logger.error(f"Error in _handle_resign: {e}", exc_info=True)
+            await send_error(self, 'INTERNAL_ERROR', 'Failed to process resignation')
+
+    async def _handle_offer_draw(self, data):
+        """Handle a draw offer from one player."""
+        try:
+            if not self.game_id or not self.username:
+                await send_error(self, 'NOT_IN_GAME', 'You are not in an active game')
+                return
+
+            state = await self._get_game_state(self.game_id)
+            if not state or state.is_finished:
+                await send_error(self, 'GAME_OVER', 'Game is not active')
+                return
+
+            if state.draw_offered_by:
+                await send_error(self, 'DRAW_ALREADY_OFFERED', 'A draw offer is already pending')
+                return
+
+            await self._set_draw_offer(self.game_id, self.username)
+
+            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                'type': 'broadcast_message',
+                'data': {
+                    'type': 'draw_offered',
+                    'offeredBy': self.username,
+                }
+            })
+
+            logger.info(f"Player {self.username} offered a draw in game {self.game_id}")
+        except Exception as e:
+            logger.error(f"Error in _handle_offer_draw: {e}", exc_info=True)
+            await send_error(self, 'INTERNAL_ERROR', 'Failed to offer draw')
+
+    async def _handle_respond_draw(self, data):
+        """Handle acceptance or rejection of a draw offer."""
+        try:
+            validate_required_fields(data, ['accept'])
+
+            if not self.game_id or not self.username:
+                await send_error(self, 'NOT_IN_GAME', 'You are not in an active game')
+                return
+
+            state = await self._get_game_state(self.game_id)
+            if not state or state.is_finished:
+                await send_error(self, 'GAME_OVER', 'Game is not active')
+                return
+
+            if not state.draw_offered_by:
+                await send_error(self, 'NO_DRAW_OFFER', 'There is no pending draw offer')
+                return
+
+            if state.draw_offered_by == self.username:
+                await send_error(self, 'INVALID_REQUEST', 'You cannot respond to your own draw offer')
+                return
+
+            accepted = bool(data['accept'])
+
+            if accepted:
+                await self._update_game_state(
+                    game_id=self.game_id,
+                    board_state=state.board_state,
+                    current_turn=state.current_turn,
+                    turn_number=state.turn_number,
+                    move_history=state.move_history,
+                    winner='',
+                    end_reason='draw_agreed',
+                )
+                await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                    'type': 'broadcast_message',
+                    'data': {
+                        'type': 'game_over',
+                        'winner': '',
+                        'endReason': 'draw_agreed',
+                    }
+                })
+                self._cancel_turn_timer(self.game_id)
+                logger.info(f"Draw agreed in game {self.game_id}")
+            else:
+                await self._set_draw_offer(self.game_id, '')  # clear the offer
+                await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                    'type': 'broadcast_message',
+                    'data': {
+                        'type': 'draw_response',
+                        'accepted': False,
+                        'declinedBy': self.username,
+                    }
+                })
+                logger.info(f"Draw declined by {self.username} in game {self.game_id}")
+        except ValidationError as e:
+            await send_error(self, e.code, e.message)
+        except Exception as e:
+            logger.error(f"Error in _handle_respond_draw: {e}", exc_info=True)
+            await send_error(self, 'INTERNAL_ERROR', 'Failed to process draw response')
+
+    async def _handle_request_game_state(self, data):
+        """Send the full current game state to the requesting player."""
+        try:
+            if not self.game_id or not self.username:
+                await send_error(self, 'NOT_IN_GAME', 'You are not in an active game')
+                return
+
+            state = await self._get_game_state(self.game_id)
+            if not state:
+                await send_error(self, 'GAME_NOT_STARTED', 'Game state not found')
+                return
+
+            await send_json_response(self, {
+                'type': 'game_state_update',
+                'gameId': self.game_id,
+                'boardState': state.board_state,
+                'currentTurn': state.current_turn,
+                'turnNumber': state.turn_number,
+                'moveHistory': state.move_history,
+                'playerWhite': state.player_white,
+                'playerBlack': state.player_black,
+                'winner': state.winner,
+                'endReason': state.end_reason,
+                'config': state.config_snapshot,
+                'turnStartedAt': timezone.now().isoformat(),
+                'drawOfferedBy': state.draw_offered_by or '',
+            })
+        except Exception as e:
+            logger.error(f"Error in _handle_request_game_state: {e}", exc_info=True)
+            await send_error(self, 'INTERNAL_ERROR', 'Failed to retrieve game state')
 
     async def _handle_heartbeat(self, data):
         """Handle client heartbeat/presence ping"""
@@ -1185,12 +1723,26 @@ class GameConsumer(AsyncWebsocketConsumer):
     
     @database_sync_to_async
     def _close_game_room(self, game_id, reason):
-        """Close a game room"""
-        GameRoom.objects.filter(game_id=game_id).update(  # type: ignore
-            status='closed',
-            closed_at=timezone.now()
-        )
-        logger.info(f"Game {game_id} closed: {reason}")
+        """Close a game room and reset both players' statuses to 'online'"""
+        try:
+            game = GameRoom.objects.get(game_id=game_id)  # type: ignore
+            
+            # Reset both players' statuses back to 'online'
+            if game.host:
+                PlayerConnection.objects.filter(username=game.host).update(status='online')  # type: ignore
+            if game.opponent:
+                PlayerConnection.objects.filter(username=game.opponent).update(status='online')  # type: ignore
+            
+            # Mark game as closed
+            GameRoom.objects.filter(game_id=game_id).update(  # type: ignore
+                status='closed',
+                closed_at=timezone.now()
+            )
+            logger.info(f"Game {game_id} closed: {reason} (both players reset to online)")
+        except GameRoom.DoesNotExist:  # type: ignore
+            logger.warning(f"Game {game_id} not found when closing")
+        except Exception as e:
+            logger.error(f"Error closing game room {game_id}: {e}")
     
     @database_sync_to_async
     def _set_ready_status(self, game_id, username, is_ready):
@@ -1222,6 +1774,47 @@ class GameConsumer(AsyncWebsocketConsumer):
         """Get a dict of username -> is_ready for all players in a game"""
         statuses = PlayerReadyStatus.objects.filter(game_id=game_id)  # type: ignore
         return {s.username: s.is_ready for s in statuses}
+
+    # ── GameState DB operations ──────────────────────────────────────
+
+    @database_sync_to_async
+    def _create_game_state(self, game_id, board_state, current_turn, player_white, player_black, config_snapshot):
+        """Create a new GameState for a game that just started."""
+        from game.models import GameRoom, GameState
+        game = GameRoom.objects.get(game_id=game_id)
+        return GameState.objects.create(
+            game=game,
+            board_state=board_state,
+            current_turn=current_turn,
+            player_white=player_white,
+            player_black=player_black,
+            config_snapshot=config_snapshot,
+        )
+
+    @database_sync_to_async
+    def _get_game_state(self, game_id):
+        """Retrieve the GameState for a game, or None."""
+        try:
+            return GameState.objects.get(game_id=game_id)  # type: ignore
+        except GameState.DoesNotExist:  # type: ignore
+            return None
+
+    @database_sync_to_async
+    def _update_game_state(self, game_id, board_state, current_turn, turn_number, move_history, winner='', end_reason=''):
+        """Update the mutable fields of a GameState after a move or game end."""
+        GameState.objects.filter(game_id=game_id).update(  # type: ignore
+            board_state=board_state,
+            current_turn=current_turn,
+            turn_number=turn_number,
+            move_history=move_history,
+            winner=winner,
+            end_reason=end_reason,
+        )
+
+    @database_sync_to_async
+    def _set_draw_offer(self, game_id, username):
+        """Set or clear the draw_offered_by field."""
+        GameState.objects.filter(game_id=game_id).update(draw_offered_by=username)  # type: ignore
     
     # ==================== Broadcast Handlers ====================
     

@@ -1,0 +1,136 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChessPlusPlus Game Configuration",
+  "description": "Configuration schema for a hex-grid chess variant. Uses axial coordinates (q, r).",
+  "type": "object",
+  "required": ["version", "board", "units", "abilities", "setup", "rules"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Schema version for forward compatibility."
+    },
+    "board": {
+      "type": "object",
+      "required": ["radius"],
+      "properties": {
+        "radius": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Hex grid radius (distance from centre hex to edge)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "units": {
+      "type": "object",
+      "description": "Unit type definitions, keyed by unit id.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["id", "name", "symbol", "movement", "value", "hp", "attack"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "symbol": { "type": "string", "maxLength": 4 },
+          "movement": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["direction", "range"],
+              "properties": {
+                "direction": {
+                  "type": "string",
+                  "enum": ["E", "W", "NE", "NW", "SE", "SW"]
+                },
+                "range": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "0 = unlimited sliding in this direction."
+                },
+                "captureOnly": { "type": "boolean" },
+                "moveOnly": { "type": "boolean" },
+                "canJump": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "abilities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "name", "description", "cooldown"],
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "cooldown": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "value": { "type": "integer", "minimum": 0 },
+          "hp": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum hit points for this unit type."
+          },
+          "attack": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Attack damage dealt when this unit initiates combat."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "abilities": {
+      "type": "object",
+      "description": "Global ability catalogue, keyed by ability id.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["id", "name", "description", "cooldown"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "cooldown": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "setup": {
+      "type": "object",
+      "required": ["white", "black"],
+      "properties": {
+        "white": {
+          "type": "object",
+          "description": "Map of 'q,r' coordinate strings to unit type ids for white.",
+          "additionalProperties": { "type": "string" }
+        },
+        "black": {
+          "type": "object",
+          "description": "Map of 'q,r' coordinate strings to unit type ids for black.",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "rules": {
+      "type": "object",
+      "required": ["maxTurns", "turnTimeLimit"],
+      "properties": {
+        "maxTurns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0 = unlimited turns."
+        },
+        "turnTimeLimit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-turn time limit in seconds (0 = unlimited)."
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

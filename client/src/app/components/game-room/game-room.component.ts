@@ -9,6 +9,8 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User } from '../../services/shared-data.service';
 import { LobbyService } from '../../services/lobby.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
+import { GameStateService } from '../../services/game-state.service';
+import { GameBoardComponent } from '../game-board/game-board.component';
 
 interface GameOptions {
   reveal?: boolean;
@@ -17,7 +19,7 @@ interface GameOptions {
 @Component({
   selector: 'app-game-room',
   standalone: true,
-  imports: [CommonModule, FormsModule, ConnectionStatusComponent],
+  imports: [CommonModule, FormsModule, ConnectionStatusComponent, GameBoardComponent],
   templateUrl: './game-room.component.html',
   styleUrls: ['./game-room.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -44,6 +46,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   revealEnabled: boolean = false;
   gameOptions: GameOptions = {};
   
+  // Reveal mode request modals
+  showRevealWaitingModal: boolean = false;  // Host waits for opponent response
+  showRevealRequestModal: boolean = false;  // Opponent receives request
+  revealRequestCountdown: number = 5;
+  revealRequestCountdownInterval: ReturnType<typeof setInterval> | null = null;
+  revealRequester: string = '';  // Username of player who requested reveal
+  otherPlayerConfiguring: boolean = false;
+  
   private subscription: Subscription | null = null;
   // Subscriptions for shared lobby data
   private lobbyMessagesSub: Subscription | null = null;
@@ -57,7 +67,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     private sharedDataService: SharedDataService,
     private navigationState: NavigationStateService,
     private lobbyService: LobbyService,
-    private cdr: ChangeDetectorRef
+    private cdr: ChangeDetectorRef,
+    public gameState: GameStateService
   ) {}
   
   ngOnInit(): void {
@@ -202,6 +213,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       clearInterval(this.countdownInterval);
       this.countdownInterval = null;
     }
+    if (this.revealRequestCountdownInterval !== null) {
+      clearInterval(this.revealRequestCountdownInterval);
+      this.revealRequestCountdownInterval = null;
+    }
+    
+    // Reset game state service
+    this.gameState.reset();
     
     // Check if we're intentionally navigating back to lobby
     const isIntentionalNav = this.navigationState.isIntentionalNavigation();
@@ -243,9 +261,84 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         );
         this.cdr.markForCheck();
         break;
+      case 'game_started':
+        // Real game initialisation — reset and load the initial state via GameStateService
+        this.gameStarted = true;
+        this.isReady = false;  // Reset ready state - button reverts to "Ready" and will be disabled
+        // Ensure clean slate by resetting game state first
+        this.gameState.reset();
+        this.gameState.applyGameStarted(actualMessage);
+        
+        const myColor = actualMessage.playerWhite === this.username ? 'White' : 'Black';
+        this.addSystemMessage(`Game started! You are playing as ${myColor}.`);
+        this.addSystemMessage(`${actualMessage.playerWhite} (White) moves first.`);
+        this.cdr.markForCheck();
+        break;
+      case 'move_made':
+        // Update local state when a move is broadcast
+        this.gameState.applyMoveMade(actualMessage);
+        {
+          const move = actualMessage.move;
+          let moveText = `${move.color} ${move.unit_id}: ${move.from} → ${move.to}`;
+          if (move.attacked) {
+            moveText += ` — dealt ${move.damage_dealt} dmg`;
+            if (move.defender_eliminated) {
+              moveText += ` (eliminated ${move.attacked})`;
+            } else {
+              moveText += ` (${move.attacked} survives, ${move.defender_hp} HP)`;
+            }
+          }
+          this.addSystemMessage(moveText);
+        }
+        this.cdr.markForCheck();
+        break;
+      case 'game_over':
+        this.gameStarted = false;
+        this.gameState.applyGameOver(actualMessage);
+        if (actualMessage.winner) {
+          this.addSystemMessage(`Game over — ${actualMessage.winner} wins by ${actualMessage.endReason}!`);
+        } else {
+          this.addSystemMessage(`Game over — Draw (${actualMessage.endReason}).`);
+        }
+        this.cdr.markForCheck();
+        break;
+      case 'game_state_update':
+        // Full state refresh (e.g., on reconnect)
+        this.gameState.applyFullState(actualMessage);
+        if (actualMessage.winner) {
+          this.addSystemMessage(`Game ended — winner: ${actualMessage.winner}`);
+        }
+        this.cdr.markForCheck();
+        break;
+      case 'draw_offered':
+        this.gameState.applyDrawOffered(actualMessage.offeredBy);
+        this.addSystemMessage(`${actualMessage.offeredBy} offered a draw.`);
+        this.cdr.markForCheck();
+        break;
+      case 'draw_response':
+        this.gameState.clearDrawOffer();
+        if (!actualMessage.accepted) {
+          this.addSystemMessage(`${actualMessage.declinedBy} declined the draw offer.`);
+        }
+        this.cdr.markForCheck();
+        break;
+      case 'invalid_move':
+        this.addSystemMessage(`Invalid move: ${actualMessage.message}`);
+        this.cdr.markForCheck();
+        break;
       case 'game_room_joined':
         // Set isInviter flag if this user is the original inviter
         this.isInviter = actualMessage.isInviter;
+        break;
+      case 'join_game_room_success':
+        // Sent after joining the game room – if the game was already started,
+        // request a full state resync (reconnection).
+        if (actualMessage.gameStatus === 'started') {
+          this.gameStarted = true;
+          this.wsService.sendMessage({ type: 'request_game_state' });
+          this.addSystemMessage('Reconnected — syncing game state…');
+          this.cdr.markForCheck();
+        }
         break;
       case 'player_list':
       case 'player_list_update': {
@@ -421,13 +514,77 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // Trigger change detection
         this.cdr.markForCheck();
         break;
-        
-      case 'game_countdown':
-        // Set all players to ready for the countdown phase
-        this.players = this.players.map(player => ({ ...player, isReady: true }));
-        this.isReady = true;
-        this.startCountdown();
+
+      case 'reveal_mode_requested':
+        // Other player is requesting to toggle reveal mode - show modal popup (no countdown)
+        this.revealRequester = actualMessage.username;
+        this.showRevealRequestModal = true;
         this.cdr.markForCheck();
+        break;
+
+      case 'reveal_request_accepted':
+        // The other player accepted our reveal request - NOW start the 5 second cooldown for host
+        if (this.revealRequestCountdownInterval) {
+          clearInterval(this.revealRequestCountdownInterval);
+          this.revealRequestCountdownInterval = null;
+        }
+        this.showRevealWaitingModal = true;  // Show waiting modal with countdown
+        this.revealEnabled = actualMessage.enabled;
+        this.gameOptions = { ...this.gameOptions, reveal: actualMessage.enabled };
+        
+        // Start 5 second cooldown for host
+        this.revealRequestCountdown = 5;
+        this.revealRequestCountdownInterval = setInterval(() => {
+          this.revealRequestCountdown--;
+          this.cdr.markForCheck();
+          
+          if (this.revealRequestCountdown <= 0) {
+            // Cooldown complete
+            if (this.revealRequestCountdownInterval) {
+              clearInterval(this.revealRequestCountdownInterval);
+              this.revealRequestCountdownInterval = null;
+            }
+            this.showRevealWaitingModal = false;
+            this.addSystemMessage(`Reveal mode has been ${actualMessage.enabled ? 'enabled' : 'disabled'}.`);
+            this.cdr.markForCheck();
+          }
+        }, 1000);
+        
+        this.addSystemMessage(`${actualMessage.username} has accepted your Reveal request!`);
+        this.cdr.markForCheck();
+        break;
+
+      case 'reveal_request_declined':
+        // The other player declined our reveal request  
+        if (this.revealRequestCountdownInterval) {
+          clearInterval(this.revealRequestCountdownInterval);
+          this.revealRequestCountdownInterval = null;
+        }
+        this.showRevealWaitingModal = false;
+        this.revealEnabled = false;
+        this.addSystemMessage(`${actualMessage.username} has declined your Reveal request.`);
+        this.cdr.markForCheck();
+        break;
+
+      case 'reveal_request_timeout':
+        // Reveal request timed out (opponent didn't respond)
+        if (this.revealRequestCountdownInterval) {
+          clearInterval(this.revealRequestCountdownInterval);
+          this.revealRequestCountdownInterval = null;
+        }
+        this.showRevealRequestModal = false;
+        this.showRevealWaitingModal = false;
+        this.revealEnabled = false;
+        this.addSystemMessage('Reveal mode request timed out.');
+        this.cdr.markForCheck();
+        break;
+
+      case 'player_status_changed':
+        // Update other player's configuring status
+        if (actualMessage.username !== this.username) {
+          this.otherPlayerConfiguring = actualMessage.status === 'configuring';
+          this.cdr.markForCheck();
+        }
         break;
 
       case 'partner_left':
@@ -584,20 +741,77 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   updateGameOptions(): void {
     if (!this.isInviter || this.gameMode !== 'custom') return;
     
-    // Update game options based on checkbox states
-    this.gameOptions = {
-      reveal: this.revealEnabled
-    };
+    // Check if other player is configuring - if so, block the reveal toggle
+    if (this.otherPlayerConfiguring) {
+      this.revealEnabled = !this.revealEnabled; // Revert the toggle
+      this.addSystemMessage('Cannot change reveal mode while other player is configuring.');
+      this.cdr.markForCheck();
+      return;
+    }
     
-    // Send message to server - it will broadcast the change and send system message
+    // When reveal checkbox changes, send a request to the other player
+    const wasRevealEnabled = this.gameOptions.reveal || false;
+    
+    if (this.revealEnabled !== wasRevealEnabled) {
+      // Reveal state is changing, send a request
+      this.showRevealWaitingModal = true;
+      
+      this.wsService.sendMessage({
+        type: 'request_reveal_mode',
+        gameId: this.gameId,
+        action: this.revealEnabled ? 'enable' : 'disable'
+      });
+      
+      // Start countdown for host's waiting modal
+      this.revealRequestCountdown = 5;
+      this.revealRequestCountdownInterval = setInterval(() => {
+        this.revealRequestCountdown--;
+        this.cdr.markForCheck();
+      }, 1000);
+      
+      this.cdr.markForCheck();
+    }
+  }
+
+  acceptRevealRequest(): void {
     this.wsService.sendMessage({
-      type: 'change_game_mode',
-      mode: 'custom',
+      type: 'reveal_response',
       gameId: this.gameId,
-      options: this.gameOptions
+      accepted: true
     });
     
-    // Don't add system message here - the server will send it
+    // Clear countdown
+    if (this.revealRequestCountdownInterval) {
+      clearInterval(this.revealRequestCountdownInterval);
+      this.revealRequestCountdownInterval = null;
+    }
+    
+    this.showRevealRequestModal = false;
+    this.revealEnabled = true;
+    this.gameOptions = { ...this.gameOptions, reveal: true };
+    this.cdr.markForCheck();
+  }
+  declineRevealRequest(): void {
+    this.wsService.sendMessage({
+      type: 'reveal_response',
+      gameId: this.gameId,
+      accepted: false
+    });
+    
+    // Clear countdown
+    if (this.revealRequestCountdownInterval) {
+      clearInterval(this.revealRequestCountdownInterval);
+      this.revealRequestCountdownInterval = null;
+    }
+    
+    this.showRevealRequestModal = false;
+    this.revealEnabled = false;
+    this.cdr.markForCheck();
+  }
+
+  getOpponentUsername(): string {
+    const opponent = this.players.find(p => p.username !== this.username);
+    return opponent?.username || 'opponent';
   }
   
   private checkAllPlayersReady(): void {
@@ -636,7 +850,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         }
         this.countdownStarted = false; // Hide the countdown when it reaches 0
         this.isReady = false; // Reset button to 'Ready' state after countdown, matching backend
-        this.addSystemMessage('Game started! Placeholder!');
+        // Game will be initialised by 'game_started' message from backend
+        this.addSystemMessage('Initialising game...');
         this.cdr.markForCheck();
       }
     }, 1000);
@@ -669,6 +884,30 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     }
     
     this.scrollChatToBottom(this.activeTab);
+  }
+  
+  /** Handle a move emitted by the GameBoardComponent. */
+  onPlayerMove(event: { from: string; to: string }): void {
+    this.wsService.sendMessage({
+      type: 'make_move',
+      from: event.from,
+      to: event.to,
+    });
+  }
+
+  /** Resign the current game. */
+  resign(): void {
+    this.wsService.sendMessage({ type: 'resign' });
+  }
+
+  /** Offer a draw to the opponent. */
+  offerDraw(): void {
+    this.wsService.sendMessage({ type: 'offer_draw' });
+  }
+
+  /** Accept or decline a draw offer. */
+  respondToDraw(accept: boolean): void {
+    this.wsService.sendMessage({ type: 'respond_draw', accept });
   }
   
   /**
