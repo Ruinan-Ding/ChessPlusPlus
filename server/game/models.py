@@ -24,6 +24,9 @@ class GameRoom(models.Model):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='waiting')
     game_mode = models.CharField(max_length=10, default='default')  # 'default' or 'custom'
     game_options = models.JSONField(default=dict)  # {'reveal': True/False, etc}
+    # Full custom board/unit config (board, units, setup, rules), saved from the
+    # setup screen. Only applied at game start when game_mode == 'custom'.
+    custom_config = models.JSONField(default=dict)
     # Access tokens for secure game room entry
     host_token = models.CharField(max_length=64, blank=True, default='')
     opponent_token = models.CharField(max_length=64, blank=True, default='')

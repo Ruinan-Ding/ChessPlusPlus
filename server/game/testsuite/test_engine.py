@@ -23,8 +23,6 @@ from game.engine.game_logic import (
     get_legal_moves_filtered,
     has_any_legal_move,
     detect_outcome,
-    find_king,
-    is_in_check,
     is_attacked,
 )
 
@@ -138,7 +136,7 @@ class ConfigLoaderTestCase(TestCase):
     def test_default_config_loads(self):
         config = load_config(None)
         self.assertEqual(config['version'], '1.0')
-        self.assertEqual(config['board']['radius'], 5)
+        self.assertEqual(config['board']['radius'], 23)
         self.assertIn('king', config['units'])
         self.assertIn('pawn', config['units'])
 
@@ -146,7 +144,7 @@ class ConfigLoaderTestCase(TestCase):
         c1 = load_config(None)
         c2 = load_config(None)
         c1['board']['radius'] = 99
-        self.assertEqual(c2['board']['radius'], 5)
+        self.assertEqual(c2['board']['radius'], 23)
 
     def test_build_initial_board_piece_count(self):
         config = load_config(None)
@@ -158,8 +156,8 @@ class ConfigLoaderTestCase(TestCase):
         config = load_config(None)
         board = build_initial_board(config)
         # Check directly that king units exist on the board
-        white_king_cell = board.get(0, 5)
-        black_king_cell = board.get(0, -5)
+        white_king_cell = board.get(-11, 23)
+        black_king_cell = board.get(11, -23)
         assert white_king_cell is not None
         assert black_king_cell is not None
         self.assertEqual(white_king_cell['unit_id'], 'king')
@@ -170,7 +168,7 @@ class ConfigLoaderTestCase(TestCase):
     def test_build_initial_board_units_have_hp(self):
         config = load_config(None)
         board = build_initial_board(config)
-        white_king = board.get(0, 5)
+        white_king = board.get(-11, 23)
         assert white_king is not None
         self.assertIn('hp', white_king)
         self.assertIn('max_hp', white_king)
@@ -521,16 +519,3 @@ class GameLogicTestCase(TestCase):
         board = build_initial_board(config)
         self.assertTrue(has_any_legal_move(board, 'white', config))
         self.assertTrue(has_any_legal_move(board, 'black', config))
-
-    # -- Legacy stubs still importable -------------------------------------
-
-    def test_legacy_find_king_returns_none(self):
-        board = HexBoard(5)
-        board.set(0, 0, 'king', 'white', hp=10, max_hp=10)
-        self.assertIsNone(find_king(board, 'white'))
-
-    def test_legacy_is_in_check_always_false(self):
-        config = self._cfg()
-        board = build_initial_board(config)
-        self.assertFalse(is_in_check(board, 'white', config))
-        self.assertFalse(is_in_check(board, 'black', config))

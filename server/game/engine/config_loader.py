@@ -2,8 +2,13 @@
 Config loader — parses a GameConfig dict (matching the shared JSON schema)
 and builds the initial HexBoard state.
 
-The DEFAULT_CONFIG provides a minimal playable hex-chess setup on a
-radius-5 board so the game works even when no custom config is supplied.
+The only fixed game fact is the board: a hexagon with 24 cells per edge
+(axial radius 23), rendered with an edge pointing up. Even that lives in
+DEFAULT_CONFIG rather than engine code, so it can change with the config.
+
+Everything about the units below is a PLACEHOLDER. The engine reads all
+movement/combat behaviour from this data — none of the unit ids mean
+anything to the code, and the real game's units will replace these.
 """
 
 from __future__ import annotations
@@ -12,27 +17,35 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from .board import HexBoard, coord_key, parse_coord
+from .move_validator import KNIGHT_OFFSETS
 
 logger = logging.getLogger('game')
 
 # ---------------------------------------------------------------------------
-# Default (built-in) configuration — radius-5 hex board with classic-style
-# pieces adapted for hex geometry.
+# Default (built-in) configuration.
 #
-# Placement uses axial coords where the board centre is (0, 0).
-# White starts on the southern edge, black on the northern edge.
+# Board: hexagon, 24 cells per edge → axial radius 23 (side = radius + 1),
+# edge-up orientation. Placement uses axial coords with centre (0, 0);
+# white starts on the southern edge row (r = +23), black mirrored north.
+#
+# Movement patterns are authored from WHITE's perspective; the engine
+# mirrors them for black. Two pattern types exist:
+#   {"direction": ..., "range": N, canJump/moveOnly/captureOnly}
+#   {"offsets": [[dq, dr], ...], moveOnly/captureOnly}   (fixed jumps)
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "version": "1.0",
     "board": {
-        "radius": 5
+        "radius": 23,              # 24 cells per hexagon edge
+        "orientation": "edge-up"   # cosmetic: how the client draws the hexagon
     },
     "units": {
         "king": {
             "id": "king",
             "name": "King",
             "symbol": "K",
+            "display": {"white": "♔", "black": "♚"},
             "movement": [
                 {"direction": d, "range": 1}
                 for d in ("E", "W", "NE", "NW", "SE", "SW")
@@ -45,6 +58,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "id": "queen",
             "name": "Queen",
             "symbol": "Q",
+            "display": {"white": "♕", "black": "♛"},
             "movement": [
                 {"direction": d, "range": 0}          # unlimited slide
                 for d in ("E", "W", "NE", "NW", "SE", "SW")
@@ -57,6 +71,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "id": "rook",
             "name": "Rook",
             "symbol": "R",
+            "display": {"white": "♖", "black": "♜"},
             "movement": [
                 {"direction": d, "range": 0}
                 for d in ("E", "W", "NE", "NW", "SE", "SW")
@@ -69,9 +84,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "id": "bishop",
             "name": "Bishop",
             "symbol": "B",
+            "display": {"white": "♗", "black": "♝"},
             "movement": [
-                {"direction": d, "range": 0}
-                for d in ("E", "W", "NE", "NW", "SE", "SW")
+                {"direction": d, "range": 0}          # diagonal slides
+                for d in ("DN", "DS", "DNE", "DSW", "DSE", "DNW")
             ],
             "value": 3,
             "hp": 6,
@@ -81,9 +97,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "id": "knight",
             "name": "Knight",
             "symbol": "N",
+            "display": {"white": "♘", "black": "♞"},
             "movement": [
-                {"direction": d, "range": 2, "canJump": True}
-                for d in ("E", "W", "NE", "NW", "SE", "SW")
+                {"offsets": [list(o) for o in KNIGHT_OFFSETS]}
             ],
             "value": 3,
             "hp": 8,
@@ -93,6 +109,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "id": "pawn",
             "name": "Pawn",
             "symbol": "P",
+            "display": {"white": "♙", "black": "♟"},
             "movement": [
                 {"direction": "NW", "range": 1, "moveOnly": True},
                 {"direction": "NE", "range": 1, "captureOnly": True},
@@ -105,42 +122,45 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "abilities": {},
     "setup": {
-        # Minimal symmetric placement for a radius-5 board.
-        # White on south, black on north.  Expand later for a full game.
+        # Placeholder symmetric placement on the south/north edge rows of the
+        # radius-23 board.  White's edge row is r=+23 (q from -23 to 0);
+        # black is the point-mirror (q,r) → (-q,-r).
         "white": {
-            "0,5":   "king",
-            "-1,5":  "queen",
-            "-2,5":  "bishop",
-            "1,4":   "bishop",
-            "-3,5":  "knight",
-            "2,3":   "knight",
-            "-4,5":  "rook",
-            "3,2":   "rook",
-            "-1,4":  "pawn",
-            "0,4":   "pawn",
-            "1,3":   "pawn",
-            "-2,4":  "pawn",
-            "2,2":   "pawn",
+            "-11,23": "king",
+            "-13,23": "queen",
+            "-9,23":  "bishop",
+            "-15,23": "bishop",
+            "-7,23":  "knight",
+            "-17,23": "knight",
+            "-5,23":  "rook",
+            "-19,23": "rook",
+            "-8,22":  "pawn",
+            "-10,22": "pawn",
+            "-12,22": "pawn",
+            "-14,22": "pawn",
+            "-16,22": "pawn",
         },
         "black": {
-            "0,-5":   "king",
-            "1,-5":   "queen",
-            "2,-5":   "bishop",
-            "-1,-4":  "bishop",
-            "3,-5":   "knight",
-            "-2,-3":  "knight",
-            "4,-5":   "rook",
-            "-3,-2":  "rook",
-            "1,-4":   "pawn",
-            "0,-4":   "pawn",
-            "-1,-3":  "pawn",
-            "2,-4":   "pawn",
-            "-2,-2":  "pawn",
+            "11,-23": "king",
+            "13,-23": "queen",
+            "9,-23":  "bishop",
+            "15,-23": "bishop",
+            "7,-23":  "knight",
+            "17,-23": "knight",
+            "5,-23":  "rook",
+            "19,-23": "rook",
+            "8,-22":  "pawn",
+            "10,-22": "pawn",
+            "12,-22": "pawn",
+            "14,-22": "pawn",
+            "16,-22": "pawn",
         }
     },
     "rules": {
         "maxTurns": 0,
-        "turnTimeLimit": 0
+        "turnTimeLimit": 0,
+        # Placeholder: win condition. Only 'elimination' is implemented.
+        "objective": "elimination"
     }
 }
 
@@ -162,8 +182,8 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
         errors.append("Missing 'board.radius'")
     else:
         r = config['board']['radius']
-        if not isinstance(r, int) or r < 1 or r > 20:
-            errors.append(f"board.radius must be an integer 1–20, got {r}")
+        if not isinstance(r, int) or r < 1 or r > 50:
+            errors.append(f"board.radius must be an integer 1–50, got {r}")
 
     if 'units' not in config or not isinstance(config.get('units'), dict):
         errors.append("Missing or invalid 'units'")

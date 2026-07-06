@@ -40,26 +40,41 @@ interface HexCell {
 // Hex geometry helpers
 // ---------------------------------------------------------------------------
 
-/** Flat-top hex: width = 2*size, height = sqrt(3)*size */
+/**
+ * Board orientation (from config.board.orientation, cosmetic only):
+ *  - 'edge-up'   → pointy-top cells; the board hexagon has a flat edge on top.
+ *  - 'vertex-up' → flat-top cells; the board hexagon has a corner on top.
+ * The default game board is an edge-up hexagon.
+ */
+type BoardOrientation = 'edge-up' | 'vertex-up';
+
 const HEX_SIZE = 28; // radius of a single hex in SVG pixels
-const HEX_WIDTH = HEX_SIZE * 2;
-const HEX_HEIGHT = Math.sqrt(3) * HEX_SIZE;
 
 /**
- * Convert axial (q, r) to pixel (x, y) for a flat-top hex grid.
+ * Convert axial (q, r) to pixel (x, y).
  * Reference: https://www.redblobgames.com/grids/hexagons/#hex-to-pixel
  */
-function axialToPixel(q: number, r: number): { x: number; y: number } {
-  const x = HEX_SIZE * (3 / 2) * q;
-  const y = HEX_SIZE * (Math.sqrt(3) / 2 * q + Math.sqrt(3) * r);
-  return { x, y };
+function axialToPixel(q: number, r: number, orientation: BoardOrientation): { x: number; y: number } {
+  if (orientation === 'vertex-up') {
+    // flat-top cells
+    return {
+      x: HEX_SIZE * (3 / 2) * q,
+      y: HEX_SIZE * (Math.sqrt(3) / 2 * q + Math.sqrt(3) * r),
+    };
+  }
+  // edge-up board → pointy-top cells
+  return {
+    x: HEX_SIZE * (Math.sqrt(3) * q + Math.sqrt(3) / 2 * r),
+    y: HEX_SIZE * (3 / 2) * r,
+  };
 }
 
-/** Generate SVG polygon points for a flat-top hex centred at (cx, cy). */
-function hexPoints(cx: number, cy: number): string {
+/** Generate SVG polygon points for a hex centred at (cx, cy). */
+function hexPoints(cx: number, cy: number, orientation: BoardOrientation): string {
+  const startDeg = orientation === 'vertex-up' ? 0 : 30; // pointy-top corners are offset 30°
   const pts: string[] = [];
   for (let i = 0; i < 6; i++) {
-    const angle = (Math.PI / 180) * (60 * i);
+    const angle = (Math.PI / 180) * (60 * i + startDeg);
     const px = cx + HEX_SIZE * Math.cos(angle);
     const py = cy + HEX_SIZE * Math.sin(angle);
     pts.push(`${px.toFixed(2)},${py.toFixed(2)}`);
@@ -67,51 +82,25 @@ function hexPoints(cx: number, cy: number): string {
   return pts.join(' ');
 }
 
-/** Unicode piece symbols by unit_id. */
-const PIECE_SYMBOLS: Record<string, { white: string; black: string }> = {
-  king:   { white: '♔', black: '♚' },
-  queen:  { white: '♕', black: '♛' },
-  rook:   { white: '♖', black: '♜' },
-  bishop: { white: '♗', black: '♝' },
-  knight: { white: '♘', black: '♞' },
-  pawn:   { white: '♙', black: '♟' },
-};
-
 // ---------------------------------------------------------------------------
 // Legal-move computation helpers (client-side preview)
+//
+// Fully config-driven: unit ids are opaque labels. Movement comes from the
+// unit's `movement` patterns — direction/range slides or fixed-jump offsets.
+// Patterns are authored from WHITE's perspective and mirrored for black
+// (a no-op for symmetric movement sets). Mirrors the server engine in
+// server/game/engine/move_validator.py.
 // ---------------------------------------------------------------------------
 
 const HEX_DIRS: Record<string, [number, number]> = {
   E:  [+1,  0], W:  [-1,  0],
   NE: [+1, -1], SW: [-1, +1],
   NW: [ 0, -1], SE: [ 0, +1],
+  // diagonals (distance-2 hexes between two adjacent cardinals)
+  DN:  [+1, -2], DS:  [-1, +2],
+  DNE: [+2, -1], DSW: [-2, +1],
+  DSE: [+1, +1], DNW: [-1, -1],
 };
-
-const DIR_OPPOSITES: Record<string, string> = {
-  E:'W', W:'E', NE:'SW', SW:'NE', NW:'SE', SE:'NW',
-};
-
-const HEX_DIAG_OFFSETS: [number, number][] = [
-  [+2,-1],[-2,+1],[+1,-2],[-1,+2],[+1,+1],[-1,-1],
-];
-
-/** Compute the 12 knight offsets (2 steps in one cardinal + 1 step in adjacent). */
-function knightOffsets(): [number, number][] {
-  const dirs = ['E','NE','NW','W','SW','SE'];
-  const set = new Set<string>();
-  const result: [number, number][] = [];
-  for (let i = 0; i < 6; i++) {
-    const [dq, dr] = HEX_DIRS[dirs[i]];
-    const bq = dq * 2, br = dr * 2;
-    for (const adj of [(i + 5) % 6, (i + 1) % 6]) {
-      const [aq, ar] = HEX_DIRS[dirs[adj]];
-      const key = `${bq + aq},${br + ar}`;
-      if (!set.has(key)) { set.add(key); result.push([bq + aq, br + ar]); }
-    }
-  }
-  return result;
-}
-const KNIGHT_OFFSETS = knightOffsets();
 
 function isInsideBoard(q: number, r: number, radius: number): boolean {
   return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) <= radius;
@@ -131,52 +120,39 @@ function computeLegalMoves(
   const unitDef = config?.units?.[piece.unit_id];
   if (!unitDef) return targets;
   const movement: any[] = unitDef.movement ?? [];
+  const mirror = color !== 'white'; // patterns are authored from white's perspective
 
-  // Knight — special jump logic
-  if (piece.unit_id === 'knight') {
-    for (const [oq, or_] of KNIGHT_OFFSETS) {
-      const tq = sq + oq, tr = sr + or_;
-      if (!isInsideBoard(tq, tr, radius)) continue;
-      const dest = boardState[`${tq},${tr}`];
-      if (dest && dest.color === color) continue; // can't land on friendly
-      targets.add(`${tq},${tr}`);
-    }
-    return targets;
-  }
-
-  // Bishop — diagonal slides
-  if (piece.unit_id === 'bishop') {
-    for (const [oq, or_] of HEX_DIAG_OFFSETS) {
-      let tq = sq, tr = sr;
-      while (true) {
-        tq += oq; tr += or_;
-        if (!isInsideBoard(tq, tr, radius)) break;
-        const dest = boardState[`${tq},${tr}`];
-        if (dest && dest.color === color) break;
-        targets.add(`${tq},${tr}`);
-        if (dest) break; // enemy blocks further sliding
-      }
-    }
-    return targets;
-  }
-
-  // Generic pattern-based (king, queen, rook, pawn, custom)
   for (const pat of movement) {
-    let dirName: string = pat.direction;
-    const range: number = pat.range ?? 0;
-    const canJump: boolean = pat.canJump ?? false;
     const moveOnly: boolean = pat.moveOnly ?? false;
     const captureOnly: boolean = pat.captureOnly ?? false;
 
-    // Pawn: flip direction for black
-    if (piece.unit_id === 'pawn' && color === 'black') {
-      dirName = DIR_OPPOSITES[dirName] ?? dirName;
+    // Fixed-jump offsets pattern (intervening pieces irrelevant)
+    if (Array.isArray(pat.offsets)) {
+      for (const offset of pat.offsets) {
+        let oq = Number(offset?.[0]), or_ = Number(offset?.[1]);
+        if (!Number.isFinite(oq) || !Number.isFinite(or_)) continue;
+        if (mirror) { oq = -oq; or_ = -or_; }
+        const tq = sq + oq, tr = sr + or_;
+        if (!isInsideBoard(tq, tr, radius)) continue;
+        const dest = boardState[`${tq},${tr}`];
+        if (dest) {
+          if (dest.color === color || moveOnly) continue;
+        } else if (captureOnly) {
+          continue;
+        }
+        targets.add(`${tq},${tr}`);
+      }
+      continue;
     }
 
-    const delta = HEX_DIRS[dirName];
+    // Direction step/slide pattern
+    const delta = HEX_DIRS[pat.direction];
     if (!delta) continue;
-    const [dq, dr] = delta;
-    const maxSteps = range === 0 ? radius * 2 : range; // 0 = unlimited
+    let [dq, dr] = delta;
+    if (mirror) { dq = -dq; dr = -dr; }
+    const range: number = pat.range ?? 1;
+    const canJump: boolean = pat.canJump ?? false;
+    const maxSteps = range > 0 ? range : radius * 2; // 0 = unlimited
 
     let tq = sq, tr = sr;
     for (let step = 0; step < maxSteps; step++) {
@@ -185,9 +161,12 @@ function computeLegalMoves(
       const dest = boardState[`${tq},${tr}`];
 
       if (dest) {
-        if (dest.color === color) break; // blocked by friendly
+        if (dest.color === color) {
+          if (!canJump) break;    // blocked by friendly
+          continue;               // jump over friendly
+        }
         if (!moveOnly) targets.add(`${tq},${tr}`); // can capture enemy
-        if (!canJump) break; // non-jumping piece stops
+        if (!canJump) break;      // non-jumping piece stops
       } else {
         if (!captureOnly) targets.add(`${tq},${tr}`); // can move to empty
       }
@@ -263,7 +242,7 @@ function computeLegalMoves(
       <!-- Post-game overlay -->
       <div class="post-game-overlay" *ngIf="endReason">
         <div class="overlay-card">
-          <h2>{{ winner ? (winner === username ? 'Victory!' : 'Defeat') : 'Draw' }}</h2>
+          <h2>{{ winner ? (winner === username ? 'You won!' : 'You lost!') : 'Draw' }}</h2>
           <p>{{ endReasonLabel }}</p>
         </div>
       </div>
@@ -275,6 +254,7 @@ function computeLegalMoves(
     }
 
     .board-container {
+      position: relative;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -287,8 +267,10 @@ function computeLegalMoves(
     .hex-board {
       display: block;
       width: 100%;
-      height: 100%;
-      flex: 1;
+      /* Height derives from the viewBox aspect ratio; a percentage here
+         resolves against an indefinite container height and collapses. */
+      height: auto;
+      max-height: 78vh;
     }
 
     .hex-cell {
@@ -357,21 +339,6 @@ function computeLegalMoves(
       stroke-width: 0.5;
     }
 
-    /* HP bar */
-    .hp-bar-bg {
-      fill: #333333;
-      stroke: none;
-      opacity: 0.6;
-    }
-
-    .hp-bar-fill {
-      stroke: none;
-    }
-
-    .hp-high { fill: #4caf50; }
-    .hp-mid  { fill: #ff9800; }
-    .hp-low  { fill: #f44336; }
-
     .status-bar {
       font-size: 14px;
       padding: 6px 12px;
@@ -434,10 +401,6 @@ function computeLegalMoves(
       font-size: 15px;
       color: #bbb;
     }
-
-    .board-container {
-      position: relative;
-    }
   `],
 })
 export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
@@ -446,7 +409,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   /** Current board state from server. */
   @Input() boardState: BoardState = {};
   /** Board radius from config. */
-  @Input() radius = 5;
+  @Input() radius = 23;
   /** Username of the current turn player. */
   @Input() currentTurn = '';
   /** Current turn number. */
@@ -477,8 +440,6 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   cells: HexCell[] = [];
   viewBox = '0 0 100 100';
-  svgWidth = 500;
-  svgHeight = 500;
 
   selectedHex: string | null = null;
   legalTargets = new Set<string>();
@@ -495,13 +456,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   get endReasonLabel(): string {
+    const isWinner = this.winner === this.username;
     switch (this.endReason) {
-      case 'elimination': return this.winner + ' wins — all enemies eliminated!';
-      case 'resign':      return this.winner + ' wins by resignation';
-      case 'timeout':     return this.winner + ' wins — opponent timed out';
+      case 'elimination': return isWinner ? 'You won — all enemies eliminated!' : 'You lost — all units eliminated';
+      case 'resign':      return isWinner ? 'You won by resignation' : 'You lost by resignation';
+      case 'timeout':     return isWinner ? 'You won — opponent timed out' : 'You lost — time out';
+      case 'disconnect':  return isWinner ? 'You won — opponent disconnected' : 'You lost — disconnected';
       case 'draw_agreed': return 'Draw by agreement';
       case 'draw_max_turns': return 'Draw — max turns reached';
-      case 'disconnect':  return this.winner + ' wins — opponent disconnected';
       default:            return 'Game over';
     }
   }
@@ -517,8 +479,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   ngOnChanges(changes: SimpleChanges): void {
-    // Recalculate cells whenever board or radius changes
-    if (changes['boardState'] || changes['radius']) {
+    // Recalculate cells whenever board, radius, or config (orientation) changes
+    if (changes['boardState'] || changes['radius'] || changes['config']) {
       this.buildCells();
     }
     // If a move was just made (turnNumber changed), clear selection
@@ -586,9 +548,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   // ── Cell building ──────────────────────────────────────────────────
 
+  /** Board orientation from config (cosmetic); the default board is edge-up. */
+  get orientation(): BoardOrientation {
+    return this.config?.board?.orientation === 'vertex-up' ? 'vertex-up' : 'edge-up';
+  }
+
   private buildCells(): void {
     const cells: HexCell[] = [];
     const r = this.radius;
+    const orientation = this.orientation;
 
     for (let q = -r; q <= r; q++) {
       for (let ri = -r; ri <= r; ri++) {
@@ -596,14 +564,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
           continue;
         }
         const key = `${q},${ri}`;
-        const { x, y } = axialToPixel(q, ri);
+        const { x, y } = axialToPixel(q, ri, orientation);
         cells.push({
           q,
           r: ri,
           key,
           cx: x,
           cy: y,
-          points: hexPoints(x, y),
+          points: hexPoints(x, y, orientation),
           piece: this.boardState[key] || null,
         });
       }
@@ -623,20 +591,17 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       const w = maxX - minX;
       const h = maxY - minY;
       this.viewBox = `${minX.toFixed(1)} ${minY.toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`;
-      // Set actual SVG dimensions (cap at reasonable max)
-      this.svgWidth = Math.min(w, 700);
-      this.svgHeight = Math.min(h, 700);
     }
   }
 
   // ── Helpers ────────────────────────────────────────────────────────
 
+  /** Glyph comes from the unit's config entry — nothing is hardcoded per unit. */
   getPieceSymbol(piece: PieceData): string {
-    const entry = PIECE_SYMBOLS[piece.unit_id];
-    if (entry) {
-      return entry[piece.color] || piece.unit_id[0].toUpperCase();
-    }
-    return piece.unit_id[0].toUpperCase();
+    const unitDef = this.config?.units?.[piece.unit_id];
+    return unitDef?.display?.[piece.color]
+        ?? unitDef?.symbol
+        ?? piece.unit_id[0].toUpperCase();
   }
 
   trackByKey(_index: number, hex: HexCell): string {

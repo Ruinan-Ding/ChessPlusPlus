@@ -4,6 +4,7 @@
     <div class="save-section">
       <button class="save-button" [disabled]="!hasUnsavedChanges" (click)="saveConfig()">Save Configuration</button>
       <span class="save-success" *ngIf="savedSuccessfully">Saved!</span>
+      <span class="save-error" *ngIf="saveError">{{ saveError }}</span>
     </div>
   </div>
 

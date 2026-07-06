@@ -93,21 +93,6 @@ def resolve_combat(
 # Legal-move helpers  (replaces the chess self-check filter)
 # ---------------------------------------------------------------------------
 
-def get_legal_moves_for_unit(
-    board: HexBoard,
-    coord: Coord,
-    config: Dict[str, Any],
-    color: str,
-) -> List[Coord]:
-    """
-    Return all legal destinations for the piece at *coord*.
-
-    In the tactical RPG model there is no self-check constraint, so this
-    is a thin wrapper around ``move_validator.get_legal_moves``.
-    """
-    return get_legal_moves(board, coord, config, color)
-
-
 def has_any_legal_move(
     board: HexBoard,
     color: str,
@@ -120,17 +105,18 @@ def has_any_legal_move(
     return False
 
 
-# ---------------------------------------------------------------------------
-# Kept for backward compatibility (referenced by __init__.py)
-# ---------------------------------------------------------------------------
-
 def get_legal_moves_filtered(
     board: HexBoard,
     coord: Coord,
     config: Dict[str, Any],
     color: str,
 ) -> List[Coord]:
-    """Alias — no self-check filter needed in tactical RPG mode."""
+    """
+    Return all legal destinations for the piece at *coord*.
+
+    In the tactical RPG model there is no self-check constraint, so this
+    is a thin wrapper around ``move_validator.get_legal_moves``.
+    """
     return get_legal_moves(board, coord, config, color)
 
 
@@ -159,24 +145,6 @@ def detect_outcome(
     if white_count == 0 or black_count == 0:
         return 'elimination'
     return None
-
-
-# ---------------------------------------------------------------------------
-# Legacy stubs — kept so existing imports don't break
-# ---------------------------------------------------------------------------
-
-def find_king(board: HexBoard, color: str) -> Optional[Coord]:
-    """Legacy stub — returns None (no king concept in tactical mode)."""
-    return None
-
-
-def is_in_check(
-    board: HexBoard,
-    color: str,
-    config: Dict[str, Any],
-) -> bool:
-    """Legacy stub — always False (no check concept)."""
-    return False
 
 
 def is_attacked(

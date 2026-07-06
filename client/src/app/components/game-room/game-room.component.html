@@ -2,7 +2,7 @@
   <header>
     <h1>Game Room</h1>
     <div class="header-actions">
-      <button class="setup-btn" (click)="openSetup()" [disabled]="countdownStarted">Configure Setup</button>
+      <button class="setup-btn" (click)="openSetup()">Configure Setup</button>
       <button class="leave-btn" (click)="leaveGameRoom()">Leave Room</button>
       <app-connection-status></app-connection-status>
     </div>
@@ -10,38 +10,52 @@
 
   <main>
     <!-- Game Board (always shown) -->
-    <div class="game-board-panel">
+    <div class="game-board-panel" *ngIf="gameState.state$ | async as state">
+      <!-- Keep the board visible after the game ends so the final position
+           and the win/loss overlay remain on screen. -->
       <app-game-board
-        *ngIf="gameStarted"
-        [boardState]="(gameState.state$ | async)?.boardState ?? {}"
-        [radius]="(gameState.state$ | async)?.config?.board?.radius ?? 12"
-        [currentTurn]="(gameState.state$ | async)?.currentTurn ?? ''"
-        [turnNumber]="(gameState.state$ | async)?.turnNumber ?? 0"
+        *ngIf="gameStarted || state.endReason"
+        [boardState]="state.boardState"
+        [radius]="state.config?.board?.radius ?? 23"
+        [currentTurn]="state.currentTurn"
+        [turnNumber]="state.turnNumber"
         [username]="username"
         [myColor]="gameState.myColor(username)"
-        [winner]="(gameState.state$ | async)?.winner ?? ''"
-        [endReason]="(gameState.state$ | async)?.endReason ?? ''"
-        [interactive]="gameState.myColor(username) !== '' && !(gameState.state$ | async)?.endReason"
-        [turnTimeLimit]="(gameState.state$ | async)?.turnTimeLimit ?? 0"
-        [turnStartedAt]="(gameState.state$ | async)?.turnStartedAt ?? ''"
-        [config]="(gameState.state$ | async)?.config"
+        [winner]="state.winner"
+        [endReason]="state.endReason"
+        [interactive]="gameState.myColor(username) !== '' && !state.endReason"
+        [turnTimeLimit]="state.turnTimeLimit"
+        [turnStartedAt]="state.turnStartedAt"
+        [config]="state.config"
         (moveMade)="onPlayerMove($event)"
       ></app-game-board>
 
       <!-- Show placeholder when game hasn't started -->
-      <div class="waiting-placeholder" *ngIf="!gameStarted">
+      <div class="waiting-placeholder" *ngIf="!gameStarted && !state.endReason">
         <p>Waiting for game to start...</p>
       </div>
 
       <!-- Post-game message -->
-      <div class="post-game-message" *ngIf="gameStarted && (gameState.state$ | async)?.endReason">
-        <p *ngIf="(gameState.state$ | async)?.winner === username" class="win-message">🎉 You Won! 🎉</p>
-        <p *ngIf="(gameState.state$ | async)?.winner !== username" class="loss-message">You Lost</p>
+      <div class="post-game-message" *ngIf="state.endReason">
+        <p *ngIf="state.winner === username" class="win-message">You won</p>
+        <p *ngIf="state.winner && state.winner !== username" class="loss-message">You lost</p>
+        <p *ngIf="!state.winner" class="draw-message">Draw</p>
       </div>
 
-      <!-- Game actions (resign only) -->
+      <!-- Draw offer banner: shown to whichever side needs to act/wait -->
+      <div class="draw-offer-banner" *ngIf="gameStarted && state.drawOfferedBy">
+        <span *ngIf="state.drawOfferedBy === username">Draw offer sent — waiting for a response...</span>
+        <ng-container *ngIf="state.drawOfferedBy !== username">
+          <span>{{ state.drawOfferedBy }} offers a draw.</span>
+          <button class="accept-btn" (click)="respondToDraw(true)">Accept</button>
+          <button class="decline-btn" (click)="respondToDraw(false)">Decline</button>
+        </ng-container>
+      </div>
+
+      <!-- Game actions -->
       <div class="game-actions" *ngIf="gameStarted && gameState.isGameActive && gameState.myColor(username)">
         <button class="resign-btn" (click)="resign()">Resign</button>
+        <button class="draw-btn" (click)="offerDraw()" [disabled]="!!state.drawOfferedBy">Offer Draw</button>
       </div>
     </div>
 
@@ -136,12 +150,11 @@
           >
             {{ gameStarted ? 'Ready' : (isReady ? 'Unready' : 'Ready') }}
           </button>
-          <!-- Start Game Button (always enabled now) -->
-          <button 
-            *ngIf="isInviter" 
-            class="start-game-btn" 
+          <button
+            *ngIf="isInviter"
+            class="start-game-btn"
             (click)="startGame()"
-            [disabled]="!canStartGame() || countdownStarted"
+            [disabled]="!canStartGame()"
           >
             Start Game
           </button>

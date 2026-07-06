@@ -3,8 +3,11 @@ node_modules/
 /dist/
 /tmp/
 /.angular/
-npm-debug.log
-yarn-error.log
+client/dist/
+client/.angular/
+
+# Logs
+*.log
 
 # Python/Django
 __pycache__/

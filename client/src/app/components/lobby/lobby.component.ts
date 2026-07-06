@@ -2,8 +2,8 @@ import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRe
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
-import { Subscription, Subject } from 'rxjs';
-import { takeUntil, filter, take, skipWhile } from 'rxjs/operators';
+import { Subject } from 'rxjs';
+import { takeUntil, filter, take } from 'rxjs/operators';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
 import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
 import { Router } from '@angular/router';
@@ -34,19 +34,14 @@ export class LobbyComponent implements OnInit, OnDestroy {
   invitePending: boolean = false;
   
   private countdownTimerId: ReturnType<typeof setInterval> | null = null;
-  private subscription: Subscription | null = null;
-  private messagesSubscription: Subscription | null = null;
   private destroy$ = new Subject<void>();
-  
+
   // Invite cooldown: 5 seconds from when they JOIN the game room (not from when they leave)
   private gameRoomJoinTime: number = 0;  // Timestamp when player joined game room
   private inviteCooldownEndTime: number = 0;
   inviteCooldownRemaining: number = 0;
   private inviteCooldownTimerId: ReturnType<typeof setInterval> | null = null;
-  
-  // Guard flag to prevent message processing after component destruction
-  private isDestroyed: boolean = false;
-  
+
   constructor(
     private wsService: WebsocketService,
     private router: Router,
@@ -108,87 +103,29 @@ export class LobbyComponent implements OnInit, OnDestroy {
     
     // Subscribe to shared lobby messages for persistence
     this.messages = this.sharedDataService.getLobbyMessages();
-    this.messagesSubscription = this.sharedDataService.lobbyMessages$.pipe(takeUntil(this.destroy$)).subscribe(msgs => {
+    this.sharedDataService.lobbyMessages$.pipe(takeUntil(this.destroy$)).subscribe(msgs => {
       this.messages = msgs;
       this.scrollChatToBottom();
     });
     
     // Subscribe to WebSocket messages BEFORE connecting
-    this.subscription = this.wsService.messages$.pipe(
+    this.wsService.messages$.pipe(
       takeUntil(this.destroy$),
       filter(message => message !== null && typeof message === 'object') // Filter out null and invalid messages
     ).subscribe(
-      message => {
-      
-      // Guard against processing messages after component destruction
-      if (this.isDestroyed) {
-        console.log('[Lobby] Ignoring message - component destroyed');
-        return;
+      rawMessage => {
+
+      // Unwrap the server's broadcast_message envelope (group broadcasts)
+      let message = rawMessage;
+      if (message.type === 'broadcast_message' && message.data && typeof message.data === 'object') {
+        message = message.data;
       }
-      
+
       switch (message.type) {
         case 'user_list':
-          // Validate message has required fields
-          if (!Array.isArray(message.users)) {
-            console.error('Invalid user_list message: missing or invalid users array', message);
-            break;
-          }
-          
-          // Validate each user object in the array
-          const validUsers: User[] = [];
-          for (const user of message.users) {
-            if (!user || typeof user !== 'object') {
-              console.warn('Skipping invalid user object:', user);
-              continue;
-            }
-            
-            // Validate required user fields
-            if (!user.username || typeof user.username !== 'string') {
-              console.warn('Skipping user with invalid username:', user);
-              continue;
-            }
-            
-            if (!user.status || typeof user.status !== 'string') {
-              console.warn('Skipping user with invalid status:', user);
-              continue;
-            }
-            
-            // Ensure status is a valid UserStatus value
-            const validStatuses: string[] = ['online', 'invited', 'configuring', 'in-game'];
-            if (!validStatuses.includes(user.status)) {
-              console.warn(`User ${user.username} has invalid status: ${user.status}, defaulting to 'online'`);
-              user.status = 'online';
-            }
-            
-            validUsers.push(user);
-          }
-          
-          // Merge server list with any local invited statuses to keep invited users visible
-          const serverUsers: User[] = validUsers;
-          const previousUsernames = new Set(this.users.map(u => u.username));
-          const newUsernames = new Set(serverUsers.map(u => u.username));
-          // Find truly joined users
-          const joined = serverUsers.filter(u => !previousUsernames.has(u.username));
-          // Find truly left users
-          const left = this.users.filter(u => !newUsernames.has(u.username));
-          // Update users - trust server status completely
-          this.users = serverUsers;
-          // Only show system messages for real joins/leaves
-          joined.forEach(u => {
-            if (u.username !== this.username) this.addSystemMessage(`${u.username} has joined the lobby.`);
-          });
-          left.forEach(u => {
-            if (u.username !== this.username) this.addSystemMessage(`${u.username} has left the lobby.`);
-          });
-          // Clear the rejoining flag (but do NOT reset statuses - trust the server's live statuses)
-          if (this.isRejoiningFromNavigation) {
-            this.isRejoiningFromNavigation = false;
-          }
-          // Store users in the shared service
-          this.sharedDataService.updateLobbyUsers(this.users);
-          this.cdr.markForCheck(); // Trigger change detection
+          this.applyUserList(message);
           break;
-          
+
         case 'user_joined':
         case 'user_left':
           // Ignore these events, handled above by user_list diff
@@ -333,78 +270,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
           console.log('[Lobby] Server connection confirmed');
           break;
         
-        case 'broadcast_message':
-          // Handle lobby state broadcast from server - process the nested message
-          if (message.data && typeof message.data === 'object' && message.data.type) {
-            console.log('[Lobby] Received lobby state broadcast:', message.data);
-            // Process the nested message inline
-            const nestedMessage = message.data;
-            
-            // Ignore game room specific messages
-            if (nestedMessage.type === 'player_list' || nestedMessage.type === 'player_list_update') {
-              console.log('[Lobby] Ignoring player_list message (game room specific)');
-              break;
-            }
-            
-            // Handle user_list inside broadcast_message
-            if (nestedMessage.type === 'user_list' && Array.isArray(nestedMessage.users)) {
-              // Validate each user object in the array
-              const validUsers: User[] = [];
-              for (const user of nestedMessage.users) {
-                if (!user || typeof user !== 'object') {
-                  console.warn('Skipping invalid user object:', user);
-                  continue;
-                }
-                
-                // Validate required user fields
-                if (!user.username || typeof user.username !== 'string') {
-                  console.warn('Skipping user with invalid username:', user);
-                  continue;
-                }
-                
-                if (!user.status || typeof user.status !== 'string') {
-                  console.warn('Skipping user with invalid status:', user);
-                  continue;
-                }
-                
-                // Ensure status is a valid UserStatus value
-                const validStatuses: string[] = ['online', 'invited', 'configuring', 'in-game'];
-                if (!validStatuses.includes(user.status)) {
-                  console.warn(`User ${user.username} has invalid status: ${user.status}, defaulting to 'online'`);
-                  user.status = 'online';
-                }
-                
-                validUsers.push(user);
-              }
-              
-              // Merge server list with any local invited statuses
-              const serverUsers: User[] = validUsers;
-              const previousUsernames = new Set(this.users.map(u => u.username));
-              const newUsernames = new Set(serverUsers.map(u => u.username));
-              const joined = serverUsers.filter(u => !previousUsernames.has(u.username));
-              const left = this.users.filter(u => !newUsernames.has(u.username));
-              
-              // Trust server status completely
-              this.users = serverUsers;
-              
-              joined.forEach(u => {
-                if (u.username !== this.username) this.addSystemMessage(`${u.username} has joined the lobby.`);
-              });
-              left.forEach(u => {
-                if (u.username !== this.username) this.addSystemMessage(`${u.username} has left the lobby.`);
-              });
-              
-              // Clear the rejoining flag (but do NOT reset statuses - trust the server's live statuses)
-              if (this.isRejoiningFromNavigation) {
-                this.isRejoiningFromNavigation = false;
-              }
-              
-              this.sharedDataService.updateLobbyUsers(this.users);
-              this.cdr.markForCheck(); // Trigger change detection
-            }
-          }
-          break;
-        
         case 'heartbeat_ack':
           // Heartbeat acknowledgment - no action needed
           break;
@@ -481,11 +346,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
         takeUntil(this.destroy$)
       ).subscribe(
         () => {
-          // Guard against sending if component has been destroyed
-          if (this.isDestroyed) {
-            console.log('[Lobby] Skipping join_lobby - component destroyed');
-            return;
-          }
           console.log('[Lobby] Connection established, sending join_lobby message');
           this.wsService.sendMessage({
             type: 'join_lobby',
@@ -502,59 +362,33 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
   
   ngOnDestroy(): void {
-    // Mark component as destroyed immediately to prevent any further message processing
-    this.isDestroyed = true;
-    
     // Remove beforeunload handler
     window.removeEventListener('beforeunload', this.handleBeforeUnload);
-    
-    // Always clear countdown timer first, regardless of connection state
-    if (this.countdownTimerId) {
-      clearInterval(this.countdownTimerId);
-      this.countdownTimerId = null;
-    }
-    
-    // Clear invite cooldown timer
+
+    // Clear timers
+    this.clearCountdownTimer();
     if (this.inviteCooldownTimerId) {
       clearInterval(this.inviteCooldownTimerId);
       this.inviteCooldownTimerId = null;
     }
-    
-    // CRITICAL: Always cleanup subscriptions via destroy$ to prevent memory leaks
-    // This must happen before any early returns
+
+    // Tear down all takeUntil(destroy$) subscriptions
     this.destroy$.next();
     this.destroy$.complete();
-    
-    // Check if we're intentionally navigating to setup or game room
+
+    // Keep the WebSocket alive when intentionally navigating to setup or game room
     const isIntentionalNav = this.navigationState.isIntentionalNavigation();
     const navContext = this.navigationState.getNavigationContext();
-    
     if (isIntentionalNav && (navContext === 'setup' || navContext === 'game-room')) {
-      // Do not disconnect or send leave message if navigating to setup or game room
-      // Subscriptions already cleaned up above
       return;
     }
-    
+
     // Send leave message for true disconnects
     this.wsService.sendMessage({
       type: 'leave_lobby',
       username: this.username
     });
-    
-    // Disconnect
     this.wsService.disconnect();
-    
-    // Unsubscribe (redundant due to destroy$ above, but keeping for explicitness)
-    if (this.subscription) {
-      this.subscription.unsubscribe();
-    }
-    
-    if (this.messagesSubscription) {
-      this.messagesSubscription.unsubscribe();
-    }
-    
-    this.destroy$.next();
-    this.destroy$.complete();
   }
   
   private handleBeforeUnload = (event: BeforeUnloadEvent): void => {
@@ -761,12 +595,54 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
   
   /**
-   * @deprecated Use canInviteUser() instead. Kept for backwards compatibility.
+   * Apply a server `user_list` message: validate each entry, diff against the
+   * current list for join/leave system messages, and sync the shared service.
    */
-  alreadyInvited(targetUsername: string): boolean {
-    return !this.canInviteUser(targetUsername).canInvite;
+  private applyUserList(message: any): void {
+    if (!Array.isArray(message.users)) {
+      console.error('Invalid user_list message: missing or invalid users array', message);
+      return;
+    }
+
+    const validStatuses: string[] = ['online', 'invited', 'configuring', 'in-game'];
+    const serverUsers: User[] = [];
+    for (const user of message.users) {
+      if (!user || typeof user !== 'object' ||
+          !user.username || typeof user.username !== 'string' ||
+          !user.status || typeof user.status !== 'string') {
+        console.warn('Skipping invalid user object:', user);
+        continue;
+      }
+      if (!validStatuses.includes(user.status)) {
+        console.warn(`User ${user.username} has invalid status: ${user.status}, defaulting to 'online'`);
+        user.status = 'online';
+      }
+      serverUsers.push(user);
+    }
+
+    const previousUsernames = new Set(this.users.map(u => u.username));
+    const newUsernames = new Set(serverUsers.map(u => u.username));
+    const joined = serverUsers.filter(u => !previousUsernames.has(u.username));
+    const left = this.users.filter(u => !newUsernames.has(u.username));
+
+    // Update users - trust server status completely
+    this.users = serverUsers;
+
+    // Only show system messages for real joins/leaves
+    joined.forEach(u => {
+      if (u.username !== this.username) this.addSystemMessage(`${u.username} has joined the lobby.`);
+    });
+    left.forEach(u => {
+      if (u.username !== this.username) this.addSystemMessage(`${u.username} has left the lobby.`);
+    });
+
+    // Clear the rejoining flag (but do NOT reset statuses - trust the server's live statuses)
+    this.isRejoiningFromNavigation = false;
+
+    this.sharedDataService.updateLobbyUsers(this.users);
+    this.cdr.markForCheck();
   }
-  
+
   private handleGameChallenge(message: any): void {
     console.log('[Lobby] handleGameChallenge called with:', message);
     console.log('[Lobby] Current activeInvite:', this.activeInvite);

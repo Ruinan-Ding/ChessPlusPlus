@@ -4,20 +4,37 @@ import { BehaviorSubject, Observable } from 'rxjs';
 /**
  * Default hex-grid game configuration.
  *
- * Mirrors the schema defined in shared/game-config.types.ts and the
- * DEFAULT_CONFIG in server/game/engine/config_loader.py.
+ * Mirrors DEFAULT_CONFIG in server/game/engine/config_loader.py.
  *
- * Radius-5 board with a minimal set of classic chess-style pieces
- * adapted for hexagonal geometry (axial coordinates q, r).
+ * The only fixed game fact is the board: a hexagon with 24 cells per edge
+ * (axial radius 23), drawn with an edge pointing up. Every unit below is a
+ * PLACEHOLDER — the engine reads all behaviour from this data and knows
+ * nothing about specific unit ids.
+ *
+ * Movement patterns are authored from WHITE's perspective and mirrored for
+ * black by the engine. Two pattern types:
+ *   { direction, range, canJump?, moveOnly?, captureOnly? }  — step/slide
+ *     (range 0 = unlimited; directions: E W NE NW SE SW plus the six
+ *      diagonals DN DS DNE DSW DSE DNW)
+ *   { offsets: [[dq, dr], ...], moveOnly?, captureOnly? }    — fixed jumps
  */
+
+/** The 12 hex 'L-shape' jump offsets used by the placeholder knight. */
+const KNIGHT_JUMP_OFFSETS: number[][] = [
+  [-3, 1], [-3, 2], [-2, -1], [-2, 3], [-1, -2], [-1, 3],
+  [1, -3], [1, 2], [2, -3], [2, 1], [3, -2], [3, -1],
+];
+
 const DEFAULT_GAME_CONFIG = {
   version: '1.0',
   board: {
-    radius: 5
+    radius: 23,              // 24 cells per hexagon edge
+    orientation: 'edge-up'   // cosmetic: how the client draws the hexagon
   },
   units: {
     king: {
       id: 'king', name: 'King', symbol: 'K', value: 0, hp: 10, attack: 3,
+      display: { white: '♔', black: '♚' },
       movement: [
         { direction: 'E',  range: 1 },
         { direction: 'W',  range: 1 },
@@ -29,6 +46,7 @@ const DEFAULT_GAME_CONFIG = {
     },
     queen: {
       id: 'queen', name: 'Queen', symbol: 'Q', value: 9, hp: 8, attack: 6,
+      display: { white: '♕', black: '♛' },
       movement: [
         { direction: 'E',  range: 0 },
         { direction: 'W',  range: 0 },
@@ -40,6 +58,7 @@ const DEFAULT_GAME_CONFIG = {
     },
     rook: {
       id: 'rook', name: 'Rook', symbol: 'R', value: 5, hp: 12, attack: 4,
+      display: { white: '♖', black: '♜' },
       movement: [
         { direction: 'E',  range: 0 },
         { direction: 'W',  range: 0 },
@@ -51,28 +70,26 @@ const DEFAULT_GAME_CONFIG = {
     },
     bishop: {
       id: 'bishop', name: 'Bishop', symbol: 'B', value: 3, hp: 6, attack: 5,
+      display: { white: '♗', black: '♝' },
       movement: [
-        { direction: 'E',  range: 0 },
-        { direction: 'W',  range: 0 },
-        { direction: 'NE', range: 0 },
-        { direction: 'NW', range: 0 },
-        { direction: 'SE', range: 0 },
-        { direction: 'SW', range: 0 }
+        { direction: 'DN',  range: 0 },
+        { direction: 'DS',  range: 0 },
+        { direction: 'DNE', range: 0 },
+        { direction: 'DSW', range: 0 },
+        { direction: 'DSE', range: 0 },
+        { direction: 'DNW', range: 0 }
       ]
     },
     knight: {
       id: 'knight', name: 'Knight', symbol: 'N', value: 3, hp: 8, attack: 4,
+      display: { white: '♘', black: '♞' },
       movement: [
-        { direction: 'E',  range: 2, canJump: true },
-        { direction: 'W',  range: 2, canJump: true },
-        { direction: 'NE', range: 2, canJump: true },
-        { direction: 'NW', range: 2, canJump: true },
-        { direction: 'SE', range: 2, canJump: true },
-        { direction: 'SW', range: 2, canJump: true }
+        { offsets: KNIGHT_JUMP_OFFSETS }
       ]
     },
     pawn: {
       id: 'pawn', name: 'Pawn', symbol: 'P', value: 1, hp: 4, attack: 2,
+      display: { white: '♙', black: '♟' },
       movement: [
         { direction: 'NW', range: 1, moveOnly: true },
         { direction: 'NE', range: 1, captureOnly: true },
@@ -82,40 +99,45 @@ const DEFAULT_GAME_CONFIG = {
   },
   abilities: {},
   setup: {
+    // Placeholder placement on the south/north edge rows of the radius-23
+    // board. White's edge row is r=+23 (q from -23 to 0); black is the
+    // point-mirror (q,r) → (-q,-r).
     white: {
-      '0,5':   'king',
-      '-1,5':  'queen',
-      '-2,5':  'bishop',
-      '1,4':   'bishop',
-      '-3,5':  'knight',
-      '2,3':   'knight',
-      '-4,5':  'rook',
-      '3,2':   'rook',
-      '-1,4':  'pawn',
-      '0,4':   'pawn',
-      '1,3':   'pawn',
-      '-2,4':  'pawn',
-      '2,2':   'pawn'
+      '-11,23': 'king',
+      '-13,23': 'queen',
+      '-9,23':  'bishop',
+      '-15,23': 'bishop',
+      '-7,23':  'knight',
+      '-17,23': 'knight',
+      '-5,23':  'rook',
+      '-19,23': 'rook',
+      '-8,22':  'pawn',
+      '-10,22': 'pawn',
+      '-12,22': 'pawn',
+      '-14,22': 'pawn',
+      '-16,22': 'pawn'
     },
     black: {
-      '0,-5':   'king',
-      '1,-5':   'queen',
-      '2,-5':   'bishop',
-      '-1,-4':  'bishop',
-      '3,-5':   'knight',
-      '-2,-3':  'knight',
-      '4,-5':   'rook',
-      '-3,-2':  'rook',
-      '1,-4':   'pawn',
-      '0,-4':   'pawn',
-      '-1,-3':  'pawn',
-      '2,-4':   'pawn',
-      '-2,-2':  'pawn'
+      '11,-23': 'king',
+      '13,-23': 'queen',
+      '9,-23':  'bishop',
+      '15,-23': 'bishop',
+      '7,-23':  'knight',
+      '17,-23': 'knight',
+      '5,-23':  'rook',
+      '19,-23': 'rook',
+      '8,-22':  'pawn',
+      '10,-22': 'pawn',
+      '12,-22': 'pawn',
+      '14,-22': 'pawn',
+      '16,-22': 'pawn'
     }
   },
   rules: {
     maxTurns: 0,
-    turnTimeLimit: 0
+    turnTimeLimit: 0,
+    // Placeholder: win condition. Only 'elimination' is implemented.
+    objective: 'elimination'
   }
 };
 
@@ -158,8 +180,8 @@ export class ConfigService {
     // Board
     if (!config.board || typeof config.board.radius !== 'number') {
       errors.push('Missing or invalid "board.radius"');
-    } else if (config.board.radius < 1 || config.board.radius > 20) {
-      errors.push('board.radius must be between 1 and 20');
+    } else if (config.board.radius < 1 || config.board.radius > 50) {
+      errors.push('board.radius must be between 1 and 50');
     }
 
     // Units
@@ -183,7 +205,7 @@ export class ConfigService {
             errors.push(`Invalid coordinate "${coord}" in setup.${side}`);
           }
           if (config.units && !(unitId as string in config.units)) {
-            // Only warn — unit definitions might be loaded later
+            errors.push(`Unknown unit "${unitId}" at ${coord} in setup.${side}`);
           }
         }
       }
