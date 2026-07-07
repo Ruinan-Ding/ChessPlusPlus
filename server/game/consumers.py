@@ -791,6 +791,18 @@ class GameConsumer(AsyncWebsocketConsumer):
             # Stop any pending turn timer - this room is being abandoned
             self._cancel_turn_timer(game_id)
 
+            # Deliberately leaving an active match forfeits it - record the
+            # result and tell both players. (The disconnect path gets a grace
+            # period because it can be accidental; walking out is a choice.)
+            forfeited = False
+            state = await self._get_game_state(game_id)
+            if state and not state.is_finished:
+                winner = game.opponent if username == game.host else game.host
+                if await self._end_game(game_id, state, winner, 'resign'):
+                    await self._broadcast_game_over(game_id, winner, 'resign', resignedBy=username)
+                    forfeited = True
+                    logger.info(f"Game {game_id} forfeited to {winner} — {username} left mid-game")
+
             # Notify other player(s) in the game room that this player left
             # Send to game room BEFORE leaving the group
             game_room_group = f'game_{game_id}'
@@ -817,9 +829,11 @@ class GameConsumer(AsyncWebsocketConsumer):
             # Clean up ready status
             await self._delete_ready_status(game_id, username)
 
-            # If host is leaving, close the game room (resets both players to 'online')
-            if username == game.host:
-                await self._close_game_room(game_id, f"{username} (host) left the game room")
+            # Close the room if the host left, or if leaving forfeited the match
+            # (the remaining player is sent back to the lobby by partner_left
+            # either way, so the room must not linger as 'started').
+            if username == game.host or forfeited:
+                await self._close_game_room(game_id, f"{username} left the game room")
 
             # Broadcast updated user list to lobby
             await self._send_user_list()
@@ -1141,6 +1155,16 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'NOT_ALL_READY', 'Not all players are ready')
                 return
 
+            # Reject a replayed start_game while a match is in progress.
+            # Ready statuses persist after start, so without this a duplicate
+            # message (double-click, retry, or crafted) would re-randomize
+            # colours and wipe the live board. A *finished* GameState is fine -
+            # that's the rematch flow.
+            existing_state = await self._get_game_state(game_id)
+            if existing_state and not existing_state.is_finished:
+                await send_error(self, 'GAME_IN_PROGRESS', 'The game has already started')
+                return
+
             # Load and validate the config BEFORE mutating any state, so a bad
             # saved custom config fails cleanly instead of leaving the room
             # half-started (players flipped to in-game with no GameState).
@@ -1166,6 +1190,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 p_white, p_black = game.opponent, game.host
 
             # Persist
+            turn_started_dt = timezone.now()
             await self._create_game_state(
                 game_id=game_id,
                 board_state=board.to_dict(),
@@ -1173,12 +1198,11 @@ class GameConsumer(AsyncWebsocketConsumer):
                 player_white=p_white,
                 player_black=p_black,
                 config_snapshot=config,
+                turn_started_at=turn_started_dt,
             )
 
             # Update GameRoom status to 'started'
             await self._update_game_status(game_id, 'started')
-
-            turn_started = timezone.now().isoformat()
 
             # Broadcast full initial state to both players immediately
             await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
@@ -1190,7 +1214,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'playerWhite': p_white,
                 'playerBlack': p_black,
                 'config': config,
-                'turnStartedAt': turn_started,
+                'turnStartedAt': turn_started_dt.isoformat(),
             })
 
             # Start turn timer (if configured)
@@ -1332,6 +1356,30 @@ class GameConsumer(AsyncWebsocketConsumer):
             expected_turn_number=state.turn_number,
         )
 
+    async def _end_game_with_retry(self, game_id: str, winner: str, end_reason: str,
+                                    precondition=None) -> bool:
+        """End a game, retrying once if a concurrent move advanced the turn
+        between the caller's state read and the conditional write.
+
+        Without this, a resign/draw-accept racing an opponent's move fails its
+        OCC write (turn number changed) and would be misreported as "game
+        already ended" while the game is in fact still running.
+
+        precondition, if given, is re-checked against each fresh state read
+        (e.g. "the draw offer is still pending"). Returns True if this call's
+        ending applied; False if the game is finished or the precondition no
+        longer holds.
+        """
+        for _ in range(2):
+            state = await self._get_game_state(game_id)
+            if not state or state.is_finished:
+                return False
+            if precondition is not None and not precondition(state):
+                return False
+            if await self._end_game(game_id, state, winner, end_reason):
+                return True
+        return False
+
     async def _broadcast_game_over(self, game_id: str, winner: str, end_reason: str, **extra):
         """Cancel the turn timer and notify both players that the game ended."""
         self._cancel_turn_timer(game_id)
@@ -1371,8 +1419,14 @@ class GameConsumer(AsyncWebsocketConsumer):
             radius = config.get('board', {}).get('radius', DEFAULT_CONFIG['board']['radius'])
             board = HexBoard.from_dict(radius, state.board_state)
 
-            fq, fr = parse_coord(from_coord)
-            tq, tr = parse_coord(to_coord)
+            # Coordinates come straight off the wire - reject malformed input
+            # as a client error, not an INTERNAL_ERROR with a traceback.
+            try:
+                fq, fr = parse_coord(from_coord)
+                tq, tr = parse_coord(to_coord)
+            except (ValueError, IndexError, TypeError, AttributeError):
+                await send_error(self, 'INVALID_MOVE', 'Malformed move coordinates')
+                return
 
             # Validate source piece
             piece = board.get(fq, fr)
@@ -1433,6 +1487,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             # state.turn_number and unfinished, so a turn timer that already
             # ended the game while this move was in flight can't be clobbered.
             next_turn_number = state.turn_number + 1
+            turn_started_dt = timezone.now()
             applied = await self._update_game_state(
                 game_id=self.game_id,
                 board_state=board.to_dict(),
@@ -1442,20 +1497,20 @@ class GameConsumer(AsyncWebsocketConsumer):
                 winner=winner,
                 end_reason=end_reason,
                 expected_turn_number=state.turn_number,
+                turn_started_at=turn_started_dt,
             )
             if not applied:
                 await send_error(self, 'GAME_OVER', 'This game already ended before your move was processed')
                 return
 
             # Broadcast the move to both players
-            turn_started = timezone.now().isoformat()
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'move_made',
                 'move': move_record,
                 'boardState': board.to_dict(),
                 'currentTurn': next_player if not end_reason else '',
                 'turnNumber': next_turn_number,
-                'turnStartedAt': turn_started,
+                'turnStartedAt': turn_started_dt.isoformat(),
             })
 
             if end_reason:
@@ -1490,7 +1545,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             winner = state.player_black if self.username == state.player_white else state.player_white
 
-            if await self._end_game(self.game_id, state, winner, 'resign'):
+            if await self._end_game_with_retry(self.game_id, winner, 'resign'):
                 await self._broadcast_game_over(self.game_id, winner, 'resign', resignedBy=self.username)
                 logger.info(f"Player {self.username} resigned in game {self.game_id}")
             else:
@@ -1552,11 +1607,16 @@ class GameConsumer(AsyncWebsocketConsumer):
             accepted = bool(data['accept'])
 
             if accepted:
-                if await self._end_game(self.game_id, state, '', 'draw_agreed'):
+                # Retry guards against racing an opponent's move; the
+                # precondition ensures the offer wasn't invalidated by that
+                # same move (every state write clears draw_offered_by).
+                offer_still_pending = lambda s: s.draw_offered_by and s.draw_offered_by != self.username
+                if await self._end_game_with_retry(self.game_id, '', 'draw_agreed',
+                                                    precondition=offer_still_pending):
                     await self._broadcast_game_over(self.game_id, '', 'draw_agreed')
                     logger.info(f"Draw agreed in game {self.game_id}")
                 else:
-                    await send_error(self, 'GAME_OVER', 'This game has already ended')
+                    await send_error(self, 'NO_DRAW_OFFER', 'The draw offer is no longer valid')
             else:
                 await self._set_draw_offer(self.game_id, '')  # clear the offer
                 await broadcast_to_group(self.channel_layer, self.room_group_name, {
@@ -1595,7 +1655,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'winner': state.winner,
                 'endReason': state.end_reason,
                 'config': state.config_snapshot,
-                'turnStartedAt': timezone.now().isoformat(),
+                'turnStartedAt': (state.turn_started_at or timezone.now()).isoformat(),
                 'drawOfferedBy': state.draw_offered_by or '',
             })
         except Exception as e:
@@ -1816,7 +1876,8 @@ class GameConsumer(AsyncWebsocketConsumer):
     # ── GameState DB operations ──────────────────────────────────────
 
     @database_sync_to_async
-    def _create_game_state(self, game_id, board_state, current_turn, player_white, player_black, config_snapshot):
+    def _create_game_state(self, game_id, board_state, current_turn, player_white, player_black,
+                            config_snapshot, turn_started_at=None):
         """Create (or reset, on rematch) the GameState for a game that just started."""
         game = GameRoom.objects.get(game_id=game_id)
         state, _created = GameState.objects.update_or_create(
@@ -1832,6 +1893,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'end_reason': '',
                 'config_snapshot': config_snapshot,
                 'draw_offered_by': '',
+                'turn_started_at': turn_started_at or timezone.now(),
             },
         )
         return state
@@ -1846,7 +1908,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _update_game_state(self, game_id, board_state, current_turn, turn_number, move_history,
-                            winner='', end_reason='', expected_turn_number=None):
+                            winner='', end_reason='', expected_turn_number=None, turn_started_at=None):
         """Update the mutable fields of a GameState after a move or game end.
 
         If expected_turn_number is given, the write is conditional: it only
@@ -1856,19 +1918,27 @@ class GameConsumer(AsyncWebsocketConsumer):
         turn timer already ended the game, or vice versa) from silently
         clobbering whichever result actually landed first.
 
+        Any pending draw offer is cleared by every state write: a move
+        invalidates an outstanding offer (matching the client, which already
+        clears it locally on move_made), and a finished game has no use for one.
+
         Returns True if the write applied, False if a concurrent write won.
         """
         qs = GameState.objects.filter(game_id=game_id)  # type: ignore
         if expected_turn_number is not None:
             qs = qs.filter(turn_number=expected_turn_number, end_reason='')
-        rows = qs.update(
-            board_state=board_state,
-            current_turn=current_turn,
-            turn_number=turn_number,
-            move_history=move_history,
-            winner=winner,
-            end_reason=end_reason,
-        )
+        update_fields = {
+            'board_state': board_state,
+            'current_turn': current_turn,
+            'turn_number': turn_number,
+            'move_history': move_history,
+            'winner': winner,
+            'end_reason': end_reason,
+            'draw_offered_by': '',
+        }
+        if turn_started_at is not None:
+            update_fields['turn_started_at'] = turn_started_at
+        rows = qs.update(**update_fields)
         return rows > 0
 
     @database_sync_to_async

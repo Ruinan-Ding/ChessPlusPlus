@@ -473,3 +473,167 @@ class FloodProtectionLiveIntegrationTests(TransactionTestCase):
                 self.assertEqual(ack['type'], 'heartbeat_ack')
         finally:
             await comm.disconnect()
+
+
+class GameLifecycleGuardTests(TransactionTestCase):
+    """
+    Covers the start_game replay guard and the explicit-leave forfeit:
+    a duplicate start_game must not reset a live board, and a player who
+    deliberately leaves an active match must forfeit it (unlike a raw
+    disconnect, which gets a reconnect grace period).
+    """
+
+    async def _start_game(self):
+        game = await GameRoom.objects.acreate(
+            host='alice', opponent='bob', status='waiting',
+            host_token='host-tok', opponent_token='opp-tok',
+        )
+        application = URLRouter(websocket_urlpatterns)
+        host_comm = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+        opp_comm = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+
+        await host_comm.connect()
+        await opp_comm.connect()
+        await host_comm.send_json_to({
+            'type': 'join_game_room', 'username': 'alice', 'gameId': game.game_id, 'token': 'host-tok',
+        })
+        await _receive_until(host_comm, 'join_game_room_success')
+        await opp_comm.send_json_to({
+            'type': 'join_game_room', 'username': 'bob', 'gameId': game.game_id, 'token': 'opp-tok',
+        })
+        await _receive_until(opp_comm, 'join_game_room_success')
+
+        await host_comm.send_json_to({'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id})
+        await opp_comm.send_json_to({'type': 'player_ready', 'username': 'bob', 'gameId': game.game_id})
+        await host_comm.send_json_to({'type': 'start_game', 'gameId': game.game_id})
+        started = await _receive_until(host_comm, 'game_started')
+        await _receive_until(opp_comm, 'game_started')
+        return game, host_comm, opp_comm, started
+
+    async def test_replayed_start_game_is_rejected_and_does_not_reset_board(self):
+        game, host_comm, opp_comm, started = await self._start_game()
+        try:
+            # White makes a move so the board diverges from the initial setup.
+            white_comm = host_comm if started['currentTurn'] == 'alice' else opp_comm
+            await white_comm.send_json_to({'type': 'make_move', 'from': '-12,22', 'to': '-12,21'})
+            await _receive_until(white_comm, 'move_made')
+
+            # Host replays start_game (double-click / crafted message).
+            await host_comm.send_json_to({'type': 'start_game', 'gameId': game.game_id})
+            err = await _receive_until(host_comm, 'error')
+            self.assertEqual(err['code'], 'GAME_IN_PROGRESS')
+
+            # The live game was not reset: still turn 2, same colour assignment.
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.turn_number, 2)
+            self.assertEqual(state.player_white, started['playerWhite'])
+            self.assertEqual(state.player_black, started['playerBlack'])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_rematch_start_game_still_allowed_after_game_over(self):
+        game, host_comm, opp_comm, started = await self._start_game()
+        try:
+            await opp_comm.send_json_to({'type': 'resign'})
+            await _receive_until(host_comm, 'game_over')
+            await _receive_until(opp_comm, 'game_over')
+
+            # Both re-ready and the host starts again - must succeed (rematch).
+            await host_comm.send_json_to({'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id})
+            await opp_comm.send_json_to({'type': 'player_ready', 'username': 'bob', 'gameId': game.game_id})
+            await host_comm.send_json_to({'type': 'start_game', 'gameId': game.game_id})
+            restarted = await _receive_until(host_comm, 'game_started')
+            self.assertEqual(restarted['turnNumber'], 1)
+
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.end_reason, '')
+            self.assertEqual(state.turn_number, 1)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_explicit_leave_mid_game_forfeits_to_the_other_player(self):
+        game, host_comm, opp_comm, started = await self._start_game()
+        try:
+            # Bob (non-host) deliberately leaves the room mid-game.
+            await opp_comm.send_json_to({
+                'type': 'leave_game_room', 'username': 'bob', 'gameId': game.game_id,
+            })
+
+            over = await _receive_until(host_comm, 'game_over', timeout=5)
+            self.assertEqual(over['endReason'], 'resign')
+            self.assertEqual(over['winner'], 'alice')
+            self.assertEqual(over['resignedBy'], 'bob')
+
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.end_reason, 'resign')
+            self.assertEqual(state.winner, 'alice')
+
+            # The room must not linger as 'started' with no one able to end it.
+            # (game_over is broadcast before the handler closes the room, so
+            # give the rest of the handler a moment to finish.)
+            room = None
+            for _ in range(40):
+                room = await GameRoom.objects.aget(game_id=game.game_id)
+                if room.status == 'closed':
+                    break
+                await asyncio.sleep(0.05)
+            self.assertEqual(room.status, 'closed')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_move_clears_pending_draw_offer_server_side(self):
+        game, host_comm, opp_comm, started = await self._start_game()
+        try:
+            white_comm = host_comm if started['currentTurn'] == 'alice' else opp_comm
+            black_comm = opp_comm if white_comm is host_comm else host_comm
+
+            # Black offers a draw, then white moves instead of responding.
+            await black_comm.send_json_to({'type': 'offer_draw'})
+            await _receive_until(white_comm, 'draw_offered')
+
+            await white_comm.send_json_to({'type': 'make_move', 'from': '-12,22', 'to': '-12,21'})
+            await _receive_until(white_comm, 'move_made')
+
+            # The stale offer must be gone server-side too (a reconnect resync
+            # previously resurrected it).
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.draw_offered_by, '')
+
+            # And accepting it now must be rejected, not end the game in a draw.
+            await white_comm.send_json_to({'type': 'respond_draw', 'accept': True})
+            err = await _receive_until(white_comm, 'error', timeout=5)
+            self.assertEqual(err['code'], 'NO_DRAW_OFFER')
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.end_reason, '')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_malformed_move_coordinates_get_client_error_not_internal(self):
+        game, host_comm, opp_comm, started = await self._start_game()
+        try:
+            white_comm = host_comm if started['currentTurn'] == 'alice' else opp_comm
+            await white_comm.send_json_to({'type': 'make_move', 'from': 'garbage', 'to': '0,0'})
+            err = await _receive_until(white_comm, 'error', timeout=5)
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_resync_reports_persisted_turn_started_at(self):
+        game, host_comm, opp_comm, started = await self._start_game()
+        try:
+            # The resync must echo the persisted turn-start timestamp, not "now".
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertIsNotNone(state.turn_started_at)
+
+            await host_comm.send_json_to({'type': 'request_game_state'})
+            resync = await _receive_until(host_comm, 'game_state_update', timeout=5)
+            self.assertEqual(resync['turnStartedAt'], state.turn_started_at.isoformat())
+            self.assertEqual(resync['turnStartedAt'], started['turnStartedAt'])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()

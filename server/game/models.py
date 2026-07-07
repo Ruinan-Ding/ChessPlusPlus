@@ -167,6 +167,9 @@ class GameState(models.Model):
     config_snapshot = models.JSONField(default=dict)
     # Draw offer tracking
     draw_offered_by = models.CharField(max_length=24, blank=True, default='')
+    # When the current turn started - persisted so reconnect resyncs report the
+    # real turn clock instead of fabricating "now"
+    turn_started_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
