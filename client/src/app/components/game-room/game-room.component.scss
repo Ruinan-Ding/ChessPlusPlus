@@ -29,6 +29,25 @@
       align-items: center;
       gap: 15px;
       
+      .setup-btn {
+        padding: 8px 15px;
+        background-color: #9b59b6;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        
+        &:hover:not(:disabled) {
+          background-color: #8e44ad;
+        }
+        
+        &:disabled {
+          background-color: #95a5a6;
+          cursor: not-allowed;
+          opacity: 0.7;
+        }
+      }
+      
       .leave-btn {
         padding: 8px 15px;
         background-color: #e74c3c;
@@ -46,12 +65,168 @@
   
   main {
     display: flex;
+    flex-direction: row;
     flex: 1;
     gap: 20px;
     min-height: 0;
     height: 100%;
     box-sizing: border-box;
     overflow: hidden;
+  }
+
+  .game-board-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background-color: #1a1a2e;
+    flex: 2;
+    min-width: 200px;
+    overflow: auto;
+    gap: 10px;
+    
+    app-game-board {
+      flex: 0 0 auto;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+      min-height: 400px;
+    }
+    
+    .waiting-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      color: #999;
+      font-size: 1.1rem;
+      p {
+        margin: 0;
+      }
+    }
+  }
+
+  .bottom-section {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .spinner {
+    width: 60px;
+    height: 60px;
+    border: 4px solid #34495e;
+    border-top-color: #3498db;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .game-actions {
+    display: flex;
+    gap: 10px;
+    width: 100%;
+    flex-shrink: 0;
+
+    .resign-btn, .draw-btn {
+      padding: 8px 12px;
+      border: none;
+      border-radius: 4px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.95rem;
+      transition: background 0.2s;
+      color: #fff;
+
+      &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+    }
+
+    .resign-btn {
+      background: #c0392b;
+      &:hover:not(:disabled) { background: #a93226; }
+    }
+
+    .draw-btn {
+      background: #566573;
+      &:hover:not(:disabled) { background: #46505a; }
+    }
+  }
+
+  .post-game-message {
+    padding: 15px 20px;
+    border-radius: 6px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 1.3rem;
+    
+    p {
+      margin: 0;
+    }
+    
+    .win-message {
+      background-color: #d4edda;
+      color: #155724;
+      border: 2px solid #28a745;
+    }
+    
+    .loss-message {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 2px solid #f5c6cb;
+    }
+
+    .draw-message {
+      background-color: #e2e3e5;
+      color: #383d41;
+      border: 2px solid #b0b3b8;
+    }
+  }
+
+  .draw-offer-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: #2c3e50;
+    border: 1px solid #f39c12;
+    border-radius: 6px;
+    color: #ecf0f1;
+    font-size: 0.92rem;
+    width: 100%;
+    box-sizing: border-box;
+
+    span { flex: 1; }
+
+    .accept-btn, .decline-btn {
+      padding: 5px 14px;
+      border: none;
+      border-radius: 4px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .accept-btn {
+      background: #27ae60;
+      color: #fff;
+      &:hover { background: #219a52; }
+    }
+    .decline-btn {
+      background: #e74c3c;
+      color: #fff;
+      &:hover { background: #c0392b; }
+    }
   }
   
   .chat-panel {
@@ -62,7 +237,6 @@
     border-radius: 4px;
     background-color: white;
     // Constrain height for internal scroll
-    height: 100%;
     min-height: 0;
     
     .chat-tabs {
@@ -246,6 +420,13 @@
     cursor: context-menu;
   }
 
+  .user-status-and-action {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
   .status-dot {
     width: 10px;
     height: 10px;
@@ -313,7 +494,7 @@
   }
 
   .game-settings-panel {
-    width: 320px;
+    width: 100%;
     min-width: 0;
     display: flex;
     flex-direction: column;
@@ -321,7 +502,7 @@
     border: 1px solid #ddd;
     border-radius: 4px;
     background-color: #f8f9fa;
-    height: 100%;
+    height: auto;
     box-sizing: border-box;
     overflow: auto;
     
@@ -372,6 +553,79 @@
             label {
               cursor: pointer;
             }
+          }
+          
+          .pending-request {
+            padding: 8px;
+            background-color: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 4px;
+            color: #856404;
+            font-size: 0.9rem;
+          }
+          
+          .blocked-message {
+            padding: 8px;
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            border-radius: 4px;
+            color: #721c24;
+            font-size: 0.9rem;
+          }
+          
+          .reveal-request-prompt {
+            padding: 12px;
+            background-color: #f0f8ff;
+            border: 2px solid #3498db;
+            border-radius: 4px;
+            
+            p {
+              margin: 0 0 12px 0;
+              color: #2c3e50;
+              font-weight: 500;
+            }
+            
+            .request-buttons {
+              display: flex;
+              gap: 8px;
+              
+              button {
+                flex: 1;
+                padding: 8px 12px;
+                border: none;
+                border-radius: 4px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s;
+                
+                &.accept-btn {
+                  background-color: #27ae60;
+                  color: white;
+                  
+                  &:hover {
+                    background-color: #229954;
+                  }
+                }
+                
+                &.decline-btn {
+                  background-color: #e74c3c;
+                  color: white;
+                  
+                  &:hover {
+                    background-color: #c0392b;
+                  }
+                }
+              }
+            }
+          }
+          
+          .reveal-display {
+            padding: 8px;
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            color: #333;
+            font-size: 0.9rem;
           }
         }
       }
@@ -470,6 +724,12 @@
         &:hover {
           background-color: #8e44ad;
         }
+        
+        &:disabled {
+          background-color: #95a5a6;
+          cursor: not-allowed;
+          opacity: 0.7;
+        }
       }
       
       .ready-btn {
@@ -493,6 +753,17 @@
           
           &:hover {
             background-color: #c0392b;
+          }
+        }
+        
+        &:disabled,
+        &.gray {
+          background-color: #95a5a6;
+          cursor: not-allowed;
+          opacity: 0.7;
+          
+          &:hover {
+            background-color: #95a5a6;
           }
         }
       }
@@ -597,6 +868,180 @@
       }
     }
   }
+
+  // ==================== REVEAL MODE REQUEST MODALS ====================
+  
+  // HOST WAITING MODAL: Full screen overlay blocking all except leave button
+  .reveal-waiting-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 2000;
+    pointer-events: auto;
+    
+    .reveal-waiting-modal {
+      background: white;
+      border-radius: 12px;
+      padding: 40px 50px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+      max-width: 500px;
+      text-align: center;
+      pointer-events: auto;
+      
+      .modal-content {
+        h2 {
+          margin: 0 0 20px 0;
+          color: #2c3e50;
+          font-size: 1.8rem;
+        }
+        
+        .request-message {
+          font-size: 1.1rem;
+          color: #555;
+          margin-bottom: 30px;
+        }
+        
+        .countdown-display {
+          font-size: 3.5rem;
+          font-weight: bold;
+          color: #3498db;
+          margin: 30px 0;
+          font-family: 'Courier New', monospace;
+        }
+        
+        .helper-text {
+          font-size: 0.95rem;
+          color: #7f8c8d;
+          font-style: italic;
+          margin: 0;
+        }
+      }
+    }
+  }
+
+  // OPPONENT REQUEST MODAL: Popup with Accept/Decline buttons
+  .reveal-request-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.6);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 3000;
+    pointer-events: auto;
+    
+    .reveal-request-modal {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 15px 50px rgba(0, 0, 0, 0.4);
+      max-width: 450px;
+      pointer-events: auto;
+      
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 25px 30px;
+        border-bottom: 2px solid #ecf0f1;
+        
+        h2 {
+          margin: 0;
+          color: #2c3e50;
+          font-size: 1.6rem;
+        }
+        
+        .countdown-badge {
+          background-color: #e74c3c;
+          color: white;
+          font-size: 1.2rem;
+          font-weight: bold;
+          padding: 8px 16px;
+          border-radius: 20px;
+          min-width: 60px;
+          text-align: center;
+        }
+      }
+      
+      .modal-body {
+        padding: 30px 30px 25px;
+        
+        p {
+          margin: 0 0 12px 0;
+          font-size: 1.1rem;
+          color: #333;
+          
+          strong {
+            color: #2c3e50;
+          }
+          
+          &.info-text {
+            font-size: 0.95rem;
+            color: #7f8c8d;
+            margin-top: 8px;
+          }
+        }
+      }
+      
+      .modal-footer {
+        display: flex;
+        gap: 12px;
+        padding: 25px 30px;
+        border-top: 1px solid #ecf0f1;
+        
+        button {
+          flex: 1;
+          padding: 12px 20px;
+          border: none;
+          border-radius: 6px;
+          font-size: 1rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.3s ease;
+          
+          &.accept-btn {
+            background-color: #27ae60;
+            color: white;
+            order: 2;  // Accept on the right
+            
+            &:hover {
+              background-color: #229954;
+              transform: translateY(-2px);
+              box-shadow: 0 4px 12px rgba(39, 174, 96, 0.3);
+            }
+            
+            &:active {
+              transform: translateY(0);
+            }
+          }
+          
+          &.decline-btn {
+            background-color: #e74c3c;
+            color: white;
+            order: 1;  // Decline on the left
+            
+            &:hover {
+              background-color: #c0392b;
+              transform: translateY(-2px);
+              box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
+            }
+            
+            &:active {
+              transform: translateY(0);
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 @media (max-width: 900px) {
@@ -604,7 +1049,11 @@
     main {
       flex-direction: column;
       gap: 20px;
-      height: 100%;
+      height: auto;
+      overflow: visible;
+    }
+    .bottom-section {
+      overflow: visible;
     }
     .game-settings-panel {
       width: 100%;
@@ -612,6 +1061,15 @@
       height: 220px;
       max-height: 220px;
       overflow: auto;
+    }
+    
+    .reveal-waiting-overlay .reveal-waiting-modal {
+      max-width: 90%;
+      padding: 30px 25px;
+    }
+    
+    .reveal-request-overlay .reveal-request-modal {
+      max-width: 90%;
     }
   }
 }

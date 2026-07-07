@@ -1,0 +1,183 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChessPlusPlus Game Configuration",
+  "description": "Configuration schema for a hex-grid tactics game. Uses axial coordinates (q, r). Matches DEFAULT_CONFIG in server/game/engine/config_loader.py and client config.service.ts.",
+  "type": "object",
+  "required": ["version", "board", "units", "setup", "rules"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Schema version for forward compatibility."
+    },
+    "board": {
+      "type": "object",
+      "required": ["radius"],
+      "properties": {
+        "radius": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Hex grid radius (distance from centre hex to edge). The default board is radius 23 (24 cells per hexagon edge)."
+        },
+        "orientation": {
+          "type": "string",
+          "enum": ["edge-up", "vertex-up"],
+          "description": "Cosmetic: how the client draws the board hexagon. Default is edge-up."
+        }
+      },
+      "additionalProperties": false
+    },
+    "units": {
+      "type": "object",
+      "description": "Unit type definitions, keyed by unit id.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["id", "name", "symbol", "movement", "value", "hp", "attack"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "symbol": { "type": "string", "maxLength": 4 },
+          "display": {
+            "type": "object",
+            "description": "Per-colour display glyphs rendered on the board.",
+            "properties": {
+              "white": { "type": "string" },
+              "black": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          "movement": {
+            "type": "array",
+            "description": "Movement patterns, authored from white's perspective (mirrored for black). Each entry is either a direction slide/step or a fixed-offset jump set.",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": ["direction", "range"],
+                  "properties": {
+                    "direction": {
+                      "type": "string",
+                      "enum": ["E", "W", "NE", "NW", "SE", "SW", "DN", "DS", "DNE", "DSW", "DSE", "DNW"],
+                      "description": "Six cardinals plus six diagonals (the distance-2 hexes between adjacent cardinals)."
+                    },
+                    "range": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "0 = unlimited sliding in this direction."
+                    },
+                    "captureOnly": { "type": "boolean" },
+                    "moveOnly": { "type": "boolean" },
+                    "canJump": { "type": "boolean" }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": ["offsets"],
+                  "properties": {
+                    "offsets": {
+                      "type": "array",
+                      "description": "Fixed jump targets as [dq, dr] pairs; intervening pieces are ignored.",
+                      "items": {
+                        "type": "array",
+                        "items": { "type": "integer" },
+                        "minItems": 2,
+                        "maxItems": 2
+                      }
+                    },
+                    "captureOnly": { "type": "boolean" },
+                    "moveOnly": { "type": "boolean" }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "abilities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "name", "description", "cooldown"],
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "cooldown": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "value": { "type": "integer", "minimum": 0 },
+          "hp": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum hit points for this unit type."
+          },
+          "attack": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Attack damage dealt when this unit initiates combat."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "abilities": {
+      "type": "object",
+      "description": "Global ability catalogue, keyed by ability id. PLACEHOLDER: the engine does not read abilities yet.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["id", "name", "description", "cooldown"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "cooldown": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "setup": {
+      "type": "object",
+      "required": ["white", "black"],
+      "properties": {
+        "white": {
+          "type": "object",
+          "description": "Map of 'q,r' coordinate strings to unit type ids for white.",
+          "propertyNames": { "pattern": "^-?\\d+,-?\\d+$" },
+          "additionalProperties": { "type": "string" }
+        },
+        "black": {
+          "type": "object",
+          "description": "Map of 'q,r' coordinate strings to unit type ids for black.",
+          "propertyNames": { "pattern": "^-?\\d+,-?\\d+$" },
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "rules": {
+      "type": "object",
+      "required": ["maxTurns", "turnTimeLimit"],
+      "properties": {
+        "maxTurns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0 = unlimited turns."
+        },
+        "turnTimeLimit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-turn time limit in seconds (0 = unlimited)."
+        },
+        "objective": {
+          "type": "string",
+          "enum": ["elimination"],
+          "description": "Win condition. Only 'elimination' is implemented."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

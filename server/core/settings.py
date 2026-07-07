@@ -10,23 +10,55 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
-
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-yqgrqaj9753gjio58mygl6i^%r=1+ayq0fde$zq&^*bw)efz(q'
+#
+# All of DEBUG / SECRET_KEY / ALLOWED_HOSTS below default to the exact same
+# values this project has always run with locally (no env vars needed for
+# local dev to keep working unchanged). Setting DJANGO_DEBUG=false switches
+# to a production-safe posture: a real SECRET_KEY becomes mandatory and
+# ALLOWED_HOSTS must be configured explicitly (no wildcard fallback).
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = _env_bool('DJANGO_DEBUG', True)
 
-# Allow local development hosts (Angular dev server + backend; wide-open for dev)
-ALLOWED_HOSTS = ["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "*"]
+# SECURITY WARNING: keep the secret key used in production secret!
+_DEV_ONLY_SECRET_KEY = 'django-insecure-yqgrqaj9753gjio58mygl6i^%r=1+ayq0fde$zq&^*bw)efz(q'
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY') or (_DEV_ONLY_SECRET_KEY if DEBUG else None)
+if not SECRET_KEY:
+    raise RuntimeError(
+        "DJANGO_SECRET_KEY environment variable is required when DJANGO_DEBUG is not "
+        "enabled. Generate one with:\n"
+        "  python -c \"from django.core.management.utils import get_random_secret_key; "
+        "print(get_random_secret_key())\""
+    )
+
+if DEBUG:
+    # Local dev: Angular dev server + backend, wide-open for convenience.
+    _default_hosts = "localhost,127.0.0.1,0.0.0.0,[::1],*"
+else:
+    # Production: no wildcard fallback - must be configured explicitly.
+    _default_hosts = ""
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', _default_hosts).split(',') if h.strip()]
+if not DEBUG and not ALLOWED_HOSTS:
+    raise RuntimeError(
+        "DJANGO_ALLOWED_HOSTS environment variable is required when DJANGO_DEBUG is not "
+        "enabled (comma-separated list of allowed hostnames)."
+    )
 
 
 # Application definition
@@ -76,6 +108,12 @@ ASGI_APPLICATION = "core.asgi.application"
 
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
+#
+# SQLite is fine for a single-process deployment (it's what the in-memory
+# channel layer below already requires). SQLite serializes writers process-
+# wide, so if this ever needs to scale to multiple worker processes on one
+# machine, move to Postgres/MySQL at the same time as moving CHANNEL_LAYERS
+# off InMemoryChannelLayer - the two constraints track together.
 
 DATABASES = {
     'default': {
@@ -126,9 +164,23 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# Add channel layers
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
+# Channel layer: InMemoryChannelLayer only works within a single process -
+# messages don't cross process/machine boundaries, so nothing (turn timers,
+# broadcasts, presence) is visible between workers if this ever runs as more
+# than one daphne process. Set REDIS_URL (and `pip install channels_redis`)
+# to switch to a real shared channel layer; until then this stays in-memory,
+# matching how this project has always run.
+_redis_url = os.environ.get('REDIS_URL', '').strip()
+if _redis_url:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [_redis_url]},
+        }
     }
-}
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer"
+        }
+    }

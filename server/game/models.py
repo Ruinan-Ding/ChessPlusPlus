@@ -24,6 +24,9 @@ class GameRoom(models.Model):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='waiting')
     game_mode = models.CharField(max_length=10, default='default')  # 'default' or 'custom'
     game_options = models.JSONField(default=dict)  # {'reveal': True/False, etc}
+    # Full custom board/unit config (board, units, setup, rules), saved from the
+    # setup screen. Only applied at game start when game_mode == 'custom'.
+    custom_config = models.JSONField(default=dict)
     # Access tokens for secure game room entry
     host_token = models.CharField(max_length=64, blank=True, default='')
     opponent_token = models.CharField(max_length=64, blank=True, default='')
@@ -125,6 +128,65 @@ class PlayerReadyStatus(models.Model):
     
     def __str__(self):
         return f"{self.username} in {self.game_id} - {'Ready' if self.is_ready else 'Not Ready'}"
+    # Explicit manager annotation for static analysis
+    objects: Any = models.Manager()
+    # Explicit DoesNotExist annotation for static analysis
+    DoesNotExist: Any
+
+
+class GameState(models.Model):
+    """
+    Tracks the live state of an active game.
+    Created when both players finish the countdown and the game starts.
+    """
+    END_REASON_CHOICES = [
+        ('', 'In progress'),
+        ('elimination', 'All enemy units eliminated'),
+        ('resign', 'Resignation'),
+        ('timeout', 'Timeout'),
+        ('draw_agreed', 'Draw by agreement'),
+        ('draw_max_turns', 'Draw by max turns'),
+        ('disconnect', 'Disconnect forfeit'),
+    ]
+
+    game = models.OneToOneField(GameRoom, on_delete=models.CASCADE, related_name='state', primary_key=True)
+    # Full board representation as JSON  — dict of "q,r" → {unit_id, color}
+    board_state = models.JSONField(default=dict)
+    # Username of whoever's turn it is
+    current_turn = models.CharField(max_length=24)
+    turn_number = models.PositiveIntegerField(default=1)
+    # Ordered list of moves: [{from_coord, to_coord, unit_id, color, turn, captured?, timestamp}]
+    move_history = models.JSONField(default=list)
+    # Side assignments
+    player_white = models.CharField(max_length=24)
+    player_black = models.CharField(max_length=24)
+    # End-of-game fields
+    winner = models.CharField(max_length=24, blank=True, default='')
+    end_reason = models.CharField(max_length=20, choices=END_REASON_CHOICES, blank=True, default='')
+    # Frozen copy of the GameConfig used at game start (prevents mid-game config edits from corrupting state)
+    config_snapshot = models.JSONField(default=dict)
+    # Draw offer tracking
+    draw_offered_by = models.CharField(max_length=24, blank=True, default='')
+    # When the current turn started - persisted so reconnect resyncs report the
+    # real turn clock instead of fabricating "now"
+    turn_started_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['current_turn']),
+            models.Index(fields=['end_reason']),
+        ]
+
+    def __str__(self):
+        status = f"Turn {self.turn_number}" if not self.end_reason else self.end_reason
+        return f"State for {self.pk} — {status}"
+
+    @property
+    def is_finished(self) -> bool:
+        return self.end_reason != ''
+
     # Explicit manager annotation for static analysis
     objects: Any = models.Manager()
     # Explicit DoesNotExist annotation for static analysis
