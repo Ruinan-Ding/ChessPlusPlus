@@ -1,5 +1,5 @@
 """
-Game logic — combat resolution and win-condition detection for a
+Game logic - combat resolution and win-condition detection for a
 Fire-Emblem-style hex-grid tactical game.
 
 Key differences from chess:
@@ -50,7 +50,7 @@ def resolve_combat(
 
     defender = board.get(*to_coord)
 
-    # ── Empty hex → simple move ───────────────────────────────────
+    # -- Empty hex -> simple move -----------------------------------
     if defender is None:
         board.move(*from_coord, *to_coord)
         return {
@@ -62,7 +62,7 @@ def resolve_combat(
             'defender_hp': None,
         }
 
-    # ── Occupied by enemy → combat ────────────────────────────────
+    # -- Occupied by enemy -> combat --------------------------------
     unit_def = config.get('units', {}).get(attacker['unit_id'], {})
     atk_damage = unit_def.get('attack', 1)
 
@@ -78,11 +78,11 @@ def resolve_combat(
     }
 
     if eliminated:
-        # Defender destroyed → attacker moves in
+        # Defender destroyed -> attacker moves in
         board.move(*from_coord, *to_coord)
         result['moved'] = True
     else:
-        # Defender survived → attacker stays; record remaining HP
+        # Defender survived -> attacker stays; record remaining HP
         surviving_cell = board.get(*to_coord)
         result['defender_hp'] = surviving_cell['hp'] if surviving_cell else None
 
@@ -90,7 +90,7 @@ def resolve_combat(
 
 
 # ---------------------------------------------------------------------------
-# Legal-move helpers  (replaces the chess self-check filter)
+# Legal-move helpers
 # ---------------------------------------------------------------------------
 
 def has_any_legal_move(

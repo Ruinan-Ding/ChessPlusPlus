@@ -41,13 +41,11 @@ export class ConnectionDialogComponent implements OnInit, OnDestroy {
   }
   
   ngOnDestroy(): void {
-    // Signal all subscriptions to complete
     this.destroy$.next();
     this.destroy$.complete();
   }
   
   retry(): void {
-    // Use the getCurrentRoom method to get the current room name
     const currentRoom = this.wsService.getCurrentRoom();
     this.wsService.connect(currentRoom);
   }

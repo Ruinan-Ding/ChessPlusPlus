@@ -27,7 +27,6 @@ class Command(BaseCommand):
             stale_delta = timedelta(minutes=stale_minutes)
             closed_delta = timedelta(days=closed_days)
 
-            # Resolve models from app registry to avoid static-analysis attribute errors
             # Resolve models from app registry; annotate as Any to satisfy static type checkers
             GameChallenge: Any = apps.get_model('game', 'GameChallenge')
             PlayerConnection: Any = apps.get_model('game', 'PlayerConnection')

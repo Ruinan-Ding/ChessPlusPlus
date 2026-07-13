@@ -18,18 +18,14 @@ export class LobbyService {
   constructor(private shared: SharedDataService, private wsService: WebsocketService) {}
 
   connect(username: string): void {
-    // Use centralized WebsocketService for lobby
-    // connect to lobby room and subscribe to messages
     this.wsService.connect('lobby');
 
-    // when connection is established, send join_lobby
     this.connectionSub = this.wsService.connectionStatus$.subscribe(connected => {
       if (connected) {
         this.sendMessage({ type: 'join_lobby', username });
       }
     });
 
-    // subscribe to raw messages and forward relevant lobby updates
     this.messagesSub = this.wsService.messages$.subscribe(data => {
       if (!data) return;
       try {
@@ -78,7 +74,6 @@ export class LobbyService {
       this.messagesSub.unsubscribe();
       this.messagesSub = null;
     }
-    // leave lobby and optionally disconnect underlying socket
     this.wsService.sendMessage({ type: 'leave_lobby', username: localStorage.getItem('username') || '' });
     this.wsService.disconnect();
   }

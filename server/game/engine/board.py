@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Type aliases
 Coord = Tuple[int, int]
 CellData = Dict[str, Any]       # {"unit_id": str, "color": str, "hp": int, "max_hp": int}
-BoardDict = Dict[str, CellData]  # serialised "q,r" → CellData
+BoardDict = Dict[str, CellData]  # serialised "q,r" -> CellData
 
 # Six axial direction offsets (flat-top orientation)
 HEX_DIRECTIONS: Dict[str, Coord] = {
@@ -63,10 +63,10 @@ class HexBoard:
         if radius < 1:
             raise ValueError("Board radius must be >= 1")
         self.radius = radius
-        # Piece map: (q, r) → CellData
+        # Piece map: (q, r) -> CellData
         self._cells: Dict[Coord, CellData] = {}
 
-    # ── Valid hex enumeration ─────────────────────────────────────────
+    # -- Valid hex enumeration -----------------------------------------
 
     def all_coords(self) -> List[Coord]:
         """Return every valid hex coordinate on this board."""
@@ -86,7 +86,7 @@ class HexBoard:
         n = self.radius
         return 3 * n * n + 3 * n + 1
 
-    # ── Cell access ───────────────────────────────────────────────────
+    # -- Cell access ---------------------------------------------------
 
     def get(self, q: int, r: int) -> Optional[CellData]:
         """Get the piece at (q, r), or None if empty / off-board."""
@@ -143,7 +143,7 @@ class HexBoard:
         """Return all pieces belonging to the given color."""
         return {c: d for c, d in self._cells.items() if d['color'] == color}
 
-    # ── Neighbour helpers ─────────────────────────────────────────────
+    # -- Neighbour helpers ---------------------------------------------
 
     @staticmethod
     def neighbours(q: int, r: int) -> List[Coord]:
@@ -154,7 +154,7 @@ class HexBoard:
         """Return only the neighbours that are inside the board."""
         return [(nq, nr) for nq, nr in self.neighbours(q, r) if self.is_valid(nq, nr)]
 
-    # ── Serialisation ─────────────────────────────────────────────────
+    # -- Serialisation -------------------------------------------------
 
     def to_dict(self) -> BoardDict:
         """Serialise to JSON-safe dict (for GameState.board_state)."""
@@ -170,7 +170,7 @@ class HexBoard:
                       hp=cell.get('hp'), max_hp=cell.get('max_hp'))
         return board
 
-    # ── Debug ─────────────────────────────────────────────────────────
+    # -- Debug ---------------------------------------------------------
 
     def __repr__(self) -> str:
         return f"HexBoard(radius={self.radius}, pieces={len(self._cells)})"

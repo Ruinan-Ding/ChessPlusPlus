@@ -9,7 +9,6 @@ export class AuthService {
   public username$ = this.usernameSubject.asObservable();
   
   constructor() { 
-    // Check if user is already logged in
     const storedUsername = localStorage.getItem('username');
     if (storedUsername) {
       this.usernameSubject.next(storedUsername);

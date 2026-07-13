@@ -348,7 +348,7 @@ class MoveValidatorTestCase(TestCase):
         board = self._make_board()
         board.set(0, 4, 'pawn', 'white')
         moves = get_legal_moves(board, (0, 4), self._cfg(), 'white')
-        # White pawn moveOnly direction is NW (0,-1) → target (0,3)
+        # White pawn moveOnly direction is NW (0,-1) -> target (0,3)
         self.assertIn((0, 3), moves)
 
     def test_white_pawn_cannot_move_to_occupied(self):
@@ -375,7 +375,7 @@ class MoveValidatorTestCase(TestCase):
         board = self._make_board()
         board.set(0, -4, 'pawn', 'black')
         moves = get_legal_moves(board, (0, -4), self._cfg(), 'black')
-        # Black flips NW→SE, so forward is SE (0,+1) → target (0,-3)
+        # Black flips NW->SE, so forward is SE (0,+1) -> target (0,-3)
         self.assertIn((0, -3), moves)
 
     # -- Edge cases --
@@ -455,7 +455,7 @@ class GameLogicTestCase(TestCase):
         self.assertIsNotNone(board.get(1, 0))
 
     def test_resolve_combat_exact_lethal(self):
-        """Damage exactly equals HP → elimination."""
+        """Damage exactly equals HP -> elimination."""
         board = HexBoard(5)
         board.set(0, 0, 'pawn', 'white', hp=4, max_hp=4)  # attack=2
         board.set(1, 0, 'pawn', 'black', hp=2, max_hp=4)  # 2 HP == 2 atk
@@ -464,14 +464,14 @@ class GameLogicTestCase(TestCase):
         self.assertTrue(result['defender_eliminated'])
         self.assertTrue(result['moved'])
 
-    # -- is_attacked (kept, it still works) --------------------------------
+    # -- is_attacked --------------------------------------------------------
 
     def test_is_attacked_by_queen(self):
         board = HexBoard(5)
         board.set(0, 0, 'queen', 'white')
         config = self._cfg()
         self.assertTrue(is_attacked(board, (5, 0), 'white', config))
-        # (1,1) is a diagonal — queen slides cardinals only
+        # (1,1) is a diagonal - queen slides cardinals only
         self.assertFalse(is_attacked(board, (1, 1), 'white', config))
 
     def test_bishop_attacks_diagonal(self):
@@ -484,7 +484,7 @@ class GameLogicTestCase(TestCase):
     # -- Legal moves (no self-check filter in tactical mode) ---------------
 
     def test_legal_moves_no_pin_restriction(self):
-        """In tactical RPG mode, there is no pin — pieces move freely."""
+        """In tactical RPG mode, there is no pin - pieces move freely."""
         board = HexBoard(5)
         board.set(0, 0, 'king', 'white', hp=10, max_hp=10)
         board.set(1, 0, 'rook', 'white', hp=12, max_hp=12)
@@ -494,7 +494,7 @@ class GameLogicTestCase(TestCase):
         moves = get_legal_moves_filtered(board, (1, 0), config, 'white')
         # The rook should be able to move off the E/W axis freely
         off_axis = [m for m in moves if m[1] != 0]
-        self.assertGreater(len(off_axis), 0, "Rook should move freely — no pins")
+        self.assertGreater(len(off_axis), 0, "Rook should move freely - no pins")
 
     # -- Elimination detection ---------------------------------------------
 

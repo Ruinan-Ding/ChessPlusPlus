@@ -77,7 +77,7 @@ class GameChallenge(models.Model):
         unique_together = [['challenger', 'responder']]
     
     def __str__(self):
-        return f"Challenge {self.challenger} → {self.responder} ({self.status})"
+        return f"Challenge {self.challenger} -> {self.responder} ({self.status})"
     
     def is_expired(self):
         return timezone.now() > self.expires_at
@@ -150,7 +150,7 @@ class GameState(models.Model):
     ]
 
     game = models.OneToOneField(GameRoom, on_delete=models.CASCADE, related_name='state', primary_key=True)
-    # Full board representation as JSON  — dict of "q,r" → {unit_id, color}
+    # Full board representation as JSON  - dict of "q,r" -> {unit_id, color}
     board_state = models.JSONField(default=dict)
     # Username of whoever's turn it is
     current_turn = models.CharField(max_length=24)
@@ -181,7 +181,7 @@ class GameState(models.Model):
 
     def __str__(self):
         status = f"Turn {self.turn_number}" if not self.end_reason else self.end_reason
-        return f"State for {self.pk} — {status}"
+        return f"State for {self.pk} - {status}"
 
     @property
     def is_finished(self) -> bool:

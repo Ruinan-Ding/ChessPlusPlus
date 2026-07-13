@@ -53,7 +53,7 @@ export interface MovePattern {
 }
 
 // ---------------------------------------------------------------------------
-// Abilities  (placeholder — expand when designing special moves)
+// Abilities  (placeholder - expand when designing special moves)
 // ---------------------------------------------------------------------------
 
 export interface AbilityDef {
