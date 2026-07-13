@@ -65,7 +65,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const isReturningFromSetup = this.navigationState.getNavigationContext() === 'game-room' && 
                                   this.navigationState.isIntentionalNavigation();
     if (isReturningFromSetup) {
-      // Restore chat from localStorage if available
       const saved = localStorage.getItem('gameRoomMessages');
       if (saved) {
         try {
@@ -75,7 +74,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         }
         localStorage.removeItem('gameRoomMessages');
       }
-      // Restore game mode and options if available
       const savedMode = localStorage.getItem('gameRoomMode');
       if (savedMode === 'default' || savedMode === 'custom') {
         this.gameMode = savedMode;
@@ -100,32 +98,25 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       this.gameRoomMessages = [];
     }
 
-    // Initialize lobby data from shared service
     this.lobbyMessages = this.sharedDataService.getLobbyMessages();
     this.lobbyUsers = this.sharedDataService.getLobbyUsers();
-    // Subscribe to lobby message and user updates (real-time sync)
     this.sharedDataService.lobbyMessages$.pipe(takeUntil(this.destroy$)).subscribe(msgs => {
       this.lobbyMessages = msgs;
       this.scrollChatToBottom('lobby');
     });
     this.sharedDataService.lobbyUsers$.pipe(takeUntil(this.destroy$)).subscribe(users => this.lobbyUsers = users);
 
-    // Get username from localStorage
     this.username = localStorage.getItem('username') || '';
     if (!this.username) {
-      // Redirect to login if no username
       this.router.navigate(['/login']);
       return;
     }
 
-    // Note: Do NOT connect LobbyService here - we use wsService for all messages
-    // The backend will route lobby chat messages appropriately
+    // Lobby chat goes through wsService; the backend routes it to the lobby group
 
-    // Get game ID from route parameters and token from query params
     this.route.params.pipe(takeUntil(this.destroy$)).subscribe(params => {
       this.gameId = params['id'];
       
-      // Extract token from query parameters
       this.route.queryParams.pipe(take(1)).subscribe(queryParams => {
         this.accessToken = queryParams['token'] || '';
         
@@ -137,7 +128,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         
         console.log('[GameRoom] Connecting to game room:', this.gameId, 'with token');
         
-        // Check if returning from setup (already connected)
         const isReturningFromSetup = this.navigationState.getNavigationContext() === 'game-room' && 
                                       this.navigationState.isIntentionalNavigation();
         
@@ -146,7 +136,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           this.navigationState.clearIntentionalNavigation();
         }
         
-        // Check if already connected to this game room
         if (this.wsService.isConnected()) {
           console.log('[GameRoom] Already connected, sending join_game_room message immediately');
           this.wsService.sendMessage({
@@ -157,7 +146,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           });
           this.lobbyMessages = this.sharedDataService.getLobbyMessages();
         } else {
-          // Connect to the game room - use just the gameId, not "game/"
           this.wsService.connect(this.gameId);
           
           // Wait for connection to be established before sending join message
@@ -168,7 +156,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           ).subscribe(connected => {
             console.log('[GameRoom] Connection established, sending join_game_room message');
             
-            // Send join message only after connection is established
             this.wsService.sendMessage({
               type: 'join_game_room',
               username: this.username,
@@ -178,13 +165,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
             
             console.log('[GameRoom] join_game_room message sent');
             
-            // Get cached lobby messages (without adding the room property)
             this.lobbyMessages = this.sharedDataService.getLobbyMessages();
           });
         }
       });
       
-      // Subscribe to WebSocket messages
       this.wsService.messages$.pipe(takeUntil(this.destroy$)).subscribe(message => {
         if (!message) return;
         this.handleWebSocketMessage(message);
@@ -193,16 +178,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
   
   ngOnDestroy(): void {
-    // Signal teardown to all subscriptions
     this.destroy$.next();
     this.destroy$.complete();
 
     this.clearRevealCountdown();
 
-    // Reset game state service
     this.gameState.reset();
     
-    // Check if we're intentionally navigating back to lobby
     const isIntentionalNav = this.navigationState.isIntentionalNavigation();
     
     // Only send leave message if not already sent via leaveGameRoom()
@@ -215,10 +197,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       this.wsService.disconnect();
     }
 
-    // DO NOT disconnect LobbyService here - if returning to lobby, maintain the connection
-    // The lobby component will handle its own connection lifecycle
+    // Don't disconnect here when returning to the lobby - the lobby
+    // component manages its own connection lifecycle
     
-    // No need to manually unsubscribe subscriptions that used takeUntil(this.destroy$)
   }
   
   handleWebSocketMessage(message: any): void {
@@ -229,10 +210,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     }
     switch (actualMessage.type) {
       case 'game_started':
-        // Real game initialisation — reset and load the initial state via GameStateService
         this.gameStarted = true;
         this.isReady = false;  // Reset ready state - button reverts to "Ready" and will be disabled
-        // Ensure clean slate by resetting game state first
         this.gameState.reset();
         this.gameState.applyGameStarted(actualMessage);
         
@@ -242,13 +221,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.cdr.markForCheck();
         break;
       case 'move_made':
-        // Update local state when a move is broadcast
         this.gameState.applyMoveMade(actualMessage);
         {
           const move = actualMessage.move;
-          let moveText = `${move.color} ${move.unit_id}: ${move.from} → ${move.to}`;
+          let moveText = `${move.color} ${move.unit_id}: ${move.from} -> ${move.to}`;
           if (move.attacked) {
-            moveText += ` — dealt ${move.damage_dealt} dmg`;
+            moveText += ` - dealt ${move.damage_dealt} dmg`;
             if (move.defender_eliminated) {
               moveText += ` (eliminated ${move.captured ?? 'enemy unit'})`;
             } else {
@@ -264,9 +242,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.gameStarted = false;
         this.gameState.applyGameOver(actualMessage);
         if (actualMessage.winner) {
-          this.addSystemMessage(`Game over — ${actualMessage.winner} wins by ${actualMessage.endReason}!`);
+          this.addSystemMessage(`Game over - ${actualMessage.winner} wins by ${actualMessage.endReason}!`);
         } else {
-          this.addSystemMessage(`Game over — Draw (${actualMessage.endReason}).`);
+          this.addSystemMessage(`Game over - Draw (${actualMessage.endReason}).`);
         }
         this.cdr.markForCheck();
         break;
@@ -274,7 +252,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // Full state refresh (e.g., on reconnect)
         this.gameState.applyFullState(actualMessage);
         if (actualMessage.winner) {
-          this.addSystemMessage(`Game ended — winner: ${actualMessage.winner}`);
+          this.addSystemMessage(`Game ended - winner: ${actualMessage.winner}`);
         }
         this.cdr.markForCheck();
         break;
@@ -309,22 +287,20 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         }
         break;
       case 'game_room_joined':
-        // Set isInviter flag if this user is the original inviter
         this.isInviter = actualMessage.isInviter;
         break;
       case 'join_game_room_success':
-        // Sent after joining the game room – if the game was already started,
+        // Sent after joining the game room - if the game was already started,
         // request a full state resync (reconnection).
         if (actualMessage.gameStatus === 'started') {
           this.gameStarted = true;
           this.wsService.sendMessage({ type: 'request_game_state' });
-          this.addSystemMessage('Reconnected — syncing game state…');
+          this.addSystemMessage('Reconnected - syncing game state...');
           this.cdr.markForCheck();
         }
         break;
       case 'player_list':
       case 'player_list_update': {
-        // Handle both message types from backend
         console.log('[GameRoom] Received player list:', actualMessage);
         if (!Array.isArray(actualMessage.players)) {
           console.error('[GameRoom] Invalid player list - missing players array');
@@ -408,7 +384,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         break;
         
       case 'player_ready':
-        // Update player ready status
         this.players = this.players.map(player => {
           if (player.username === actualMessage.username) {
             return { ...player, isReady: true };
@@ -416,18 +391,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           return player;
         });
         
-        // Check if this is the current user
         if (actualMessage.username === this.username) {
           this.isReady = true;
         }
         
-        // Add system message
         this.addSystemMessage(`${actualMessage.username} is ready.`);
         this.cdr.markForCheck();
         break;
         
       case 'player_unready':
-        // Update player ready status to unready
         this.players = this.players.map(player => {
           if (player.username === actualMessage.username) {
             return { ...player, isReady: false };
@@ -435,12 +407,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           return player;
         });
 
-        // Check if this is the current user
         if (actualMessage.username === this.username) {
           this.isReady = false;
         }
 
-        // Only add system message if not silent
         if (!actualMessage.silent) {
           this.addSystemMessage(`${actualMessage.username} is not ready.`);
         }
@@ -450,18 +420,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       case 'game_mode_changed':
         this.gameMode = actualMessage.mode;
         
-        // Update game options if they were included in the message
         if (actualMessage.options) {
           this.gameOptions = actualMessage.options;
           // Update UI to match options
           this.revealEnabled = actualMessage.options.reveal || false;
         } else if (actualMessage.mode === 'default') {
-          // Reset any custom options when returning to default mode
           this.gameOptions = {};
           this.revealEnabled = false;
         }
 
-        // Add system message about mode change
         const modeText = actualMessage.mode === 'default' ? 'Default Mode' : 'Custom Mode';
         let optionsText = '';
         if (actualMessage.mode === 'custom' && actualMessage.options) {
@@ -474,7 +441,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         }
         this.addSystemMessage(`Game mode changed to ${modeText}${optionsText}`);
 
-        // Trigger change detection
         this.cdr.markForCheck();
         break;
 
@@ -492,20 +458,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         break;
 
       case 'reveal_request_accepted':
-        // The other player accepted our reveal request - NOW start the 5 second cooldown for host
+        // Opponent accepted our reveal request - start the 5 second cooldown
         this.clearRevealCountdown();
         this.showRevealWaitingModal = true;  // Show waiting modal with countdown
         this.revealEnabled = actualMessage.enabled;
         this.gameOptions = { ...this.gameOptions, reveal: actualMessage.enabled };
         
-        // Start 5 second cooldown for host
         this.revealRequestCountdown = 5;
         this.revealRequestCountdownInterval = setInterval(() => {
           this.revealRequestCountdown--;
           this.cdr.markForCheck();
           
           if (this.revealRequestCountdown <= 0) {
-            // Cooldown complete
             this.clearRevealCountdown();
             this.showRevealWaitingModal = false;
             this.addSystemMessage(`Reveal mode has been ${actualMessage.enabled ? 'enabled' : 'disabled'}.`);
@@ -537,12 +501,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         break;
 
       case 'partner_left':
-        // Other player has left the game room - navigate back to lobby
-        // Do NOT call leaveGameRoom() as that would send another leave_game_room message
+        // Don't call leaveGameRoom() here - that would send another leave_game_room message
         this.addSystemMessage(`${actualMessage.username} has left the game room. Returning to lobby...`);
         
-        // Only the HOST (inviter/person with crown) gets the cooldown, even when kicked
-        // This prevents the host from spam-inviting
+        // Only the host (inviter) gets the cooldown, even when kicked,
+        // to keep them from spam-inviting
         console.log('[GameRoom] partner_left: isInviter:', this.isInviter);
         if (this.isInviter) {
           this.navigationState.setIntentionalNavigation('none'); // Triggers cooldown
@@ -550,7 +513,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           this.navigationState.setIntentionalNavigation('lobby'); // No cooldown
         }
 
-        // Navigate to lobby after a brief delay
         setTimeout(() => {
           console.log('[GameRoom] Partner left, navigating to lobby');
           this.router.navigate(['/lobby']);
@@ -594,9 +556,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (!this.messageContent.trim()) return;
     const content = this.messageContent.trim();
     const timestamp = new Date().toISOString();
-    // Handle chat send based on active tab
     if (this.activeTab === 'gameRoom') {
-      // Only send to server; do NOT add locally. Wait for server echo.
+      // Send to the server only; the message shows up when the server echoes it back
       this.wsService.sendMessage({
         type: 'game_room_message',
         username: this.username,
@@ -604,7 +565,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         gameId: this.gameId,
         timestamp: timestamp
       });
-      // Clear input
       this.messageContent = '';
       return;
     } else {
@@ -615,7 +575,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         content, 
         timestamp 
       });
-      // Clear input
       this.messageContent = '';
       return;
     }
@@ -623,7 +582,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   
   changeTab(tab: 'gameRoom' | 'lobby'): void {
     this.activeTab = tab;
-    // Wait for DOM update then scroll
     setTimeout(() => {
       this.scrollChatToBottom(tab);
     }, 100);
@@ -644,19 +602,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     
     this.gameMode = mode;
     if (mode === 'default') {
-      // Reset options when switching to default mode
       this.revealEnabled = false;
       this.gameOptions = {};
     }
     
-    // Include game options only if they exist and we're in custom mode
     const messageData: any = {
       type: 'change_game_mode',
       mode: mode,
       gameId: this.gameId
     };
     
-    // Only include options if in custom mode
     if (mode === 'custom' && Object.keys(this.gameOptions).length > 0) {
       messageData.options = this.gameOptions;
     }
@@ -679,7 +634,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const wasRevealEnabled = this.gameOptions.reveal || false;
     
     if (this.revealEnabled !== wasRevealEnabled) {
-      // Reveal state is changing, send a request
       this.showRevealWaitingModal = true;
       
       this.wsService.sendMessage({
@@ -688,7 +642,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         action: this.revealEnabled ? 'enable' : 'disable'
       });
       
-      // Start countdown for host's waiting modal
       this.revealRequestCountdown = 5;
       this.revealRequestCountdownInterval = setInterval(() => {
         this.revealRequestCountdown--;
@@ -748,7 +701,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
   
   private addSystemMessage(content: string): void {
-    // Create a chat message without the room property
     const message: ChatMessage = {
       username: 'System',
       content: content,
@@ -756,7 +708,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       type: 'system'
     };
     
-    // Add to the appropriate message array
     if (this.activeTab === 'gameRoom') {
       this.gameRoomMessages.push(message);
     } else {
@@ -795,18 +746,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * Sets status to 'configuring' and navigates to setup.
    */
   openSetup(): void {
-    // Save game mode and options to localStorage before navigating
     localStorage.setItem('gameRoomMode', this.gameMode);
     localStorage.setItem('gameRoomReveal', JSON.stringify(this.revealEnabled));
     localStorage.setItem('gameRoomOptions', JSON.stringify(this.gameOptions));
     // Set navigation state before navigating - use 'game-room' context to return here
     this.navigationState.setIntentionalNavigation('game-room');
 
-    // Store game ID and token so setup can return to this game room
     localStorage.setItem('returnToGameRoom', this.gameId);
     localStorage.setItem('gameRoomToken', this.accessToken);
 
-    // Always unset readiness when opening setup (silent)
     this.wsService.sendMessage({
       type: 'player_unready',
       username: this.username,
@@ -814,22 +762,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       silent: true
     });
 
-    // Save game room chat to localStorage before navigating
     localStorage.setItem('gameRoomMessages', JSON.stringify(this.gameRoomMessages));
 
-    // Set status to configuring
     this.wsService.sendMessage({
       type: 'set_status',
       username: this.username,
       status: 'configuring'
     });
 
-    // Navigate to setup
     this.router.navigate(['/setup']);
   }
   
   leaveGameRoom(): void {
-    // First, send leave message
     this.wsService.sendMessage({
       type: 'leave_game_room',
       username: this.username,
@@ -838,8 +782,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     
     console.log('[GameRoom] Sent leave_game_room message, setting navigation state, isInviter:', this.isInviter);
     
-    // Only the HOST (inviter/person with crown) gets the cooldown
-    // This prevents the host from spam-inviting
+    // Only the host (inviter) gets the cooldown, to keep them from spam-inviting
     if (this.isInviter) {
       this.navigationState.setIntentionalNavigation('none'); // Triggers cooldown
     } else {
@@ -847,7 +790,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     }
 
     // Navigate immediately - the server will process the leave asynchronously
-    // DO NOT disconnect - the lobby will reuse the same WebSocket connection
+    // Don't disconnect - the lobby reuses the same WebSocket connection
     console.log('[GameRoom] Navigating to lobby (keeping WebSocket connection)');
     this.router.navigate(['/lobby']);
   }
@@ -857,9 +800,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * At least one other player must be present and everyone must be ready.
    */
   canStartGame(): boolean {
-    // Game can start if:
-    // 1. There are at least 2 players (inviter + at least one other player)
-    // 2. All players are ready
     return this.players.length >= 2 && this.players.every(player => player.isReady);
   }
   
@@ -875,22 +815,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     });
   }
 
-  // Stub for context menu on lobby user items
   openUserMenu(event: MouseEvent, user: User): void {
     event.preventDefault();
 
-    // Don't allow inviting yourself
     if (user.username === this.username) return;
 
     // When in a game room, you cannot invite anyone
     const canInvite = false;
     const disabledReason = "Can't invite while in a game room";
 
-    // Remove any existing menus first
     const existingMenus = document.querySelectorAll('.user-context-menu');
     existingMenus.forEach(menu => document.body.removeChild(menu));
 
-    // Create the context menu
     const menu = document.createElement('div');
     menu.className = 'user-context-menu';
     menu.innerHTML = canInvite ?
@@ -898,7 +834,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       `<button disabled>${disabledReason}</button>`;
     menu.style.position = 'absolute';
 
-    // Position the menu relative to the button if possible
     if (event.target instanceof HTMLButtonElement && event.target.classList.contains('action-button')) {
       const rect = (event.target as HTMLElement).getBoundingClientRect();
       menu.style.left = `${rect.left}px`;
@@ -908,7 +843,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       menu.style.top = `${event.pageY}px`;
     }
 
-    // Add event listener for invite button
     menu.querySelector('button')?.addEventListener('click', () => {
       if (canInvite) {
         this.inviteLobbyUser(user.username);

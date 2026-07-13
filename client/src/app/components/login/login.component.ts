@@ -26,10 +26,8 @@ export class LoginComponent {
       return;
     }
 
-    // Store username in localStorage
     localStorage.setItem('username', this.username.trim());
 
-    // Navigate to the lobby
     this.router.navigate(['/lobby']);
   }
 }

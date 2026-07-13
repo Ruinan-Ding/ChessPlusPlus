@@ -44,7 +44,7 @@ class GameStateOptimisticConcurrencyTests(TestCase):
     Verifies the conditional-write mechanism in GameConsumer._update_game_state /
     _end_game that prevents a stale turn-timer write from clobbering a move
     that already ended the game (or vice versa). Each test exercises the real
-    consumer methods directly against a real GameState row — no WebSocket or
+    consumer methods directly against a real GameState row - no WebSocket or
     asyncio timing is involved, so the race conditions are reproduced
     deterministically instead of by trying to hit a live microsecond window.
     """
@@ -96,7 +96,7 @@ class GameStateOptimisticConcurrencyTests(TestCase):
             current_turn='alice',
             turn_number=2,
             move_history=[],
-            expected_turn_number=1,  # stale — the row is already at turn_number=2
+            expected_turn_number=1,  # stale - the row is already at turn_number=2
         )
         self.assertFalse(applied)
 
@@ -141,7 +141,7 @@ class GameStateOptimisticConcurrencyTests(TestCase):
 
     async def test_end_game_second_caller_on_same_turn_is_rejected(self):
         """Two concurrent end-game paths (e.g. resign racing a timeout) on the
-        same turn — only the first should apply; the second must no-op."""
+        same turn - only the first should apply; the second must no-op."""
         first_ok = await self.consumer._end_game(self.game.game_id, self.state, 'bob', 'timeout')
         self.assertTrue(first_ok)
 
@@ -199,7 +199,7 @@ class TurnTimerLiveIntegrationTests(TransactionTestCase):
             started_opp = await _receive_until(opp_comm, 'game_started')
             self.assertEqual(started_host['currentTurn'], started_opp['currentTurn'])
 
-            # Neither player moves — the real 1-second asyncio timer should fire.
+            # Neither player moves - the real 1-second asyncio timer should fire.
             over_host = await _receive_until(host_comm, 'game_over', timeout=8)
             over_opp = await _receive_until(opp_comm, 'game_over', timeout=8)
 
@@ -225,7 +225,7 @@ class DisconnectGraceLiveIntegrationTests(TransactionTestCase):
     Drives a real game through the full async WebSocket stack to verify the
     disconnect-forfeit grace period: a raw disconnect during an active game
     must not freeze the match forever (the old bug) nor instantly forfeit it
-    (too harsh for a page refresh) — it should notify the opponent, wait a
+    (too harsh for a page refresh) - it should notify the opponent, wait a
     grace period, and only forfeit if the disconnected player never returns.
     """
 
@@ -327,7 +327,7 @@ class DisconnectGraceLiveIntegrationTests(TransactionTestCase):
 class CustomConfigLiveIntegrationTests(TransactionTestCase):
     """
     Verifies the setup-screen custom config actually reaches the server and
-    is used at game start — closing the gap where saveConfig() only wrote to
+    is used at game start - closing the gap where saveConfig() only wrote to
     a local Angular service and never touched game_options/custom_config.
     """
 

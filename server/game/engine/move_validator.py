@@ -1,19 +1,19 @@
 """
-Move validator — fully config-driven.
+Move validator - fully config-driven.
 
-The engine knows NOTHING about specific unit types. Every unit's movement
+The engine knows nothing about specific unit types. Every unit's movement
 is described entirely by the ``movement`` patterns in its config entry.
-Unit ids ('king', 'knight', …) are opaque labels; renaming a unit or adding
+Unit ids ('king', 'knight', ...) are opaque labels; renaming a unit or adding
 a brand-new one requires no engine changes.
 
 Pattern types
 -------------
-1. Direction pattern — step/slide along a named direction:
+1. Direction pattern - step/slide along a named direction:
        { "direction": "NW", "range": 1, "canJump": false,
          "moveOnly": false, "captureOnly": false }
    range 0 means unlimited (blocked by pieces unless canJump).
 
-2. Offsets pattern — fixed jump targets relative to the unit:
+2. Offsets pattern - fixed jump targets relative to the unit:
        { "offsets": [[2, -1], [1, -2], ...],
          "moveOnly": false, "captureOnly": false }
    Offsets are inherently jumping (intervening pieces are ignored).
@@ -35,7 +35,7 @@ Orientation convention
 All movement patterns are defined from WHITE's perspective and are
 automatically mirrored (negated) for black. Symmetric movement sets
 (e.g. "all 6 cardinals") are unaffected by mirroring, so this is safe
-to apply universally — it only matters for asymmetric, pawn-like units.
+to apply universally - it only matters for asymmetric, pawn-like units.
 
 Hex geometry reference: https://www.redblobgames.com/grids/hexagons/
 """
@@ -62,8 +62,8 @@ ALL_DIRECTIONS: Dict[str, Coord] = {
 }
 
 # ---------------------------------------------------------------------------
-# Knight-style jump offsets (kept as a convenience constant for configs
-# and tests — the engine itself never treats these specially).
+# Knight-style jump offsets, exposed for configs and tests. The engine
+# itself never treats these specially.
 # ---------------------------------------------------------------------------
 
 _DIR_LIST = ['E', 'NE', 'NW', 'W', 'SW', 'SE']  # ring order
@@ -96,7 +96,7 @@ def get_legal_moves(
 
     The piece must belong to *color*.  An empty or wrong-colour source
     returns an empty list.  Movement comes purely from the unit's config
-    ``movement`` patterns — there is no per-unit engine logic.
+    ``movement`` patterns - there is no per-unit engine logic.
     """
     piece = board.get(*coord)
     if not piece or piece['color'] != color:
@@ -130,7 +130,7 @@ def is_legal_move(
     config: Dict[str, Any],
     color: str,
 ) -> bool:
-    """Quick check: is the move from → to in the legal set?"""
+    """Quick check: is the move from -> to in the legal set?"""
     return to_coord in get_legal_moves(board, from_coord, config, color)
 
 
@@ -148,10 +148,10 @@ def _direction_targets(
     """
     Step/slide along a named direction.
 
-    range == 0 → unlimited slide (bounded by board size).
-    canJump     → not blocked by intermediate pieces.
-    moveOnly    → cannot land on an occupied hex.
-    captureOnly → can only land on an enemy-occupied hex.
+    range == 0 -> unlimited slide (bounded by board size).
+    canJump     -> not blocked by intermediate pieces.
+    moveOnly    -> cannot land on an occupied hex.
+    captureOnly -> can only land on an enemy-occupied hex.
     """
     targets: List[Coord] = []
     delta = ALL_DIRECTIONS.get(pattern.get('direction', ''))

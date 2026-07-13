@@ -8,15 +8,15 @@ import { BehaviorSubject, Observable } from 'rxjs';
  *
  * The only fixed game fact is the board: a hexagon with 24 cells per edge
  * (axial radius 23), drawn with an edge pointing up. Every unit below is a
- * PLACEHOLDER — the engine reads all behaviour from this data and knows
+ * PLACEHOLDER - the engine reads all behaviour from this data and knows
  * nothing about specific unit ids.
  *
  * Movement patterns are authored from WHITE's perspective and mirrored for
  * black by the engine. Two pattern types:
- *   { direction, range, canJump?, moveOnly?, captureOnly? }  — step/slide
+ *   { direction, range, canJump?, moveOnly?, captureOnly? }  - step/slide
  *     (range 0 = unlimited; directions: E W NE NW SE SW plus the six
  *      diagonals DN DS DNE DSW DSE DNW)
- *   { offsets: [[dq, dr], ...], moveOnly?, captureOnly? }    — fixed jumps
+ *   { offsets: [[dq, dr], ...], moveOnly?, captureOnly? }    - fixed jumps
  */
 
 /** The 12 hex 'L-shape' jump offsets used by the placeholder knight. */
@@ -101,7 +101,7 @@ const DEFAULT_GAME_CONFIG = {
   setup: {
     // Placeholder placement on the south/north edge rows of the radius-23
     // board. White's edge row is r=+23 (q from -23 to 0); black is the
-    // point-mirror (q,r) → (-q,-r).
+    // point-mirror (q,r) -> (-q,-r).
     white: {
       '-11,23': 'king',
       '-13,23': 'queen',
@@ -189,7 +189,7 @@ export class ConfigService {
       errors.push('Missing or invalid "units"');
     }
 
-    // Setup — validate coordinate format and unit references
+    // Setup - validate coordinate format and unit references
     if (!config.setup) {
       errors.push('Missing "setup"');
     } else {
@@ -216,7 +216,7 @@ export class ConfigService {
       errors.push('Missing "rules"');
     }
 
-    // Abilities (optional — just needs to be an object if present)
+    // Abilities (optional - just needs to be an object if present)
     if (config.abilities !== undefined && typeof config.abilities !== 'object') {
       errors.push('"abilities" must be an object');
     }
@@ -225,7 +225,6 @@ export class ConfigService {
   }
 
   updateConfig(jsonString: string): { valid: boolean; errors?: string[] } {
-    // First validate JSON syntax
     if (!this.validateJsonSyntax(jsonString)) {
       return {
         valid: false,
@@ -235,13 +234,11 @@ export class ConfigService {
 
     const config = JSON.parse(jsonString);
     
-    // Then validate game rules
     const gameValidation = this.validateGameRules(config);
     if (!gameValidation.valid) {
       return gameValidation;
     }
 
-    // If all validation passes, update the configuration
     this.configSubject.next(config);
     return { valid: true };
   }

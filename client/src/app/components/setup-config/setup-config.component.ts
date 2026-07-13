@@ -34,16 +34,13 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit(): void {
-    // Get username from localStorage
     this.username = localStorage.getItem('username') || '';
-    // Note: The lobby component already sent set_status: configuring before navigating here
-    // So we don't need to send it again
+    // The lobby already set our status to 'configuring' before navigating here
 
     // If opened from a game room, remember it so Save can push the config
     // to the server (onBack() still owns clearing this from localStorage).
     this.gameId = localStorage.getItem('returnToGameRoom');
 
-    // Initialize with default config
     this.jsonConfig = this.configService.getDefaultConfig();
     this.savedConfig = this.jsonConfig;
 
@@ -115,11 +112,9 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   }
 
   onBack(): void {
-    // Check if we came from a game room
     const returnToGameRoom = localStorage.getItem('returnToGameRoom');
     const gameRoomToken = localStorage.getItem('gameRoomToken');
     
-    // Determine navigation target and state
     let targetRoute: string[];
     let queryParams: { token?: string } = {};
     if (returnToGameRoom) {
@@ -132,7 +127,6 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
       localStorage.removeItem('returnToGameRoom');
       localStorage.removeItem('gameRoomToken');
       
-      // Set status back to in-game
       this.wsService.sendMessage({
         type: 'set_status',
         username: this.username,
@@ -187,7 +181,6 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   }
 
   onConfigChange(): void {
-    // Only update saved state if there are actual changes
     this.savedSuccessfully = false;
   }
 

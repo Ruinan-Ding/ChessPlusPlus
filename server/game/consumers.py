@@ -86,7 +86,6 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         """Handle WebSocket connection"""
         try:
-            # Get room name from URL route
             url_route: Dict[str, Any] = cast(Dict[str, Any], self.scope.get('url_route', {}))
             kwargs: Dict[str, Any] = cast(Dict[str, Any], url_route.get('kwargs', {}))
             self.room_name = cast(str, kwargs.get('room_name') or 'default')
@@ -98,10 +97,8 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self.channel_layer.group_add(self.room_group_name, self.channel_name)
             # For game rooms, we'll add to the group in _handle_join_game_room after validation
             
-            # Accept connection
             await self.accept()
             
-            # Send confirmation
             await send_json_response(self, {
                 'type': 'connection_established',
                 'message': 'Connected to game server'
@@ -135,7 +132,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                     # Clean up game room connection (only if user was validated to be in game)
                     elif self.game_id:
                         await self._cleanup_game_room_connection()
-                    # If user was never validated (no game_id), just log and do nothing
                     else:
                         logger.info(f"User {self.username} disconnecting without validated game_id, skipping cleanup")
             
@@ -156,16 +152,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 logger.info(f"User {self.username} is in-game, not deleting PlayerConnection")
                 return
             
-            # Remove from database
             await self._delete_player_connection(self.username)
             
-            # Notify other lobby users
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'user_left',
                 'username': self.username
             })
             
-            # Send updated user list
             await self._send_user_list()
         except Exception as e:
             logger.error(f"Error cleaning up lobby connection for {self.username}: {e}")
@@ -196,13 +189,10 @@ class GameConsumer(AsyncWebsocketConsumer):
                 # No active match to protect (not yet started, or already
                 # over) - safe to close the room immediately if the host left.
                 await self._close_game_room(game.game_id, f"{self.username} (host) disconnected")
-                # Broadcast updated user list so others see the status change
                 await self._send_user_list()
 
-            # Remove player from ready status
             await self._delete_ready_status(self.game_id, self.username)
 
-            # Clean up player connection
             await self._delete_player_connection(self.username)
         except Exception as e:
             logger.error(f"Error cleaning up game room connection for {self.username}: {e}")
@@ -242,7 +232,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.debug(f"Message received from {self.username}: {message_type}")
             structured_log('debug', 'message_received', username=self.username, message_type=message_type)
 
-            # Route message to appropriate handler
             handlers = {
                 'join_lobby': self._handle_join_lobby,
                 'leave_lobby': self._handle_leave_lobby,
@@ -310,13 +299,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             original_username = username
             username_was_taken = False
             
-            # Validate username
             validate_username(username)
             
-            # Check if username already taken
             existing_connection = await self._get_player_connection(username)
             if existing_connection and existing_connection.channel_name != self.channel_name:
-                # If rejoining, allow it and update the connection
                 if data.get('rejoining', False):
                     logger.info(f"User {username} rejoining lobby with new channel")
                 else:
@@ -326,11 +312,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                     username_was_taken = True
                     logger.info(f"Username '{original_username}' was taken, assigned '{username}' instead")
             
-            # Save connection (will update if already exists)
             self.username = username
             await self._create_or_update_player_connection(username, self.channel_name, 'online')
             
-            # If username was changed, notify the client of their new username
             if username_was_taken:
                 await send_json_response(self, {
                     'type': 'username_assigned',
@@ -346,7 +330,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'username': username
                 })
             
-            # Send user list to all lobby users
             await self._send_user_list()
             
             logger.info(f"User {username} joined lobby (rejoining: {data.get('rejoining', False)})")
@@ -365,16 +348,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Cannot leave as different user')
                 return
             
-            # Remove connection
             await self._delete_player_connection(username)
             
-            # Notify others
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'user_left',
                 'username': username
             })
             
-            # Send updated user list
             await self._send_user_list()
             
             logger.info(f"User {username} left lobby")
@@ -411,7 +391,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Cannot change username for another user')
                 return
             
-            # Check if new username already taken
             existing = await self._get_player_connection(new_username)
             if existing:
                 await send_error(self, 'USERNAME_TAKEN', f'Username "{new_username}" is already taken')
@@ -424,14 +403,12 @@ class GameConsumer(AsyncWebsocketConsumer):
             
             self.username = new_username
             
-            # Notify others
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'username_changed',
                 'oldUsername': old_username,
                 'newUsername': new_username
             })
             
-            # Send updated user list
             await self._send_user_list()
             
             logger.info(f"User renamed from {old_username} to {new_username}")
@@ -450,10 +427,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             
             validate_status(status)
             
-            # Update in database
             await self._update_player_status(username, status)
             
-            # Send updated user list to lobby
             await self._send_user_list()
             
             # If user is in a game room, also send updated player list to that room
@@ -513,13 +488,10 @@ class GameConsumer(AsyncWebsocketConsumer):
                     # Delete old declined/expired challenges to allow re-invitation
                     await self._delete_challenge(existing)
             
-            # Create challenge
-            # Idempotency: check for key
             idem_key = data.get('idempotency_key')
             if idem_key:
                 prior = get_idempotency(idem_key)
                 if prior:
-                    # Return prior invite id if present
                     await send_json_response(self, {
                         'type': 'challenge_existing',
                         'invite_id': prior.get('invite_id')
@@ -538,10 +510,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self._update_player_status(challenger, 'invited')
             await self._update_player_status(opponent, 'invited')
             
-            # Broadcast updated user list to lobby
             await self._send_user_list()
             
-            # Notify opponent
             await self.channel_layer.send(opponent_conn.channel_name, {
                 'type': 'send_game_challenge',
                 'challenger': challenger,
@@ -549,7 +519,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'invite_id': challenge.challenge_id
             })
             
-            logger.info(f"Challenge created: {challenger} → {opponent}")
+            logger.info(f"Challenge created: {challenger} -> {opponent}")
             structured_log('info', 'challenge_created', challenger=challenger, opponent=opponent, invite_id=challenge.challenge_id)
         except ValidationError as e:
             await send_error(self, e.code, e.message)
@@ -566,22 +536,17 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Only the challenged player can accept')
                 return
             
-            # Get challenge
             challenge = await self._get_challenge(challenger, opponent)
             if not challenge or challenge.status != 'pending':
                 await send_error(self, 'CHALLENGE_NOT_FOUND', 'Challenge not found or no longer pending')
                 return
             
-            # Generate a unique game ID
             game_id = str(uuid.uuid4())
             
-            # Create game room
-            # Idempotency for game creation
             idem_key = data.get('idempotency_key')
             if idem_key:
                 prior = get_idempotency(idem_key)
                 if prior:
-                    # If game already created, respond with existing game id
                     existing_game_id = prior.get('game_id')
                     await send_json_response(self, {
                         'type': 'game_already_created',
@@ -602,7 +567,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             # Delete the challenge now that game is created (prevents CHALLENGE_EXISTS on re-invite)
             await self._delete_challenge(challenge)
             
-            # Update both players' status to 'in-game' BEFORE they navigate to game room
+            # Update both players' status to 'in-game' before they navigate to the game room
             # This prevents the PlayerConnection from being deleted when lobby disconnects
             await self._update_player_status(challenger, 'in-game')
             await self._update_player_status(opponent, 'in-game')
@@ -617,7 +582,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'type': 'send_challenge_accepted',
                     'username': opponent,
                     'gameId': game_id,
-                    'token': game.host_token  # Host gets host_token
+                    'token': game.host_token
                 })
             
             if opponent_conn:
@@ -625,13 +590,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'type': 'send_challenge_accepted',
                     'username': opponent,
                     'gameId': game_id,
-                    'token': game.opponent_token  # Opponent gets opponent_token
+                    'token': game.opponent_token
                 })
             
-            # Broadcast updated user list to lobby so everyone sees the 'in-game' status
             await self._send_user_list()
             
-            logger.info(f"Challenge accepted: {challenger} ↔ {opponent} (game: {game_id})")
+            logger.info(f"Challenge accepted: {challenger} <-> {opponent} (game: {game_id})")
             structured_log('info', 'challenge_accepted', challenger=challenger, opponent=opponent, game_id=game_id)
         except ValidationError as e:
             await send_error(self, e.code, e.message)
@@ -648,23 +612,18 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Only the challenged player can decline')
                 return
             
-            # Get challenge
             challenge = await self._get_challenge(challenger, opponent)
             if not challenge:
                 await send_error(self, 'CHALLENGE_NOT_FOUND', 'Challenge not found')
                 return
             
-            # Update challenge status
             await self._update_challenge_status(challenge.challenge_id, 'declined')
             
-            # Reset both players' status back to 'online'
             await self._update_player_status(challenger, 'online')
             await self._update_player_status(opponent, 'online')
             
-            # Broadcast updated user list to lobby
             await self._send_user_list()
             
-            # Notify challenger
             challenger_conn = await self._get_player_connection(challenger)
             if challenger_conn:
                 await self.channel_layer.send(challenger_conn.channel_name, {
@@ -672,7 +631,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'username': opponent
                 })
             
-            logger.info(f"Challenge declined: {challenger} ← {opponent}")
+            logger.info(f"Challenge declined: {challenger} <- {opponent}")
         except ValidationError as e:
             await send_error(self, e.code, e.message)
     
@@ -695,7 +654,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Can only join as yourself')
                 return
             
-            # Get game
             game = await self._get_game_by_id(game_id)
             if not game:
                 await send_error(self, 'GAME_NOT_FOUND', 'Game room not found')
@@ -703,48 +661,39 @@ class GameConsumer(AsyncWebsocketConsumer):
             
             logger.info(f"[join_game_room] Game found: host={game.host}, opponent={game.opponent}")
             
-            # Verify user is in this game
             if username != game.host and username != game.opponent:
                 logger.warning(f"[join_game_room] User {username} not in game - host={game.host}, opponent={game.opponent}")
                 await send_error(self, 'NOT_IN_GAME', 'You are not in this game')
                 return
             
-            # Validate the access token
             expected_token = game.host_token if username == game.host else game.opponent_token
             if not expected_token or token != expected_token:
                 await send_error(self, 'INVALID_TOKEN', 'Invalid or missing access token')
                 return
             
-            # Check if token has expired
             if game.token_expires_at and timezone.now() > game.token_expires_at:
                 await send_error(self, 'TOKEN_EXPIRED', 'Access token has expired')
                 return
             
-            # Store game_id for this connection
             self.game_id = game_id
 
-            # Cancel any pending disconnect-forfeit grace timer - they made it back.
+            # Cancel any pending disconnect-forfeit grace timer
             had_pending_grace = (game_id, username) in _pending_disconnect_timers
             self._cancel_disconnect_timer(game_id, username)
 
-            # Update player connection with new channel and status
-            # This is important when the game room uses a different WebSocket connection
+            # The game room may arrive on a fresh WebSocket, so refresh the stored channel
             await self._create_or_update_player_connection(username, self.channel_name, 'in-game')
             
-            # Add to game room group (but KEEP lobby group membership for lobby chat)
-            # Don't discard from lobby group - users in game room should still receive lobby messages
+            # Add to the game room group, but keep lobby group membership for lobby chat
             self.room_name = game_id
             self.room_group_name = f'game_{game_id}'
             await self.channel_layer.group_add(self.room_group_name, self.channel_name)
-            # Also ensure we're still in lobby group for lobby chat
             await self.channel_layer.group_add('game_lobby', self.channel_name)
             
-            # Broadcast updated user list to lobby
             await self._send_user_list()
 
             logger.info(f"Sending player_list for game {game_id}, is_inviter: {username == game.host}")
 
-            # Send player list
             await self._send_game_player_list(game_id, username == game.host)
 
             if had_pending_grace:
@@ -801,9 +750,8 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if await self._end_game(game_id, state, winner, 'resign'):
                     await self._broadcast_game_over(game_id, winner, 'resign', resignedBy=username)
                     forfeited = True
-                    logger.info(f"Game {game_id} forfeited to {winner} — {username} left mid-game")
+                    logger.info(f"Game {game_id} forfeited to {winner} - {username} left mid-game")
 
-            # Notify other player(s) in the game room that this player left
             # Send to game room BEFORE leaving the group
             game_room_group = f'game_{game_id}'
             await self.channel_layer.group_send(
@@ -814,10 +762,8 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'gameId': game_id
                 }
             )
-            # Mark that this user is leaving to return to lobby
             self.leaving_game_room = True
 
-            # Switch back to lobby group
             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
             self.room_name = 'lobby'
             self.room_group_name = 'game_lobby'
@@ -826,7 +772,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             # Update player status back to 'online' (keep the connection alive)
             await self._update_player_status(username, 'online')
 
-            # Clean up ready status
             await self._delete_ready_status(game_id, username)
 
             # Close the room if the host left, or if leaving forfeited the match
@@ -835,7 +780,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             if username == game.host or forfeited:
                 await self._close_game_room(game_id, f"{username} left the game room")
 
-            # Broadcast updated user list to lobby
             await self._send_user_list()
             
             logger.info(f"User {username} left game room {game_id}, returning to lobby")
@@ -873,16 +817,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Can only ready yourself')
                 return
             
-            # Verify game exists
             game = await self._get_game_by_id(game_id)
             if not game:
                 await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
                 return
             
-            # Mark as ready
             await self._set_ready_status(game_id, username, True)
             
-            # Broadcast to game room
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'player_ready',
                 'username': username
@@ -904,16 +845,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Can only unready yourself')
                 return
             
-            # Verify game exists
             game = await self._get_game_by_id(game_id)
             if not game:
                 await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
                 return
             
-            # Mark as not ready
             await self._set_ready_status(game_id, username, False)
 
-            # Broadcast to game room, include silent flag if present
             silent = data.get('silent', False)
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'player_unready',
@@ -935,28 +873,23 @@ class GameConsumer(AsyncWebsocketConsumer):
             
             validate_game_mode(mode)
             
-            # Verify game exists
             game = await self._get_game_by_id(game_id)
             if not game:
                 await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
                 return
             
-            # Only host can change mode
             if self.username != game.host:
                 await send_error(self, 'PERMISSION_DENIED', 'Only the host can change game mode')
                 return
             
-            # Validate and update options if custom mode
             options = {}
             if mode == 'custom':
                 if 'options' in data:
                     validate_game_options(data['options'])
                     options = data['options']
             
-            # Update game
             await self._update_game_mode(game_id, mode, options)
             
-            # Broadcast to game room
             message_data = {
                 'type': 'game_mode_changed',
                 'mode': mode
@@ -966,7 +899,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             
             await broadcast_to_group(self.channel_layer, self.room_group_name, message_data)
             
-            # Log mode change instead of sending system message
             mode_text = "Default Mode" if mode == "default" else "Custom Mode"
             options_text = ""
             if mode == 'custom' and options:
@@ -1030,13 +962,11 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_ACTION', 'Action must be enable or disable')
                 return
             
-            # Verify game exists
             game = await self._get_game_by_id(game_id)
             if not game:
                 await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
                 return
             
-            # Only host can request reveal mode changes
             if self.username != game.host:
                 await send_error(self, 'PERMISSION_DENIED', 'Only the host can request reveal mode changes')
                 return
@@ -1047,25 +977,21 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'NO_OPPONENT', 'Opponent not found')
                 return
             
-            # Cancel any existing reveal request
             if game_id in _pending_reveal_requests:
                 old_task = _pending_reveal_requests[game_id].get('task')
                 if old_task:
                     old_task.cancel()
             
-            # Create timeout task for 5 seconds
             async def reveal_timeout():
                 try:
                     await asyncio.sleep(5)
                     _pending_reveal_requests.pop(game_id, None)
-                    # Notify both players of timeout
                     await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
                         'type': 'reveal_request_timeout'
                     })
                 except asyncio.CancelledError:
                     pass
             
-            # Schedule timeout task
             timeout_task = asyncio.create_task(reveal_timeout())
             _pending_reveal_requests[game_id] = {
                 'requester': self.username,
@@ -1073,7 +999,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'action': action
             }
             
-            # Send request to opponent
             await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
                 'type': 'reveal_mode_requested',
                 'username': self.username,
@@ -1095,7 +1020,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             game_id = data.get('gameId', '').strip()
             accepted = data.get('accepted', False)
             
-            # Check if there's a pending request
             if game_id not in _pending_reveal_requests:
                 await send_error(self, 'NO_PENDING_REQUEST', 'No pending reveal mode request')
                 return
@@ -1108,14 +1032,11 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'You cannot respond to your own reveal mode request')
                 return
 
-            # Cancel the timeout task
             if request_info.get('task'):
                 request_info['task'].cancel()
             
-            # Remove request from tracking
             del _pending_reveal_requests[game_id]
             
-            # Notify both players of response
             if accepted:
                 await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
                     'type': 'reveal_request_accepted',
@@ -1140,16 +1061,13 @@ class GameConsumer(AsyncWebsocketConsumer):
         try:
             validate_required_fields(data, ['gameId'])
             game_id = data.get('gameId', '').strip()
-            # Verify game exists
             game = await self._get_game_by_id(game_id)
             if not game:
                 await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
                 return
-            # Only host can start
             if self.username != game.host:
                 await send_error(self, 'PERMISSION_DENIED', 'Only the host can start the game')
                 return
-            # Check all players are ready
             all_ready = await self._all_players_ready(game_id)
             if not all_ready:
                 await send_error(self, 'NOT_ALL_READY', 'Not all players are ready')
@@ -1176,20 +1094,16 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return
             board = build_initial_board(config)
 
-            # Set both players' status to 'in-game' (red)
             await self._update_player_status(game.host, 'in-game')
             await self._update_player_status(game.opponent, 'in-game')
-            # Broadcast updated user list to lobby and game room
             await self._send_user_list()
             await self._send_game_player_list(game_id, is_inviter=(self.username == game.host))
 
-            # Randomly assign colours
             if random.random() < 0.5:
                 p_white, p_black = game.host, game.opponent
             else:
                 p_white, p_black = game.opponent, game.host
 
-            # Persist
             turn_started_dt = timezone.now()
             await self._create_game_state(
                 game_id=game_id,
@@ -1201,10 +1115,8 @@ class GameConsumer(AsyncWebsocketConsumer):
                 turn_started_at=turn_started_dt,
             )
 
-            # Update GameRoom status to 'started'
             await self._update_game_status(game_id, 'started')
 
-            # Broadcast full initial state to both players immediately
             await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
                 'type': 'game_started',
                 'gameId': game_id,
@@ -1217,7 +1129,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'turnStartedAt': turn_started_dt.isoformat(),
             })
 
-            # Start turn timer (if configured)
             time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
             if time_limit > 0:
                 await self._start_turn_timer(game_id, time_limit, turn_number=1, current_turn=p_white)
@@ -1241,7 +1152,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         turn_number/current_turn fix the exact turn this timer is watching.
         If a move (or any other game-ending event) has already moved the
         game past that turn by the time the timer wakes up, the timer
-        recognises itself as stale and does nothing — this prevents a
+        recognises itself as stale and does nothing - this prevents a
         timer armed for turn N from mistakenly declaring a winner using
         turn N+1's state after the real turn-N player already moved in time.
         """
@@ -1253,7 +1164,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         async def _timer_task():
             try:
                 await asyncio.sleep(time_limit)
-                # Timer expired – the current player loses, unless the game
+                # Timer expired - the current player loses, unless the game
                 # has already moved on since this timer was armed.
                 state = await self._get_game_state(game_id)
                 if not state or state.is_finished:
@@ -1265,7 +1176,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 winner = state.player_black if state.current_turn == state.player_white else state.player_white
                 if await self._end_game(game_id, state, winner, 'timeout'):
                     await self._broadcast_game_over(game_id, winner, 'timeout')
-                    logger.info(f"Turn timer expired in game {game_id} – {winner} wins")
+                    logger.info(f"Turn timer expired in game {game_id} - {winner} wins")
             except asyncio.CancelledError:
                 pass
             except Exception as e:
@@ -1280,7 +1191,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         """Cancel a running turn timer for the given game (if any).
 
         A timer's own expiry coroutine calls this (via _broadcast_game_over)
-        to retire itself from the tracking dict — in that case the task is
+        to retire itself from the tracking dict - in that case the task is
         asyncio.current_task(), and cancelling it would throw CancelledError
         into its own in-flight broadcast. Only cancel a *different* task.
         """
@@ -1315,7 +1226,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     await self._broadcast_game_over(game_id, winner, 'disconnect', disconnectedPlayer=username)
                     await self._close_game_room(game_id, f"{username} did not reconnect within the grace period")
                     await self._send_user_list()
-                    logger.info(f"Game {game_id} forfeited to {winner} — {username} did not reconnect in time")
+                    logger.info(f"Game {game_id} forfeited to {winner} - {username} did not reconnect in time")
             except asyncio.CancelledError:
                 pass
             except Exception as e:
@@ -1327,7 +1238,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         _pending_disconnect_timers[(game_id, username)] = task
 
     def _cancel_disconnect_timer(self, game_id: Optional[str], username: Optional[str]):
-        """Cancel a pending disconnect-grace timer (if any) — called when the
+        """Cancel a pending disconnect-grace timer (if any) - called when the
         player successfully reconnects."""
         if game_id is None or username is None:
             return
@@ -1341,7 +1252,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         """Persist a game ending that leaves the board untouched (resign/timeout/draw).
 
         Conditional on the game still being at state.turn_number and
-        unfinished (see _update_game_state) — if a concurrent move or
+        unfinished (see _update_game_state) - if a concurrent move or
         another end-game path already advanced past that turn, this is a
         no-op. Returns True if this call's ending is the one that applied.
         """
@@ -1428,7 +1339,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_MOVE', 'Malformed move coordinates')
                 return
 
-            # Validate source piece
             piece = board.get(fq, fr)
             if not piece:
                 await send_error(self, 'INVALID_MOVE', 'No piece at source coordinate')
@@ -1439,20 +1349,16 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_MOVE', 'That piece is not yours')
                 return
 
-            # Full legal move validation
             legal_dests = get_legal_moves_filtered(board, (fq, fr), config, my_color)
             if (tq, tr) not in legal_dests:
                 await send_error(self, 'INVALID_MOVE', 'Illegal move for this piece')
                 return
 
-            # Resolve combat (HP-based)
             combat = resolve_combat(board, (fq, fr), (tq, tr), config)
 
-            # Determine next turn
             next_player = state.player_black if self.username == state.player_white else state.player_white
             next_color = 'black' if my_color == 'white' else 'white'
 
-            # Build move record
             move_record: dict = {
                 'from': from_coord,
                 'to': to_coord,
@@ -1470,7 +1376,6 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             new_history = list(state.move_history) + [move_record]
 
-            # Detect elimination (all units of one side destroyed)
             winner = ''
             end_reason = ''
             outcome = detect_outcome(board, next_color, config)
@@ -1478,12 +1383,11 @@ class GameConsumer(AsyncWebsocketConsumer):
                 winner = self.username
                 end_reason = 'elimination'
 
-            # Check max-turns rule
             max_turns = config.get('rules', {}).get('maxTurns', 0)
             if not end_reason and max_turns > 0 and state.turn_number >= max_turns:
                 end_reason = 'draw_max_turns'
 
-            # Persist updated state — conditional on the game still being at
+            # Persist updated state - conditional on the game still being at
             # state.turn_number and unfinished, so a turn timer that already
             # ended the game while this move was in flight can't be clobbered.
             next_turn_number = state.turn_number + 1
@@ -1503,7 +1407,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'GAME_OVER', 'This game already ended before your move was processed')
                 return
 
-            # Broadcast the move to both players
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'move_made',
                 'move': move_record,
@@ -1516,7 +1419,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             if end_reason:
                 await self._broadcast_game_over(self.game_id, winner, end_reason)
             else:
-                # Restart turn timer for the next player
                 time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
                 if time_limit > 0:
                     await self._start_turn_timer(
@@ -1524,7 +1426,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                         turn_number=next_turn_number, current_turn=next_player,
                     )
 
-            logger.info(f"Move in game {self.game_id}: {from_coord}→{to_coord} by {self.username}")
+            logger.info(f"Move in game {self.game_id}: {from_coord}->{to_coord} by {self.username}")
         except ValidationError as e:
             await send_error(self, e.code, e.message)
         except Exception as e:
@@ -1665,12 +1567,10 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def _handle_heartbeat(self, data):
         """Handle client heartbeat/presence ping"""
         try:
-            # Update last_activity
             if self.username:
                 await self._update_player_activity(self.username)
                 structured_log('debug', 'heartbeat_received', username=self.username)
 
-            # Reply with ack
             await send_json_response(self, {
                 'type': 'heartbeat_ack',
                 'timestamp': timezone.now().isoformat()
@@ -1773,10 +1673,8 @@ class GameConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _create_game_room(self, host, opponent, game_id):
         """Create a new game room with access tokens"""
-        # Generate secure tokens for each player (32 bytes = 64 hex chars)
         host_token = secrets.token_hex(32)
         opponent_token = secrets.token_hex(32)
-        # Tokens expire in 10 minutes
         token_expires = timezone.now() + timedelta(minutes=10)
         
         game = GameRoom.objects.create(  # type: ignore
@@ -1826,13 +1724,11 @@ class GameConsumer(AsyncWebsocketConsumer):
         try:
             game = GameRoom.objects.get(game_id=game_id)  # type: ignore
             
-            # Reset both players' statuses back to 'online'
             if game.host:
                 PlayerConnection.objects.filter(username=game.host).update(status='online')  # type: ignore
             if game.opponent:
                 PlayerConnection.objects.filter(username=game.opponent).update(status='online')  # type: ignore
             
-            # Mark game as closed
             GameRoom.objects.filter(game_id=game_id).update(  # type: ignore
                 status='closed',
                 closed_at=timezone.now()
@@ -1873,7 +1769,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         statuses = PlayerReadyStatus.objects.filter(game_id=game_id)  # type: ignore
         return {s.username: s.is_ready for s in statuses}
 
-    # ── GameState DB operations ──────────────────────────────────────
+    # -- GameState DB operations --------------------------------------
 
     @database_sync_to_async
     def _create_game_state(self, game_id, board_state, current_turn, player_white, player_black,
@@ -1913,7 +1809,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         If expected_turn_number is given, the write is conditional: it only
         applies if the game is still unfinished (end_reason == '') and still
-        at exactly that turn_number. This is optimistic concurrency control —
+        at exactly that turn_number. This is optimistic concurrency control -
         it stops a stale write (e.g. a move that finishes processing after a
         turn timer already ended the game, or vice versa) from silently
         clobbering whichever result actually landed first.
@@ -1967,7 +1863,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'type': 'challenge_accepted',
             'username': event['username'],
             'gameId': event['gameId'],
-            'token': event.get('token', '')  # Include access token
+            'token': event.get('token', '')
         })
     
     async def send_challenge_declined(self, event):

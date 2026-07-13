@@ -77,24 +77,21 @@ const EMPTY_SNAPSHOT: GameSnapshot = {
  *
  * Components subscribe to `state$` (or individual derived observables)
  * and the WebSocket handler calls the `apply*` methods to push updates.
- *
- * This replaces the `(this as any)._initialBoardState` hacks that were
- * previously scattered through the GameRoomComponent.
  */
 @Injectable({
   providedIn: 'root',
 })
 export class GameStateService {
-  // ── Internal state ─────────────────────────────────────────────────
+  // -- Internal state -------------------------------------------------
 
   private stateSubject = new BehaviorSubject<GameSnapshot>({ ...EMPTY_SNAPSHOT });
 
-  // ── Public observables ─────────────────────────────────────────────
+  // -- Public observables ---------------------------------------------
 
   /** Full game snapshot (board, turn, history, config, etc.). */
   readonly state$: Observable<GameSnapshot> = this.stateSubject.asObservable();
 
-  // ── Read helpers (synchronous) ─────────────────────────────────────
+  // -- Read helpers (synchronous) -------------------------------------
 
   get snapshot(): GameSnapshot {
     return this.stateSubject.value;
@@ -117,7 +114,7 @@ export class GameStateService {
     return '';
   }
 
-  // ── Mutation methods (called from WS handler) ──────────────────────
+  // -- Mutation methods (called from WS handler) ----------------------
 
   /** Apply a `game_started` message. */
   applyGameStarted(msg: any): void {

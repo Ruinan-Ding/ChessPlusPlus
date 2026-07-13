@@ -5,7 +5,7 @@
  * every handler that deals with a particular message type.
  */
 
-// ── Lobby ────────────────────────────────────────────────────────────────
+// -- Lobby ----------------------------------------------------------------
 export const JOIN_LOBBY           = 'join_lobby';
 export const LEAVE_LOBBY          = 'leave_lobby';
 export const CHAT_MESSAGE         = 'chat_message';
@@ -14,12 +14,12 @@ export const SET_STATUS           = 'set_status';
 export const REQUEST_USER_LIST    = 'request_user_list';
 export const HEARTBEAT            = 'heartbeat';
 
-// ── Challenges ───────────────────────────────────────────────────────────
+// -- Challenges -----------------------------------------------------------
 export const GAME_CHALLENGE       = 'game_challenge';
 export const CHALLENGE_ACCEPT     = 'challenge_accept';
 export const CHALLENGE_DECLINE    = 'challenge_decline';
 
-// ── Game Room (pre-game) ─────────────────────────────────────────────────
+// -- Game Room (pre-game) -------------------------------------------------
 export const JOIN_GAME_ROOM       = 'join_game_room';
 export const LEAVE_GAME_ROOM      = 'leave_game_room';
 export const GAME_ROOM_MESSAGE    = 'game_room_message';
@@ -31,14 +31,14 @@ export const REVEAL_RESPONSE      = 'reveal_response';
 export const START_GAME           = 'start_game';
 export const CANCEL_GAME_COUNTDOWN = 'cancel_game_countdown';
 
-// ── Gameplay (in-game) ───────────────────────────────────────────────────
+// -- Gameplay (in-game) ---------------------------------------------------
 export const MAKE_MOVE            = 'make_move';
 export const RESIGN               = 'resign';
 export const OFFER_DRAW           = 'offer_draw';
 export const RESPOND_DRAW         = 'respond_draw';
 export const REQUEST_GAME_STATE   = 'request_game_state';
 
-// ── Server → Client broadcasts ───────────────────────────────────────────
+// -- Server -> Client broadcasts -------------------------------------------
 export const GAME_STATE_UPDATE    = 'game_state_update';
 export const GAME_STARTED         = 'game_started';
 export const GAME_OVER            = 'game_over';

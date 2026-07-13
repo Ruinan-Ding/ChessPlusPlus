@@ -1,5 +1,5 @@
 """
-Config loader — parses a GameConfig dict (matching the shared JSON schema)
+Config loader - parses a GameConfig dict (matching the shared JSON schema)
 and builds the initial HexBoard state.
 
 The only fixed game fact is the board: a hexagon with 24 cells per edge
@@ -7,7 +7,7 @@ The only fixed game fact is the board: a hexagon with 24 cells per edge
 DEFAULT_CONFIG rather than engine code, so it can change with the config.
 
 Everything about the units below is a PLACEHOLDER. The engine reads all
-movement/combat behaviour from this data — none of the unit ids mean
+movement/combat behaviour from this data - none of the unit ids mean
 anything to the code, and the real game's units will replace these.
 """
 
@@ -24,7 +24,7 @@ logger = logging.getLogger('game')
 # ---------------------------------------------------------------------------
 # Default (built-in) configuration.
 #
-# Board: hexagon, 24 cells per edge → axial radius 23 (side = radius + 1),
+# Board: hexagon, 24 cells per edge -> axial radius 23 (side = radius + 1),
 # edge-up orientation. Placement uses axial coords with centre (0, 0);
 # white starts on the southern edge row (r = +23), black mirrored north.
 #
@@ -124,7 +124,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "setup": {
         # Placeholder symmetric placement on the south/north edge rows of the
         # radius-23 board.  White's edge row is r=+23 (q from -23 to 0);
-        # black is the point-mirror (q,r) → (-q,-r).
+        # black is the point-mirror (q,r) -> (-q,-r).
         "white": {
             "-11,23": "king",
             "-13,23": "queen",
@@ -183,7 +183,7 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
     else:
         r = config['board']['radius']
         if not isinstance(r, int) or r < 1 or r > 50:
-            errors.append(f"board.radius must be an integer 1–50, got {r}")
+            errors.append(f"board.radius must be an integer 1-50, got {r}")
 
     if 'units' not in config or not isinstance(config.get('units'), dict):
         errors.append("Missing or invalid 'units'")
@@ -197,12 +197,10 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                 errors.append(f"setup.{side} must be a dict")
                 continue
             for coord_str, unit_id in placement.items():
-                # validate coord format
                 try:
                     parse_coord(coord_str)
                 except (ValueError, IndexError):
                     errors.append(f"Invalid coordinate '{coord_str}' in setup.{side}")
-                # validate unit exists
                 if unit_id not in config.get('units', {}):
                     errors.append(f"Unknown unit '{unit_id}' at {coord_str} in setup.{side}")
 

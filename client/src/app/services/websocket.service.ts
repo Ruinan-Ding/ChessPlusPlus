@@ -41,15 +41,13 @@ export class WebsocketService {
   connect(roomName: string = 'default'): void {
     console.log(`[WebSocket.connect] Connecting to room: ${roomName}`);
     
-    // Only disconnect if we're switching rooms or not already connecting to this room
-    // Also check if socket is actually OPEN (not just exists)
+    // Only disconnect if we're switching rooms or the existing socket isn't open
     const isActiveConnection = this.socket && this.socket.readyState === WebSocket.OPEN;
     
     if (this.currentRoomName !== roomName || !isActiveConnection) {
       this.disconnect();
       this.currentRoomName = roomName;
     } else {
-      // Already connected to this room, just return
       console.log(`[WebSocket.connect] Already connected to room: ${roomName}`);
       return;
     }
@@ -57,7 +55,6 @@ export class WebsocketService {
     this.reconnectAttemptsSubject.next(0);
     this.connectionFailedSubject.next(false);
     
-    // Ensure connection status is false before starting new connection
     if (this.connectionStatusSubject.value !== false) {
       this.connectionStatusSubject.next(false);
     }
@@ -66,7 +63,6 @@ export class WebsocketService {
   }
 
   private createSocket(roomName: string): void {
-    // Force reconnecting to be false when creating a new socket
     this.reconnectingSubject.next(false);
     
     try {
@@ -83,7 +79,6 @@ export class WebsocketService {
         this.reconnectingSubject.next(false);
         this.reconnectAttemptsSubject.next(0);
         this.connectionFailedSubject.next(false);
-        // start heartbeat after connection established
         this.startHeartbeat();
         // Flush any queued messages that were sent while connecting
         if (this.sendQueue.length) {
@@ -112,9 +107,7 @@ export class WebsocketService {
           this.attemptReconnect();
         } else if (event.code === 4000) {
           console.log('Forced disconnect from server - another session took over');
-          // We could show a notification here if desired
         }
-        // stop heartbeat when socket closed
         this.stopHeartbeat();
       };
       
@@ -128,7 +121,6 @@ export class WebsocketService {
           const data = JSON.parse(event.data);
           console.log('[WebSocket] Message received:', data);
           
-          // Handle force disconnect message from server
           if (data.type === 'force_disconnect') {
             console.log('[WebSocket] Forced disconnect from server:', data.message);
             // The connection will be closed by the server immediately after this
@@ -170,7 +162,6 @@ export class WebsocketService {
   }
 
   private attemptReconnect(): void {
-    // Clear any existing reconnect timeout
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
     }
@@ -201,9 +192,7 @@ export class WebsocketService {
         // Queue messages while connecting/reconnecting so UI actions are not lost
         console.log('[WebSocket] Socket not open, queueing message');
         this.sendQueue.push(message);
-        // If socket is null and we have a room name, attempt a connect
         if (!this.socket) {
-          // attempt reconnect in background
           this.connect(this.currentRoomName);
         }
       }
@@ -213,7 +202,6 @@ export class WebsocketService {
   }
 
   disconnect(): void {
-    // Clear any reconnect timeout
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
@@ -229,7 +217,6 @@ export class WebsocketService {
       }
       this.socket = null;
     }
-    // ensure heartbeat is stopped when explicitly disconnecting
     this.stopHeartbeat();
   }
   

@@ -44,7 +44,7 @@
 
       <!-- Draw offer banner: shown to whichever side needs to act/wait -->
       <div class="draw-offer-banner" *ngIf="gameStarted && state.drawOfferedBy">
-        <span *ngIf="state.drawOfferedBy === username">Draw offer sent — waiting for a response...</span>
+        <span *ngIf="state.drawOfferedBy === username">Draw offer sent - waiting for a response...</span>
         <ng-container *ngIf="state.drawOfferedBy !== username">
           <span>{{ state.drawOfferedBy }} offers a draw.</span>
           <button class="accept-btn" (click)="respondToDraw(true)">Accept</button>
@@ -303,5 +303,3 @@
       </div>
     </div>
   </main>
-  
-  <!-- Countdown Popup removed: countdown is now inside the Cancel button -->

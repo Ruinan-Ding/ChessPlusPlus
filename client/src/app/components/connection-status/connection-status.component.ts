@@ -46,13 +46,12 @@ export class ConnectionStatusComponent implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit(): void {
-    // Subscribe to status updates and get current value
     this.isConnected = this.wsService.isConnected();
     this.subscription = this.wsService.connectionStatus$.pipe(takeUntil(this.destroy$)).subscribe(
       (status: boolean) => {
         console.log('Connection status updated:', status);
         this.isConnected = status;
-        this.cdr.markForCheck(); // Trigger change detection
+        this.cdr.markForCheck();
       }
     );
   }
@@ -64,7 +63,5 @@ export class ConnectionStatusComponent implements OnInit, OnDestroy {
     }
     this.destroy$.next();
     this.destroy$.complete();
-    // Remove this line - don't disconnect when the status component is destroyed
-    // this.wsService.disconnect();
   }
 }

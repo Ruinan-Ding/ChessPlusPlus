@@ -42,8 +42,8 @@ interface HexCell {
 
 /**
  * Board orientation (from config.board.orientation, cosmetic only):
- *  - 'edge-up'   → pointy-top cells; the board hexagon has a flat edge on top.
- *  - 'vertex-up' → flat-top cells; the board hexagon has a corner on top.
+ *  - 'edge-up'   -> pointy-top cells; the board hexagon has a flat edge on top.
+ *  - 'vertex-up' -> flat-top cells; the board hexagon has a corner on top.
  * The default game board is an edge-up hexagon.
  */
 type BoardOrientation = 'edge-up' | 'vertex-up';
@@ -62,7 +62,7 @@ function axialToPixel(q: number, r: number, orientation: BoardOrientation): { x:
       y: HEX_SIZE * (Math.sqrt(3) / 2 * q + Math.sqrt(3) * r),
     };
   }
-  // edge-up board → pointy-top cells
+  // edge-up board -> pointy-top cells
   return {
     x: HEX_SIZE * (Math.sqrt(3) * q + Math.sqrt(3) / 2 * r),
     y: HEX_SIZE * (3 / 2) * r,
@@ -86,7 +86,7 @@ function hexPoints(cx: number, cy: number, orientation: BoardOrientation): strin
 // Legal-move computation helpers (client-side preview)
 //
 // Fully config-driven: unit ids are opaque labels. Movement comes from the
-// unit's `movement` patterns — direction/range slides or fixed-jump offsets.
+// unit's `movement` patterns - direction/range slides or fixed-jump offsets.
 // Patterns are authored from WHITE's perspective and mirrored for black
 // (a no-op for symmetric movement sets). Mirrors the server engine in
 // server/game/engine/move_validator.py.
@@ -228,7 +228,7 @@ function computeLegalMoves(
       <!-- Turn / status bar -->
       <div class="status-bar" *ngIf="currentTurn || endReason">
         <span *ngIf="!endReason">
-          Turn {{ turnNumber }} —
+          Turn {{ turnNumber }} -
           <strong [class.my-turn]="isMyTurn">{{ isMyTurn ? 'Your move' : currentTurn + "'s move" }}</strong>
           <span *ngIf="turnTimeLimit > 0" class="timer-badge" [class.timer-low]="timerSeconds <= 10">
             ⏱ {{ timerSeconds }}s
@@ -404,7 +404,7 @@ function computeLegalMoves(
   `],
 })
 export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
-  // ── Inputs ─────────────────────────────────────────────────────────
+  // -- Inputs ---------------------------------------------------------
 
   /** Current board state from server. */
   @Input() boardState: BoardState = {};
@@ -431,12 +431,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   /** Game config (for legal-move preview). */
   @Input() config: any = null;
 
-  // ── Outputs ────────────────────────────────────────────────────────
+  // -- Outputs --------------------------------------------------------
 
   /** Emitted when the player makes a move: {from: "q,r", to: "q,r"}. */
   @Output() moveMade = new EventEmitter<{ from: string; to: string }>();
 
-  // ── Internal state ─────────────────────────────────────────────────
+  // -- Internal state -------------------------------------------------
 
   cells: HexCell[] = [];
   viewBox = '0 0 100 100';
@@ -458,17 +458,17 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   get endReasonLabel(): string {
     const isWinner = this.winner === this.username;
     switch (this.endReason) {
-      case 'elimination': return isWinner ? 'You won — all enemies eliminated!' : 'You lost — all units eliminated';
+      case 'elimination': return isWinner ? 'You won - all enemies eliminated!' : 'You lost - all units eliminated';
       case 'resign':      return isWinner ? 'You won by resignation' : 'You lost by resignation';
-      case 'timeout':     return isWinner ? 'You won — opponent timed out' : 'You lost — time out';
-      case 'disconnect':  return isWinner ? 'You won — opponent disconnected' : 'You lost — disconnected';
+      case 'timeout':     return isWinner ? 'You won - opponent timed out' : 'You lost - time out';
+      case 'disconnect':  return isWinner ? 'You won - opponent disconnected' : 'You lost - disconnected';
       case 'draw_agreed': return 'Draw by agreement';
-      case 'draw_max_turns': return 'Draw — max turns reached';
+      case 'draw_max_turns': return 'Draw - max turns reached';
       default:            return 'Game over';
     }
   }
 
-  // ── Lifecycle ──────────────────────────────────────────────────────
+  // -- Lifecycle ------------------------------------------------------
 
   ngOnInit(): void {
     this.startTimer();
@@ -494,14 +494,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     }
   }
 
-  // ── Click handler ──────────────────────────────────────────────────
+  // -- Click handler --------------------------------------------------
 
   onHexClick(hex: HexCell): void {
     if (!this.interactive || !this.isMyTurn || this.endReason) {
       return;
     }
 
-    // If clicking a legal target → emit the move
+    // If clicking a legal target -> emit the move
     if (this.selectedHex && this.legalTargets.has(hex.key)) {
       this.lastMoveFrom = this.selectedHex;
       this.lastMoveTo = hex.key;
@@ -511,7 +511,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       return;
     }
 
-    // If clicking own piece → select it and compute legal moves
+    // If clicking own piece -> select it and compute legal moves
     if (hex.piece && hex.piece.color === this.myColor) {
       this.selectedHex = hex.key;
       // Compute client-side legal-move preview
@@ -546,7 +546,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     }
   }
 
-  // ── Cell building ──────────────────────────────────────────────────
+  // -- Cell building --------------------------------------------------
 
   /** Board orientation from config (cosmetic); the default board is edge-up. */
   get orientation(): BoardOrientation {
@@ -594,9 +594,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     }
   }
 
-  // ── Helpers ────────────────────────────────────────────────────────
+  // -- Helpers --------------------------------------------------------
 
-  /** Glyph comes from the unit's config entry — nothing is hardcoded per unit. */
+  /** Glyph comes from the unit's config entry - nothing is hardcoded per unit. */
   getPieceSymbol(piece: PieceData): string {
     const unitDef = this.config?.units?.[piece.unit_id];
     return unitDef?.display?.[piece.color]
@@ -608,7 +608,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     return hex.key;
   }
 
-  // ── Timer ──────────────────────────────────────────────────────────
+  // -- Timer ----------------------------------------------------------
 
   private startTimer(): void {
     this.stopTimer();
