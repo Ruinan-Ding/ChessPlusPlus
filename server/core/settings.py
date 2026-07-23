@@ -27,14 +27,14 @@ def _env_bool(name: str, default: bool) -> bool:
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 #
-# All of DEBUG / SECRET_KEY / ALLOWED_HOSTS below default to the exact same
-# values this project has always run with locally (no env vars needed for
-# local dev to keep working unchanged). Setting DJANGO_DEBUG=false switches
-# to a production-safe posture: a real SECRET_KEY becomes mandatory and
-# ALLOWED_HOSTS must be configured explicitly (no wildcard fallback).
+# DEBUG defaults to False (production-safe posture: a real SECRET_KEY
+# becomes mandatory and ALLOWED_HOSTS must be configured explicitly, no
+# wildcard fallback). Local dev must set DJANGO_DEBUG=true explicitly - see
+# README.md - so forgetting to set it in a real deployment fails loudly
+# instead of silently shipping debug mode.
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = _env_bool('DJANGO_DEBUG', True)
+DEBUG = _env_bool('DJANGO_DEBUG', False)
 
 # SECURITY WARNING: keep the secret key used in production secret!
 _DEV_ONLY_SECRET_KEY = 'django-insecure-yqgrqaj9753gjio58mygl6i^%r=1+ayq0fde$zq&^*bw)efz(q'

@@ -9,6 +9,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { GameStateService } from '../../services/game-state.service';
+import { AuthService } from '../../services/auth.service';
 import { GameBoardComponent } from '../game-board/game-board.component';
 
 interface GameOptions {
@@ -57,7 +58,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     private sharedDataService: SharedDataService,
     private navigationState: NavigationStateService,
     private cdr: ChangeDetectorRef,
-    public gameState: GameStateService
+    public gameState: GameStateService,
+    private authService: AuthService
   ) {}
   
   ngOnInit(): void {
@@ -106,7 +108,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     });
     this.sharedDataService.lobbyUsers$.pipe(takeUntil(this.destroy$)).subscribe(users => this.lobbyUsers = users);
 
-    this.username = localStorage.getItem('username') || '';
+    this.username = this.authService.getUsername();
     if (!this.username) {
       this.router.navigate(['/login']);
       return;

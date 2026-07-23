@@ -637,3 +637,63 @@ class GameLifecycleGuardTests(TransactionTestCase):
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
+
+
+class LobbyIdentityHijackTests(TransactionTestCase):
+    """
+    Verifies that rejoining an already-connected username requires proving
+    ownership via the per-browser secret (game.consumers._handle_join_lobby),
+    instead of anyone being able to take over an online username by simply
+    sending rejoining: true.
+    """
+
+    async def test_matching_secret_allows_rejoin(self):
+        application = URLRouter(websocket_urlpatterns)
+        owner = WebsocketCommunicator(application, "/ws/game/lobby/")
+        rejoiner = WebsocketCommunicator(application, "/ws/game/lobby/")
+        try:
+            await owner.connect()
+            await _receive_until(owner, 'connection_established')
+            await owner.send_json_to({'type': 'join_lobby', 'username': 'alice_test', 'secret': 'correct-secret'})
+            await _receive_until(owner, 'user_list')
+
+            await rejoiner.connect()
+            await _receive_until(rejoiner, 'connection_established')
+            await rejoiner.send_json_to({
+                'type': 'join_lobby',
+                'username': 'alice_test',
+                'rejoining': True,
+                'secret': 'correct-secret',
+            })
+            # A successful rejoin goes straight to user_list with no
+            # username_assigned Guest-rename in between.
+            result = await _receive_until(rejoiner, 'user_list')
+            self.assertIsNotNone(result)
+        finally:
+            await owner.disconnect()
+            await rejoiner.disconnect()
+
+    async def test_wrong_secret_blocks_rejoin(self):
+        application = URLRouter(websocket_urlpatterns)
+        owner = WebsocketCommunicator(application, "/ws/game/lobby/")
+        attacker = WebsocketCommunicator(application, "/ws/game/lobby/")
+        try:
+            await owner.connect()
+            await _receive_until(owner, 'connection_established')
+            await owner.send_json_to({'type': 'join_lobby', 'username': 'bob_test', 'secret': 'owner-secret'})
+            await _receive_until(owner, 'user_list')
+
+            await attacker.connect()
+            await _receive_until(attacker, 'connection_established')
+            await attacker.send_json_to({
+                'type': 'join_lobby',
+                'username': 'bob_test',
+                'rejoining': True,
+                'secret': 'wrong-secret',
+            })
+            assigned = await _receive_until(attacker, 'username_assigned')
+            self.assertEqual(assigned['originalUsername'], 'bob_test')
+            self.assertTrue(assigned['username'].startswith('Guest'))
+        finally:
+            await owner.disconnect()
+            await attacker.disconnect()

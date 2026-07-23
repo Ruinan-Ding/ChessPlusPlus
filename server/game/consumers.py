@@ -66,6 +66,11 @@ RATE_LIMIT_WINDOW_SECONDS = 10
 RATE_LIMIT_MAX_MESSAGES = 30  # ~3/sec sustained, generous burst allowance
 
 
+def _extract_secret(data: Dict[str, Any]) -> str:
+    """Pull the client-asserted identity secret out of an incoming message."""
+    return str(data.get('secret') or '').strip()[:64]
+
+
 class GameConsumer(AsyncWebsocketConsumer):
     """
     WebSocket consumer handling all game and lobby operations.
@@ -152,13 +157,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 logger.info(f"User {self.username} is in-game, not deleting PlayerConnection")
                 return
             
-            await self._delete_player_connection(self.username)
-            
+            await self._delete_player_connection(self.username, channel_name=self.channel_name)
+
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'user_left',
                 'username': self.username
             })
-            
+
             await self._send_user_list()
         except Exception as e:
             logger.error(f"Error cleaning up lobby connection for {self.username}: {e}")
@@ -193,7 +198,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             await self._delete_ready_status(self.game_id, self.username)
 
-            await self._delete_player_connection(self.username)
+            await self._delete_player_connection(self.username, channel_name=self.channel_name)
         except Exception as e:
             logger.error(f"Error cleaning up game room connection for {self.username}: {e}")
     
@@ -298,22 +303,28 @@ class GameConsumer(AsyncWebsocketConsumer):
             username = data.get('username', '').strip()
             original_username = username
             username_was_taken = False
-            
+            client_secret = _extract_secret(data)
+
             validate_username(username)
-            
+
             existing_connection = await self._get_player_connection(username)
             if existing_connection and existing_connection.channel_name != self.channel_name:
-                if data.get('rejoining', False):
+                # ponytail: single seam for identity verification - replace this
+                # comparison with real credential checking if accounts are added later.
+                secret_ok = bool(existing_connection.secret) and existing_connection.secret == client_secret
+                if data.get('rejoining', False) and secret_ok:
                     logger.info(f"User {username} rejoining lobby with new channel")
                 else:
+                    if data.get('rejoining', False):
+                        logger.warning(f"Rejected rejoin claim for '{username}': secret mismatch")
                     # Generate a random username instead of rejecting
                     random_suffix = ''.join(random.choices(string.digits, k=6))
                     username = f"Guest{random_suffix}"
                     username_was_taken = True
                     logger.info(f"Username '{original_username}' was taken, assigned '{username}' instead")
-            
+
             self.username = username
-            await self._create_or_update_player_connection(username, self.channel_name, 'online')
+            await self._create_or_update_player_connection(username, self.channel_name, 'online', secret=client_secret)
             
             if username_was_taken:
                 await send_json_response(self, {
@@ -347,8 +358,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             if self.username != username:
                 await send_error(self, 'INVALID_REQUEST', 'Cannot leave as different user')
                 return
-            
-            await self._delete_player_connection(username)
+
+            await self._delete_player_connection(username, channel_name=self.channel_name)
             
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'user_left',
@@ -384,22 +395,23 @@ class GameConsumer(AsyncWebsocketConsumer):
         try:
             old_username = data.get('oldUsername', '').strip()
             new_username = data.get('newUsername', '').strip()
-            
+            client_secret = _extract_secret(data)
+
             validate_username(new_username)
-            
+
             if self.username != old_username:
                 await send_error(self, 'INVALID_REQUEST', 'Cannot change username for another user')
                 return
-            
+
             existing = await self._get_player_connection(new_username)
             if existing:
                 await send_error(self, 'USERNAME_TAKEN', f'Username "{new_username}" is already taken')
                 return
-            
+
             # Update in database - first delete old, then create new to avoid duplicates
             # This is more reliable than updating in place
-            await self._delete_player_connection(old_username)
-            await self._create_or_update_player_connection(new_username, self.channel_name, 'online')
+            await self._delete_player_connection(old_username, channel_name=self.channel_name)
+            await self._create_or_update_player_connection(new_username, self.channel_name, 'online', secret=client_secret)
             
             self.username = new_username
             
@@ -1600,15 +1612,18 @@ class GameConsumer(AsyncWebsocketConsumer):
         PlayerConnection.objects.filter(username=username).update(last_activity=timezone.now())  # type: ignore
     
     @database_sync_to_async
-    def _create_or_update_player_connection(self, username, channel_name, status):
+    def _create_or_update_player_connection(self, username, channel_name, status, secret=None):
         """Create or update a player connection"""
+        defaults = {
+            'channel_name': channel_name,
+            'status': status,
+            'last_activity': timezone.now()
+        }
+        if secret is not None:
+            defaults['secret'] = secret
         connection, _ = PlayerConnection.objects.update_or_create(  # type: ignore
             username=username,
-            defaults={
-                'channel_name': channel_name,
-                'status': status,
-                'last_activity': timezone.now()
-            }
+            defaults=defaults
         )
         return connection
     
@@ -1623,9 +1638,15 @@ class GameConsumer(AsyncWebsocketConsumer):
         return rows_updated
     
     @database_sync_to_async
-    def _delete_player_connection(self, username):
-        """Delete a player connection"""
-        PlayerConnection.objects.filter(username=username).delete()  # type: ignore
+    def _delete_player_connection(self, username, channel_name=None):
+        """Delete a player connection. If channel_name is given, only delete
+        when the stored row still belongs to that channel - guards a
+        late-firing disconnect() from deleting a row a newer, legitimately
+        reconnected session has since claimed."""
+        qs = PlayerConnection.objects.filter(username=username)  # type: ignore
+        if channel_name is not None:
+            qs = qs.filter(channel_name=channel_name)
+        qs.delete()
     
     @database_sync_to_async
     def _get_all_online_users(self):

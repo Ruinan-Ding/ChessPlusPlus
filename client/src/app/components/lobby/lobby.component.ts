@@ -9,6 +9,7 @@ import { ConnectionDialogComponent } from '../connection-dialog/connection-dialo
 import { Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
+import { AuthService } from '../../services/auth.service';
 
 @Component({
   selector: 'app-lobby',
@@ -47,7 +48,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
     private router: Router,
     private sharedDataService: SharedDataService,
     private navigationState: NavigationStateService,
-    private cdr: ChangeDetectorRef
+    private cdr: ChangeDetectorRef,
+    private authService: AuthService
   ) {}
   
   ngOnInit(): void {
@@ -91,8 +93,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
       console.log('[Lobby] Rejoining from navigation, will send rejoining: true');
     }
     
-    this.username = localStorage.getItem('username') || this.generateRandomUsername();
-    localStorage.setItem('username', this.username);
+    this.username = this.authService.getUsername() || this.generateRandomUsername();
+    this.authService.setUsername(this.username);
     this.newUsername = this.username;
     console.log('[Lobby] Username:', this.username);
     
@@ -158,7 +160,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
           if (message.oldUsername === this.username) {
             this.username = message.newUsername;
             this.newUsername = message.newUsername;
-            localStorage.setItem('username', this.username);
+            this.authService.setUsername(this.username);
           }
           this.cdr.markForCheck();
           break;
@@ -171,15 +173,14 @@ export class LobbyComponent implements OnInit, OnDestroy {
           alert(message.error);
           
           if (message.oldUsername && message.oldUsername === this.username) {
-            localStorage.removeItem('username');
-            
             const newRandomName = this.generateRandomUsername();
             this.username = newRandomName;
-            localStorage.setItem('username', newRandomName);
-            
+            this.authService.setUsername(newRandomName);
+
             this.wsService.sendMessage({
               type: 'join_lobby',
-              username: newRandomName
+              username: newRandomName,
+              secret: this.authService.getIdentitySecret()
             });
             
             this.addSystemMessage(`System assigned you a new username: ${newRandomName}`);
@@ -260,7 +261,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
           // Server assigned a different username because the requested one was taken
           console.log('[Lobby] Username was taken, assigned new username:', message.username);
           this.username = message.username;
-          localStorage.setItem('username', message.username);
+          this.authService.setUsername(message.username);
           this.addSystemMessage(message.message);
           this.cdr.markForCheck();
           break;
@@ -304,7 +305,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
       this.wsService.sendMessage({
         type: 'join_lobby',
         username: this.username,
-        rejoining: this.isRejoiningFromNavigation
+        rejoining: this.isRejoiningFromNavigation,
+        secret: this.authService.getIdentitySecret()
       });
     } else {
       console.log('[Lobby] Connecting to WebSocket lobby...');
@@ -320,7 +322,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
           this.wsService.sendMessage({
             type: 'join_lobby',
             username: this.username,
-            rejoining: this.isRejoiningFromNavigation
+            rejoining: this.isRejoiningFromNavigation,
+            secret: this.authService.getIdentitySecret()
           });
         },
         error => {
@@ -413,7 +416,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
       this.wsService.sendMessage({
         type: 'change_username',
         oldUsername: this.username,
-        newUsername: trimmedUsername
+        newUsername: trimmedUsername,
+        secret: this.authService.getIdentitySecret()
       });
     } catch (error) {
       console.error('Failed to change username:', error);
