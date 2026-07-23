@@ -119,6 +119,11 @@ class HexBoardTestCase(TestCase):
                 pq, pr = parse_coord(key)
                 self.assertEqual((pq, pr), (q, r))
 
+    def test_parse_coord_rejects_malformed_input(self):
+        for bad in (None, 5, "5", "a,b", "", "1,2,3"):
+            with self.assertRaises(ValueError):
+                parse_coord(bad)
+
     def test_hex_distance(self):
         self.assertEqual(hex_distance((0, 0), (0, 0)), 0)
         self.assertEqual(hex_distance((0, 0), (1, 0)), 1)

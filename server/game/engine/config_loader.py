@@ -199,7 +199,7 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
             for coord_str, unit_id in placement.items():
                 try:
                     parse_coord(coord_str)
-                except (ValueError, IndexError):
+                except ValueError:
                     errors.append(f"Invalid coordinate '{coord_str}' in setup.{side}")
                 if unit_id not in config.get('units', {}):
                     errors.append(f"Unknown unit '{unit_id}' at {coord_str} in setup.{side}")

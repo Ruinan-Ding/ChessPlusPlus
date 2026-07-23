@@ -93,20 +93,6 @@
               ]
             }
           },
-          "abilities": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["id", "name", "description", "cooldown"],
-              "properties": {
-                "id": { "type": "string" },
-                "name": { "type": "string" },
-                "description": { "type": "string" },
-                "cooldown": { "type": "integer", "minimum": 0 }
-              },
-              "additionalProperties": false
-            }
-          },
           "value": { "type": "integer", "minimum": 0 },
           "hp": {
             "type": "integer",

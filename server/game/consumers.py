@@ -1347,7 +1347,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             try:
                 fq, fr = parse_coord(from_coord)
                 tq, tr = parse_coord(to_coord)
-            except (ValueError, IndexError, TypeError, AttributeError):
+            except ValueError:
                 await send_error(self, 'INVALID_MOVE', 'Malformed move coordinates')
                 return
 

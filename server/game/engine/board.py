@@ -38,9 +38,20 @@ def coord_key(q: int, r: int) -> str:
 
 
 def parse_coord(key: str) -> Coord:
-    """Parse a `'q,r'` string back to an (int, int) tuple."""
+    """Parse a `'q,r'` string back to an (int, int) tuple.
+
+    Raises ValueError for any malformed input (not a two-part comma-separated
+    string of integers) - callers get one consistent exception type to catch.
+    """
+    if not isinstance(key, str):
+        raise ValueError(f"Invalid coordinate key: {key!r}")
     parts = key.split(',')
-    return int(parts[0]), int(parts[1])
+    if len(parts) != 2:
+        raise ValueError(f"Invalid coordinate key: {key!r}")
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        raise ValueError(f"Invalid coordinate key: {key!r}") from None
 
 
 def hex_distance(a: Coord, b: Coord) -> int:
