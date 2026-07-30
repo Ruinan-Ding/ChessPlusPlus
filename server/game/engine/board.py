@@ -8,8 +8,13 @@ A board of radius N contains all hexes where
   max(|q|, |r|, |q+r|) <= N
 giving a total of  3N² + 3N + 1  hexes.
 
-Each occupied cell stores:
+Each occupied cell stores at minimum:
   {"unit_id": "<unit type>", "color": "white"|"black"}
+
+Cells are open-ended dicts - HP tracking adds "hp"/"max_hp", and higher
+layers may attach their own per-unit state. The board preserves whatever
+a cell carries across moves and (de)serialisation; it only requires that
+"unit_id" and "color" are present.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # Type aliases
 Coord = Tuple[int, int]
-CellData = Dict[str, Any]       # {"unit_id": str, "color": str, "hp": int, "max_hp": int}
+CellData = Dict[str, Any]       # {"unit_id": str, "color": str, "hp": int, "max_hp": int, ...}
 BoardDict = Dict[str, CellData]  # serialised "q,r" -> CellData
 
 # Six axial direction offsets (flat-top orientation)
@@ -106,14 +111,26 @@ class HexBoard:
     def set(self, q: int, r: int, unit_id: str, color: str,
             hp: Optional[int] = None, max_hp: Optional[int] = None) -> None:
         """Place a piece on the board with optional HP tracking."""
-        if not self.is_valid(q, r):
-            raise ValueError(f"Coordinate ({q},{r}) is outside radius {self.radius}")
         cell: CellData = {'unit_id': unit_id, 'color': color}
         if hp is not None:
             cell['hp'] = hp
         if max_hp is not None:
             cell['max_hp'] = max_hp
-        self._cells[(q, r)] = cell
+        self.set_cell(q, r, cell)
+
+    def set_cell(self, q: int, r: int, cell: CellData) -> None:
+        """Place a full cell dict on the board, preserving every field.
+
+        Use this rather than ``set()`` whenever an existing cell is being
+        relocated or rehydrated: ``set()`` can only express the four core
+        fields, so routing a live cell through it silently drops anything
+        else the cell carries (status effects, cooldowns, per-unit flags).
+        """
+        if not self.is_valid(q, r):
+            raise ValueError(f"Coordinate ({q},{r}) is outside radius {self.radius}")
+        if 'unit_id' not in cell or 'color' not in cell:
+            raise ValueError(f"Cell at ({q},{r}) is missing unit_id/color: {cell!r}")
+        self._cells[(q, r)] = dict(cell)
 
     def remove(self, q: int, r: int) -> Optional[CellData]:
         """Remove and return the piece at (q, r), or None if empty."""
@@ -131,8 +148,7 @@ class HexBoard:
             raise ValueError(f"No piece at ({from_q},{from_r})")
         captured = self.remove(to_q, to_r)
         self.remove(from_q, from_r)
-        self.set(to_q, to_r, piece['unit_id'], piece['color'],
-                 hp=piece.get('hp'), max_hp=piece.get('max_hp'))
+        self.set_cell(to_q, to_r, piece)
         return captured
 
     def deal_damage(self, q: int, r: int, damage: int) -> Optional[CellData]:
@@ -177,8 +193,7 @@ class HexBoard:
         board = cls(radius)
         for key, cell in data.items():
             q, r = parse_coord(key)
-            board.set(q, r, cell['unit_id'], cell['color'],
-                      hp=cell.get('hp'), max_hp=cell.get('max_hp'))
+            board.set_cell(q, r, cell)
         return board
 
     # -- Debug ---------------------------------------------------------

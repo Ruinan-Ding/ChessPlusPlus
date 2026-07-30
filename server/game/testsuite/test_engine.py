@@ -85,6 +85,60 @@ class HexBoardTestCase(TestCase):
         assert moved is not None
         self.assertEqual(moved['color'], 'white')
 
+    def test_move_preserves_extra_cell_fields(self):
+        """Moving a unit must not drop per-unit state the cell carries.
+
+        Cells are open-ended: ability layers attach statuses, cooldowns and
+        flags to them. Rebuilding the destination cell from only the four
+        core fields would silently wipe all of that on every move.
+        """
+        board = HexBoard(3)
+        board.set(0, 0, 'rook', 'white', hp=8, max_hp=10)
+        cell = board.get(0, 0)
+        assert cell is not None
+        cell['statuses'] = [{'id': 'poison', 'remaining': 2}]
+        cell['cooldowns'] = {'heal': 1}
+
+        board.move(0, 0, 1, 0)
+
+        moved = board.get(1, 0)
+        assert moved is not None
+        self.assertEqual(moved['statuses'], [{'id': 'poison', 'remaining': 2}])
+        self.assertEqual(moved['cooldowns'], {'heal': 1})
+        self.assertEqual(moved['hp'], 8)
+        self.assertEqual(moved['max_hp'], 10)
+
+    def test_serialisation_preserves_extra_cell_fields(self):
+        board = HexBoard(3)
+        board.set(0, 0, 'mage', 'black', hp=4, max_hp=6)
+        cell = board.get(0, 0)
+        assert cell is not None
+        cell['statuses'] = [{'id': 'shielded', 'remaining': 1}]
+
+        restored = HexBoard.from_dict(3, board.to_dict())
+
+        r = restored.get(0, 0)
+        assert r is not None
+        self.assertEqual(r['statuses'], [{'id': 'shielded', 'remaining': 1}])
+        self.assertEqual(r['hp'], 4)
+
+    def test_set_cell_rejects_incomplete_cell(self):
+        board = HexBoard(3)
+        with self.assertRaises(ValueError):
+            board.set_cell(0, 0, {'unit_id': 'rook'})
+        with self.assertRaises(ValueError):
+            board.set_cell(0, 0, {'color': 'white'})
+
+    def test_set_cell_copies_input(self):
+        """Stored cells must not alias the caller's dict."""
+        board = HexBoard(3)
+        source = {'unit_id': 'rook', 'color': 'white', 'hp': 5}
+        board.set_cell(0, 0, source)
+        source['hp'] = 99
+        stored = board.get(0, 0)
+        assert stored is not None
+        self.assertEqual(stored['hp'], 5)
+
     def test_pieces_by_color(self):
         board = HexBoard(3)
         board.set(0, 0, 'king', 'white')
