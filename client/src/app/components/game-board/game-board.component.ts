@@ -46,9 +46,12 @@ interface HexCell {
  *  - 'vertex-up' -> flat-top cells; the board hexagon has a corner on top.
  * The default game board is an edge-up hexagon.
  */
-type BoardOrientation = 'edge-up' | 'vertex-up';
+export type BoardOrientation = 'edge-up' | 'vertex-up';
 
 const HEX_SIZE = 28; // radius of a single hex in SVG pixels
+
+/** Padding around the outermost hex centres in the viewBox. Must match buildCells(). */
+const VIEWBOX_PADDING = HEX_SIZE + 4;
 
 /**
  * Convert axial (q, r) to pixel (x, y).
@@ -69,6 +72,32 @@ function axialToPixel(q: number, r: number, orientation: BoardOrientation): { x:
   };
 }
 
+/**
+ * Width / height of the board's rendered viewBox for a given radius - i.e. the
+ * box the hexagon is drawn into.
+ *
+ * The game room's four corner panels are clipped to hug the hexagon's slanted
+ * edges, and CSS can't work this out on its own: `clip-path` percentages
+ * resolve against each panel's own box, not the board's. So the game room
+ * measures its container, asks for this ratio, and publishes the resulting
+ * hexagon size as CSS variables.
+ */
+export function boardBoxAspect(radius: number, orientation: BoardOrientation = 'edge-up'): number {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let q = -radius; q <= radius; q++) {
+    for (let r = -radius; r <= radius; r++) {
+      if (Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) > radius) continue;
+      const { x, y } = axialToPixel(q, r, orientation);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (!Number.isFinite(minX)) return 1;
+  return (maxX - minX + VIEWBOX_PADDING * 2) / (maxY - minY + VIEWBOX_PADDING * 2);
+}
+
 /** Generate SVG polygon points for a hex centred at (cx, cy). */
 function hexPoints(cx: number, cy: number, orientation: BoardOrientation): string {
   const startDeg = orientation === 'vertex-up' ? 0 : 30; // pointy-top corners are offset 30°
@@ -86,21 +115,15 @@ function hexPoints(cx: number, cy: number, orientation: BoardOrientation): strin
 // Legal-move computation helpers (client-side preview)
 //
 // Fully config-driven: unit ids are opaque labels. Movement comes from the
-// unit's `movement` patterns - direction/range slides or fixed-jump offsets.
-// Patterns are authored from WHITE's perspective and mirrored for black
-// (a no-op for symmetric movement sets). Mirrors the server engine in
+// unit's single `move` stat - a flood fill through the six hex neighbours,
+// through empty hexes only. A unit can never move through or onto an
+// occupied hex (ally or enemy). Mirrors the server engine in
 // server/game/engine/move_validator.py.
 // ---------------------------------------------------------------------------
 
-const HEX_DIRS: Record<string, [number, number]> = {
-  E:  [+1,  0], W:  [-1,  0],
-  NE: [+1, -1], SW: [-1, +1],
-  NW: [ 0, -1], SE: [ 0, +1],
-  // diagonals (distance-2 hexes between two adjacent cardinals)
-  DN:  [+1, -2], DS:  [-1, +2],
-  DNE: [+2, -1], DSW: [-2, +1],
-  DSE: [+1, +1], DNW: [-1, -1],
-};
+const HEX_DIRS: [number, number][] = [
+  [+1, 0], [-1, 0], [+1, -1], [0, -1], [0, 1], [-1, 1],
+];
 
 function isInsideBoard(q: number, r: number, radius: number): boolean {
   return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) <= radius;
@@ -110,7 +133,6 @@ function isInsideBoard(q: number, r: number, radius: number): boolean {
 function computeLegalMoves(
   boardState: BoardState,
   sq: number, sr: number,
-  color: string,
   config: any,
   radius: number,
 ): Set<string> {
@@ -118,59 +140,27 @@ function computeLegalMoves(
   const piece = boardState[`${sq},${sr}`];
   if (!piece) return targets;
   const unitDef = config?.units?.[piece.unit_id];
-  if (!unitDef) return targets;
-  const movement: any[] = unitDef.movement ?? [];
-  const mirror = color !== 'white'; // patterns are authored from white's perspective
+  const moveRange: number = unitDef?.move ?? 0;
+  if (moveRange <= 0) return targets;
 
-  for (const pat of movement) {
-    const moveOnly: boolean = pat.moveOnly ?? false;
-    const captureOnly: boolean = pat.captureOnly ?? false;
+  const visited = new Set<string>([`${sq},${sr}`]);
+  let frontier: [number, number][] = [[sq, sr]];
 
-    // Fixed-jump offsets pattern (intervening pieces irrelevant)
-    if (Array.isArray(pat.offsets)) {
-      for (const offset of pat.offsets) {
-        let oq = Number(offset?.[0]), or_ = Number(offset?.[1]);
-        if (!Number.isFinite(oq) || !Number.isFinite(or_)) continue;
-        if (mirror) { oq = -oq; or_ = -or_; }
-        const tq = sq + oq, tr = sr + or_;
-        if (!isInsideBoard(tq, tr, radius)) continue;
-        const dest = boardState[`${tq},${tr}`];
-        if (dest) {
-          if (dest.color === color || moveOnly) continue;
-        } else if (captureOnly) {
-          continue;
-        }
-        targets.add(`${tq},${tr}`);
-      }
-      continue;
-    }
-
-    // Direction step/slide pattern
-    const delta = HEX_DIRS[pat.direction];
-    if (!delta) continue;
-    let [dq, dr] = delta;
-    if (mirror) { dq = -dq; dr = -dr; }
-    const range: number = pat.range ?? 1;
-    const canJump: boolean = pat.canJump ?? false;
-    const maxSteps = range > 0 ? range : radius * 2; // 0 = unlimited
-
-    let tq = sq, tr = sr;
-    for (let step = 0; step < maxSteps; step++) {
-      tq += dq; tr += dr;
-      if (!isInsideBoard(tq, tr, radius)) break;
-      const dest = boardState[`${tq},${tr}`];
-
-      if (dest) {
-        if (dest.color === color) {
-          if (!canJump) break;    // blocked by friendly
-          continue;               // jump over friendly
-        }
-        if (!moveOnly) targets.add(`${tq},${tr}`); // can capture enemy
-        if (!canJump) break;      // non-jumping piece stops
-      } else {
-        if (!captureOnly) targets.add(`${tq},${tr}`); // can move to empty
+  for (let step = 0; step < moveRange; step++) {
+    const nextFrontier: [number, number][] = [];
+    for (const [cq, cr] of frontier) {
+      for (const [dq, dr] of HEX_DIRS) {
+        const nq = cq + dq, nr = cr + dr;
+        const key = `${nq},${nr}`;
+        if (visited.has(key) || !isInsideBoard(nq, nr, radius)) continue;
+        visited.add(key);
+        if (boardState[key]) continue; // occupied - blocks entry and passage
+        targets.add(key);
+        nextFrontier.push([nq, nr]);
       }
     }
+    if (nextFrontier.length === 0) break;
+    frontier = nextFrontier;
   }
   return targets;
 }
@@ -250,7 +240,9 @@ function computeLegalMoves(
   `,
   styles: [`
     :host {
-      display: block;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
     }
 
     .board-container {
@@ -265,12 +257,15 @@ function computeLegalMoves(
     }
 
     .hex-board {
+      /* Fill the whole container rather than sharing the column with the
+         status bar: the game room sizes its corner panels from this exact box,
+         so anything that shrinks it would leave them hugging thin air.
+         preserveAspectRatio letterboxes the hexagon inside whatever box it gets. */
+      position: absolute;
+      inset: 0;
       display: block;
       width: 100%;
-      /* Height derives from the viewBox aspect ratio; a percentage here
-         resolves against an indefinite container height and collapses. */
-      height: auto;
-      max-height: 78vh;
+      height: 100%;
     }
 
     .hex-cell {
@@ -340,11 +335,18 @@ function computeLegalMoves(
     }
 
     .status-bar {
+      /* Overlaid on the board rather than stacked below it - see .hex-board. */
+      position: absolute;
+      top: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 2;
       font-size: 14px;
       padding: 6px 12px;
-      background: #2a2a2a;
+      background: rgba(42, 42, 42, 0.9);
       border-radius: 6px;
       color: #e0e0e0;
+      white-space: nowrap;
     }
 
     .my-turn {
@@ -409,7 +411,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   /** Current board state from server. */
   @Input() boardState: BoardState = {};
   /** Board radius from config. */
-  @Input() radius = 23;
+  @Input() radius = 11;
   /** Username of the current turn player. */
   @Input() currentTurn = '';
   /** Current turn number. */
@@ -518,7 +520,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       if (this.config) {
         const [sq, sr] = hex.key.split(',').map(Number);
         this.legalTargets = computeLegalMoves(
-          this.boardState, sq, sr, this.myColor, this.config, this.radius
+          this.boardState, sq, sr, this.config, this.radius
         );
       } else {
         this.legalTargets.clear();
@@ -583,7 +585,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (cells.length > 0) {
       const xs = cells.map(c => c.cx);
       const ys = cells.map(c => c.cy);
-      const pad = HEX_SIZE + 4;
+      const pad = VIEWBOX_PADDING;
       const minX = Math.min(...xs) - pad;
       const minY = Math.min(...ys) - pad;
       const maxX = Math.max(...xs) + pad;

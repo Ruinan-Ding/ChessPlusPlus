@@ -6,131 +6,90 @@ import { BehaviorSubject, Observable } from 'rxjs';
  *
  * Mirrors DEFAULT_CONFIG in server/game/engine/config_loader.py.
  *
- * The only fixed game fact is the board: a hexagon with 24 cells per edge
- * (axial radius 23), drawn with an edge pointing up. Every unit below is a
+ * The only fixed game fact is the board: a hexagon with 12 cells per edge
+ * (axial radius 11), drawn with an edge pointing up. Every unit below is a
  * PLACEHOLDER - the engine reads all behaviour from this data and knows
  * nothing about specific unit ids.
  *
- * Movement patterns are authored from WHITE's perspective and mirrored for
- * black by the engine. Two pattern types:
- *   { direction, range, canJump?, moveOnly?, captureOnly? }  - step/slide
- *     (range 0 = unlimited; directions: E W NE NW SE SW plus the six
- *      diagonals DN DS DNE DSW DSE DNW)
- *   { offsets: [[dq, dr], ...], moveOnly?, captureOnly? }    - fixed jumps
+ * Movement is a single `move` stat per unit: the number of adjacent-hex
+ * steps it can take per turn. Movement floods outward through the six hex
+ * neighbours, through empty hexes only - a unit can never move through or
+ * onto an occupied hex (ally or enemy).
  */
-
-/** The 12 hex 'L-shape' jump offsets used by the placeholder knight. */
-const KNIGHT_JUMP_OFFSETS: number[][] = [
-  [-3, 1], [-3, 2], [-2, -1], [-2, 3], [-1, -2], [-1, 3],
-  [1, -3], [1, 2], [2, -3], [2, 1], [3, -2], [3, -1],
-];
 
 const DEFAULT_GAME_CONFIG = {
   version: '1.0',
   board: {
-    radius: 23,              // 24 cells per hexagon edge
+    radius: 11,              // 12 cells per hexagon edge
     orientation: 'edge-up'   // cosmetic: how the client draws the hexagon
   },
   units: {
     king: {
       id: 'king', name: 'King', symbol: 'K', value: 0, hp: 10, attack: 3,
       display: { white: '♔', black: '♚' },
-      movement: [
-        { direction: 'E',  range: 1 },
-        { direction: 'W',  range: 1 },
-        { direction: 'NE', range: 1 },
-        { direction: 'NW', range: 1 },
-        { direction: 'SE', range: 1 },
-        { direction: 'SW', range: 1 }
-      ]
+      move: 6
     },
     queen: {
       id: 'queen', name: 'Queen', symbol: 'Q', value: 9, hp: 8, attack: 6,
       display: { white: '♕', black: '♛' },
-      movement: [
-        { direction: 'E',  range: 0 },
-        { direction: 'W',  range: 0 },
-        { direction: 'NE', range: 0 },
-        { direction: 'NW', range: 0 },
-        { direction: 'SE', range: 0 },
-        { direction: 'SW', range: 0 }
-      ]
+      move: 6
     },
     rook: {
       id: 'rook', name: 'Rook', symbol: 'R', value: 5, hp: 12, attack: 4,
       display: { white: '♖', black: '♜' },
-      movement: [
-        { direction: 'E',  range: 0 },
-        { direction: 'W',  range: 0 },
-        { direction: 'NE', range: 0 },
-        { direction: 'NW', range: 0 },
-        { direction: 'SE', range: 0 },
-        { direction: 'SW', range: 0 }
-      ]
+      move: 6
     },
     bishop: {
       id: 'bishop', name: 'Bishop', symbol: 'B', value: 3, hp: 6, attack: 5,
       display: { white: '♗', black: '♝' },
-      movement: [
-        { direction: 'DN',  range: 0 },
-        { direction: 'DS',  range: 0 },
-        { direction: 'DNE', range: 0 },
-        { direction: 'DSW', range: 0 },
-        { direction: 'DSE', range: 0 },
-        { direction: 'DNW', range: 0 }
-      ]
+      move: 6
     },
     knight: {
       id: 'knight', name: 'Knight', symbol: 'N', value: 3, hp: 8, attack: 4,
       display: { white: '♘', black: '♞' },
-      movement: [
-        { offsets: KNIGHT_JUMP_OFFSETS }
-      ]
+      move: 6
     },
     pawn: {
       id: 'pawn', name: 'Pawn', symbol: 'P', value: 1, hp: 4, attack: 2,
       display: { white: '♙', black: '♟' },
-      movement: [
-        { direction: 'NW', range: 1, moveOnly: true },
-        { direction: 'NE', range: 1, captureOnly: true },
-        { direction: 'W',  range: 1, captureOnly: true }
-      ]
+      move: 6
     }
   },
   abilities: {},
   setup: {
-    // Placeholder placement on the south/north edge rows of the radius-23
-    // board. White's edge row is r=+23 (q from -23 to 0); black is the
-    // point-mirror (q,r) -> (-q,-r).
+    // Placeholder placement on the south/north edge rows of the radius-11
+    // board. White's edge row is r=+11 (q from -11 to 0, 12 cells); black is
+    // the point-mirror (q,r) -> (-q,-r). The 8 back-rank pieces sit
+    // contiguously (the row is too short to space them out).
     white: {
-      '-11,23': 'king',
-      '-13,23': 'queen',
-      '-9,23':  'bishop',
-      '-15,23': 'bishop',
-      '-7,23':  'knight',
-      '-17,23': 'knight',
-      '-5,23':  'rook',
-      '-19,23': 'rook',
-      '-8,22':  'pawn',
-      '-10,22': 'pawn',
-      '-12,22': 'pawn',
-      '-14,22': 'pawn',
-      '-16,22': 'pawn'
+      '-5,11':  'king',
+      '-6,11':  'queen',
+      '-4,11':  'bishop',
+      '-7,11':  'bishop',
+      '-3,11':  'knight',
+      '-8,11':  'knight',
+      '-2,11':  'rook',
+      '-9,11':  'rook',
+      '-3,10':  'pawn',
+      '-4,10':  'pawn',
+      '-5,10':  'pawn',
+      '-6,10':  'pawn',
+      '-7,10':  'pawn'
     },
     black: {
-      '11,-23': 'king',
-      '13,-23': 'queen',
-      '9,-23':  'bishop',
-      '15,-23': 'bishop',
-      '7,-23':  'knight',
-      '17,-23': 'knight',
-      '5,-23':  'rook',
-      '19,-23': 'rook',
-      '8,-22':  'pawn',
-      '10,-22': 'pawn',
-      '12,-22': 'pawn',
-      '14,-22': 'pawn',
-      '16,-22': 'pawn'
+      '5,-11':  'king',
+      '6,-11':  'queen',
+      '4,-11':  'bishop',
+      '7,-11':  'bishop',
+      '3,-11':  'knight',
+      '8,-11':  'knight',
+      '2,-11':  'rook',
+      '9,-11':  'rook',
+      '3,-10':  'pawn',
+      '4,-10':  'pawn',
+      '5,-10':  'pawn',
+      '6,-10':  'pawn',
+      '7,-10':  'pawn'
     }
   },
   rules: {

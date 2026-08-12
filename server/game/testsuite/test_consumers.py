@@ -290,6 +290,58 @@ class DisconnectGraceLiveIntegrationTests(TransactionTestCase):
             finally:
                 await host_comm.disconnect()
 
+    async def test_pregame_disconnect_abandons_the_room_after_grace_period(self):
+        """
+        Regression test: before, a disconnect with no match underway left the
+        remaining player sitting in a room forever waiting for someone who was
+        never coming back. Now they are told the room is abandoned and it is
+        closed - and the leaver's ready flag is cleared straight away so the
+        room can't be started while they're missing.
+        """
+        with patch('game.consumers.DISCONNECT_GRACE_SECONDS', 1):
+            game = await GameRoom.objects.acreate(
+                host='alice', opponent='bob', status='waiting',
+                host_token='host-tok', opponent_token='opp-tok',
+            )
+            application = URLRouter(websocket_urlpatterns)
+            host_comm = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+            opp_comm = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+            await host_comm.connect()
+            await opp_comm.connect()
+            await host_comm.send_json_to({
+                'type': 'join_game_room', 'username': 'alice', 'gameId': game.game_id, 'token': 'host-tok',
+            })
+            await _receive_until(host_comm, 'join_game_room_success')
+            await opp_comm.send_json_to({
+                'type': 'join_game_room', 'username': 'bob', 'gameId': game.game_id, 'token': 'opp-tok',
+            })
+            await _receive_until(opp_comm, 'join_game_room_success')
+            await opp_comm.send_json_to({'type': 'player_ready', 'username': 'bob', 'gameId': game.game_id})
+            await _receive_until(host_comm, 'player_ready')
+
+            try:
+                # Bob drops out before the game ever starts and never returns.
+                await opp_comm.disconnect()
+
+                # Alice is told he is no longer ready, then that he's gone.
+                # (_receive_until discards everything before its target, so
+                # these have to be asserted in the order they're broadcast.)
+                unready = await _receive_until(host_comm, 'player_unready', timeout=5)
+                self.assertEqual(unready['username'], 'bob')
+                notice = await _receive_until(host_comm, 'opponent_disconnected', timeout=5)
+                self.assertEqual(notice['username'], 'bob')
+
+                # Once the grace period lapses the room is declared abandoned,
+                # not "won" - there was no match to win.
+                abandoned = await _receive_until(host_comm, 'room_abandoned', timeout=5)
+                self.assertEqual(abandoned['username'], 'bob')
+
+                room = await GameRoom.objects.aget(game_id=game.game_id)
+                self.assertEqual(room.status, 'closed')
+                self.assertFalse(await GameState.objects.filter(game_id=game.game_id).aexists())
+            finally:
+                await host_comm.disconnect()
+
     async def test_reconnect_within_grace_period_cancels_the_forfeit(self):
         with patch('game.consumers.DISCONNECT_GRACE_SECONDS', 3):
             game, host_comm, opp_comm = await self._start_game(grace_seconds=3)
@@ -515,7 +567,7 @@ class GameLifecycleGuardTests(TransactionTestCase):
         try:
             # White makes a move so the board diverges from the initial setup.
             white_comm = host_comm if started['currentTurn'] == 'alice' else opp_comm
-            await white_comm.send_json_to({'type': 'make_move', 'from': '-12,22', 'to': '-12,21'})
+            await white_comm.send_json_to({'type': 'make_move', 'from': '-5,10', 'to': '-5,9'})
             await _receive_until(white_comm, 'move_made')
 
             # Host replays start_game (double-click / crafted message).
@@ -584,6 +636,61 @@ class GameLifecycleGuardTests(TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
+    async def _join_pregame_room(self):
+        """Two players joined to a 'waiting' room; game not yet started."""
+        game = await GameRoom.objects.acreate(
+            host='alice', opponent='bob', status='waiting',
+            host_token='host-tok', opponent_token='opp-tok',
+        )
+        application = URLRouter(websocket_urlpatterns)
+        host_comm = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+        opp_comm = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+        await host_comm.connect()
+        await opp_comm.connect()
+        await host_comm.send_json_to({
+            'type': 'join_game_room', 'username': 'alice', 'gameId': game.game_id, 'token': 'host-tok',
+        })
+        await _receive_until(host_comm, 'join_game_room_success')
+        await opp_comm.send_json_to({
+            'type': 'join_game_room', 'username': 'bob', 'gameId': game.game_id, 'token': 'opp-tok',
+        })
+        await _receive_until(opp_comm, 'join_game_room_success')
+        return game, host_comm, opp_comm
+
+    async def test_non_host_leaving_pregame_room_closes_it_and_blocks_rejoin(self):
+        """
+        Regression test: bob (non-host) leaves before the game starts while
+        alice is elsewhere (e.g. the setup-config screen) and doesn't see the
+        partner_left broadcast. Her eventual rejoin attempt must bounce her
+        to the lobby (GAME_NOT_FOUND) instead of reviving a stale room that
+        still shows bob as present.
+        """
+        game, host_comm, opp_comm = await self._join_pregame_room()
+        try:
+            await opp_comm.send_json_to({
+                'type': 'leave_game_room', 'username': 'bob', 'gameId': game.game_id,
+            })
+
+            room = None
+            for _ in range(40):
+                room = await GameRoom.objects.aget(game_id=game.game_id)
+                if room.status == 'closed':
+                    break
+                await asyncio.sleep(0.05)
+            self.assertEqual(room.status, 'closed')
+
+            # Alice (host) was away and rejoins afterwards, as if returning
+            # from the setup screen.
+            await host_comm.send_json_to({
+                'type': 'join_game_room', 'username': 'alice', 'gameId': game.game_id, 'token': 'host-tok',
+            })
+            err = await _receive_until(host_comm, 'error', timeout=5)
+            self.assertEqual(err['code'], 'GAME_NOT_FOUND')
+            self.assertEqual(err['message'], 'Game room not found')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
     async def test_move_clears_pending_draw_offer_server_side(self):
         game, host_comm, opp_comm, started = await self._start_game()
         try:
@@ -594,7 +701,7 @@ class GameLifecycleGuardTests(TransactionTestCase):
             await black_comm.send_json_to({'type': 'offer_draw'})
             await _receive_until(white_comm, 'draw_offered')
 
-            await white_comm.send_json_to({'type': 'make_move', 'from': '-12,22', 'to': '-12,21'})
+            await white_comm.send_json_to({'type': 'make_move', 'from': '-5,10', 'to': '-5,9'})
             await _receive_until(white_comm, 'move_made')
 
             # The stale offer must be gone server-side too (a reconnect resync
@@ -637,3 +744,63 @@ class GameLifecycleGuardTests(TransactionTestCase):
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
+
+
+class LobbyIdentityHijackTests(TransactionTestCase):
+    """
+    Verifies that rejoining an already-connected username requires proving
+    ownership via the per-browser secret (game.consumers._handle_join_lobby),
+    instead of anyone being able to take over an online username by simply
+    sending rejoining: true.
+    """
+
+    async def test_matching_secret_allows_rejoin(self):
+        application = URLRouter(websocket_urlpatterns)
+        owner = WebsocketCommunicator(application, "/ws/game/lobby/")
+        rejoiner = WebsocketCommunicator(application, "/ws/game/lobby/")
+        try:
+            await owner.connect()
+            await _receive_until(owner, 'connection_established')
+            await owner.send_json_to({'type': 'join_lobby', 'username': 'alice_test', 'secret': 'correct-secret'})
+            await _receive_until(owner, 'user_list')
+
+            await rejoiner.connect()
+            await _receive_until(rejoiner, 'connection_established')
+            await rejoiner.send_json_to({
+                'type': 'join_lobby',
+                'username': 'alice_test',
+                'rejoining': True,
+                'secret': 'correct-secret',
+            })
+            # A successful rejoin goes straight to user_list with no
+            # username_assigned Guest-rename in between.
+            result = await _receive_until(rejoiner, 'user_list')
+            self.assertIsNotNone(result)
+        finally:
+            await owner.disconnect()
+            await rejoiner.disconnect()
+
+    async def test_wrong_secret_blocks_rejoin(self):
+        application = URLRouter(websocket_urlpatterns)
+        owner = WebsocketCommunicator(application, "/ws/game/lobby/")
+        attacker = WebsocketCommunicator(application, "/ws/game/lobby/")
+        try:
+            await owner.connect()
+            await _receive_until(owner, 'connection_established')
+            await owner.send_json_to({'type': 'join_lobby', 'username': 'bob_test', 'secret': 'owner-secret'})
+            await _receive_until(owner, 'user_list')
+
+            await attacker.connect()
+            await _receive_until(attacker, 'connection_established')
+            await attacker.send_json_to({
+                'type': 'join_lobby',
+                'username': 'bob_test',
+                'rejoining': True,
+                'secret': 'wrong-secret',
+            })
+            assigned = await _receive_until(attacker, 'username_assigned')
+            self.assertEqual(assigned['originalUsername'], 'bob_test')
+            self.assertTrue(assigned['username'].startswith('Guest'))
+        finally:
+            await owner.disconnect()
+            await attacker.disconnect()

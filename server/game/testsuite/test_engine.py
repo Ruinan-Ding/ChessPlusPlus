@@ -16,7 +16,6 @@ from game.engine.config_loader import (
 from game.engine.move_validator import (
     get_legal_moves,
     is_legal_move,
-    KNIGHT_OFFSETS,
 )
 from game.engine.game_logic import (
     resolve_combat,
@@ -85,6 +84,60 @@ class HexBoardTestCase(TestCase):
         assert moved is not None
         self.assertEqual(moved['color'], 'white')
 
+    def test_move_preserves_extra_cell_fields(self):
+        """Moving a unit must not drop per-unit state the cell carries.
+
+        Cells are open-ended: ability layers attach statuses, cooldowns and
+        flags to them. Rebuilding the destination cell from only the four
+        core fields would silently wipe all of that on every move.
+        """
+        board = HexBoard(3)
+        board.set(0, 0, 'rook', 'white', hp=8, max_hp=10)
+        cell = board.get(0, 0)
+        assert cell is not None
+        cell['statuses'] = [{'id': 'poison', 'remaining': 2}]
+        cell['cooldowns'] = {'heal': 1}
+
+        board.move(0, 0, 1, 0)
+
+        moved = board.get(1, 0)
+        assert moved is not None
+        self.assertEqual(moved['statuses'], [{'id': 'poison', 'remaining': 2}])
+        self.assertEqual(moved['cooldowns'], {'heal': 1})
+        self.assertEqual(moved['hp'], 8)
+        self.assertEqual(moved['max_hp'], 10)
+
+    def test_serialisation_preserves_extra_cell_fields(self):
+        board = HexBoard(3)
+        board.set(0, 0, 'mage', 'black', hp=4, max_hp=6)
+        cell = board.get(0, 0)
+        assert cell is not None
+        cell['statuses'] = [{'id': 'shielded', 'remaining': 1}]
+
+        restored = HexBoard.from_dict(3, board.to_dict())
+
+        r = restored.get(0, 0)
+        assert r is not None
+        self.assertEqual(r['statuses'], [{'id': 'shielded', 'remaining': 1}])
+        self.assertEqual(r['hp'], 4)
+
+    def test_set_cell_rejects_incomplete_cell(self):
+        board = HexBoard(3)
+        with self.assertRaises(ValueError):
+            board.set_cell(0, 0, {'unit_id': 'rook'})
+        with self.assertRaises(ValueError):
+            board.set_cell(0, 0, {'color': 'white'})
+
+    def test_set_cell_copies_input(self):
+        """Stored cells must not alias the caller's dict."""
+        board = HexBoard(3)
+        source = {'unit_id': 'rook', 'color': 'white', 'hp': 5}
+        board.set_cell(0, 0, source)
+        source['hp'] = 99
+        stored = board.get(0, 0)
+        assert stored is not None
+        self.assertEqual(stored['hp'], 5)
+
     def test_pieces_by_color(self):
         board = HexBoard(3)
         board.set(0, 0, 'king', 'white')
@@ -119,6 +172,11 @@ class HexBoardTestCase(TestCase):
                 pq, pr = parse_coord(key)
                 self.assertEqual((pq, pr), (q, r))
 
+    def test_parse_coord_rejects_malformed_input(self):
+        for bad in (None, 5, "5", "a,b", "", "1,2,3"):
+            with self.assertRaises(ValueError):
+                parse_coord(bad)
+
     def test_hex_distance(self):
         self.assertEqual(hex_distance((0, 0), (0, 0)), 0)
         self.assertEqual(hex_distance((0, 0), (1, 0)), 1)
@@ -136,7 +194,7 @@ class ConfigLoaderTestCase(TestCase):
     def test_default_config_loads(self):
         config = load_config(None)
         self.assertEqual(config['version'], '1.0')
-        self.assertEqual(config['board']['radius'], 23)
+        self.assertEqual(config['board']['radius'], 11)
         self.assertIn('king', config['units'])
         self.assertIn('pawn', config['units'])
 
@@ -144,7 +202,7 @@ class ConfigLoaderTestCase(TestCase):
         c1 = load_config(None)
         c2 = load_config(None)
         c1['board']['radius'] = 99
-        self.assertEqual(c2['board']['radius'], 23)
+        self.assertEqual(c2['board']['radius'], 11)
 
     def test_build_initial_board_piece_count(self):
         config = load_config(None)
@@ -156,8 +214,8 @@ class ConfigLoaderTestCase(TestCase):
         config = load_config(None)
         board = build_initial_board(config)
         # Check directly that king units exist on the board
-        white_king_cell = board.get(-11, 23)
-        black_king_cell = board.get(11, -23)
+        white_king_cell = board.get(-5, 11)
+        black_king_cell = board.get(5, -11)
         assert white_king_cell is not None
         assert black_king_cell is not None
         self.assertEqual(white_king_cell['unit_id'], 'king')
@@ -168,7 +226,7 @@ class ConfigLoaderTestCase(TestCase):
     def test_build_initial_board_units_have_hp(self):
         config = load_config(None)
         board = build_initial_board(config)
-        white_king = board.get(-11, 23)
+        white_king = board.get(-5, 11)
         assert white_king is not None
         self.assertIn('hp', white_king)
         self.assertIn('max_hp', white_king)
@@ -205,180 +263,84 @@ class ConfigLoaderTestCase(TestCase):
 # ---------------------------------------------------------------------------
 
 class MoveValidatorTestCase(TestCase):
-    """Tests for per-piece move generation."""
+    """
+    Tests for movement: a flood fill through the six hex neighbours, bounded
+    by the unit's `move` stat. Blocked entirely by any occupied hex (own or
+    enemy) - units cannot pass through each other.
+    """
 
     def _make_board(self, radius: int = 5) -> HexBoard:
         return HexBoard(radius)
 
-    def _cfg(self) -> Dict[str, Any]:
-        return load_config(None)
+    def _cfg(self, move: int = 6) -> Dict[str, Any]:
+        return {'units': {'unit': {'move': move}}}
 
-    # -- King --
-
-    def test_king_moves_centre(self):
+    def test_one_step_from_centre_is_six_neighbours(self):
         board = self._make_board()
-        board.set(0, 0, 'king', 'white')
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        # King at centre should have exactly 6 moves
+        board.set(0, 0, 'unit', 'white')
+        moves = get_legal_moves(board, (0, 0), self._cfg(move=1), 'white')
         self.assertEqual(len(moves), 6)
         for m in moves:
             self.assertEqual(hex_distance((0, 0), m), 1)
 
-    def test_king_blocked_by_own_pieces(self):
-        board = self._make_board()
-        board.set(0, 0, 'king', 'white')
-        # Surround with own pawns
-        for dq, dr in HEX_DIRECTIONS.values():
-            board.set(dq, dr, 'pawn', 'white')
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        self.assertEqual(len(moves), 0)
+    def test_reaches_every_hex_within_move_range(self):
+        """On an open board, legal moves == every hex within hex_distance <= move."""
+        board = self._make_board(radius=5)
+        board.set(0, 0, 'unit', 'white')
+        moves = set(get_legal_moves(board, (0, 0), self._cfg(move=6), 'white'))
+        expected = {c for c in board.all_coords() if c != (0, 0)}
+        self.assertEqual(moves, expected)
 
-    def test_king_can_capture_enemy(self):
-        board = self._make_board()
-        board.set(0, 0, 'king', 'white')
-        board.set(1, 0, 'pawn', 'black')
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        self.assertIn((1, 0), moves)
-
-    # -- Queen --
-
-    def test_queen_slides_all_directions(self):
-        board = self._make_board()
-        board.set(0, 0, 'queen', 'white')
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        # From centre of radius-5, queen can reach many hexes
-        self.assertGreater(len(moves), 20)
-        # Check specific far hexes
-        self.assertIn((5, 0), moves)    # E edge
-        self.assertIn((-5, 0), moves)   # W edge
-        self.assertIn((0, -5), moves)   # NW edge
-        self.assertIn((0, 5), moves)    # SE edge
-
-    def test_queen_blocked_by_own_piece(self):
-        board = self._make_board()
-        board.set(0, 0, 'queen', 'white')
-        board.set(2, 0, 'pawn', 'white')
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        self.assertIn((1, 0), moves)    # can reach 1 step E
-        self.assertNotIn((2, 0), moves)  # blocked by own pawn
-        self.assertNotIn((3, 0), moves)  # behind own pawn
-
-    def test_queen_can_capture_then_stop(self):
-        board = self._make_board()
-        board.set(0, 0, 'queen', 'white')
-        board.set(2, 0, 'pawn', 'black')
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        self.assertIn((1, 0), moves)
-        self.assertIn((2, 0), moves)    # capture
-        self.assertNotIn((3, 0), moves)  # can't go past
-
-    # -- Rook --
-
-    def test_rook_slides(self):
-        board = self._make_board()
-        board.set(0, 0, 'rook', 'white')
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        # Rook config uses same 6 directions with range 0 (unlimited)
-        self.assertIn((5, 0), moves)
-        self.assertIn((-5, 0), moves)
-
-    # -- Bishop (hex diagonal) --
-
-    def test_bishop_slides_diagonals(self):
-        board = self._make_board()
-        board.set(0, 0, 'bishop', 'white')
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        # Bishop should only reach diagonal hexes
-        self.assertGreater(len(moves), 0)
-        # One diagonal axis: (+1,+1), (+2,+2) etc.
-        self.assertIn((1, 1), moves)
-        self.assertIn((2, 2), moves)
-        # Another axis: (+2,-1), (+4,-2)
-        self.assertIn((2, -1), moves)
-        self.assertIn((4, -2), moves)
-        # Cardinal directions should NOT be reachable
-        self.assertNotIn((1, 0), moves)
-        self.assertNotIn((0, 1), moves)
-
-    def test_bishop_blocked(self):
-        board = self._make_board()
-        board.set(0, 0, 'bishop', 'white')
-        board.set(1, 1, 'pawn', 'white')  # blocks (+1,+1) diagonal
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        self.assertNotIn((1, 1), moves)
-        self.assertNotIn((2, 2), moves)
-
-    # -- Knight --
-
-    def test_knight_has_12_offsets(self):
-        self.assertEqual(len(KNIGHT_OFFSETS), 12)
-
-    def test_knight_moves_centre(self):
-        board = self._make_board()
-        board.set(0, 0, 'knight', 'white')
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        # All 12 offsets should be valid from centre of radius-5
-        self.assertEqual(len(moves), 12)
+    def test_move_range_stops_short(self):
+        board = self._make_board(radius=5)
+        board.set(0, 0, 'unit', 'white')
+        moves = set(get_legal_moves(board, (0, 0), self._cfg(move=2), 'white'))
         for m in moves:
-            d = hex_distance((0, 0), m)
-            self.assertIn(d, [2, 3])  # knight offsets are distance 2 or 3
+            self.assertLessEqual(hex_distance((0, 0), m), 2)
+        self.assertIn((2, 0), moves)
+        self.assertNotIn((3, 0), moves)
 
-    def test_knight_can_jump_over_pieces(self):
+    def test_blocked_by_own_piece(self):
         board = self._make_board()
-        board.set(0, 0, 'knight', 'white')
-        # Surround with own pieces
-        for dq, dr in HEX_DIRECTIONS.values():
-            board.set(dq, dr, 'pawn', 'white')
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        # Knight can jump, so it should still have moves
-        self.assertGreater(len(moves), 0)
+        board.set(0, 0, 'unit', 'white')
+        board.set(1, 0, 'pawn', 'white')  # occupies a neighbour
+        # move=2: not enough budget to detour around the blocker to (2,0).
+        moves = get_legal_moves(board, (0, 0), self._cfg(move=2), 'white')
+        self.assertNotIn((1, 0), moves)  # can't land on it
+        self.assertNotIn((2, 0), moves)  # can't pass through it either
 
-    def test_knight_cannot_land_on_own(self):
+    def test_blocked_by_enemy_piece(self):
         board = self._make_board()
-        board.set(0, 0, 'knight', 'white')
-        # Place own piece on one knight target
-        target = KNIGHT_OFFSETS[0]
-        board.set(*target, 'pawn', 'white')
-        moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
-        self.assertNotIn(target, moves)
+        board.set(0, 0, 'unit', 'white')
+        board.set(1, 0, 'pawn', 'black')
+        moves = get_legal_moves(board, (0, 0), self._cfg(move=2), 'white')
+        self.assertNotIn((1, 0), moves)  # movement never lands on an enemy
+        self.assertNotIn((2, 0), moves)  # or passes through one
 
-    # -- Pawn (white) --
-
-    def test_white_pawn_moves_forward(self):
+    def test_can_route_around_a_blocker_with_enough_moves(self):
         board = self._make_board()
-        board.set(0, 4, 'pawn', 'white')
-        moves = get_legal_moves(board, (0, 4), self._cfg(), 'white')
-        # White pawn moveOnly direction is NW (0,-1) -> target (0,3)
-        self.assertIn((0, 3), moves)
+        board.set(0, 0, 'unit', 'white')
+        board.set(1, 0, 'pawn', 'black')  # blocks the direct 2-step line to (2,0)
+        # Two moves isn't enough to detour around a blocker on the direct line...
+        moves2 = get_legal_moves(board, (0, 0), self._cfg(move=2), 'white')
+        self.assertNotIn((2, 0), moves2)
+        # ...but three is, going around instead of through.
+        moves3 = get_legal_moves(board, (0, 0), self._cfg(move=3), 'white')
+        self.assertIn((2, 0), moves3)
 
-    def test_white_pawn_cannot_move_to_occupied(self):
+    def test_stops_at_board_edge(self):
+        board = self._make_board(radius=2)
+        board.set(0, 0, 'unit', 'white')
+        moves = get_legal_moves(board, (0, 0), self._cfg(move=6), 'white')
+        for m in moves:
+            self.assertTrue(board.is_valid(*m))
+        self.assertEqual(len(moves), board.total_hexes - 1)
+
+    def test_zero_move_returns_no_moves(self):
         board = self._make_board()
-        board.set(0, 4, 'pawn', 'white')
-        board.set(0, 3, 'pawn', 'black')  # block forward
-        moves = get_legal_moves(board, (0, 4), self._cfg(), 'white')
-        self.assertNotIn((0, 3), moves)
-
-    def test_white_pawn_captures_diagonally(self):
-        board = self._make_board()
-        board.set(0, 4, 'pawn', 'white')
-        # Capture-only directions for white: NE(+1,-1) and NW(0,-1)
-        # But NW is also move-only... let's check what's in the config
-        # Config pawn: moveOnly NW, captureOnly NE, captureOnly NW
-        # So NE capture target from (0,4) is (1,3)
-        board.set(1, 3, 'pawn', 'black')
-        moves = get_legal_moves(board, (0, 4), self._cfg(), 'white')
-        self.assertIn((1, 3), moves)
-
-    # -- Pawn (black) --
-
-    def test_black_pawn_moves_opposite(self):
-        board = self._make_board()
-        board.set(0, -4, 'pawn', 'black')
-        moves = get_legal_moves(board, (0, -4), self._cfg(), 'black')
-        # Black flips NW->SE, so forward is SE (0,+1) -> target (0,-3)
-        self.assertIn((0, -3), moves)
-
-    # -- Edge cases --
+        board.set(0, 0, 'unit', 'white')
+        moves = get_legal_moves(board, (0, 0), self._cfg(move=0), 'white')
+        self.assertEqual(moves, [])
 
     def test_empty_square_returns_no_moves(self):
         board = self._make_board()
@@ -387,15 +349,21 @@ class MoveValidatorTestCase(TestCase):
 
     def test_wrong_color_returns_no_moves(self):
         board = self._make_board()
-        board.set(0, 0, 'king', 'black')
+        board.set(0, 0, 'unit', 'black')
         moves = get_legal_moves(board, (0, 0), self._cfg(), 'white')
         self.assertEqual(moves, [])
 
     def test_is_legal_move_helper(self):
         board = self._make_board()
-        board.set(0, 0, 'king', 'white')
-        self.assertTrue(is_legal_move(board, (0, 0), (1, 0), self._cfg(), 'white'))
-        self.assertFalse(is_legal_move(board, (0, 0), (3, 0), self._cfg(), 'white'))
+        board.set(0, 0, 'unit', 'white')
+        self.assertTrue(is_legal_move(board, (0, 0), (1, 0), self._cfg(move=1), 'white'))
+        self.assertFalse(is_legal_move(board, (0, 0), (3, 0), self._cfg(move=1), 'white'))
+
+    def test_default_config_units_all_move_six(self):
+        """Placeholder rule: every unit in DEFAULT_CONFIG currently gets move=6."""
+        config = load_config(None)
+        for unit_id, unit_def in config['units'].items():
+            self.assertEqual(unit_def.get('move'), 6, unit_id)
 
 
 # ---------------------------------------------------------------------------
@@ -466,20 +434,18 @@ class GameLogicTestCase(TestCase):
 
     # -- is_attacked --------------------------------------------------------
 
-    def test_is_attacked_by_queen(self):
+    def test_is_attacked_within_move_range(self):
         board = HexBoard(5)
-        board.set(0, 0, 'queen', 'white')
+        board.set(0, 0, 'queen', 'white')  # move=6 in DEFAULT_CONFIG
         config = self._cfg()
         self.assertTrue(is_attacked(board, (5, 0), 'white', config))
-        # (1,1) is a diagonal - queen slides cardinals only
-        self.assertFalse(is_attacked(board, (1, 1), 'white', config))
+        self.assertTrue(is_attacked(board, (1, 1), 'white', config))
 
-    def test_bishop_attacks_diagonal(self):
-        board = HexBoard(5)
-        board.set(0, 0, 'bishop', 'white')
+    def test_not_attacked_beyond_move_range(self):
+        board = HexBoard(8)
+        board.set(0, 0, 'pawn', 'white')  # move=6
         config = self._cfg()
-        self.assertTrue(is_attacked(board, (2, -1), 'white', config))
-        self.assertFalse(is_attacked(board, (1, 0), 'white', config))
+        self.assertFalse(is_attacked(board, (7, 0), 'white', config))
 
     # -- Legal moves (no self-check filter in tactical mode) ---------------
 

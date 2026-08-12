@@ -31,7 +31,7 @@
       <div class="users-list">
         <div 
           class="user-item" 
-          *ngFor="let user of users"
+          *ngFor="let user of sortedUsers"
           [ngClass]="{'current-user': user.username === username, 'configuring-user': user.status === 'configuring'}"
           (contextmenu)="openUserMenu($event, user)"
         >
@@ -42,7 +42,7 @@
             'configuring': user.status === 'configuring'
           }"></span>
           <span class="username" [title]="user.username">
-            {{ user.username }}
+            <span class="username-text">{{ user.username }}</span>
             <span *ngIf="user.username === username" class="current-user-tag">(You)</span>
           </span>
           <span class="user-status">

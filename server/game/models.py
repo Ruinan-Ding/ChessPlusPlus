@@ -98,6 +98,9 @@ class PlayerConnection(models.Model):
     
     username = models.CharField(max_length=24, unique=True, primary_key=True)
     channel_name = models.CharField(max_length=255)  # Channels consumer channel name
+    # ponytail: anonymous per-browser secret, not a real credential. Swap this
+    # field's role for a password/OAuth-backed check if real accounts are added.
+    secret = models.CharField(max_length=64, blank=True, default='')
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='online')
     connected_at = models.DateTimeField(auto_now_add=True)
     last_activity = models.DateTimeField(auto_now=True)

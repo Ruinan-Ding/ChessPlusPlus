@@ -6,21 +6,22 @@
   overflow: auto;        // allow outer scrolling to prevent clipping
 
   width: 100%;
-  max-width: 1200px;
   margin: 0 auto;
-  padding: 20px;
+  padding: 10px 12px;
   font-family: Arial, sans-serif;
-  
+
   header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 20px;
-    padding-bottom: 10px;
+    flex: 0 0 auto;          // never steal height from the board
+    margin-bottom: 8px;
+    padding-bottom: 6px;
     border-bottom: 1px solid #ddd;
-    
+
     h1 {
       margin: 0;
+      font-size: 1.25rem;    // compact: the board is the point of this screen
       color: #2c3e50;
     }
     
@@ -74,62 +75,219 @@
     overflow: hidden;
   }
 
+  // Centre column: the board alone. The four match panels used to be clipped
+  // into its corners, but a corner triangle left far too little usable room
+  // for their controls - they now live in their own column on the left.
+  .game-area {
+    position: relative;
+    flex: 1;
+    min-width: 200px;
+    min-height: 0;
+  }
+
   .game-board-panel {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    padding: 12px;
-    border: 1px solid #ddd;
+    position: absolute;
+    inset: 0;
+    z-index: 0;
     border-radius: 4px;
     background-color: #1a1a2e;
-    flex: 2;
-    min-width: 200px;
-    overflow: auto;
-    gap: 10px;
-    
-    app-game-board {
-      flex: 0 0 auto;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      width: 100%;
-      min-height: 400px;
+    transition: background-color 0.3s ease;
+    overflow: hidden;
+
+    // Whose-move cue on the area behind the board itself, not the whole
+    // page: green on your turn, dark red on your opponent's.
+    &.your-turn {
+      background-color: #1b3a2b;
     }
-    
+
+    &.their-turn {
+      background-color: #3a1b1b;
+    }
+
+    app-game-board {
+      position: absolute;
+      inset: 0;
+      display: flex;
+    }
+
+    // Everything else in here floats over the board rather than taking a
+    // slice of its height - the panels are clipped against the full box.
     .waiting-placeholder {
+      position: absolute;
+      inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      flex: 1;
       color: #999;
       font-size: 1.1rem;
-      p {
-        margin: 0;
+      p { margin: 0; }
+    }
+
+    .post-game-message {
+      position: absolute;
+      top: 14%;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 3;
+    }
+  }
+
+  // Left column: the four match panels, plain stacked rectangles.
+  .match-panels {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 0 0 260px;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .match-panel {
+    display: flex;
+    flex-direction: column;
+    background-color: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    overflow: hidden;
+    min-height: 0;
+
+    h3 {
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 8px 12px;
+      border-bottom: 1px solid #ddd;
+      font-size: 0.92rem;
+      color: #2c3e50;
+    }
+
+    .panel-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+  }
+
+  // History gets the slack; the other three size to their content.
+  .history-panel { flex: 1 1 auto; min-height: 120px; }
+  .stats-panel,
+  .opponent-panel,
+  .abilities-panel { flex: 0 0 auto; }
+
+  .panel-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .panel-empty {
+    color: #999;
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 14px 0;
+  }
+
+  .history-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    background-color: #f5f7fa;
+    font-size: 0.84rem;
+
+    .history-time {
+      flex: 0 0 auto;
+      color: #888;
+      font-size: 0.76rem;
+    }
+  }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid #eee;
+    font-size: 0.88rem;
+  }
+
+  .ability-row {
+    padding: 8px 10px;
+    border-radius: 6px;
+    background-color: #f5f7fa;
+    font-size: 0.88rem;
+  }
+
+  // Placeholder ability buttons - wired up once abilities actually exist.
+  .scaffold-btn {
+    padding: 8px 12px;
+    border: none;
+    border-radius: 6px;
+    background-color: #2e86de;
+    color: white;
+    cursor: pointer;
+    font-size: 0.88rem;
+    flex: 0 0 auto;
+
+    &:hover {
+      background-color: #1f6fb8;
+    }
+  }
+
+  // Right column: Game and Lobby share one tabbed rail so they aren't both
+  // claiming screen width at once. Fixed rail, not a proportional share.
+  .side-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 0 0 320px;
+    min-height: 0;
+  }
+
+  .rail-tabs {
+    display: flex;
+    flex: 0 0 auto;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #fff;
+
+    button {
+      flex: 1;
+      padding: 9px 10px;
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.92rem;
+      color: #6b7683;
+
+      &:hover { background-color: #f5f5f5; }
+
+      &.active {
+        border-bottom-color: #3498db;
+        color: #2980b9;
       }
     }
   }
 
-  .bottom-section {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    flex: 1;
+  // Panes inside the rail. Chat takes the slack; the rest size to content.
+  .rail-section {
+    flex: 0 0 auto;
     min-height: 0;
-    overflow: hidden;
+    box-sizing: border-box;
   }
-
-  .spinner {
-    width: 60px;
-    height: 60px;
-    border: 4px solid #34495e;
-    border-top-color: #3498db;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
+  .side-rail .chat-panel,
+  .side-rail .lobby-chat {
+    flex: 1 1 auto;
+    min-height: 120px;
   }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
+  .side-rail .users-panel {
+    max-height: 40%;
   }
 
   .game-actions {
@@ -238,153 +396,115 @@
     background-color: white;
     // Constrain height for internal scroll
     min-height: 0;
-    
-    .chat-tabs {
-      display: flex;
-      border-bottom: 1px solid #ddd;
-      
-      button {
-        flex: 1;
-        padding: 10px;
-        background: none;
-        border: none;
-        cursor: pointer;
-        font-weight: 500;
-        
-        &:hover {
-          background-color: #f5f5f5;
-        }
-        
-        &.active {
-          border-bottom: 3px solid #3498db;
-          color: #3498db;
-        }
-      }
-    }
-    
+
     .chat-content {
       display: flex;
       flex-direction: column;
       flex-grow: 1;
       // Allow children to shrink for overflow
       min-height: 0;
-      
-      .game-room-messages,
-      .lobby-messages {
-        flex-grow: 1;
-        padding: 15px;
-        overflow-y: auto;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        // Ensure scroll container does not expand
-        min-height: 0;
+    }
+  }
+
+  // Shared by the game-room chat (.chat-panel) and the lobby chat
+  // (.lobby-panel) - both render the same message-list + input shape.
+  .game-room-messages,
+  .lobby-messages {
+    flex-grow: 1;
+    padding: 15px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    // Ensure scroll container does not expand
+    min-height: 0;
+  }
+
+  .message-item {
+    padding: 10px;
+    margin: 5px 0;
+    border-radius: 10px;
+    background-color: #f1f1f1;
+
+    &.system-message {
+      background-color: #e8f4f8;
+      font-style: italic;
+      align-self: center;
+
+      .message-username {
+        color: #3498db;
+        font-weight: bold;
       }
-      
-      .lobby-user-list {
-        padding: 10px 15px;
-        border-top: 1px solid #ddd;
-        background-color: #fff;
-        flex: 0 0 auto;
-        max-height: 150px;
-        overflow-y: auto;
-      }
-      
-      .message-item {
-        padding: 10px;
-        margin: 5px 0;
-        border-radius: 10px;
-        background-color: #f1f1f1;
-        
-        &.system-message {
-          background-color: #e8f4f8;
-          font-style: italic;
-          align-self: center;
-          
-          .message-username {
-            color: #3498db;
-            font-weight: bold;
-          }
+    }
+
+    &.my-message {
+      text-align: right;
+      background-color: #e0f7fa;
+      border-radius: 10px 10px 0 10px;
+      margin-left: auto;
+
+      .message-header {
+        justify-content: flex-end;
+
+        .message-username {
+          color: #1565C0;
         }
-        
-        &.my-message {
-          text-align: right;
-          background-color: #e0f7fa;
-          border-radius: 10px 10px 0 10px;
-          margin-left: auto;
-          
-          .message-header {
-            justify-content: flex-end;
-            
-            .message-username {
-              color: #1565C0;
-            }
-            
-            .message-time {
-              margin-left: 8px;
-            }
-          }
-        }
-        
-        .message-header {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          margin-bottom: 4px;
-          
-          .message-username {
-            font-weight: 600;
-            font-size: 1.1em;
-            color: #2c3e50;
-          }
-          
-          .message-time {
-            margin-left: auto;
-            color: #666;
-            font-size: 0.8rem;
-          }
-        }
-        
-        .message-content {
-          margin-top: 5px;
-        }
-      }
-      
-      .chat-input {
-        display: flex;
-        padding: 10px;
-        border-top: 1px solid #ddd;
-        
-        input {
-          flex-grow: 1;
-          padding: 8px;
-          border: 1px solid #ddd;
-          border-radius: 4px;
-          margin-right: 10px;
-        }
-        
-        button {
-          padding: 8px 15px;
-          background-color: #3498db;
-          color: white;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          
-          &:hover {
-            background-color: #2980b9;
-          }
+
+        .message-time {
+          margin-left: 8px;
         }
       }
     }
+
+    .message-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+
+      .message-username {
+        font-weight: 600;
+        font-size: 1.1em;
+        color: #2c3e50;
+      }
+
+      .message-time {
+        margin-left: auto;
+        color: #666;
+        font-size: 0.8rem;
+      }
+    }
+
+    .message-content {
+      margin-top: 5px;
+    }
   }
-  
-  .lobby-content {
+
+  .chat-input {
     display: flex;
-    flex: 1;
-    height: 100%;
-    gap: 20px;
-    min-height: 0;
+    padding: 10px;
+    border-top: 1px solid #ddd;
+
+    input {
+      flex-grow: 1;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      margin-right: 10px;
+    }
+
+    button {
+      padding: 8px 15px;
+      background-color: #3498db;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+
+      &:hover {
+        background-color: #2980b9;
+      }
+    }
   }
 
   .lobby-chat {
@@ -392,32 +512,77 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background-color: white;
+
+    h3 {
+      margin: 0;
+      padding: 10px 15px;
+      border-bottom: 1px solid #ddd;
+      font-size: 1rem;
+      color: #2c3e50;
+    }
   }
 
   .users-panel {
-    flex: 0 0 250px;
     display: flex;
     flex-direction: column;
     border: 1px solid #ddd;
     border-radius: 4px;
     padding: 10px;
     background-color: #f8f9fa;
-    max-height: 100%;
     min-height: 0;
+  }
+
+  // You always sit at the top of the list (see sortedLobbyUsers), set a little
+  // apart from everyone else.
+  .users-panel .user-item.current-user {
+    background-color: #eef6fb;
+    border-radius: 4px;
+    border-bottom: 2px solid #cfd8dc;
+    margin-bottom: 6px;
+    font-weight: 600;
   }
 
   .users-panel .users-list {
     flex: 1;
     overflow-y: auto;
+    min-height: 0;
   }
 
   .users-panel .user-item {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px;
+    gap: 6px;
+    padding: 4px 6px;
     border-bottom: 1px solid #eee;
     cursor: context-menu;
+    font-size: 0.85rem;
+  }
+
+  // Keep "(You)" on the same line as the name and never let it be the thing
+  // that gets clipped - truncate the name instead. min-width:0 is what lets
+  // this shrink at all inside the flex row.
+  .users-panel .username {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .users-panel .username-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .users-panel .current-user-tag {
+    flex: 0 0 auto;
   }
 
   .user-status-and-action {
@@ -493,19 +658,20 @@
     cursor: not-allowed;
   }
 
-  .game-settings-panel {
+  .game-settings-panel,
+  .players-section {
     width: 100%;
     min-width: 0;
     display: flex;
     flex-direction: column;
-    padding: 15px;
+    padding: 12px;
     border: 1px solid #ddd;
     border-radius: 4px;
     background-color: #f8f9fa;
     height: auto;
     box-sizing: border-box;
     overflow: auto;
-    
+
     h3 {
       margin-top: 0;
       margin-bottom: 10px;
@@ -552,70 +718,6 @@
             
             label {
               cursor: pointer;
-            }
-          }
-          
-          .pending-request {
-            padding: 8px;
-            background-color: #fff3cd;
-            border: 1px solid #ffc107;
-            border-radius: 4px;
-            color: #856404;
-            font-size: 0.9rem;
-          }
-          
-          .blocked-message {
-            padding: 8px;
-            background-color: #f8d7da;
-            border: 1px solid #f5c6cb;
-            border-radius: 4px;
-            color: #721c24;
-            font-size: 0.9rem;
-          }
-          
-          .reveal-request-prompt {
-            padding: 12px;
-            background-color: #f0f8ff;
-            border: 2px solid #3498db;
-            border-radius: 4px;
-            
-            p {
-              margin: 0 0 12px 0;
-              color: #2c3e50;
-              font-weight: 500;
-            }
-            
-            .request-buttons {
-              display: flex;
-              gap: 8px;
-              
-              button {
-                flex: 1;
-                padding: 8px 12px;
-                border: none;
-                border-radius: 4px;
-                font-weight: 600;
-                cursor: pointer;
-                transition: all 0.3s;
-                
-                &.accept-btn {
-                  background-color: #27ae60;
-                  color: white;
-                  
-                  &:hover {
-                    background-color: #229954;
-                  }
-                }
-                
-                &.decline-btn {
-                  background-color: #e74c3c;
-                  color: white;
-                  
-                  &:hover {
-                    background-color: #c0392b;
-                  }
-                }
-              }
             }
           }
           
@@ -685,16 +787,6 @@
           cursor: default;
         }
         
-        .status-tag {
-          font-size: 0.8rem;
-          color: #3498db;
-
-          &.left-tag {
-            color: #e74c3c; // red tag for left
-            margin-left: 5px;
-          }
-        }
-        
         .ready-checkmark {
           color: #2ecc71;
           font-weight: bold;
@@ -702,36 +794,13 @@
         }
       }
     }
-    
+
     .ready-section {
       margin-top: auto;
       display: flex;
       flex-direction: column;
       gap: 10px;
-      
-      .setup-btn {
-        width: 100%;
-        padding: 12px;
-        background-color: #9b59b6;
-        color: white;
-        border: none;
-        border-radius: 4px;
-        font-size: 1.1rem;
-        font-weight: bold;
-        cursor: pointer;
-        transition: background-color 0.2s;
-        
-        &:hover {
-          background-color: #8e44ad;
-        }
-        
-        &:disabled {
-          background-color: #95a5a6;
-          cursor: not-allowed;
-          opacity: 0.7;
-        }
-      }
-      
+
       .ready-btn {
         width: 100%;
         padding: 12px;
@@ -793,79 +862,83 @@
     }
   }
   
-  .countdown-popup {
+  // You always sit at the top of the Players list too, matching the lobby.
+  .player-item.current-user {
+    background-color: #eef6fb;
+    border-radius: 4px;
+    border-bottom: 2px solid #cfd8dc;
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+
+  // A player who has dropped out: dimmed, with a ⚠ badge.
+  .player-item.player-offline {
+    opacity: 0.65;
+
+    .player-name { text-decoration: line-through; }
+  }
+  .disconnect-icon {
+    cursor: help;
+  }
+
+  // ==================== CONNECTION / END-OF-ROOM MODALS ====================
+
+  .reconnect-overlay,
+  .end-overlay {
     position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0, 0, 0, 0.7);
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.55);
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 1000;
-    
-    .countdown-content {
-      background-color: white;
-      border-radius: 8px;
-      padding: 30px;
-      text-align: center;
-      box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
-      
-      h2 {
-        margin-top: 0;
-        color: #2c3e50;
-      }
-      
-      .countdown-number {
-        font-size: 5rem;
-        font-weight: bold;
-        margin: 20px 0;
-        color: #e74c3c;
-      }
-      
-      p {
-        margin-bottom: 0;
-        font-size: 1.2rem;
-      }
+    z-index: 2500;
+  }
+
+  .reconnect-modal,
+  .end-modal {
+    background: #fff;
+    border-radius: 12px;
+    padding: 28px 34px;
+    max-width: 420px;
+    text-align: center;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+
+    h2 {
+      margin: 0 0 12px;
+      color: #2c3e50;
+      font-size: 1.5rem;
+    }
+
+    p {
+      margin: 0 0 20px;
+      color: #555;
     }
   }
 
-  .game-started-message {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0, 0, 0, 0.7);
+  .reconnect-actions,
+  .end-actions {
     display: flex;
+    gap: 10px;
     justify-content: center;
-    align-items: center;
-    z-index: 1000;
-    
-    .game-started-content {
-      background-color: white;
-      border-radius: 8px;
-      padding: 30px;
-      text-align: center;
-      box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
-      max-width: 400px;
-      
-      h2 {
-        margin-top: 0;
-        color: #2c3e50;
-      }
-      
-      p {
-        margin: 15px 0;
-        font-size: 1.1rem;
-      }
-      
-      .note {
-        font-style: italic;
-        color: #7f8c8d;
-        font-size: 0.9rem;
-      }
+
+    button {
+      padding: 10px 18px;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .lobby-btn {
+      background-color: #3498db;
+      color: #fff;
+      &:hover { background-color: #2980b9; }
+    }
+
+    .stay-btn {
+      background-color: #e6e9ec;
+      color: #2c3e50;
+      &:hover { background-color: #d6dade; }
     }
   }
 
@@ -1052,17 +1125,33 @@
       height: auto;
       overflow: visible;
     }
-    .bottom-section {
+    // Stacked into a column, so the fixed-pixel rail bases would become fixed
+    // *heights*. Give each section a real height instead of letting flex
+    // collapse it to nothing.
+    .match-panels,
+    .side-rail {
+      flex: 0 0 auto;
       overflow: visible;
-    }
-    .game-settings-panel {
       width: 100%;
       min-width: 0;
-      height: 220px;
-      max-height: 220px;
+    }
+    .game-area {
+      flex: 0 0 auto;
+      min-height: 460px;
+    }
+    .match-panel,
+    .game-settings-panel,
+    .players-section,
+    .lobby-chat,
+    .users-panel,
+    .side-rail .chat-panel {
+      width: 100%;
+      min-width: 0;
+      max-height: 260px;
       overflow: auto;
     }
-    
+    .history-panel { min-height: 140px; }
+
     .reveal-waiting-overlay .reveal-waiting-modal {
       max-width: 90%;
       padding: 30px 25px;

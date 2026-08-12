@@ -56,3 +56,15 @@ export class SharedDataService {
     return this.lobbyUsersSubject.value;
   }
 }
+/**
+ * Return `users` with the current user pinned to the front.
+ *
+ * Shared so every list that shows people - the lobby's Online Users, the game
+ * room's Online Users and its Players list - puts "(You)" in the same place.
+ */
+export function selfFirst<T extends { username: string }>(users: T[], username: string): T[] {
+  return [
+    ...users.filter(user => user.username === username),
+    ...users.filter(user => user.username !== username),
+  ];
+}

@@ -17,7 +17,7 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 50,
-          "description": "Hex grid radius (distance from centre hex to edge). The default board is radius 23 (24 cells per hexagon edge)."
+          "description": "Hex grid radius (distance from centre hex to edge). The default board is radius 11 (12 cells per hexagon edge)."
         },
         "orientation": {
           "type": "string",
@@ -32,7 +32,7 @@
       "description": "Unit type definitions, keyed by unit id.",
       "additionalProperties": {
         "type": "object",
-        "required": ["id", "name", "symbol", "movement", "value", "hp", "attack"],
+        "required": ["id", "name", "symbol", "move", "value", "hp", "attack"],
         "properties": {
           "id": { "type": "string" },
           "name": { "type": "string" },
@@ -46,66 +46,10 @@
             },
             "additionalProperties": false
           },
-          "movement": {
-            "type": "array",
-            "description": "Movement patterns, authored from white's perspective (mirrored for black). Each entry is either a direction slide/step or a fixed-offset jump set.",
-            "items": {
-              "oneOf": [
-                {
-                  "type": "object",
-                  "required": ["direction", "range"],
-                  "properties": {
-                    "direction": {
-                      "type": "string",
-                      "enum": ["E", "W", "NE", "NW", "SE", "SW", "DN", "DS", "DNE", "DSW", "DSE", "DNW"],
-                      "description": "Six cardinals plus six diagonals (the distance-2 hexes between adjacent cardinals)."
-                    },
-                    "range": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "description": "0 = unlimited sliding in this direction."
-                    },
-                    "captureOnly": { "type": "boolean" },
-                    "moveOnly": { "type": "boolean" },
-                    "canJump": { "type": "boolean" }
-                  },
-                  "additionalProperties": false
-                },
-                {
-                  "type": "object",
-                  "required": ["offsets"],
-                  "properties": {
-                    "offsets": {
-                      "type": "array",
-                      "description": "Fixed jump targets as [dq, dr] pairs; intervening pieces are ignored.",
-                      "items": {
-                        "type": "array",
-                        "items": { "type": "integer" },
-                        "minItems": 2,
-                        "maxItems": 2
-                      }
-                    },
-                    "captureOnly": { "type": "boolean" },
-                    "moveOnly": { "type": "boolean" }
-                  },
-                  "additionalProperties": false
-                }
-              ]
-            }
-          },
-          "abilities": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["id", "name", "description", "cooldown"],
-              "properties": {
-                "id": { "type": "string" },
-                "name": { "type": "string" },
-                "description": { "type": "string" },
-                "cooldown": { "type": "integer", "minimum": 0 }
-              },
-              "additionalProperties": false
-            }
+          "move": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of adjacent-hex steps this unit can move per turn. Movement floods outward through the six hex neighbours, through empty hexes only - a unit can never move through or onto an occupied hex (ally or enemy)."
           },
           "value": { "type": "integer", "minimum": 0 },
           "hp": {

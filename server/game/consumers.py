@@ -66,6 +66,11 @@ RATE_LIMIT_WINDOW_SECONDS = 10
 RATE_LIMIT_MAX_MESSAGES = 30  # ~3/sec sustained, generous burst allowance
 
 
+def _extract_secret(data: Dict[str, Any]) -> str:
+    """Pull the client-asserted identity secret out of an incoming message."""
+    return str(data.get('secret') or '').strip()[:64]
+
+
 class GameConsumer(AsyncWebsocketConsumer):
     """
     WebSocket consumer handling all game and lobby operations.
@@ -152,13 +157,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 logger.info(f"User {self.username} is in-game, not deleting PlayerConnection")
                 return
             
-            await self._delete_player_connection(self.username)
-            
+            await self._delete_player_connection(self.username, channel_name=self.channel_name)
+
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'user_left',
                 'username': self.username
             })
-            
+
             await self._send_user_list()
         except Exception as e:
             logger.error(f"Error cleaning up lobby connection for {self.username}: {e}")
@@ -170,30 +175,31 @@ class GameConsumer(AsyncWebsocketConsumer):
             if not game:
                 return
 
-            state = await self._get_game_state(self.game_id)
-            if state and not state.is_finished:
-                # A match is actively in progress - don't end it or close the
-                # room immediately (the player may just be refreshing the
-                # page). Leave the turn timer running as-is - if the
-                # disconnecting player was on the clock, it will still
-                # correctly expire and end the game; if not, nothing about
-                # it should change. Instead, give them a grace period to
-                # reconnect before forfeiting the game to their opponent.
-                await self._start_disconnect_grace_timer(self.game_id, self.username)
-                await broadcast_to_group(self.channel_layer, self.room_group_name, {
-                    'type': 'opponent_disconnected',
-                    'username': self.username,
-                    'graceSeconds': DISCONNECT_GRACE_SECONDS,
-                })
-            elif game.host == self.username:
-                # No active match to protect (not yet started, or already
-                # over) - safe to close the room immediately if the host left.
-                await self._close_game_room(game.game_id, f"{self.username} (host) disconnected")
-                await self._send_user_list()
-
+            # Dropping out always clears your ready flag - the room must not be
+            # startable while somebody is missing. Tell the room so the other
+            # player's list updates instead of showing a stale tick.
             await self._delete_ready_status(self.game_id, self.username)
+            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                'type': 'player_unready',
+                'username': self.username,
+                'silent': True,
+            })
 
-            await self._delete_player_connection(self.username)
+            # A page refresh is indistinguishable from a disconnect, so never
+            # tear anything down on the spot - always give the player a grace
+            # period to come back (cancelled in _handle_join_game_room). What
+            # happens if the timer actually fires depends on whether a match
+            # was underway; see _start_disconnect_grace_timer. Any turn timer
+            # is left running: if the disconnected player was on the clock it
+            # should still expire normally.
+            await self._start_disconnect_grace_timer(self.game_id, self.username)
+            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                'type': 'opponent_disconnected',
+                'username': self.username,
+                'graceSeconds': DISCONNECT_GRACE_SECONDS,
+            })
+
+            await self._delete_player_connection(self.username, channel_name=self.channel_name)
         except Exception as e:
             logger.error(f"Error cleaning up game room connection for {self.username}: {e}")
     
@@ -298,22 +304,28 @@ class GameConsumer(AsyncWebsocketConsumer):
             username = data.get('username', '').strip()
             original_username = username
             username_was_taken = False
-            
+            client_secret = _extract_secret(data)
+
             validate_username(username)
-            
+
             existing_connection = await self._get_player_connection(username)
             if existing_connection and existing_connection.channel_name != self.channel_name:
-                if data.get('rejoining', False):
+                # ponytail: single seam for identity verification - replace this
+                # comparison with real credential checking if accounts are added later.
+                secret_ok = bool(existing_connection.secret) and existing_connection.secret == client_secret
+                if data.get('rejoining', False) and secret_ok:
                     logger.info(f"User {username} rejoining lobby with new channel")
                 else:
+                    if data.get('rejoining', False):
+                        logger.warning(f"Rejected rejoin claim for '{username}': secret mismatch")
                     # Generate a random username instead of rejecting
                     random_suffix = ''.join(random.choices(string.digits, k=6))
                     username = f"Guest{random_suffix}"
                     username_was_taken = True
                     logger.info(f"Username '{original_username}' was taken, assigned '{username}' instead")
-            
+
             self.username = username
-            await self._create_or_update_player_connection(username, self.channel_name, 'online')
+            await self._create_or_update_player_connection(username, self.channel_name, 'online', secret=client_secret)
             
             if username_was_taken:
                 await send_json_response(self, {
@@ -347,8 +359,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             if self.username != username:
                 await send_error(self, 'INVALID_REQUEST', 'Cannot leave as different user')
                 return
-            
-            await self._delete_player_connection(username)
+
+            await self._delete_player_connection(username, channel_name=self.channel_name)
             
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'user_left',
@@ -384,22 +396,23 @@ class GameConsumer(AsyncWebsocketConsumer):
         try:
             old_username = data.get('oldUsername', '').strip()
             new_username = data.get('newUsername', '').strip()
-            
+            client_secret = _extract_secret(data)
+
             validate_username(new_username)
-            
+
             if self.username != old_username:
                 await send_error(self, 'INVALID_REQUEST', 'Cannot change username for another user')
                 return
-            
+
             existing = await self._get_player_connection(new_username)
             if existing:
                 await send_error(self, 'USERNAME_TAKEN', f'Username "{new_username}" is already taken')
                 return
-            
+
             # Update in database - first delete old, then create new to avoid duplicates
             # This is more reliable than updating in place
-            await self._delete_player_connection(old_username)
-            await self._create_or_update_player_connection(new_username, self.channel_name, 'online')
+            await self._delete_player_connection(old_username, channel_name=self.channel_name)
+            await self._create_or_update_player_connection(new_username, self.channel_name, 'online', secret=client_secret)
             
             self.username = new_username
             
@@ -655,12 +668,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return
             
             game = await self._get_game_by_id(game_id)
-            if not game:
+            if not game or game.status == 'closed':
                 await send_error(self, 'GAME_NOT_FOUND', 'Game room not found')
                 return
-            
+
             logger.info(f"[join_game_room] Game found: host={game.host}, opponent={game.opponent}")
-            
+
             if username != game.host and username != game.opponent:
                 logger.warning(f"[join_game_room] User {username} not in game - host={game.host}, opponent={game.opponent}")
                 await send_error(self, 'NOT_IN_GAME', 'You are not in this game')
@@ -774,11 +787,15 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             await self._delete_ready_status(game_id, username)
 
-            # Close the room if the host left, or if leaving forfeited the match
-            # (the remaining player is sent back to the lobby by partner_left
-            # either way, so the room must not linger as 'started').
-            if username == game.host or forfeited:
-                await self._close_game_room(game_id, f"{username} left the game room")
+            # Always close the room: there's no way for anyone but the
+            # original host/opponent to join it (see _handle_join_game_room),
+            # so a deliberate leave - by either player, before or after the
+            # game starts - always makes the room unusable. The remaining
+            # player is sent back to the lobby by partner_left if they're
+            # actively in the room; if they're elsewhere (e.g. configuring),
+            # closing it here is what makes their eventual rejoin attempt
+            # bounce them to the lobby instead of rejoining a stale room.
+            await self._close_game_room(game_id, f"{username} left the game room")
 
             await self._send_user_list()
             
@@ -1204,8 +1221,12 @@ class GameConsumer(AsyncWebsocketConsumer):
     # ==================== Disconnect grace period ====================
 
     async def _start_disconnect_grace_timer(self, game_id: str, username: str):
-        """Give a disconnected player DISCONNECT_GRACE_SECONDS to reconnect
-        before forfeiting the game to their opponent.
+        """Give a disconnected player DISCONNECT_GRACE_SECONDS to reconnect.
+
+        If a match was underway it is forfeited to their opponent. If nothing
+        was underway there is no game to win, so the room is simply closed and
+        the remaining player told it has been abandoned - otherwise they sit
+        there forever waiting for somebody who is never coming back.
 
         Cancelled by _handle_join_game_room if the player rejoins in time.
         """
@@ -1214,19 +1235,26 @@ class GameConsumer(AsyncWebsocketConsumer):
         async def _grace_task():
             try:
                 await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
-                state = await self._get_game_state(game_id)
-                if not state or state.is_finished:
-                    return
                 game = await self._get_game_by_id(game_id)
-                if not game:
+                if not game or game.status == 'closed':
                     return
+                state = await self._get_game_state(game_id)
 
-                winner = game.opponent if username == game.host else game.host
-                if await self._end_game(game_id, state, winner, 'disconnect'):
-                    await self._broadcast_game_over(game_id, winner, 'disconnect', disconnectedPlayer=username)
+                if state and not state.is_finished:
+                    winner = game.opponent if username == game.host else game.host
+                    if await self._end_game(game_id, state, winner, 'disconnect'):
+                        await self._broadcast_game_over(game_id, winner, 'disconnect', disconnectedPlayer=username)
+                        await self._close_game_room(game_id, f"{username} did not reconnect within the grace period")
+                        await self._send_user_list()
+                        logger.info(f"Game {game_id} forfeited to {winner} - {username} did not reconnect in time")
+                else:
+                    await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
+                        'type': 'room_abandoned',
+                        'username': username,
+                    })
                     await self._close_game_room(game_id, f"{username} did not reconnect within the grace period")
                     await self._send_user_list()
-                    logger.info(f"Game {game_id} forfeited to {winner} - {username} did not reconnect in time")
+                    logger.info(f"Room {game_id} abandoned - {username} did not reconnect in time")
             except asyncio.CancelledError:
                 pass
             except Exception as e:
@@ -1335,7 +1363,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             try:
                 fq, fr = parse_coord(from_coord)
                 tq, tr = parse_coord(to_coord)
-            except (ValueError, IndexError, TypeError, AttributeError):
+            except ValueError:
                 await send_error(self, 'INVALID_MOVE', 'Malformed move coordinates')
                 return
 
@@ -1600,15 +1628,18 @@ class GameConsumer(AsyncWebsocketConsumer):
         PlayerConnection.objects.filter(username=username).update(last_activity=timezone.now())  # type: ignore
     
     @database_sync_to_async
-    def _create_or_update_player_connection(self, username, channel_name, status):
+    def _create_or_update_player_connection(self, username, channel_name, status, secret=None):
         """Create or update a player connection"""
+        defaults = {
+            'channel_name': channel_name,
+            'status': status,
+            'last_activity': timezone.now()
+        }
+        if secret is not None:
+            defaults['secret'] = secret
         connection, _ = PlayerConnection.objects.update_or_create(  # type: ignore
             username=username,
-            defaults={
-                'channel_name': channel_name,
-                'status': status,
-                'last_activity': timezone.now()
-            }
+            defaults=defaults
         )
         return connection
     
@@ -1623,9 +1654,15 @@ class GameConsumer(AsyncWebsocketConsumer):
         return rows_updated
     
     @database_sync_to_async
-    def _delete_player_connection(self, username):
-        """Delete a player connection"""
-        PlayerConnection.objects.filter(username=username).delete()  # type: ignore
+    def _delete_player_connection(self, username, channel_name=None):
+        """Delete a player connection. If channel_name is given, only delete
+        when the stored row still belongs to that channel - guards a
+        late-firing disconnect() from deleting a row a newer, legitimately
+        reconnected session has since claimed."""
+        qs = PlayerConnection.objects.filter(username=username)  # type: ignore
+        if channel_name is not None:
+            qs = qs.filter(channel_name=channel_name)
+        qs.delete()
     
     @database_sync_to_async
     def _get_all_online_users(self):

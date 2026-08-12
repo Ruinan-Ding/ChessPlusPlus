@@ -6,9 +6,10 @@ import { Subject } from 'rxjs';
 import { takeUntil, take, filter } from 'rxjs/operators';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
 import { ActivatedRoute, Router } from '@angular/router';
-import { SharedDataService, ChatMessage, User } from '../../services/shared-data.service';
+import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { GameStateService } from '../../services/game-state.service';
+import { AuthService } from '../../services/auth.service';
 import { GameBoardComponent } from '../game-board/game-board.component';
 
 interface GameOptions {
@@ -31,8 +32,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   lobbyUsers: User[] = [];
   gameRoomMessages: ChatMessage[] = [];
   lobbyMessages: ChatMessage[] = [];
-  messageContent: string = '';
-  activeTab: 'gameRoom' | 'lobby' = 'gameRoom';
+  gameRoomMessageContent: string = '';
+  lobbyMessageContent: string = '';
+  /** Which pane the right-hand rail is showing. */
+  activeSideTab: 'game' | 'lobby' = 'game';
   isInviter: boolean = false;
   gameMode: 'default' | 'custom' = 'default';
   isReady: boolean = false;
@@ -48,6 +51,19 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   revealRequester: string = '';  // Username of player who requested reveal
   otherPlayerConfiguring: boolean = false;
 
+  /** Players currently dropped out, by username - drives the ⚠ badge. */
+  disconnectedPlayers = new Set<string>();
+  /** Our own socket is down and the service is retrying. */
+  isReconnecting: boolean = false;
+  reconnectAttempt: number = 0;
+  connectionLost: boolean = false;   // retries exhausted
+
+  /** End-of-match popup (also covers "everyone else left"). */
+  showEndModal: boolean = false;
+  endModalTitle: string = '';
+  endModalDetail: string = '';
+  private endModalTimer: ReturnType<typeof setTimeout> | null = null;
+
   private destroy$ = new Subject<void>();
 
   constructor(
@@ -57,7 +73,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     private sharedDataService: SharedDataService,
     private navigationState: NavigationStateService,
     private cdr: ChangeDetectorRef,
-    public gameState: GameStateService
+    public gameState: GameStateService,
+    private authService: AuthService
   ) {}
   
   ngOnInit(): void {
@@ -106,7 +123,25 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     });
     this.sharedDataService.lobbyUsers$.pipe(takeUntil(this.destroy$)).subscribe(users => this.lobbyUsers = users);
 
-    this.username = localStorage.getItem('username') || '';
+    // Our own connection state - the opponent gets told we dropped via
+    // opponent_disconnected, but we only find out from the socket itself.
+    this.wsService.reconnecting$.pipe(takeUntil(this.destroy$)).subscribe(retrying => {
+      this.isReconnecting = retrying;
+      if (retrying) this.connectionLost = false;
+      this.cdr.markForCheck();
+    });
+    this.wsService.reconnectAttempts$.pipe(takeUntil(this.destroy$)).subscribe(n => {
+      this.reconnectAttempt = n;
+      this.cdr.markForCheck();
+    });
+    this.wsService.connectionFailed$.pipe(takeUntil(this.destroy$)).subscribe(failed => {
+      if (!failed) return;
+      this.isReconnecting = false;
+      this.connectionLost = true;
+      this.cdr.markForCheck();
+    });
+
+    this.username = this.authService.getUsername();
     if (!this.username) {
       this.router.navigate(['/login']);
       return;
@@ -182,6 +217,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.destroy$.complete();
 
     this.clearRevealCountdown();
+    if (this.endModalTimer) {
+      clearTimeout(this.endModalTimer);
+      this.endModalTimer = null;
+    }
 
     this.gameState.reset();
     
@@ -238,7 +277,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         }
         this.cdr.markForCheck();
         break;
-      case 'game_over':
+      case 'game_over': {
         this.gameStarted = false;
         this.gameState.applyGameOver(actualMessage);
         if (actualMessage.winner) {
@@ -246,8 +285,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         } else {
           this.addSystemMessage(`Game over - Draw (${actualMessage.endReason}).`);
         }
+        const iWon = actualMessage.winner === this.username;
+        const title = actualMessage.winner ? (iWon ? 'You won!' : 'You lost') : 'Draw';
+        // An opponent who never came back can't rematch, so that ending
+        // returns to the lobby on its own; the others wait for the button.
+        this.openEndModal(
+          title,
+          this.endReasonDetail(actualMessage),
+          actualMessage.endReason === 'disconnect',
+        );
         this.cdr.markForCheck();
         break;
+      }
       case 'game_state_update':
         // Full state refresh (e.g., on reconnect)
         this.gameState.applyFullState(actualMessage);
@@ -274,6 +323,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         break;
       case 'opponent_disconnected':
         if (actualMessage.username !== this.username) {
+          this.disconnectedPlayers = new Set(this.disconnectedPlayers).add(actualMessage.username);
           this.addSystemMessage(
             `${actualMessage.username} disconnected. Waiting ${actualMessage.graceSeconds}s for them to reconnect...`
           );
@@ -282,8 +332,21 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         break;
       case 'opponent_reconnected':
         if (actualMessage.username !== this.username) {
+          const stillOut = new Set(this.disconnectedPlayers);
+          stillOut.delete(actualMessage.username);
+          this.disconnectedPlayers = stillOut;
           this.addSystemMessage(`${actualMessage.username} reconnected.`);
           this.cdr.markForCheck();
+        }
+        break;
+      case 'room_abandoned':
+        // Nothing had started, so there is no game to win - the room simply
+        // can't continue with nobody else in it.
+        if (actualMessage.username !== this.username) {
+          this.openEndModal(
+            'No players left',
+            `${actualMessage.username} left and did not come back. This room is closed.`,
+          );
         }
         break;
       case 'game_room_joined':
@@ -552,41 +615,31 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     }
   }
   
-  sendMessage(): void {
-    if (!this.messageContent.trim()) return;
-    const content = this.messageContent.trim();
-    const timestamp = new Date().toISOString();
-    if (this.activeTab === 'gameRoom') {
-      // Send to the server only; the message shows up when the server echoes it back
-      this.wsService.sendMessage({
-        type: 'game_room_message',
-        username: this.username,
-        content: content,
-        gameId: this.gameId,
-        timestamp: timestamp
-      });
-      this.messageContent = '';
-      return;
-    } else {
-      // Send lobby chat via wsService - backend will route to lobby group
-      this.wsService.sendMessage({ 
-        type: 'chat_message', 
-        username: this.username, 
-        content, 
-        timestamp 
-      });
-      this.messageContent = '';
-      return;
-    }
+  sendGameRoomMessage(): void {
+    if (!this.gameRoomMessageContent.trim()) return;
+    // Send to the server only; the message shows up when the server echoes it back
+    this.wsService.sendMessage({
+      type: 'game_room_message',
+      username: this.username,
+      content: this.gameRoomMessageContent.trim(),
+      gameId: this.gameId,
+      timestamp: new Date().toISOString()
+    });
+    this.gameRoomMessageContent = '';
   }
-  
-  changeTab(tab: 'gameRoom' | 'lobby'): void {
-    this.activeTab = tab;
-    setTimeout(() => {
-      this.scrollChatToBottom(tab);
-    }, 100);
+
+  sendLobbyMessage(): void {
+    if (!this.lobbyMessageContent.trim()) return;
+    // Send lobby chat via wsService - backend will route to lobby group
+    this.wsService.sendMessage({
+      type: 'chat_message',
+      username: this.username,
+      content: this.lobbyMessageContent.trim(),
+      timestamp: new Date().toISOString()
+    });
+    this.lobbyMessageContent = '';
   }
-  
+
   toggleReady(): void {
     // Toggle the ready status; the server response updates our local state
     const toggleAction = this.isReady ? 'player_unready' : 'player_ready';
@@ -708,15 +761,73 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       type: 'system'
     };
     
-    if (this.activeTab === 'gameRoom') {
-      this.gameRoomMessages.push(message);
-    } else {
-      this.lobbyMessages.push(message);
-    }
-    
-    this.scrollChatToBottom(this.activeTab);
+    this.gameRoomMessages.push(message);
+    this.scrollChatToBottom('gameRoom');
   }
-  
+
+  /** System log (moves, ready/mode changes, ...) - shown in the History panel. */
+  get historyMessages(): ChatMessage[] {
+    return this.gameRoomMessages.filter(message => message.type === 'system');
+  }
+
+  /** Player chat only; the system log lives in historyMessages. */
+  get gameRoomChatMessages(): ChatMessage[] {
+    return this.gameRoomMessages.filter(message => message.type !== 'system');
+  }
+
+  /** Online users with yourself pinned to the top of the list. */
+  get sortedLobbyUsers(): User[] {
+    return selfFirst(this.lobbyUsers, this.username);
+  }
+
+  /** Players with yourself pinned to the top of the list. */
+  get sortedPlayers(): User[] {
+    return selfFirst(this.players, this.username);
+  }
+
+  /** True if this player has dropped out and we're waiting on them. */
+  isDisconnected(name: string): boolean {
+    return this.disconnectedPlayers.has(name);
+  }
+
+  /**
+   * Show the end-of-room popup. `autoReturn` sends us back to the lobby on a
+   * timer, for endings where staying put is pointless (nobody left to play).
+   */
+  private openEndModal(title: string, detail: string, autoReturn = false): void {
+    this.endModalTitle = title;
+    this.endModalDetail = detail;
+    this.showEndModal = true;
+    if (this.endModalTimer) clearTimeout(this.endModalTimer);
+    if (autoReturn) {
+      this.endModalTimer = setTimeout(() => this.returnToLobby(), 8000);
+    }
+    this.cdr.markForCheck();
+  }
+
+  private endReasonDetail(msg: any): string {
+    switch (msg.endReason) {
+      case 'disconnect': return `${msg.disconnectedPlayer ?? 'Your opponent'} did not reconnect in time.`;
+      case 'resign':     return `${msg.resignedBy ?? 'A player'} resigned.`;
+      case 'timeout':    return 'A player ran out of time.';
+      case 'elimination': return 'All units on one side were eliminated.';
+      case 'draw_agreed': return 'Both players agreed to a draw.';
+      case 'draw_max_turns': return 'The turn limit was reached.';
+      default: return 'The match has ended.';
+    }
+  }
+
+  /** Leave for the lobby without re-sending a leave message. */
+  returnToLobby(): void {
+    if (this.endModalTimer) {
+      clearTimeout(this.endModalTimer);
+      this.endModalTimer = null;
+    }
+    this.showEndModal = false;
+    this.navigationState.setIntentionalNavigation('lobby');
+    this.router.navigate(['/lobby']);
+  }
+
   /** Handle a move emitted by the GameBoardComponent. */
   onPlayerMove(event: { from: string; to: string }): void {
     this.wsService.sendMessage({
@@ -746,6 +857,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * Sets status to 'configuring' and navigates to setup.
    */
   openSetup(): void {
+    if (this.gameStarted) return;
+
     localStorage.setItem('gameRoomMode', this.gameMode);
     localStorage.setItem('gameRoomReveal', JSON.stringify(this.revealEnabled));
     localStorage.setItem('gameRoomOptions', JSON.stringify(this.gameOptions));
