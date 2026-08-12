@@ -175,28 +175,29 @@ class GameConsumer(AsyncWebsocketConsumer):
             if not game:
                 return
 
-            state = await self._get_game_state(self.game_id)
-            if state and not state.is_finished:
-                # A match is actively in progress - don't end it or close the
-                # room immediately (the player may just be refreshing the
-                # page). Leave the turn timer running as-is - if the
-                # disconnecting player was on the clock, it will still
-                # correctly expire and end the game; if not, nothing about
-                # it should change. Instead, give them a grace period to
-                # reconnect before forfeiting the game to their opponent.
-                await self._start_disconnect_grace_timer(self.game_id, self.username)
-                await broadcast_to_group(self.channel_layer, self.room_group_name, {
-                    'type': 'opponent_disconnected',
-                    'username': self.username,
-                    'graceSeconds': DISCONNECT_GRACE_SECONDS,
-                })
-            elif game.host == self.username:
-                # No active match to protect (not yet started, or already
-                # over) - safe to close the room immediately if the host left.
-                await self._close_game_room(game.game_id, f"{self.username} (host) disconnected")
-                await self._send_user_list()
-
+            # Dropping out always clears your ready flag - the room must not be
+            # startable while somebody is missing. Tell the room so the other
+            # player's list updates instead of showing a stale tick.
             await self._delete_ready_status(self.game_id, self.username)
+            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                'type': 'player_unready',
+                'username': self.username,
+                'silent': True,
+            })
+
+            # A page refresh is indistinguishable from a disconnect, so never
+            # tear anything down on the spot - always give the player a grace
+            # period to come back (cancelled in _handle_join_game_room). What
+            # happens if the timer actually fires depends on whether a match
+            # was underway; see _start_disconnect_grace_timer. Any turn timer
+            # is left running: if the disconnected player was on the clock it
+            # should still expire normally.
+            await self._start_disconnect_grace_timer(self.game_id, self.username)
+            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                'type': 'opponent_disconnected',
+                'username': self.username,
+                'graceSeconds': DISCONNECT_GRACE_SECONDS,
+            })
 
             await self._delete_player_connection(self.username, channel_name=self.channel_name)
         except Exception as e:
@@ -667,12 +668,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return
             
             game = await self._get_game_by_id(game_id)
-            if not game:
+            if not game or game.status == 'closed':
                 await send_error(self, 'GAME_NOT_FOUND', 'Game room not found')
                 return
-            
+
             logger.info(f"[join_game_room] Game found: host={game.host}, opponent={game.opponent}")
-            
+
             if username != game.host and username != game.opponent:
                 logger.warning(f"[join_game_room] User {username} not in game - host={game.host}, opponent={game.opponent}")
                 await send_error(self, 'NOT_IN_GAME', 'You are not in this game')
@@ -786,11 +787,15 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             await self._delete_ready_status(game_id, username)
 
-            # Close the room if the host left, or if leaving forfeited the match
-            # (the remaining player is sent back to the lobby by partner_left
-            # either way, so the room must not linger as 'started').
-            if username == game.host or forfeited:
-                await self._close_game_room(game_id, f"{username} left the game room")
+            # Always close the room: there's no way for anyone but the
+            # original host/opponent to join it (see _handle_join_game_room),
+            # so a deliberate leave - by either player, before or after the
+            # game starts - always makes the room unusable. The remaining
+            # player is sent back to the lobby by partner_left if they're
+            # actively in the room; if they're elsewhere (e.g. configuring),
+            # closing it here is what makes their eventual rejoin attempt
+            # bounce them to the lobby instead of rejoining a stale room.
+            await self._close_game_room(game_id, f"{username} left the game room")
 
             await self._send_user_list()
             
@@ -1216,8 +1221,12 @@ class GameConsumer(AsyncWebsocketConsumer):
     # ==================== Disconnect grace period ====================
 
     async def _start_disconnect_grace_timer(self, game_id: str, username: str):
-        """Give a disconnected player DISCONNECT_GRACE_SECONDS to reconnect
-        before forfeiting the game to their opponent.
+        """Give a disconnected player DISCONNECT_GRACE_SECONDS to reconnect.
+
+        If a match was underway it is forfeited to their opponent. If nothing
+        was underway there is no game to win, so the room is simply closed and
+        the remaining player told it has been abandoned - otherwise they sit
+        there forever waiting for somebody who is never coming back.
 
         Cancelled by _handle_join_game_room if the player rejoins in time.
         """
@@ -1226,19 +1235,26 @@ class GameConsumer(AsyncWebsocketConsumer):
         async def _grace_task():
             try:
                 await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
-                state = await self._get_game_state(game_id)
-                if not state or state.is_finished:
-                    return
                 game = await self._get_game_by_id(game_id)
-                if not game:
+                if not game or game.status == 'closed':
                     return
+                state = await self._get_game_state(game_id)
 
-                winner = game.opponent if username == game.host else game.host
-                if await self._end_game(game_id, state, winner, 'disconnect'):
-                    await self._broadcast_game_over(game_id, winner, 'disconnect', disconnectedPlayer=username)
+                if state and not state.is_finished:
+                    winner = game.opponent if username == game.host else game.host
+                    if await self._end_game(game_id, state, winner, 'disconnect'):
+                        await self._broadcast_game_over(game_id, winner, 'disconnect', disconnectedPlayer=username)
+                        await self._close_game_room(game_id, f"{username} did not reconnect within the grace period")
+                        await self._send_user_list()
+                        logger.info(f"Game {game_id} forfeited to {winner} - {username} did not reconnect in time")
+                else:
+                    await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
+                        'type': 'room_abandoned',
+                        'username': username,
+                    })
                     await self._close_game_room(game_id, f"{username} did not reconnect within the grace period")
                     await self._send_user_list()
-                    logger.info(f"Game {game_id} forfeited to {winner} - {username} did not reconnect in time")
+                    logger.info(f"Room {game_id} abandoned - {username} did not reconnect in time")
             except asyncio.CancelledError:
                 pass
             except Exception as e:

@@ -35,23 +35,6 @@ export interface HexCoord {
  */
 export type HexDirection = 'E' | 'W' | 'NE' | 'NW' | 'SE' | 'SW';
 
-/** A single movement/attack vector for a unit. */
-export interface MovePattern {
-  /** Direction of travel. */
-  direction: HexDirection;
-  /**
-   * How many hexes the unit can travel in this direction.
-   * Use 0 for "unlimited" (like a bishop/rook sliding).
-   */
-  range: number;
-  /** If true, this pattern can capture but not move to an empty hex. */
-  captureOnly?: boolean;
-  /** If true, this pattern can move to an empty hex but not capture. */
-  moveOnly?: boolean;
-  /** If true, the unit can jump over other pieces along this line. */
-  canJump?: boolean;
-}
-
 // ---------------------------------------------------------------------------
 // Abilities  (placeholder - expand when designing special moves)
 // ---------------------------------------------------------------------------
@@ -81,8 +64,13 @@ export interface UnitDef {
    * Can also be used as the key for a sprite map.
    */
   symbol: string;
-  /** Movement rules for this unit type. */
-  movement: MovePattern[];
+  /**
+   * Number of adjacent-hex steps this unit can move per turn. Movement
+   * floods outward through the six hex neighbours, through empty hexes
+   * only - a unit can never move through or onto an occupied hex (ally
+   * or enemy).
+   */
+  move: number;
   /** Optional special abilities. */
   abilities?: AbilityDef[];
   /** Point value for scoring / evaluation. */

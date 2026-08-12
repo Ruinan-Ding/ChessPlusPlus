@@ -7,7 +7,7 @@ import { takeUntil, filter, take } from 'rxjs/operators';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
 import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
 import { Router } from '@angular/router';
-import { SharedDataService, ChatMessage, User } from '../../services/shared-data.service';
+import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { AuthService } from '../../services/auth.service';
 
@@ -23,6 +23,11 @@ export class LobbyComponent implements OnInit, OnDestroy {
   private isRejoiningFromNavigation: boolean = false;
   username: string = '';
   users: User[] = [];
+
+  /** Online users with yourself pinned to the top of the list. */
+  get sortedUsers(): User[] {
+    return selfFirst(this.users, this.username);
+  }
   messages: ChatMessage[] = [];
   messageContent: string = '';
   newUsername: string = '';
