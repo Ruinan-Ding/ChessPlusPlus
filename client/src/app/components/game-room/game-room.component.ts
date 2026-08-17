@@ -785,6 +785,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return selfFirst(this.players, this.username);
   }
 
+  /** Overlays every hex, panels included, with its number - a reference aid. */
+  showHexNumbers = false;
+
   /** True if this player has dropped out and we're waiting on them. */
   isDisconnected(name: string): boolean {
     return this.disconnectedPlayers.has(name);

@@ -64,9 +64,16 @@
           </div>
         </div>
       </section>
+
+      <button
+        class="hex-numbers-btn"
+        type="button"
+        [class.active]="showHexNumbers"
+        (click)="showHexNumbers = !showHexNumbers"
+      >{{ showHexNumbers ? 'Hide' : 'Show' }} Hex Numbers</button>
     </div>
 
-    <!-- Centre: the board on its own. -->
+    <!-- Centre: the board. app-game-board squares itself off with filler hexes. -->
     <div class="game-area">
       <div class="game-board-panel"
            [class.your-turn]="gameStarted && !state.endReason && state.currentTurn === username"
@@ -87,6 +94,7 @@
           [turnTimeLimit]="state.turnTimeLimit"
           [turnStartedAt]="state.turnStartedAt"
           [config]="state.config"
+          [showNumbers]="showHexNumbers"
           (moveMade)="onPlayerMove($event)"
         ></app-game-board>
 
