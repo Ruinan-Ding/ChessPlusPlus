@@ -34,6 +34,12 @@ interface HexCell {
   cy: number;           // SVG centre Y
   points: string;       // SVG polygon points for the hex
   piece: PieceData | null;
+  /** Outside the radius-N battlefield - drawn to square off the board, inert. */
+  filler: boolean;
+  /** '' for battlefield, else 'hex-filler panel-xx' picking the panel colour. */
+  zoneClass: string;
+  /** 1-based reading order across the battlefield; 0 for filler hexes. */
+  num: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +192,7 @@ function computeLegalMoves(
           <polygon
             [attr.points]="hex.points"
             [class.hex-cell]="true"
+            [ngClass]="hex.zoneClass"
             [class.hex-selected]="hex.key === selectedHex"
             [class.hex-legal]="legalTargets.has(hex.key)"
             [class.hex-last-from]="hex.key === lastMoveFrom"
@@ -202,6 +209,14 @@ function computeLegalMoves(
             class="legal-dot"
             (click)="onHexClick(hex)"
           />
+          <!-- Hex number (toggled from the game room) -->
+          <text
+            *ngIf="showNumbers"
+            [attr.x]="hex.cx"
+            [attr.y]="hex.cy - 10"
+            class="hex-number"
+            [class.on-panel]="hex.filler"
+          >{{ hex.num }}</text>
           <!-- Piece symbol -->
           <text
             *ngIf="hex.piece"
@@ -276,9 +291,28 @@ function computeLegalMoves(
       transition: fill 0.1s;
     }
 
-    .hex-cell:hover {
+    .hex-cell:not(.hex-filler):hover {
       fill: #e8cf9f;
     }
+
+    /* The four panels squaring off the board: same grid, outside the radius-N
+       battlefield. Colour-coded per corner; no meaning or interaction yet. */
+    .hex-filler {
+      stroke: rgba(255, 255, 255, 0.10);
+      cursor: default;
+    }
+    /* Panel colours follow each player's OWN left/right, not the screen's. The
+       board never flips - white is always at the bottom, black at the top -
+       so black faces the other way and his left is screen-right. Hence the
+       diagonal pairing: white gets the bright pair, black the dark one.
+         bottom-left  = white's left   -> red
+         bottom-right = white's right  -> light green
+         top-right    = black's left   -> dark red
+         top-left     = black's right  -> dark green */
+    .panel-bl { fill: #9e3b3b; }
+    .panel-br { fill: #4e9c72; }
+    .panel-tr { fill: #4f2020; }
+    .panel-tl { fill: #1c4632; }
 
     .hex-selected {
       fill: #ffff66 !important;
@@ -312,6 +346,23 @@ function computeLegalMoves(
     .legal-dot {
       fill: rgba(0, 128, 0, 0.4);
       pointer-events: none;
+    }
+
+    /* Sits high in the cell so it stays readable over a piece glyph. Two
+       fills, because one colour cannot carry both the pale battlefield and
+       the dark panels. */
+    .hex-number {
+      /* 3 digits at this size span ~39 of the hex's 48.5 flat width. */
+      font-size: 22px;
+      font-weight: 600;
+      text-anchor: middle;
+      dominant-baseline: central;
+      fill: #6b4a2a;
+      pointer-events: none;
+      user-select: none;
+    }
+    .hex-number.on-panel {
+      fill: rgba(255, 255, 255, 0.92);
     }
 
     .piece-symbol {
@@ -432,6 +483,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   @Input() turnStartedAt = '';
   /** Game config (for legal-move preview). */
   @Input() config: any = null;
+  /** Overlay each battlefield hex with its reading-order number. */
+  @Input() showNumbers = false;
 
   // -- Outputs --------------------------------------------------------
 
@@ -499,6 +552,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   // -- Click handler --------------------------------------------------
 
   onHexClick(hex: HexCell): void {
+    // Filler hexes are off the battlefield - nothing to select.
+    if (hex.filler) {
+      return;
+    }
     if (!this.interactive || !this.isMyTurn || this.endReason) {
       return;
     }
@@ -560,13 +617,38 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     const r = this.radius;
     const orientation = this.orientation;
 
+    // Square off the board: fill every hex whose centre falls inside the
+    // battlefield's own centre-bounds, symmetric about both axes. Fill by row
+    // *count* instead and the half-cell stagger on odd rows shifts the whole
+    // block sideways, leaving one flank a column short.
+    let limitX = 0, limitY = 0;
     for (let q = -r; q <= r; q++) {
       for (let ri = -r; ri <= r; ri++) {
-        if (Math.max(Math.abs(q), Math.abs(ri), Math.abs(q + ri)) > r) {
-          continue;
-        }
-        const key = `${q},${ri}`;
+        if (Math.max(Math.abs(q), Math.abs(ri), Math.abs(q + ri)) > r) continue;
         const { x, y } = axialToPixel(q, ri, orientation);
+        limitX = Math.max(limitX, Math.abs(x));
+        limitY = Math.max(limitY, Math.abs(y));
+      }
+    }
+    // ...then out by HALF a column on each flank. Odd rows are staggered half a
+    // cell, so half a step reaches them and not the even rows: every row ends
+    // up flush at the same outer edge, instead of even rows jutting out past
+    // odd ones. A full step would add a cell to every row and put that
+    // alternating overhang back.
+    limitX += Math.abs(axialToPixel(1, 0, orientation).x - axialToPixel(0, 0, orientation).x) / 2;
+
+    const EPS = 0.001; // float slack - these are products of sqrt(3)
+    const scan = 2 * r + 3;
+    for (let q = -scan; q <= scan; q++) {
+      for (let ri = -scan; ri <= scan; ri++) {
+        const { x, y } = axialToPixel(q, ri, orientation);
+        const onBattlefield = Math.max(Math.abs(q), Math.abs(ri), Math.abs(q + ri)) <= r;
+        // The bounds trim filler ONLY. Guarding on !onBattlefield means no
+        // amount of tuning limitX/limitY can start shaving hexes off the board
+        // itself - which is otherwise exactly what narrowing them does.
+        if (!onBattlefield && (Math.abs(x) > limitX + EPS || Math.abs(y) > limitY + EPS)) continue;
+
+        const key = `${q},${ri}`;
         cells.push({
           q,
           r: ri,
@@ -574,10 +656,25 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
           cx: x,
           cy: y,
           points: hexPoints(x, y, orientation),
-          piece: this.boardState[key] || null,
+          // Filler hexes are never occupied - nothing is played on them yet.
+          piece: onBattlefield ? (this.boardState[key] || null) : null,
+          filler: !onBattlefield,
+          // Four panels around the hexagon, one per corner.
+          zoneClass: onBattlefield
+            ? ''
+            : `hex-filler panel-${y < 0 ? 't' : 'b'}${x < 0 ? 'l' : 'r'}`,
+          num: 0,
         });
       }
     }
+
+    // Reading order over EVERY hex, panels included: 1 at the very top-left of
+    // the top-left panel, rightwards along each row, then down, ending at the
+    // bottom-right of the bottom-right panel. Rows share a cy exactly, so a
+    // (cy, cx) sort is the row-by-row order.
+    [...cells]
+      .sort((a, b) => a.cy - b.cy || a.cx - b.cx)
+      .forEach((cell, i) => { cell.num = i + 1; });
 
     this.cells = cells;
 

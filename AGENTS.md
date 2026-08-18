@@ -87,6 +87,37 @@ Six neighbour directions (`HEX_DIRECTIONS` in `board.py`; `board.neighbours()` /
 ever existed for the deleted direction-pattern movement system. `hex_distance()` in `board.py`
 is the hex metric — use it, don't re-derive it.
 
+`buildCells()` renders **more than the battlefield**: it fills every hex whose centre falls
+inside the battlefield's centre-bounds *plus half a column on each flank*, squaring the board
+off with `filler` cells. 541 cells at radius 11 — 397 battlefield, 144 filler; 23 per even row,
+24 per odd. Bbox 1164×980. One continuous grid, no overlays.
+
+Three rules, all learned the hard way:
+
+**Fill by pixel bounds, never by row count.** Padding each row to a fixed number of cells looks
+equivalent and is not: odd rows are staggered half a cell, so a fixed count shifts the whole
+block sideways and leaves one flank a column short — visibly, as alternating gaps down that
+edge. Bounding by `|x| <= limitX` is symmetric by construction. Verify by asserting every row
+has equal filler counts left and right, and that the bbox centre is 0.
+
+**Half a column of overhang, not a whole one.** Because odd rows are staggered, `limitX += step/2`
+reaches the odd rows only and leaves both parities flush at the same outer edge. A full `step`
+adds a cell to *every* row, so even rows jut half a hex past odd ones — a visible alternating
+overhang down both flanks. This was tried and rejected.
+
+**Don't add rows.** Row count stays 2N+1. Adding rows to force a 1:1 pixel aspect shrinks the
+hexagon and was rejected. The block is 1.188:1 and that is intended — a hex grid cannot be both
+row-symmetric and pixel-square, because pointy-top rows sit 1.5·S apart vertically but √3·S
+apart horizontally, so squaring needs ~1.155× more rows than columns.
+
+The bounds are guarded with `!onBattlefield`, so tuning them can only ever trim filler. Without
+that guard, narrowing `limitX` silently shaves the hexagon's own left and right vertices.
+
+Filler hexes are **purely cosmetic**: skipped by `onHexClick`, never given a piece, and
+`computeLegalMoves()` still bounds itself with `isInsideBoard`, so movement cannot leak off the
+battlefield. They are tinted per corner (`.panel-tl/tr/bl/br`) and are where the reserve planes
+will eventually live (see Game spec), but they carry no meaning yet.
+
 Serialised coords are `"q,r"` strings (`coord_key` / `parse_coord`). `parse_coord` raises
 `ValueError` on anything malformed so callers catch one exception type.
 
@@ -138,6 +169,37 @@ Decided so far:
   turns; ultimates get 1–2 charges per match.
 - **Veterancy:** XP from damage dealt, damage received, and kills. Reaching a rank unlocks an
   ability or passive. Rank is *derived* from XP, never stored.
+- **Four reserve planes flank the battlefield** — two per player. They are drawn as *hexes in
+  the same grid*, filling the hexagon's bounding square so the whole play area is one square of
+  hexagons. They are not part of the battlefield: units there are out of play, and
+  `get_legal_moves()` never reaches them.
+  - **Left plane** = the player's pool. Completely out of the war: it cannot be attacked or
+    interacted with by the opponent at all. Troops are staged *from* here.
+  - **Right plane** = staged troops. Every couple of phases of the war, units here can be
+    selected and deployed into the player's first row. Unlike the left plane, the right plane
+    **can** be attacked, but only in very specific ways.
+  - **Nothing of this is built.** The board squares itself off with `filler` hexes, tinted one
+    colour per corner so the four panels are distinguishable, and nothing else — no labels, no
+    units, no clicks, no server model. The owner asked for the shape and the colours only.
+    Do not add staging/deployment UI back unprompted.
+  - **Left and right are from each player's own perspective**, and the board never flips —
+    white always sits at the bottom, black at the top, so black faces the other way and his
+    left is *screen-right*. The panels therefore pair up diagonally, not by column:
+
+    | screen corner | owner | that player's side | colour |
+    |---|---|---|---|
+    | bottom-left | white | left | red |
+    | bottom-right | white | right | light green |
+    | top-right | black | left | dark red |
+    | top-left | black | right | dark green |
+
+    Left panels are the red pair, right panels the green pair; white gets the bright shades,
+    black the dark ones. Wiring the planes up later must follow this mapping — treating
+    screen-left as "left plane" would silently give black the wrong two.
+  - Still unspecified: plane capacity (squaring the board yields 236 filler hexes, almost
+    certainly more than the real design wants), how troops enter the left plane, the exact
+    deployment cadence ("a couple of phases"), what a "phase of the war" is, which first-row
+    hexes a deployment can target, and the specific ways the right plane can be attacked.
 
 Assumed by an agent, **not** yet confirmed by the owner — treat as weaker than the above and
 re-check before building on it:
