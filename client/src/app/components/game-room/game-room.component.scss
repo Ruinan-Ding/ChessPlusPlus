@@ -123,12 +123,61 @@
       p { margin: 0; }
     }
 
-    .post-game-message {
-      position: absolute;
-      top: 14%;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 3;
+    }
+
+  // Game Mode, centred on the empty board before play starts. Light-on-dark,
+  // since it sits on the board panel rather than in a white rail card.
+  .result-banner {
+    margin: 0 0 4px;
+    font-size: 2.6rem;
+    letter-spacing: 2px;
+    font-weight: 800;
+    color: #e8ecef;
+
+    &.won { color: #4ade80; }
+    &.lost { color: #f87171; }
+  }
+
+  .board-game-mode {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: #e8ecef;
+    z-index: 1;
+
+    h3 {
+      margin: 0 0 6px;
+      font-size: 1.15rem;
+      color: #fff;
+    }
+
+    .mode-options {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 1rem;
+    }
+
+    .radio-option,
+    .checkbox-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+
+      input { cursor: pointer; }
+      label { cursor: pointer; }
+    }
+
+    .custom-options { margin-top: 8px; margin-left: 20px; }
+
+    .reveal-display,
+    .custom-options-display {
+      font-size: 0.9rem;
+      color: #b9c2cb;
     }
   }
 
@@ -173,9 +222,97 @@
 
   // History gets the slack; the other three size to their content.
   .history-panel { flex: 1 1 auto; min-height: 120px; }
+  // Expanded, it is the only panel left, so it takes the whole column.
+  .history-panel.expanded { flex: 1 1 100%; }
+
+  .history-panel h3 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  // Header row shared by the expandable rail sections.
+  .rail-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0 0 8px;
+    font-size: 1rem;
+    color: #2c3e50;
+  }
+
+  // An expanded section takes the rail; its siblings collapse away.
+  .side-rail .rail-section.expanded {
+    flex: 1 1 100%;
+    max-height: none;
+  }
+
+  .coming-soon {
+    margin: 4px 0 8px;
+    font-style: italic;
+    color: #f1c40f;
+  }
+
+  .expand-btn {
+    flex: 0 0 auto;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    font-size: 0.95rem;
+    line-height: 1;
+    padding: 3px 7px;
+    color: #2c3e50;
+
+    &:hover { background-color: #f1f4f7; }
+  }
+
+  // HP / ATK / DEF / MOV, two per row, colour-matched to the board numbers.
+  .stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .stat-cell {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background-color: #f5f7fa;
+    font-size: 0.82rem;
+
+    strong { font-size: 1rem; }
+
+    &.hp strong { color: #15803d; }
+    &.atk strong { color: #b91c1c; }
+    &.def strong { color: #1d4ed8; }
+    &.mov strong { color: #6b4a2a; }
+  }
   .stats-panel,
   .opponent-panel,
   .abilities-panel { flex: 0 0 auto; }
+
+  // Solo room: side picker standing in for the Ready button.
+  .color-toggle-btn {
+    background-color: #fff;
+    color: #2c3e50;
+    box-shadow: inset 0 0 0 2px #2c3e50;
+
+    &.as-black {
+      background-color: #1c1c1c;
+      color: #fff;
+      box-shadow: none;
+    }
+  }
+
+  .gear-button {
+    font-size: 15px;
+  }
 
   .hex-numbers-btn {
     flex: 0 0 auto;
@@ -225,19 +362,35 @@
     }
   }
 
-  .stat-row {
-    display: flex;
-    justify-content: space-between;
-    padding: 4px 0;
-    border-bottom: 1px solid #eee;
-    font-size: 0.88rem;
-  }
+  // Undo / End Turn, pinned under the history list.
+  .turn-controls {
+    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 8px 12px;
+    border-top: 1px solid #ddd;
 
-  .ability-row {
-    padding: 8px 10px;
-    border-radius: 6px;
-    background-color: #f5f7fa;
-    font-size: 0.88rem;
+    button {
+      padding: 8px 6px;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      // Both labels keep one line at the same size; "End Turn (TAB)" is the
+      // one that has to fit, so it sets the size for the pair.
+      font-size: 0.8rem;
+      white-space: nowrap;
+      cursor: pointer;
+      color: #fff;
+
+      &:disabled {
+        background-color: #b9c2cb;
+        cursor: not-allowed;
+      }
+    }
+
+    .undo-btn { background-color: #7f8c8d; &:hover:not(:disabled) { background-color: #6c7a7b; } }
+    .end-turn-btn { background-color: #27ae60; &:hover:not(:disabled) { background-color: #219a52; } }
   }
 
   // Placeholder ability buttons - wired up once abilities actually exist.
@@ -251,8 +404,13 @@
     font-size: 0.88rem;
     flex: 0 0 auto;
 
-    &:hover {
+    &:hover:not(:disabled) {
       background-color: #1f6fb8;
+    }
+
+    &:disabled {
+      background-color: #b9c2cb;
+      cursor: not-allowed;
     }
   }
 
@@ -315,14 +473,23 @@
     width: 100%;
     flex-shrink: 0;
 
-    .resign-btn, .draw-btn {
+    // One shape for every control in these rows, so the pre-game pair
+    // (You: White / Start Game) is the same size as Resign / Offer Draw.
+    // The per-button rules below carry colour only.
+    > button {
+      flex: 1 1 0;
+      min-width: 0;
+      box-sizing: border-box;
       padding: 8px 12px;
       border: none;
       border-radius: 4px;
+      font-size: 0.95rem;
       font-weight: 600;
       cursor: pointer;
-      font-size: 0.95rem;
       transition: background 0.2s;
+    }
+
+    .resign-btn, .draw-btn {
       color: #fff;
 
       &:disabled {
@@ -342,35 +509,6 @@
     }
   }
 
-  .post-game-message {
-    padding: 15px 20px;
-    border-radius: 6px;
-    text-align: center;
-    font-weight: 700;
-    font-size: 1.3rem;
-    
-    p {
-      margin: 0;
-    }
-    
-    .win-message {
-      background-color: #d4edda;
-      color: #155724;
-      border: 2px solid #28a745;
-    }
-    
-    .loss-message {
-      background-color: #f8d7da;
-      color: #721c24;
-      border: 2px solid #f5c6cb;
-    }
-
-    .draw-message {
-      background-color: #e2e3e5;
-      color: #383d41;
-      border: 2px solid #b0b3b8;
-    }
-  }
 
   .draw-offer-banner {
     display: flex;
@@ -425,8 +563,7 @@
     }
   }
 
-  // Shared by the game-room chat (.chat-panel) and the lobby chat
-  // (.lobby-panel) - both render the same message-list + input shape.
+  // Shared by the game-room chat and the lobby chat - same list + input shape.
   .game-room-messages,
   .lobby-messages {
     flex-grow: 1;
@@ -778,18 +915,8 @@
           height: 10px;
           border-radius: 50%;
           background-color: #f1c40f; /* Always yellow for not ready */
-          &.not-ready {
-            background-color: #f1c40f;
-          }
         }
 
-        .ready-checkmark {
-          color: #2ecc71;
-          font-size: 1.2em;
-          margin-left: 6px;
-          vertical-align: middle;
-        }
-        
         .player-name {
           flex-grow: 1;
           
@@ -821,16 +948,8 @@
       gap: 10px;
 
       .ready-btn {
-        width: 100%;
-        padding: 12px;
         background-color: #2ecc71;
         color: white;
-        border: none;
-        border-radius: 4px;
-        font-size: 1.1rem;
-        font-weight: bold;
-        cursor: pointer;
-        transition: background-color 0.2s;
         
         &:hover {
           background-color: #27ae60;
@@ -857,16 +976,8 @@
       }
       
       .start-game-btn {
-        width: 100%;
-        padding: 12px;
         background-color: #3498db;
         color: white;
-        border: none;
-        border-radius: 4px;
-        font-size: 1.1rem;
-        font-weight: bold;
-        cursor: pointer;
-        transition: background-color 0.2s;
         
         &:hover {
           background-color: #2980b9;
@@ -1180,4 +1291,53 @@
       max-width: 90%;
     }
   }
+}
+// Roster heading when there is no server behind it.
+.offline-head {
+  color: #c0392b;
+}
+
+// Panel heading with its points pushed to the far side.
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+
+  .points { font-variant-numeric: tabular-nums; }
+}
+
+// A passive is not a control: same slot, no button chrome, no hover.
+.passive-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border: 1px dashed #6b7785;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: #cbd5e0;
+  background: rgba(255, 255, 255, 0.04);
+
+  &.locked {
+    opacity: 0.45;
+  }
+}
+
+// Armed and waiting for the player to pick who gets it.
+.scaffold-btn.arming {
+  outline: 2px solid #f6c343;
+  outline-offset: -2px;
+}
+
+.arming-hint {
+  margin: 4px 0 0;
+  font-size: 0.75rem;
+  color: #f6c343;
+  text-align: center;
+}
+
+// A stat currently carrying a boost.
+.stat-cell strong.boosted {
+  color: #63d68a;
 }

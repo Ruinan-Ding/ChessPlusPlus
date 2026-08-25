@@ -73,6 +73,19 @@
     }
   }
   
+  .single-player-btn {
+    padding: 8px 12px;
+    background-color: #27ae60;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+
+    &:hover {
+      background-color: #219a52;
+    }
+  }
+
   .setup-btn {
     padding: 8px 12px;
     background-color: #3498db;
@@ -491,4 +504,15 @@
       background-color: #f1f1f1;
     }
   }
+}
+// Roster heading when there is no server behind it.
+.offline-head {
+  color: #c0392b;
+}
+
+// Shown when the server had to rename us after a reconnect.
+.name-taken {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  color: #b7791f;
 }

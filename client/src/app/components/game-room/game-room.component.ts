@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, HostListener } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
@@ -10,10 +10,45 @@ import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { GameStateService } from '../../services/game-state.service';
 import { AuthService } from '../../services/auth.service';
-import { GameBoardComponent } from '../game-board/game-board.component';
+import { GameBoardComponent, SelectedUnit, hexNumberMap } from '../game-board/game-board.component';
+import { hexDistanceKeys, strikeDamage } from '../../services/hex-rules';
+
+/** Axial hex distance between two "q,r" coords. */
+function hexDistance(from: string, to: string): number {
+  const [aq, ar] = from.split(',').map(Number);
+  const [bq, br] = to.split(',').map(Number);
+  const dq = aq - bq, dr = ar - br;
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(dq + dr)) / 2;
+}
 
 interface GameOptions {
   reveal?: boolean;
+}
+
+/** One staged action: where the unit ended up and the board it left behind. */
+/** A one-turn stat boost an ability put on a unit. */
+interface UnitBuff {
+  mov: number;
+  atk: number;
+  def: number;
+  /** Whose turn start clears it - the side that cast it. */
+  caster: string;
+  label: string;
+}
+
+/** Server error codes that invalidate a staged turn. Nothing else does. */
+const MOVE_ERROR_CODES = new Set(['INVALID_MOVE', 'NOT_YOUR_TURN']);
+
+interface StagedAction {
+  board: Record<string, any>;
+  /** Where the unit stood at the start of the turn. */
+  from: string;
+  /** Where it stands after this action. */
+  to: string;
+  /** Steps walked so far this turn. */
+  used: number;
+  /** Hex it struck, or null for a plain step. */
+  attack: string | null;
 }
 
 @Component({
@@ -41,6 +76,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   isReady: boolean = false;
   gameStarted: boolean = false;
   revealEnabled: boolean = false;
+  /** Fog of war. Unlike Reveal it needs no opponent confirmation. */
+  fogEnabled: boolean = false;
   gameOptions: GameOptions = {};
 
   // Reveal mode request modals
@@ -134,6 +171,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       this.reconnectAttempt = n;
       this.cdr.markForCheck();
     });
+    this.wsService.connectionStatus$.pipe(takeUntil(this.destroy$)).subscribe(connected => {
+      this.serverOnline = connected;
+      this.cdr.markForCheck();
+    });
     this.wsService.connectionFailed$.pipe(takeUntil(this.destroy$)).subscribe(failed => {
       if (!failed) return;
       this.isReconnecting = false;
@@ -171,8 +212,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           this.navigationState.clearIntentionalNavigation();
         }
         
-        if (this.wsService.isConnected()) {
-          console.log('[GameRoom] Already connected, sending join_game_room message immediately');
+        const join = () => {
           this.wsService.sendMessage({
             type: 'join_game_room',
             username: this.username,
@@ -180,29 +220,30 @@ export class GameRoomComponent implements OnInit, OnDestroy {
             token: this.accessToken
           });
           this.lobbyMessages = this.sharedDataService.getLobbyMessages();
-        } else {
-          this.wsService.connect(this.gameId);
-          
-          // Wait for connection to be established before sending join message
-          // Use filter to wait for true value, not just take the first emission
-          const connectionSub = this.wsService.connectionStatus$.pipe(
-            filter(connected => connected === true),
-            take(1)
-          ).subscribe(connected => {
-            console.log('[GameRoom] Connection established, sending join_game_room message');
-            
-            this.wsService.sendMessage({
-              type: 'join_game_room',
-              username: this.username,
-              gameId: this.gameId,
-              token: this.accessToken
-            });
-            
-            console.log('[GameRoom] join_game_room message sent');
-            
-            this.lobbyMessages = this.sharedDataService.getLobbyMessages();
-          });
+        };
+
+        // A solo game left behind by a closed tab stays latched in session
+        // storage: entering a real room, every message would still be
+        // answered by the offline engine while the opponent sat alone.
+        if (this.gameId !== 'local' && this.wsService.isLocal()) {
+          this.wsService.endLocalGame();
         }
+        if (!this.wsService.isOffline()) {
+          this.wsService.connect(this.gameId);
+        }
+        // Offline games have no socket to wait on, so join right away.
+        if (this.wsService.isLocal()) {
+          join();
+        }
+        // Every time the socket comes up - now if it already is, and again
+        // after any reconnect. A dropped socket loses the server-side group
+        // membership, and without rejoining the room just sits there empty.
+        this.wsService.connectionStatus$.pipe(
+          // A solo game is answered locally and joined once, above: the socket
+          // coming and going says nothing about it.
+          filter(connected => connected === true && !this.wsService.isLocal()),
+          takeUntil(this.destroy$),
+        ).subscribe(() => join());
       });
       
       this.wsService.messages$.pipe(takeUntil(this.destroy$)).subscribe(message => {
@@ -257,13 +298,33 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         const myColor = actualMessage.playerWhite === this.username ? 'White' : 'Black';
         this.addSystemMessage(`Game started! You are playing as ${myColor}.`);
         this.addSystemMessage(`${actualMessage.playerWhite} (White) moves first.`);
+        this.myPoints = 0;
+        this.opponentPoints = 0;
+        this.beginTurnFor('white');
         this.cdr.markForCheck();
         break;
-      case 'move_made':
+      case 'turn_passed':
+        this.stagedActions = [];
+        this.gameState.applyTurnPassed(actualMessage);
+        this.beginTurnFor(actualMessage.color === 'white' ? 'black' : 'white');
+        this.addSystemMessage(`${actualMessage.color ?? 'A player'} passed the turn.`);
+        this.cdr.markForCheck();
+        break;
+      case 'move_made': {
+        // The staged board stands in until the confirmed one lands, so the
+        // position never flickers back and the selection keeps its unit.
+        this.stagedActions = [];
         this.gameState.applyMoveMade(actualMessage);
+        const m = actualMessage.move ?? {};
+        const other = m.color === 'white' ? 'black' : 'white';
+        if (m.defender_eliminated) this.awardPoints(m.color, 1);
+        if (m.attacker_eliminated) this.awardPoints(other, 1);
+        // The turn point belongs to whoever plays next, banked as they start.
+        this.beginTurnFor(other);
         {
           const move = actualMessage.move;
-          let moveText = `${move.color} ${move.unit_id}: ${move.from} -> ${move.to}`;
+          // Quote the same numbers the board draws, not raw axial coords.
+          let moveText = `${move.color} ${move.unit_id}: ${this.hexLabel(move.from)} -> ${this.hexLabel(move.to)}`;
           if (move.attacked) {
             moveText += ` - dealt ${move.damage_dealt} dmg`;
             if (move.defender_eliminated) {
@@ -277,6 +338,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         }
         this.cdr.markForCheck();
         break;
+      }
       case 'game_over': {
         this.gameStarted = false;
         this.gameState.applyGameOver(actualMessage);
@@ -285,15 +347,19 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         } else {
           this.addSystemMessage(`Game over - Draw (${actualMessage.endReason}).`);
         }
-        const iWon = actualMessage.winner === this.username;
-        const title = actualMessage.winner ? (iWon ? 'You won!' : 'You lost') : 'Draw';
-        // An opponent who never came back can't rematch, so that ending
-        // returns to the lobby on its own; the others wait for the button.
-        this.openEndModal(
-          title,
-          this.endReasonDetail(actualMessage),
-          actualMessage.endReason === 'disconnect',
-        );
+        // Solo: the result banner on the mode screen already says it, and the
+        // popup's only button dumps you back in the lobby. Skip it.
+        if (!this.isSinglePlayer) {
+          const iWon = actualMessage.winner === this.username;
+          const title = actualMessage.winner ? (iWon ? 'You won!' : 'You lost') : 'Draw';
+          // An opponent who never came back can't rematch, so that ending
+          // returns to the lobby on its own; the others wait for the button.
+          this.openEndModal(
+            title,
+            this.endReasonDetail(actualMessage),
+            actualMessage.endReason === 'disconnect',
+          );
+        }
         this.cdr.markForCheck();
         break;
       }
@@ -318,6 +384,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.cdr.markForCheck();
         break;
       case 'invalid_move':
+        // The offline engine's rejection; same consequence as the server's.
+        this.stagedActions = [];
         this.addSystemMessage(`Invalid move: ${actualMessage.message}`);
         this.cdr.markForCheck();
         break;
@@ -369,6 +437,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           console.error('[GameRoom] Invalid player list - missing players array');
           break;
         }
+        this.isSinglePlayer = actualMessage.singlePlayer === true;
         const previousReadyState = new Map(this.players.map(p => [p.username, p.isReady]));
         this.players = actualMessage.players.map((player: User) => ({
           ...player,
@@ -589,6 +658,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         break;
 
       case 'error':
+        // A rejected move must not leave the staged position on screen - but
+        // a chat, invite or username error has nothing to do with it, and
+        // must not silently bin a turn the player has been building.
+        if (MOVE_ERROR_CODES.has(actualMessage.code)) this.stagedActions = [];
         // Handle case when game room no longer exists (e.g., host disconnected)
         if (message.message === 'Game room not found') {
           this.addSystemMessage('Game room no longer exists. Returning to lobby...');
@@ -687,6 +760,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const wasRevealEnabled = this.gameOptions.reveal || false;
     
     if (this.revealEnabled !== wasRevealEnabled) {
+      // Solo rooms have no second player to confirm with - apply it directly.
+      if (this.isSinglePlayer) {
+        this.gameOptions = { ...this.gameOptions, reveal: this.revealEnabled };
+        this.cdr.markForCheck();
+        return;
+      }
       this.showRevealWaitingModal = true;
       
       this.wsService.sendMessage({
@@ -777,8 +856,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /** Online users with yourself pinned to the top of the list. */
   get sortedLobbyUsers(): User[] {
+    // With no server there is no roster to speak of - just you.
+    if (!this.serverOnline) return [{ username: this.username, status: 'online' } as User];
     return selfFirst(this.lobbyUsers, this.username);
   }
+
+  /** False whenever the socket is down, offline mode included. */
+  serverOnline = false;
 
   /** Players with yourself pinned to the top of the list. */
   get sortedPlayers(): User[] {
@@ -787,6 +871,357 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /** Overlays every hex, panels included, with its number - a reference aid. */
   showHexNumbers = false;
+
+  /** Big win/lose banner shown over the mode screen once a match ends. */
+  get resultBanner(): string {
+    const s = this.gameState.snapshot;
+    if (!s.endReason) return '';
+    if (!s.winner) return 'DRAW';
+    return s.winner === this.username ? 'YOU WIN' : 'YOU LOST';
+  }
+
+  /** Header for the Unit panel: the selected unit, or the bare label. */
+  get unitPanelTitle(): string {
+    const u = this.displayUnit;
+    if (!u) return 'Unit';
+    const side = u.color === 'white' ? 'White' : 'Black';
+    // Veterancy rides right behind the name, same stars the hex draws.
+    const stars = '\u2605'.repeat(Math.max(0, Math.min(3, u.vet)));
+    return `${u.name}${stars ? ' ' + stars : ''} - ${side}`;
+  }
+
+  /** History header carries the turn number. */
+  get historyTitle(): string {
+    const turn = this.gameState.snapshot.turnNumber;
+    return turn ? `History - Turn ${turn}` : 'History';
+  }
+
+  /** The board's number for a "q,r" coord, falling back to the raw coord. */
+  private hexLabel(coord: string): string {
+    const board = this.gameState.snapshot.config?.board;
+    const radius = board?.radius ?? 11;
+    const orientation = board?.orientation === 'vertex-up' ? 'vertex-up' : 'edge-up';
+    // Numbering belongs to a board, not to a session: a rematch on a
+    // different radius - or an orientation the map was never built for -
+    // would otherwise label history with numbers drawn nowhere.
+    const stamp = `${radius}|${orientation}`;
+    if (stamp !== this.hexNumbersFor) {
+      this.hexNumbers = hexNumberMap(radius, orientation);
+      this.hexNumbersFor = stamp;
+    }
+    const n = this.hexNumbers[coord];
+    return n === undefined ? coord : String(n);
+  }
+
+  onHexSelected(unit: SelectedUnit | null): void {
+    this.selectedUnit = unit;
+    this.cdr.markForCheck();
+  }
+
+  /** A deliberate pick - and so the target an armed ability was waiting for. */
+  onHexClicked(unit: SelectedUnit | null): void {
+    if (unit && this.pendingAbility) this.castOn(unit);
+    this.cdr.markForCheck();
+  }
+
+  onHexHovered(unit: SelectedUnit | null): void {
+    this.hoveredUnit = unit;
+    this.cdr.markForCheck();
+  }
+
+  /** Hover wins while the cursor is over a unit, otherwise the selection. */
+  get displayUnit(): SelectedUnit | null {
+    return this.hoveredUnit ?? this.selectedUnit;
+  }
+
+  /** Steps already spent this turn by the displayed unit (0 unless staged). */
+  get moveUsed(): number {
+    const u = this.displayUnit;
+    if (!u || !this.pendingMove || this.pendingMove.to !== u.key) return 0;
+    return this.pendingMove.used;
+  }
+
+  /** Slot 2 is the passive every unit carries - always on, never clicked. */
+  isPassive(index: number): boolean {
+    return index === 1;
+  }
+
+  /**
+   * Which veterancy rank unlocks a slot. Both of a unit's own two slots are
+   * earned, not given: one star for the ability, two for the passive.
+   * ponytail: a flat table, not per-unit - the roster does not exist yet.
+   */
+  private vetNeeded(index: number): number {
+    return this.isPassive(index) ? 2 : 1;
+  }
+
+  /** True when the displayed unit has earned that slot. */
+  vetUnlocked(index: number): boolean {
+    return (this.displayUnit?.vet ?? 0) >= this.vetNeeded(index);
+  }
+
+  /** "Ability1 - 3 (2)" while cooling down, "Passive1" for the passive row. */
+  abilityLabel(index: number, cooldown: number): string {
+    const name = this.abilityEffects[index]?.name ?? `Ability${index + 1}`;
+    if (this.isPassive(index)) return name;
+    const cost = this.abilityCosts[index] ?? 0;
+    return cooldown > 0 ? `${name} - ${cost} (${cooldown})` : `${name} - ${cost}`;
+  }
+
+  /** Tooltip: what the slot actually does, and what it costs to get there. */
+  abilityHint(index: number): string {
+    const e = this.abilityEffects[index];
+    if (!e) return '';
+    const parts: string[] = [];
+    if (e.mov) parts.push(`${e.mov > 0 ? '+' : ''}${e.mov} MOV`);
+    if (e.atk) parts.push(`${e.atk > 0 ? '+' : ''}${e.atk} ATK`);
+    if (e.def) parts.push(`${e.def > 0 ? '+' : ''}${e.def} DEF`);
+    const effect = parts.join(', ') || 'no effect yet';
+    const star = '\u2605'.repeat(this.vetNeeded(index));
+    return this.isPassive(index)
+      ? `${effect} while the unit holds ${star}`
+      : `${effect} for one turn - click, then click the unit to boost (needs ${star})`;
+  }
+
+  /** True while this slot is waiting for the player to pick a target. */
+  isArmed(side: 'mine' | 'opponent', index: number): boolean {
+    return this.pendingAbility?.side === side && this.pendingAbility?.index === index;
+  }
+
+  /** Affordable, off cooldown, and this side's turn to act. */
+  canAfford(side: 'mine' | 'opponent', index: number, cooldown: number): boolean {
+    if (cooldown > 0 || !this.canUseAbilities(side)) return false;
+    const points = side === 'mine' ? this.myPoints : this.opponentPoints;
+    return points >= (this.abilityCosts[index] ?? 0);
+  }
+
+  /** Which colour a box belongs to - 'mine' is us, whichever seat we hold. */
+  private casterColor(side: 'mine' | 'opponent'): string {
+    const mine = this.gameState.myColor(this.username) || 'white';
+    return side === 'mine' ? mine : (mine === 'white' ? 'black' : 'white');
+  }
+
+  /**
+   * Use an ability. A unit already selected is the obvious target, so it
+   * lands there at once; with nothing selected the slot arms instead and the
+   * next unit clicked on the board takes it. Clicking an armed slot again
+   * calls it off.
+   */
+  useAbility(side: 'mine' | 'opponent', index: number, cooldowns: number[]): void {
+    if (this.isPassive(index)) return;  // always on, nothing to cast
+    if (!this.canAfford(side, index, cooldowns[index] ?? 0)) return;
+    const target = this.selectedUnit;
+    if (target && target.color === this.casterColor(side)) {
+      this.pendingAbility = { side, index, cooldowns };
+      this.castOn(target);
+    } else {
+      this.pendingAbility = this.isArmed(side, index) ? null : { side, index, cooldowns };
+    }
+    this.cdr.markForCheck();
+  }
+
+  /** Land the armed ability on a unit, paying for it as it goes. */
+  private castOn(unit: SelectedUnit): void {
+    const armed = this.pendingAbility!;
+    // A boost goes on your own unit; clicking an enemy just calls it off.
+    if (unit.color === this.casterColor(armed.side)) {
+      const e = this.abilityEffects[armed.index];
+      const cost = this.abilityCosts[armed.index] ?? 0;
+      if (armed.side === 'mine') this.myPoints -= cost; else this.opponentPoints -= cost;
+      armed.cooldowns[armed.index] = 3;
+      // Keyed by the unit, so the boost follows it through a staged step, an
+      // Undo and the server's own confirmation of the move. A fresh object,
+      // so the board sees the change and redraws its reach.
+      this.buffs = {
+        ...this.buffs,
+        [unit.uid]: { mov: e.mov, atk: e.atk, def: e.def, caster: this.casterColor(armed.side), label: e.name },
+      };
+    }
+    this.pendingAbility = null;
+  }
+
+  /** Extra steps lent to whatever unit stands on `key`, staged board first. */
+  private moveBonusFor(key: string): number {
+    const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
+    const uid = board?.[key]?.uid;
+    return (uid ? this.buffs[uid]?.mov : undefined) ?? 0;
+  }
+
+  /** The boost on the unit the panel is showing, if it carries one. */
+  get displayBuff(): UnitBuff | null {
+    const u = this.displayUnit;
+    return u ? this.buffs[u.uid] ?? null : null;
+  }
+
+  /** Boosted over base, so a +4 on a base 26 reads "30/26". */
+  get statAtk(): string {
+    const u = this.displayUnit;
+    if (!u) return '\u2014';
+    const add = this.displayBuff?.atk ?? 0;
+    // Multi-ring attacks read "26,19"; every ring gains the same boost.
+    const boosted = u.atk.split(',').map(n => String(Number(n) + add)).join(',');
+    return `${boosted}/${u.atk}`;
+  }
+
+  get statDef(): string {
+    const u = this.displayUnit;
+    if (!u) return '\u2014';
+    return `${(u.def ?? 0) + (this.displayBuff?.def ?? 0)}/${u.def}`;
+  }
+
+  get statMov(): string {
+    const u = this.displayUnit;
+    if (!u) return '\u2014';
+    const base = u.mv ?? 0;
+    return `${base + (this.displayBuff?.mov ?? 0) - this.moveUsed}/${base}`;
+  }
+
+/** Credit a side: a point for starting a turn, a point per unit killed. */
+  private awardPoints(color: string, amount: number): void {
+    const mine = this.gameState.myColor(this.username);
+    const toMe = mine ? color === mine : color === 'white';
+    if (toMe) this.myPoints += amount;
+    else this.opponentPoints += amount;
+  }
+
+  /**
+   * A side's turn begins: it banks a point and its abilities tick down one.
+   * Called for whoever is *about* to play, never for the side just finished.
+   */
+  private beginTurnFor(color: string): void {
+    if (!color) return;
+    // A boost lasts one turn: it runs out when its caster comes round again.
+    const kept = Object.fromEntries(
+      Object.entries(this.buffs).filter(([, b]) => b.caster !== color),
+    );
+    if (Object.keys(kept).length !== Object.keys(this.buffs).length) this.buffs = kept;
+    this.awardPoints(color, 1);
+    const mine = this.gameState.myColor(this.username);
+    const isMine = mine ? color === mine : color === 'white';
+    const tick = (cds: number[]) => cds.forEach((cd, i) => (cds[i] = Math.max(0, cd - 1)));
+    if (isMine) {
+      tick(this.myCooldowns);
+      tick(this.unitCooldowns);
+    } else {
+      tick(this.opponentCooldowns);
+    }
+  }
+
+  /** True while R / TAB / S should act, which is also when the hints show. */
+  get shortcutsActive(): boolean {
+    return this.windowFocused && !this.chatFocused;
+  }
+
+  @HostListener('window:blur')
+  onWindowBlur(): void { this.windowFocused = false; this.cdr.markForCheck(); }
+
+  @HostListener('window:focus')
+  onWindowFocus(): void { this.windowFocused = true; this.cdr.markForCheck(); }
+
+  @HostListener('window:keydown', ['$event'])
+  onShortcut(event: KeyboardEvent): void {
+    if (!this.shortcutsActive || event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target as HTMLElement | null;
+    // Never steal keys from a field, even one outside the chat boxes.
+    if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+
+    if (event.key === 'Tab') {
+      // Tab belongs to the browser whenever the player is on a control:
+      // swallowing it everywhere put Undo, End Turn and Resign out of reach
+      // of the keyboard, and ended a turn on every attempt to reach them.
+      if (target && /^(BUTTON|A)$/.test(target.tagName)) return;
+      event.preventDefault();
+      this.endTurn();
+    } else if (event.key === 'r' || event.key === 'R') {
+      this.undoMove();
+    } else if (event.key === 's' || event.key === 'S') {
+      this.showHexNumbers = !this.showHexNumbers;
+      this.cdr.markForCheck();
+    }
+  }
+
+  /** Solo room: the second seat is a placeholder, so no readying up. */
+  isSinglePlayer = false;
+  /** Unit under the cursor of the Unit panel; null when nothing is selected. */
+  selectedUnit: SelectedUnit | null = null;
+  /** Hover preview - takes precedence over the selection while it lasts. */
+  hoveredUnit: SelectedUnit | null = null;
+
+  /** What each ability costs in points. Placeholder until abilities exist. */
+  abilityCosts = [3, 5, 2, 4];
+
+  /**
+   * What each slot does. Arbitrary numbers - this is the proof of concept
+   * that an ability can be clicked, aimed at a unit and change its stats for
+   * a turn. Slot 2 is the passive: it is not cast, so its numbers are what
+   * the unit carries once it has the rank for it.
+   */
+  readonly abilityEffects = [
+    { name: 'Ability1', mov: 2, atk: 0, def: 0 },
+    { name: 'Passive1', mov: 0, atk: 0, def: 3 },
+    { name: 'Ability3', mov: 0, atk: 4, def: 0 },
+    { name: 'Ability4', mov: -1, atk: 2, def: 2 },
+  ];
+
+  /**
+   * One-turn stat boosts, keyed by the hex the unit stands on.
+   * ponytail: client-side and hex-keyed - a boost follows a staged move but
+   * not a unit the server moves for us, and a reload drops it.
+   */
+  buffs: Record<string, UnitBuff> = {};
+
+  /** An ability waiting for its target; null when nothing is armed. */
+  pendingAbility: { side: 'mine' | 'opponent'; index: number; cooldowns: number[] } | null = null;
+
+  /** Placeholder ability cooldowns, in turns. Nothing decrements them yet. */
+  unitCooldowns = [5, 0];
+  opponentCooldowns = [5, 4, 0, 2];
+  myCooldowns = [3, 0, 5, 1];
+
+  /** Keyboard shortcuts go quiet while typing or when the window loses focus. */
+  windowFocused = true;
+  chatFocused = false;
+
+  /** Expandable rail sections. */
+  chatExpanded = false;
+  usersExpanded = false;
+  lobbyChatExpanded = false;
+  /** History takes over the whole left column. */
+  historyExpanded = false;
+  /** Ability points per side. Nothing spends them yet. */
+  myPoints = 0;
+  opponentPoints = 0;
+  /** "q,r" -> the number drawn on that hex, for labelling move history. */
+  private hexNumbers: Record<string, number> = {};
+  /** Which board the cached numbering was built for - "radius|orientation". */
+  private hexNumbersFor = '';
+  /** Move made but not yet committed - held here until End Turn. */
+  /**
+   * Everything staged this turn, oldest first. Each entry carries the board as
+   * it looked *after* that action, so Undo is a pop rather than an inverse -
+   * which is what lets an attack be taken back as cheaply as a step.
+   */
+  stagedActions: StagedAction[] = [];
+
+  /** Board with the staged actions applied, or null when nothing is staged. */
+  get stagedBoard(): Record<string, any> | null {
+    return this.stagedActions.length
+      ? this.stagedActions[this.stagedActions.length - 1].board
+      : null;
+  }
+
+  /** Where the acting unit started, where it stands, and steps spent so far. */
+  get pendingMove(): { from: string; to: string; used: number } | null {
+    const last = this.stagedActions[this.stagedActions.length - 1];
+    return last ? { from: last.from, to: last.to, used: last.used } : null;
+  }
+
+  /** A unit that has swung is done for the turn - no more walking. */
+  get hasAttacked(): boolean {
+    return this.stagedActions.some(a => a.attack !== null);
+  }
+  /** Which side the host takes in a solo game; the placeholder gets the other. */
+  soloColor: 'white' | 'black' = 'white';
 
   /** True if this player has dropped out and we're waiting on them. */
   isDisconnected(name: string): boolean {
@@ -832,12 +1267,128 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /** Handle a move emitted by the GameBoardComponent. */
-  onPlayerMove(event: { from: string; to: string }): void {
+  /**
+   * A move is staged, not sent: it shows on the board and can be undone until
+   * End Turn commits it. The server still ends the turn on receipt, so
+   * committing and ending the turn are one and the same message.
+   */
+  onPlayerMove(event: { from: string; to: string; cost: number }): void {
+    if (this.hasAttacked) return;
+    const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
+    const next: Record<string, any> = { ...board };
+    next[event.to] = next[event.from];
+    delete next[event.from];
+    // Steps accumulate across hops: a unit keeps walking on what is left of
+    // its move until it attacks or the turn ends.
+    const prev = this.pendingMove;
+    this.stagedActions.push({
+      board: next,
+      from: prev?.from ?? event.from,
+      to: event.to,
+      // The board charges the walk it actually plotted, detours included.
+      used: (prev?.used ?? 0) + event.cost,
+      attack: null,
+    });
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * An attack stages like a step, so it can be taken back. The damage is
+   * previewed with the same sums the server uses (see hex-rules); the
+   * authoritative result arrives with move_made once End Turn sends it.
+   */
+  onPlayerAttack(event: { from: string; to: string; attack: string }): void {
+    if (!this.canEndTurn || this.hasAttacked) return;
+    const config = this.gameState.snapshot.config;
+    const board = { ...(this.stagedBoard ?? this.gameState.snapshot.boardState) };
+    const attacker = board[event.to];
+    const target = board[event.attack];
+    if (!attacker || !target) return;
+
+    const distance = hexDistanceKeys(event.to, event.attack);
+    const dealt = strikeDamage(attacker.unit_id, target.unit_id, distance, config);
+    const hurt = { ...target, hp: target.hp - dealt };
+
+    if (hurt.hp <= 0) {
+      delete board[event.attack];
+    } else {
+      board[event.attack] = hurt;
+      const theirRange = config?.units?.[target.unit_id]?.attackRange ?? 1;
+      if (distance <= theirRange) {
+        const counter = strikeDamage(target.unit_id, attacker.unit_id, distance, config);
+        const mine = { ...attacker, hp: attacker.hp - counter };
+        if (mine.hp <= 0) delete board[event.to];
+        else board[event.to] = mine;
+      }
+    }
+
+    const prev = this.pendingMove;
+    this.stagedActions.push({
+      board,
+      from: prev?.from ?? event.from,
+      to: event.to,
+      used: prev?.used ?? 0,
+      attack: event.attack,
+    });
+    this.cdr.markForCheck();
+  }
+
+  /** Steps the staged unit has left, or null when nothing is staged. */
+  get movesLeft(): number | null {
+    const pending = this.pendingMove;
+    if (!pending) return null;
+    if (this.hasAttacked) return 0;
+    const unit = this.stagedBoard?.[pending.to];
+    const base = this.gameState.snapshot.config?.units?.[unit?.unit_id]?.move ?? 0;
+    // A +MOV boost is real steps, not just a number in the panel.
+    const total = base + this.moveBonusFor(pending.to);
+    return Math.max(0, total - pending.used);
+  }
+
+  /** The turn can be ended whenever it is ours, move staged or not. */
+  get canEndTurn(): boolean {
+    const s = this.gameState.snapshot;
+    if (!this.gameStarted || s.endReason || !s.currentTurn) return false;
+    return this.isSinglePlayer || s.currentTurn === this.username;
+  }
+
+  /** Take back the last staged action - one step, or the attack. */
+  undoMove(): void {
+    this.stagedActions.pop();
+    this.cdr.markForCheck();
+  }
+
+  /** Commit the staged move, which also hands the turn over. */
+  endTurn(): void {
+    if (!this.canEndTurn) return;
+    const pending = this.pendingMove;
+    if (!pending) {
+      // Doing nothing is a legal turn.
+      this.wsService.sendMessage({ type: 'pass_turn' });
+      return;
+    }
+    const attack = this.stagedActions.find(a => a.attack !== null)?.attack;
+    // Both engines re-check the walk from where it started, so they need to
+    // be told about the extra steps or they reject the move outright.
+    const moveBonus = this.moveBonusFor(pending.to);
     this.wsService.sendMessage({
       type: 'make_move',
-      from: event.from,
-      to: event.to,
+      from: pending.from,
+      to: pending.to,
+      ...(attack ? { attack } : {}),
+      ...(moveBonus ? { moveBonus } : {}),
     });
+    // The staged board stays up until move_made confirms it - see the handler.
+  }
+
+  /**
+   * Each abilities box is live only on its own side's turn, and an opponent's
+   * box is never live unless you are driving both sides (solo play).
+   */
+  canUseAbilities(side: 'mine' | 'opponent'): boolean {
+    if (!this.gameStarted) return false;
+    const myTurn = this.gameState.snapshot.currentTurn === this.username;
+    return side === 'mine' ? myTurn : (this.isSinglePlayer && !myTurn);
   }
 
   /** Resign the current game. */
@@ -916,7 +1467,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * At least one other player must be present and everyone must be ready.
    */
   canStartGame(): boolean {
+    // Custom mode is a stub ("Coming Soon..."), so starting it is blocked.
+    if (this.gameMode === 'custom') return false;
+    if (this.isSinglePlayer) {
+      // Nobody to ready up - the placeholder seat never connects.
+      return this.players.length >= 2;
+    }
     return this.players.length >= 2 && this.players.every(player => player.isReady);
+  }
+
+  /** Flip which side you take; the placeholder always gets the other one. */
+  toggleSoloColor(): void {
+    this.soloColor = this.soloColor === 'white' ? 'black' : 'white';
   }
   
   /**
@@ -927,7 +1489,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (!this.isInviter) return;
     this.wsService.sendMessage({
       type: 'start_game',
-      gameId: this.gameId
+      gameId: this.gameId,
+      // Ignored by the server for two-player rooms, where colours stay random.
+      hostColor: this.isSinglePlayer ? this.soloColor : undefined
     });
   }
 

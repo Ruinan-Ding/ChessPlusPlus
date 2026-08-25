@@ -15,13 +15,43 @@ All functions are pure (no DB access) and operate on a HexBoard + config.
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
-from .board import HexBoard, CellData, Coord
+from .board import HexBoard, CellData, Coord, hex_distance
 from .move_validator import get_legal_moves
 
 
 # ---------------------------------------------------------------------------
 # Combat resolution
 # ---------------------------------------------------------------------------
+
+def ranged_damage(attack: int, distance: int, config: Dict[str, Any]) -> int:
+    """
+    Damage an attack of *attack* deals at *distance* rings.
+
+    Striking a neighbour (distance 1) costs nothing. Every further ring loses
+    ``rules.rangeFalloff`` of the attack stat, linearly, floored - a hit that
+    lands at all always takes off at least 1.
+    """
+    if attack <= 0 or distance <= 1:
+        return max(0, attack)
+    falloff = config.get('rules', {}).get('rangeFalloff', 0)
+    scale = max(0.0, 1.0 - falloff * (distance - 1))
+    return max(1, int(attack * scale))
+
+
+def strike_damage(
+    attacker_def: Dict[str, Any],
+    defender_def: Dict[str, Any],
+    distance: int,
+    config: Dict[str, Any],
+) -> int:
+    """
+    Damage one unit lands on another: the attacker's ring-scaled attack stat
+    less the defender's defence. Armour can absorb a hit entirely, but never
+    heals - the result floors at 0.
+    """
+    attack = ranged_damage(attacker_def.get('attack', 1), distance, config)
+    return max(0, attack - defender_def.get('defense', 0))
+
 
 def resolve_combat(
     board: HexBoard,
@@ -63,9 +93,14 @@ def resolve_combat(
         }
 
     # -- Occupied by enemy -> combat --------------------------------
-    unit_def = config.get('units', {}).get(attacker['unit_id'], {})
-    atk_damage = unit_def.get('attack', 1)
+    units = config.get('units', {})
+    attacker_def = units.get(attacker['unit_id'], {})
+    defender_def = units.get(defender['unit_id'], {})
+    distance = hex_distance(from_coord, to_coord)
 
+    # Damage is what gets past armour: the ring-scaled attack stat minus the
+    # defender's defence, never healing them.
+    atk_damage = strike_damage(attacker_def, defender_def, distance, config)
     eliminated = board.deal_damage(*to_coord, atk_damage)
 
     result: Dict[str, Any] = {
@@ -75,16 +110,29 @@ def resolve_combat(
         'defender_eliminated': eliminated is not None,
         'captured_unit': eliminated,
         'defender_hp': None,
+        'counter_damage': 0,
+        'attacker_eliminated': False,
+        'attacker_hp': attacker.get('hp'),
     }
 
     if eliminated:
-        # Defender destroyed -> attacker moves in
-        board.move(*from_coord, *to_coord)
-        result['moved'] = True
-    else:
-        # Defender survived -> attacker stays; record remaining HP
-        surviving_cell = board.get(*to_coord)
-        result['defender_hp'] = surviving_cell['hp'] if surviving_cell else None
+        # A dead unit never swings back. The attacker holds its ground -
+        # taking the hex is a move, and its move was spent attacking.
+        return result
+
+    surviving_cell = board.get(*to_coord)
+    result['defender_hp'] = surviving_cell['hp'] if surviving_cell else None
+
+    # Counter-attack: the same sum in reverse, and only if the attacker is
+    # inside the defender's own reach.
+    if distance <= defender_def.get('attackRange', 1):
+        counter = strike_damage(defender_def, attacker_def, distance, config)
+        if counter > 0:
+            killed = board.deal_damage(*from_coord, counter)
+            result['counter_damage'] = counter
+            result['attacker_eliminated'] = killed is not None
+        attacker_cell = board.get(*from_coord)
+        result['attacker_hp'] = attacker_cell['hp'] if attacker_cell else None
 
     return result
 
@@ -110,6 +158,7 @@ def get_legal_moves_filtered(
     coord: Coord,
     config: Dict[str, Any],
     color: str,
+    move_bonus: int = 0,
 ) -> List[Coord]:
     """
     Return all legal destinations for the piece at *coord*.
@@ -117,12 +166,37 @@ def get_legal_moves_filtered(
     In the tactical RPG model there is no self-check constraint, so this
     is a thin wrapper around ``move_validator.get_legal_moves``.
     """
-    return get_legal_moves(board, coord, config, color)
+    return get_legal_moves(board, coord, config, color, move_bonus)
 
 
 # ---------------------------------------------------------------------------
 # End-of-game detection
 # ---------------------------------------------------------------------------
+
+def find_defeated(board: HexBoard, config: Dict[str, Any]) -> Optional[str]:
+    """
+    The colour that has lost, or None while the game continues.
+
+    Under the default ``regicide`` objective a side is beaten when it has no
+    commander left - the unit whose config carries ``commander: true``. Under
+    ``elimination`` it takes losing every unit. Either way a side with nothing
+    on the board is out, so a config with no commander still terminates.
+
+    Both sides can fall in the same exchange (a counter-attack that kills the
+    last commander of the attacker); white is reported first, arbitrarily.
+    """
+    objective = config.get('rules', {}).get('objective', 'regicide')
+    units = config.get('units', {})
+
+    for color in ('white', 'black'):
+        pieces = board.pieces_by_color(color)
+        if not pieces:
+            return color
+        if objective == 'regicide':
+            if not any(units.get(cell['unit_id'], {}).get('commander') for cell in pieces.values()):
+                return color
+    return None
+
 
 def detect_outcome(
     board: HexBoard,
@@ -130,21 +204,10 @@ def detect_outcome(
     config: Dict[str, Any],
 ) -> Optional[str]:
     """
-    After a move has been made, call this to check if the game is over.
-
-    Returns:
-      - ``'elimination'`` if one side has zero pieces remaining.
-      - ``None``          if the game continues.
-
-    No stalemate: if a player has pieces but no moves, the turn simply
-    passes (or the game continues until elimination).
+    Back-compat wrapper: the *reason* the game ended, without saying who lost.
+    Prefer `find_defeated`, which is what the consumer needs to name a winner.
     """
-    white_count = len(board.pieces_by_color('white'))
-    black_count = len(board.pieces_by_color('black'))
-
-    if white_count == 0 or black_count == 0:
-        return 'elimination'
-    return None
+    return 'elimination' if find_defeated(board, config) else None
 
 
 def is_attacked(

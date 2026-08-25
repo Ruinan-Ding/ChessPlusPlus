@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { WebsocketService } from '../../services/websocket.service';
+import { AuthService } from '../../services/auth.service';
 import { Subscription, Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { Router } from '@angular/router';
@@ -23,6 +24,7 @@ export class ConnectionDialogComponent implements OnInit, OnDestroy {
   
   constructor(
     private wsService: WebsocketService,
+    private authService: AuthService,
     private router: Router
   ) {}
   
@@ -46,8 +48,17 @@ export class ConnectionDialogComponent implements OnInit, OnDestroy {
   }
   
   retry(): void {
-    const currentRoom = this.wsService.getCurrentRoom();
-    this.wsService.connect(currentRoom);
+    this.wsService.reconnectToServer();
+  }
+
+  /**
+   * Give up on the server and carry on without it: the reconnect loop stops,
+   * the dialog goes away, and the lobby works offline - where Single Player
+   * starts a game. Offered from the first attempt, because waiting out five
+   * tries to learn you could have played anyway is the annoying version.
+   */
+  playSinglePlayer(): void {
+    this.wsService.playOffline();
   }
   
   goToLogin(): void {

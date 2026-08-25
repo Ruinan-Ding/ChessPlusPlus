@@ -36,8 +36,8 @@ from .utils import (
     get_challenge_expiration_time, structured_log, get_idempotency, set_idempotency
 )
 from .engine import load_config, build_initial_board, DEFAULT_CONFIG
-from .engine.board import HexBoard, parse_coord
-from .engine.game_logic import get_legal_moves_filtered, resolve_combat, detect_outcome
+from .engine.board import HexBoard, parse_coord, hex_distance
+from .engine.game_logic import get_legal_moves_filtered, resolve_combat, find_defeated
 
 logger = logging.getLogger('game')
 
@@ -53,6 +53,10 @@ _pending_reveal_requests: dict = {}
 # by forfeit. Keeps a transient network blip / page refresh from instantly
 # ending an active game, while still resolving a real abandonment.
 DISCONNECT_GRACE_SECONDS = 30
+
+# Placeholder occupying the second seat in a solo room. It never connects,
+# so it has no PlayerConnection and never shows up in the lobby user list.
+SINGLE_PLAYER_OPPONENT = 'Opponent'
 
 # Global dictionary to track pending disconnect-grace-period tasks.
 # Key: (game_id, username), Value: asyncio.Task
@@ -257,10 +261,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'request_reveal_mode': self._handle_request_reveal_mode,
                 'reveal_response': self._handle_reveal_response,
                 'start_game': self._handle_start_game,
+                'create_single_player_game': self._handle_create_single_player_game,
                 'request_user_list': self._handle_request_user_list,
                 'heartbeat': self._handle_heartbeat,
                 # Gameplay handlers (in-game)
                 'make_move': self._handle_make_move,
+                'pass_turn': self._handle_pass_turn,
                 'resign': self._handle_resign,
                 'offer_draw': self._handle_offer_draw,
                 'respond_draw': self._handle_respond_draw,
@@ -906,7 +912,18 @@ class GameConsumer(AsyncWebsocketConsumer):
                     options = data['options']
             
             await self._update_game_mode(game_id, mode, options)
-            
+
+            # Anyone who already readied did so against the OLD settings, so a
+            # host change has to send them round again.
+            for player in (game.host, game.opponent):
+                if player and player != self.username:
+                    await self._delete_ready_status(game_id, player)
+                    await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                        'type': 'player_unready',
+                        'username': player,
+                        'silent': True,
+                    })
+
             message_data = {
                 'type': 'game_mode_changed',
                 'mode': mode
@@ -1073,6 +1090,42 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.error(f"Error in _handle_reveal_response: {e}")
             await send_error(self, 'INTERNAL_ERROR', 'Failed to handle reveal response')
     
+    async def _handle_create_single_player_game(self, data):
+        """
+        Create a solo room: you as host plus a placeholder opponent seat.
+
+        The placeholder has no PlayerConnection and never joins, so it shows in
+        the room's player list but not the lobby. Readiness is skipped and the
+        host picks the colours - see _handle_start_game.
+        """
+        try:
+            validate_required_fields(data, ['username'])
+            username = data.get('username', '').strip()
+            if self.username != username:
+                await send_error(self, 'INVALID_REQUEST', 'Can only start a game as yourself')
+                return
+            if username == SINGLE_PLAYER_OPPONENT:
+                await send_error(self, 'INVALID_REQUEST',
+                                 f'"{SINGLE_PLAYER_OPPONENT}" is reserved for solo games')
+                return
+
+            game_id = str(uuid.uuid4())
+            game = await self._create_game_room(
+                username, SINGLE_PLAYER_OPPONENT, game_id, single_player=True
+            )
+            await self._update_player_status(username, 'in-game')
+            await self._send_user_list()
+
+            await send_json_response(self, {
+                'type': 'single_player_game_created',
+                'gameId': game_id,
+                'token': game.host_token,
+            })
+            structured_log('info', 'single_player_game_created',
+                           host=username, game_id=game_id)
+        except ValidationError as e:
+            await send_error(self, e.code, e.message)
+
     async def _handle_start_game(self, data):
         """Handle game start request: initialise and broadcast the game state."""
         try:
@@ -1085,10 +1138,13 @@ class GameConsumer(AsyncWebsocketConsumer):
             if self.username != game.host:
                 await send_error(self, 'PERMISSION_DENIED', 'Only the host can start the game')
                 return
-            all_ready = await self._all_players_ready(game_id)
-            if not all_ready:
-                await send_error(self, 'NOT_ALL_READY', 'Not all players are ready')
-                return
+            single_player = bool((game.game_options or {}).get('singlePlayer'))
+            # Solo rooms have nobody to ready up, so the host starts directly.
+            if not single_player:
+                all_ready = await self._all_players_ready(game_id)
+                if not all_ready:
+                    await send_error(self, 'NOT_ALL_READY', 'Not all players are ready')
+                    return
 
             # Reject a replayed start_game while a match is in progress.
             # Ready statuses persist after start, so without this a duplicate
@@ -1116,7 +1172,15 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self._send_user_list()
             await self._send_game_player_list(game_id, is_inviter=(self.username == game.host))
 
-            if random.random() < 0.5:
+            # Solo: the host picked a side, so honour it. Two-player games stay
+            # random - nobody gets to choose their colour there.
+            host_color = str(data.get('hostColor') or '').strip().lower()
+            if single_player and host_color in ('white', 'black'):
+                if host_color == 'white':
+                    p_white, p_black = game.host, game.opponent
+                else:
+                    p_white, p_black = game.opponent, game.host
+            elif random.random() < 0.5:
                 p_white, p_black = game.host, game.opponent
             else:
                 p_white, p_black = game.opponent, game.host
@@ -1347,9 +1411,19 @@ class GameConsumer(AsyncWebsocketConsumer):
             if state.is_finished:
                 await send_error(self, 'GAME_OVER', 'This game has already ended')
                 return
-            if state.current_turn != self.username:
+            # Solo rooms: the host plays both sides, so they may also move for
+            # the placeholder seat. Everywhere below, the *mover* is whoever's
+            # turn it is - not necessarily the sender.
+            game = await self._get_game_by_id(self.game_id)
+            controls_both = bool(
+                game
+                and (game.game_options or {}).get('singlePlayer')
+                and self.username == game.host
+            )
+            if state.current_turn != self.username and not controls_both:
                 await send_error(self, 'NOT_YOUR_TURN', 'It is not your turn')
                 return
+            mover = state.current_turn
 
             from_coord = data['from']  # "q,r"
             to_coord = data['to']      # "q,r"
@@ -1372,19 +1446,58 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_MOVE', 'No piece at source coordinate')
                 return
 
-            my_color = 'white' if self.username == state.player_white else 'black'
+            my_color = 'white' if mover == state.player_white else 'black'
             if piece['color'] != my_color:
                 await send_error(self, 'INVALID_MOVE', 'That piece is not yours')
                 return
 
-            legal_dests = get_legal_moves_filtered(board, (fq, fr), config, my_color)
-            if (tq, tr) not in legal_dests:
-                await send_error(self, 'INVALID_MOVE', 'Illegal move for this piece')
+            # A turn is "walk, then optionally swing": `to` is where the unit
+            # ends up (possibly where it already stands) and `attack` names a
+            # hex it strikes from there.
+            attack_coord = data.get('attack')
+            # Extra steps lent by a one-turn ability. Abilities live on the
+            # client for now, so this is the client's word for it - taken only
+            # in a solo room, where the same client already drives both sides
+            # and has nobody to cheat. In a real game it would be a free
+            # movement upgrade for anyone willing to edit a message.
+            move_bonus = 0
+            if controls_both:
+                try:
+                    move_bonus = max(0, min(10, int(data.get('moveBonus') or 0)))
+                except (TypeError, ValueError):
+                    move_bonus = 0
+            if (tq, tr) != (fq, fr):
+                legal_dests = get_legal_moves_filtered(
+                    board, (fq, fr), config, my_color, move_bonus)
+                if (tq, tr) not in legal_dests:
+                    await send_error(self, 'INVALID_MOVE', 'Illegal move for this piece')
+                    return
+            elif not attack_coord:
+                await send_error(self, 'INVALID_MOVE', 'A move must change hexes')
                 return
 
-            combat = resolve_combat(board, (fq, fr), (tq, tr), config)
+            if attack_coord:
+                try:
+                    aq, ar = parse_coord(attack_coord)
+                except ValueError:
+                    await send_error(self, 'INVALID_MOVE', 'Malformed attack coordinate')
+                    return
+                target = board.get(aq, ar)
+                if not target or target['color'] == my_color:
+                    await send_error(self, 'INVALID_MOVE', 'No enemy unit on the attacked hex')
+                    return
+                unit_range = config.get('units', {}).get(piece['unit_id'], {}).get('attackRange', 1)
+                if hex_distance((tq, tr), (aq, ar)) > unit_range:
+                    await send_error(self, 'INVALID_MOVE', 'That hex is out of attack range')
+                    return
+                if (tq, tr) != (fq, fr):
+                    board.move(fq, fr, tq, tr)
+                combat = resolve_combat(board, (tq, tr), (aq, ar), config)
+                combat['moved'] = (tq, tr) != (fq, fr)
+            else:
+                combat = resolve_combat(board, (fq, fr), (tq, tr), config)
 
-            next_player = state.player_black if self.username == state.player_white else state.player_white
+            next_player = state.player_black if mover == state.player_white else state.player_white
             next_color = 'black' if my_color == 'white' else 'white'
 
             move_record: dict = {
@@ -1399,6 +1512,10 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'defender_eliminated': combat['defender_eliminated'],
                 'moved': combat['moved'],
             }
+            if attack_coord:
+                move_record['attackedHex'] = attack_coord
+                move_record['counter_damage'] = combat.get('counter_damage', 0)
+                move_record['attacker_eliminated'] = combat.get('attacker_eliminated', False)
             if combat['defender_hp'] is not None:
                 move_record['defender_hp'] = combat['defender_hp']
 
@@ -1406,10 +1523,14 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             winner = ''
             end_reason = ''
-            outcome = detect_outcome(board, next_color, config)
-            if outcome == 'elimination':
-                winner = self.username
+            # Who lost is a property of the board, not of who moved: a
+            # counter-attack can kill the attacker's commander on their own turn.
+            defeated = find_defeated(board, config)
+            if defeated:
+                loser = state.player_white if defeated == 'white' else state.player_black
+                winner = state.player_black if defeated == 'white' else state.player_white
                 end_reason = 'elimination'
+                logger.info(f"Game {self.game_id} decided: {loser} lost ({defeated})")
 
             max_turns = config.get('rules', {}).get('maxTurns', 0)
             if not end_reason and max_turns > 0 and state.turn_number >= max_turns:
@@ -1461,6 +1582,83 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.error(f"Error in _handle_make_move: {e}", exc_info=True)
             await send_error(self, 'INTERNAL_ERROR', 'Failed to process move')
 
+    async def _handle_pass_turn(self, data):
+        """Hand the turn over without moving anything - a unit turn is optional."""
+        try:
+            if not self.game_id or not self.username:
+                await send_error(self, 'NOT_IN_GAME', 'You are not in an active game')
+                return
+
+            state = await self._get_game_state(self.game_id)
+            if not state:
+                await send_error(self, 'GAME_NOT_STARTED', 'Game state not found')
+                return
+            if state.is_finished:
+                await send_error(self, 'GAME_OVER', 'This game has already ended')
+                return
+
+            # Same seat rules as a move: solo hosts pass for either side.
+            game = await self._get_game_by_id(self.game_id)
+            controls_both = bool(
+                game
+                and (game.game_options or {}).get('singlePlayer')
+                and self.username == game.host
+            )
+            if state.current_turn != self.username and not controls_both:
+                await send_error(self, 'NOT_YOUR_TURN', 'It is not your turn')
+                return
+
+            mover = state.current_turn
+            my_color = 'white' if mover == state.player_white else 'black'
+            next_player = state.player_black if mover == state.player_white else state.player_white
+
+            config = state.config_snapshot
+            end_reason = ''
+            max_turns = config.get('rules', {}).get('maxTurns', 0)
+            if max_turns > 0 and state.turn_number >= max_turns:
+                end_reason = 'draw_max_turns'
+
+            next_turn_number = state.turn_number + 1
+            turn_started_dt = timezone.now()
+            applied = await self._update_game_state(
+                game_id=self.game_id,
+                board_state=state.board_state,
+                current_turn=next_player if not end_reason else state.current_turn,
+                turn_number=next_turn_number,
+                move_history=list(state.move_history),
+                winner='',
+                end_reason=end_reason,
+                expected_turn_number=state.turn_number,
+                turn_started_at=turn_started_dt,
+            )
+            if not applied:
+                await send_error(self, 'GAME_OVER', 'This game already ended before your pass was processed')
+                return
+
+            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+                'type': 'turn_passed',
+                'passedBy': mover,
+                'color': my_color,
+                'currentTurn': next_player if not end_reason else '',
+                'turnNumber': next_turn_number,
+                'turnStartedAt': turn_started_dt.isoformat(),
+            })
+
+            if end_reason:
+                await self._broadcast_game_over(self.game_id, '', end_reason)
+            else:
+                time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
+                if time_limit > 0:
+                    await self._start_turn_timer(
+                        self.game_id, time_limit,
+                        turn_number=next_turn_number, current_turn=next_player,
+                    )
+
+            logger.info(f"Turn passed in game {self.game_id} by {mover}")
+        except Exception as e:
+            logger.error(f"Error in _handle_pass_turn: {e}", exc_info=True)
+            await send_error(self, 'INTERNAL_ERROR', 'Failed to pass the turn')
+
     async def _handle_resign(self, data):
         """Handle a player resigning from an active game."""
         try:
@@ -1498,6 +1696,17 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             if state.draw_offered_by:
                 await send_error(self, 'DRAW_ALREADY_OFFERED', 'A draw offer is already pending')
+                return
+
+            # Solo rooms have nobody on the other side to accept, so an offer
+            # is simply a draw.
+            game = await self._get_game_by_id(self.game_id)
+            if game and (game.game_options or {}).get('singlePlayer'):
+                if await self._end_game_with_retry(self.game_id, '', 'draw_agreed'):
+                    await self._broadcast_game_over(self.game_id, '', 'draw_agreed')
+                    logger.info(f"Solo draw taken in game {self.game_id}")
+                else:
+                    await send_error(self, 'GAME_OVER', 'This game has already ended')
                 return
 
             await self._set_draw_offer(self.game_id, self.username)
@@ -1708,7 +1917,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         GameChallenge.objects.filter(challenge_id=challenge_id).update(status=status)  # type: ignore
     
     @database_sync_to_async
-    def _create_game_room(self, host, opponent, game_id):
+    def _create_game_room(self, host, opponent, game_id, single_player=False):
         """Create a new game room with access tokens"""
         host_token = secrets.token_hex(32)
         opponent_token = secrets.token_hex(32)
@@ -1721,7 +1930,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             status='waiting',
             host_token=host_token,
             opponent_token=opponent_token,
-            token_expires_at=token_expires
+            token_expires_at=token_expires,
+            # Rides game_options rather than a new column - it is a JSONField
+            # already carried through the room lifecycle.
+            game_options={'singlePlayer': True} if single_player else {},
         )
         return game
     
@@ -1744,10 +1956,24 @@ class GameConsumer(AsyncWebsocketConsumer):
     
     @database_sync_to_async
     def _update_game_mode(self, game_id, mode, options):
-        """Update game mode and options"""
+        """
+        Update game mode and options.
+
+        Merges rather than replaces: game_options also carries room-lifetime
+        flags like singlePlayer, and a plain overwrite silently demoted a solo
+        room to a normal one on the first mode change - after which start_game
+        demanded a ready from a placeholder that can never give one.
+        """
+        game = GameRoom.objects.filter(game_id=game_id).first()  # type: ignore
+        if not game:
+            return
+        merged = dict(options or {})
+        for keep in ('singlePlayer',):
+            if keep in (game.game_options or {}):
+                merged[keep] = game.game_options[keep]
         GameRoom.objects.filter(game_id=game_id).update(  # type: ignore
             game_mode=mode,
-            game_options=options
+            game_options=merged
         )
 
     @database_sync_to_async
@@ -1975,7 +2201,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'player_list',
                 'players': players,
-                'isInviter': is_inviter
+                'isInviter': is_inviter,
+                'singlePlayer': bool((game.game_options or {}).get('singlePlayer')),
             })
         except Exception as e:
             logger.error(f"Error sending game player list: {e}")

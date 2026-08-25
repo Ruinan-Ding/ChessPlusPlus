@@ -47,8 +47,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "display": {"white": "♔", "black": "♚"},
             "move": 6,
             "value": 0,
-            "hp": 10,
-            "attack": 3
+            "hp": 45,
+            "attack": 16,
+            "attackRange": 1,
+            "commander": True,
+            "defense": 15
         },
         "queen": {
             "id": "queen",
@@ -57,8 +60,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "display": {"white": "♕", "black": "♛"},
             "move": 6,
             "value": 9,
-            "hp": 8,
-            "attack": 6
+            "hp": 30,
+            "attack": 26,
+            "attackRange": 2,
+            "defense": 12
         },
         "rook": {
             "id": "rook",
@@ -67,8 +72,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "display": {"white": "♖", "black": "♜"},
             "move": 6,
             "value": 5,
-            "hp": 12,
-            "attack": 4
+            "hp": 40,
+            "attack": 20,
+            "attackRange": 2,
+            "defense": 13
         },
         "bishop": {
             "id": "bishop",
@@ -77,8 +84,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "display": {"white": "♗", "black": "♝"},
             "move": 6,
             "value": 3,
-            "hp": 6,
-            "attack": 5
+            "hp": 22,
+            "attack": 22,
+            "attackRange": 3,
+            "defense": 10
         },
         "knight": {
             "id": "knight",
@@ -87,8 +96,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "display": {"white": "♘", "black": "♞"},
             "move": 6,
             "value": 3,
-            "hp": 8,
-            "attack": 4
+            "hp": 28,
+            "attack": 18,
+            "attackRange": 1,
+            "defense": 11
         },
         "pawn": {
             "id": "pawn",
@@ -97,8 +108,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "display": {"white": "♙", "black": "♟"},
             "move": 6,
             "value": 1,
-            "hp": 4,
-            "attack": 2
+            "hp": 20,
+            "attack": 14,
+            "attackRange": 1,
+            "defense": 10
         }
     },
     "abilities": {},
@@ -139,10 +152,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         }
     },
     "rules": {
+        # Fraction of damage lost per ring beyond the first.
+        "rangeFalloff": 0.25,
         "maxTurns": 0,
         "turnTimeLimit": 0,
-        # Placeholder: win condition. Only 'elimination' is implemented.
-        "objective": "elimination"
+        # A side loses when its commander dies; 'elimination' (no units left)
+        # is the other supported objective.
+        "objective": "regicide"
     }
 }
 
@@ -169,6 +185,24 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
 
     if 'units' not in config or not isinstance(config.get('units'), dict):
         errors.append("Missing or invalid 'units'")
+    else:
+        # A silly attackRange would have the client expanding rings over the
+        # whole board for a hover preview, so bound it like board.radius.
+        for unit_id, unit in config['units'].items():
+            if not isinstance(unit, dict):
+                continue
+            rng = unit.get('attackRange', 1)
+            if not isinstance(rng, int) or isinstance(rng, bool) or rng < 1 or rng > 50:
+                errors.append(f"units.{unit_id}.attackRange must be an integer 1-50, got {rng}")
+            # The schema requires defence and combat reads it. A unit without
+            # one loads as armour 0 and fights with silently wrong numbers.
+            dfn = unit.get('defense')
+            if not isinstance(dfn, int) or isinstance(dfn, bool) or dfn < 0:
+                errors.append(f"units.{unit_id}.defense must be an integer >= 0, got {dfn}")
+
+    falloff = config.get('rules', {}).get('rangeFalloff', 0)
+    if not isinstance(falloff, (int, float)) or isinstance(falloff, bool) or not 0 <= falloff <= 1:
+        errors.append(f"rules.rangeFalloff must be a number 0-1, got {falloff}")
 
     if 'setup' not in config:
         errors.append("Missing 'setup'")
@@ -185,6 +219,24 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                     errors.append(f"Invalid coordinate '{coord_str}' in setup.{side}")
                 if unit_id not in config.get('units', {}):
                     errors.append(f"Unknown unit '{unit_id}' at {coord_str} in setup.{side}")
+
+    # The objective decides how a game is lost, so a config that cannot
+    # satisfy it is unplayable rather than merely odd: under regicide a side
+    # with no commander on the board has already lost before the first move.
+    objective = config.get('rules', {}).get('objective', 'regicide')
+    if objective not in ('regicide', 'elimination'):
+        errors.append(
+            f"rules.objective must be 'regicide' or 'elimination', got {objective!r}")
+    elif objective == 'regicide' and isinstance(config.get('setup'), dict):
+        units = config.get('units', {})
+        for side in ('white', 'black'):
+            placement = config['setup'].get(side, {})
+            if not isinstance(placement, dict):
+                continue
+            if not any(units.get(u, {}).get('commander') for u in placement.values()):
+                errors.append(
+                    f"setup.{side} has no commander unit, but rules.objective "
+                    f"is 'regicide' - that side is beaten before it moves")
 
     return errors
 
@@ -233,7 +285,18 @@ def build_initial_board(config: Dict[str, Any]) -> HexBoard:
                 continue
             unit_def = units.get(unit_id, {})
             hp = unit_def.get('hp', 1)
-            board.set(q, r, unit_id, color, hp=hp, max_hp=hp)
+            # Every unit carries an identity that outlives the hex it stands
+            # on. Per-unit state - veterancy, boosts, cooldowns - hangs off
+            # this, so it travels with the unit instead of being re-keyed by
+            # every caller that moves one. The cell dict is open and both
+            # move() and (de)serialisation preserve it.
+            board.set_cell(q, r, {
+                'unit_id': unit_id,
+                'color': color,
+                'hp': hp,
+                'max_hp': hp,
+                'uid': f"{color[0]}{coord_str}",
+            })
 
     logger.info(f"Built initial board: radius={radius}, pieces={len(board.to_dict())}")
     return board

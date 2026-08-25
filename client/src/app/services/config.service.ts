@@ -25,32 +25,32 @@ const DEFAULT_GAME_CONFIG = {
   },
   units: {
     king: {
-      id: 'king', name: 'King', symbol: 'K', value: 0, hp: 10, attack: 3,
+      id: 'king', name: 'King', symbol: 'K', value: 0, hp: 45, attack: 16, defense: 15, attackRange: 1, commander: true,
       display: { white: '♔', black: '♚' },
       move: 6
     },
     queen: {
-      id: 'queen', name: 'Queen', symbol: 'Q', value: 9, hp: 8, attack: 6,
+      id: 'queen', name: 'Queen', symbol: 'Q', value: 9, hp: 30, attack: 26, defense: 12, attackRange: 2,
       display: { white: '♕', black: '♛' },
       move: 6
     },
     rook: {
-      id: 'rook', name: 'Rook', symbol: 'R', value: 5, hp: 12, attack: 4,
+      id: 'rook', name: 'Rook', symbol: 'R', value: 5, hp: 40, attack: 20, defense: 13, attackRange: 2,
       display: { white: '♖', black: '♜' },
       move: 6
     },
     bishop: {
-      id: 'bishop', name: 'Bishop', symbol: 'B', value: 3, hp: 6, attack: 5,
+      id: 'bishop', name: 'Bishop', symbol: 'B', value: 3, hp: 22, attack: 22, defense: 10, attackRange: 3,
       display: { white: '♗', black: '♝' },
       move: 6
     },
     knight: {
-      id: 'knight', name: 'Knight', symbol: 'N', value: 3, hp: 8, attack: 4,
+      id: 'knight', name: 'Knight', symbol: 'N', value: 3, hp: 28, attack: 18, defense: 11, attackRange: 1,
       display: { white: '♘', black: '♞' },
       move: 6
     },
     pawn: {
-      id: 'pawn', name: 'Pawn', symbol: 'P', value: 1, hp: 4, attack: 2,
+      id: 'pawn', name: 'Pawn', symbol: 'P', value: 1, hp: 20, attack: 14, defense: 10, attackRange: 1,
       display: { white: '♙', black: '♟' },
       move: 6
     }
@@ -95,8 +95,11 @@ const DEFAULT_GAME_CONFIG = {
   rules: {
     maxTurns: 0,
     turnTimeLimit: 0,
-    // Placeholder: win condition. Only 'elimination' is implemented.
-    objective: 'elimination'
+    // Fraction of damage lost per ring beyond the first.
+    rangeFalloff: 0.25,
+    // A side loses when its commander dies; 'elimination' (no units left) is
+    // the other supported objective.
+    objective: 'regicide'
   }
 };
 
@@ -110,6 +113,11 @@ export class ConfigService {
   public config$ = this.configSubject.asObservable();
 
   constructor() {}
+
+  /** The config in force right now - what a local game is built from. */
+  getConfig(): any {
+    return this.configSubject.value;
+  }
 
   getDefaultConfig(): string {
     return JSON.stringify(this.defaultConfig, null, 2);
@@ -146,6 +154,20 @@ export class ConfigService {
     // Units
     if (!config.units || typeof config.units !== 'object') {
       errors.push('Missing or invalid "units"');
+    } else {
+      // Bounded like board.radius: a silly range would have the hover preview
+      // expanding rings across the whole board.
+      for (const [unitId, unit] of Object.entries<any>(config.units)) {
+        const range = unit?.attackRange ?? 1;
+        if (!Number.isInteger(range) || range < 1 || range > 50) {
+          errors.push(`units.${unitId}.attackRange must be an integer 1-50`);
+        }
+        // The schema requires defence and combat reads it. A unit without one
+        // loads as armour 0 and fights with silently wrong numbers.
+        if (!Number.isInteger(unit?.defense) || unit.defense < 0) {
+          errors.push(`units.${unitId}.defense must be an integer >= 0`);
+        }
+      }
     }
 
     // Setup - validate coordinate format and unit references
@@ -173,6 +195,31 @@ export class ConfigService {
     // Rules
     if (!config.rules) {
       errors.push('Missing "rules"');
+    } else {
+      const falloff = config.rules.rangeFalloff ?? 0;
+      if (typeof falloff !== 'number' || falloff < 0 || falloff > 1) {
+        errors.push('rules.rangeFalloff must be a number between 0 and 1');
+      }
+
+      // The objective decides how a game is lost, so a config that cannot
+      // satisfy it is unplayable rather than merely odd: under regicide a
+      // side with no commander has already lost before the first move.
+      const objective = config.rules.objective ?? 'regicide';
+      if (objective !== 'regicide' && objective !== 'elimination') {
+        errors.push(`rules.objective must be 'regicide' or 'elimination'`);
+      } else if (objective === 'regicide' && config.setup) {
+        for (const side of ['white', 'black'] as const) {
+          const placement = config.setup[side];
+          if (!placement || typeof placement !== 'object') continue;
+          const hasCommander = Object.values<any>(placement)
+            .some(unitId => config.units?.[unitId]?.commander);
+          if (!hasCommander) {
+            errors.push(
+              `setup.${side} has no commander unit, but rules.objective is ` +
+              `'regicide' - that side is beaten before it moves`);
+          }
+        }
+      }
     }
 
     // Abilities (optional - just needs to be an object if present)

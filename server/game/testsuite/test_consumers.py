@@ -730,6 +730,31 @@ class GameLifecycleGuardTests(TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
+    async def test_passing_hands_the_turn_over_without_touching_the_board(self):
+        game, host_comm, opp_comm, started = await self._start_game()
+        try:
+            white_comm = host_comm if started['currentTurn'] == 'alice' else opp_comm
+            black_comm = opp_comm if white_comm is host_comm else host_comm
+            before = await GameState.objects.aget(game_id=game.game_id)
+
+            # Out of turn: rejected, and the turn stays put.
+            await black_comm.send_json_to({'type': 'pass_turn'})
+            err = await _receive_until(black_comm, 'error', timeout=5)
+            self.assertEqual(err['code'], 'NOT_YOUR_TURN')
+
+            await white_comm.send_json_to({'type': 'pass_turn'})
+            passed = await _receive_until(black_comm, 'turn_passed', timeout=5)
+            self.assertEqual(passed['color'], 'white')
+            self.assertEqual(passed['turnNumber'], before.turn_number + 1)
+
+            after = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(after.board_state, before.board_state)
+            self.assertEqual(list(after.move_history), list(before.move_history))
+            self.assertNotEqual(after.current_turn, before.current_turn)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
     async def test_resync_reports_persisted_turn_started_at(self):
         game, host_comm, opp_comm, started = await self._start_game()
         try:

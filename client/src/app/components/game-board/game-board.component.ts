@@ -11,6 +11,7 @@ import {
   ChangeDetectorRef,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { attackTiers, computeAttackZone, computeLegalMoves, computeMoveCosts, hexDistanceKeys } from '../../services/hex-rules';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,9 +22,25 @@ interface PieceData {
   color: 'white' | 'black';
   hp: number;
   max_hp: number;
+  /** Identity that survives moves - see build_initial_board. */
+  uid?: string;
 }
 
 type BoardState = Record<string, PieceData>;
+
+/** What the game room's Unit panel needs about the selected hex. */
+export interface SelectedUnit {
+  key: string;                       // "q,r" - lets the room match a staged move
+  uid: string;                       // the unit itself, wherever it stands
+  name: string;
+  color: 'white' | 'black';
+  hp: number | null;
+  hpMax: number | null;
+  atk: string;                       // damage per ring, e.g. "26,19"
+  def: number | null;
+  mv: number | null;                 // full move budget
+  vet: number;                       // 0-3
+}
 
 /** Internal render model for a single hex. */
 interface HexCell {
@@ -34,12 +51,20 @@ interface HexCell {
   cy: number;           // SVG centre Y
   points: string;       // SVG polygon points for the hex
   piece: PieceData | null;
-  /** Outside the radius-N battlefield - drawn to square off the board, inert. */
+  /** Outside the radius-N battlefield - one of the four reserve panels. */
   filler: boolean;
+  /** '' for battlefield, else 'bl' | 'br' | 'tr' | 'tl' - which panel. */
+  panel: string;
   /** '' for battlefield, else 'hex-filler panel-xx' picking the panel colour. */
   zoneClass: string;
-  /** 1-based reading order across the battlefield; 0 for filler hexes. */
+  /** 1-based reading order over every hex, panels included. */
   num: number;
+  /** Smaller hex drawn under an occupying unit. */
+  innerPoints: string;
+  /** Stats shown around the unit; null when the hex is empty. */
+  stats: { hp: number | null; atk: string; def: number | null } | null;
+  /** Veterancy 0-3, currently a placeholder derived from the unit's position. */
+  vet: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +80,10 @@ interface HexCell {
 export type BoardOrientation = 'edge-up' | 'vertex-up';
 
 const HEX_SIZE = 28; // radius of a single hex in SVG pixels
+
+/** Radius of the inner hex a unit sits on. Close to HEX_SIZE so only a thin
+ *  ring of board shows around it - the stats sit ON the plate, not beside it. */
+const PLATE_SIZE = 23;
 
 /** Padding around the outermost hex centres in the viewBox. Must match buildCells(). */
 const VIEWBOX_PADDING = HEX_SIZE + 4;
@@ -105,70 +134,97 @@ export function boardBoxAspect(radius: number, orientation: BoardOrientation = '
 }
 
 /** Generate SVG polygon points for a hex centred at (cx, cy). */
-function hexPoints(cx: number, cy: number, orientation: BoardOrientation): string {
+function hexPoints(cx: number, cy: number, orientation: BoardOrientation, size = HEX_SIZE): string {
   const startDeg = orientation === 'vertex-up' ? 0 : 30; // pointy-top corners are offset 30°
   const pts: string[] = [];
   for (let i = 0; i < 6; i++) {
     const angle = (Math.PI / 180) * (60 * i + startDeg);
-    const px = cx + HEX_SIZE * Math.cos(angle);
-    const py = cy + HEX_SIZE * Math.sin(angle);
+    const px = cx + size * Math.cos(angle);
+    const py = cy + size * Math.sin(angle);
     pts.push(`${px.toFixed(2)},${py.toFixed(2)}`);
   }
   return pts.join(' ');
 }
 
-// ---------------------------------------------------------------------------
-// Legal-move computation helpers (client-side preview)
-//
-// Fully config-driven: unit ids are opaque labels. Movement comes from the
-// unit's single `move` stat - a flood fill through the six hex neighbours,
-// through empty hexes only. A unit can never move through or onto an
-// occupied hex (ally or enemy). Mirrors the server engine in
-// server/game/engine/move_validator.py.
-// ---------------------------------------------------------------------------
-
-const HEX_DIRS: [number, number][] = [
-  [+1, 0], [-1, 0], [+1, -1], [0, -1], [0, 1], [-1, 1],
-];
-
-function isInsideBoard(q: number, r: number, radius: number): boolean {
-  return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) <= radius;
+/** Stats render in two digits at most - clamp rather than overflow the hex. */
+function twoDigits(v: number | null | undefined): number | null {
+  return v === null || v === undefined ? null : Math.min(99, Math.max(0, Math.trunc(v)));
 }
 
-/** Compute legal destinations for the piece at (sq,sr). */
-function computeLegalMoves(
-  boardState: BoardState,
-  sq: number, sr: number,
-  config: any,
+/**
+ * Placeholder veterancy 0-3. Deterministic from the coord + unit so it does not
+ * flicker on every redraw - the real mechanic is not specified yet.
+ */
+function placeholderVet(key: string, unitId: string): number {
+  let h = 0;
+  const seed = key + unitId;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
+  return Math.abs(h) % 4;
+}
+
+/**
+ * Attack as drawn on the hex: one number per ring the unit can strike,
+ * outermost last - "16" for a melee unit, "26,19" for one that reaches two.
+ */
+function attackText(unitId: string, config: any): string {
+  return attackTiers(unitId, config).map(d => String(twoDigits(d))).join(',');
+}
+
+/** Stat as drawn on the hex: plain digits, two at most (see twoDigits). */
+function statText(v: number | null | undefined): string {
+  return v === null || v === undefined ? '' : String(v);
+}
+
+/**
+ * "q,r" -> hex number, in the same reading order the board draws: 1 at the
+ * top-left of the block, rightwards along each row, then down. Exported so the
+ * game room can label move history with the numbers shown on the board.
+ */
+export function hexNumberMap(
   radius: number,
-): Set<string> {
-  const targets = new Set<string>();
-  const piece = boardState[`${sq},${sr}`];
-  if (!piece) return targets;
-  const unitDef = config?.units?.[piece.unit_id];
-  const moveRange: number = unitDef?.move ?? 0;
-  if (moveRange <= 0) return targets;
+  orientation: BoardOrientation = 'edge-up',
+): Record<string, number> {
+  const coords = gridCoords(radius, orientation);
+  const out: Record<string, number> = {};
+  coords.forEach((c, i) => { out[`${c.q},${c.r}`] = i + 1; });
+  return out;
+}
 
-  const visited = new Set<string>([`${sq},${sr}`]);
-  let frontier: [number, number][] = [[sq, sr]];
+/**
+ * Which corner panel a filler hex sits in. Panel colours follow each player's
+ * OWN left/right - see the stylesheet - so the bottom pair is white's and the
+ * top pair is black's.
+ */
+function panelOf(x: number, y: number): string {
+  return `${y < 0 ? 't' : 'b'}${x < 0 ? 'l' : 'r'}`;
+}
 
-  for (let step = 0; step < moveRange; step++) {
-    const nextFrontier: [number, number][] = [];
-    for (const [cq, cr] of frontier) {
-      for (const [dq, dr] of HEX_DIRS) {
-        const nq = cq + dq, nr = cr + dr;
-        const key = `${nq},${nr}`;
-        if (visited.has(key) || !isInsideBoard(nq, nr, radius)) continue;
-        visited.add(key);
-        if (boardState[key]) continue; // occupied - blocks entry and passage
-        targets.add(key);
-        nextFrontier.push([nq, nr]);
-      }
+/** Every hex in the squared-off block, already in reading order. */
+function gridCoords(radius: number, orientation: BoardOrientation) {
+  let limitX = 0, limitY = 0;
+  for (let q = -radius; q <= radius; q++) {
+    for (let r = -radius; r <= radius; r++) {
+      if (Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) > radius) continue;
+      const { x, y } = axialToPixel(q, r, orientation);
+      limitX = Math.max(limitX, Math.abs(x));
+      limitY = Math.max(limitY, Math.abs(y));
     }
-    if (nextFrontier.length === 0) break;
-    frontier = nextFrontier;
   }
-  return targets;
+  limitX += Math.abs(axialToPixel(1, 0, orientation).x - axialToPixel(0, 0, orientation).x) / 2;
+
+  const EPS = 0.001;
+  const scan = 2 * radius + 3;
+  const cells: { q: number; r: number; x: number; y: number; onBattlefield: boolean }[] = [];
+  for (let q = -scan; q <= scan; q++) {
+    for (let r = -scan; r <= scan; r++) {
+      const { x, y } = axialToPixel(q, r, orientation);
+      const onBattlefield = Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) <= radius;
+      if (!onBattlefield && (Math.abs(x) > limitX + EPS || Math.abs(y) > limitY + EPS)) continue;
+      cells.push({ q, r, x, y, onBattlefield });
+    }
+  }
+  cells.sort((a, b) => a.y - b.y || a.x - b.x);
+  return cells;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +242,7 @@ function computeLegalMoves(
         [attr.viewBox]="viewBox"
         class="hex-board"
         preserveAspectRatio="xMidYMid meet"
+        (mouseleave)="onHexHover(null)"
       >
         <!-- Hex cells -->
         <g *ngFor="let hex of cells; trackBy: trackByKey">
@@ -195,10 +252,14 @@ function computeLegalMoves(
             [ngClass]="hex.zoneClass"
             [class.hex-selected]="hex.key === selectedHex"
             [class.hex-legal]="legalTargets.has(hex.key)"
+            [class.hex-move-preview]="previewMoves.has(hex.key) && !legalTargets.has(hex.key)"
+            [class.hex-attack-preview]="previewAttacks.has(hex.key)"
+            [class.hex-attack-target]="attackTargets.has(hex.key)"
             [class.hex-last-from]="hex.key === lastMoveFrom"
             [class.hex-last-to]="hex.key === lastMoveTo"
             [class.hex-damaged]="hex.key === lastDamagedHex"
             (click)="onHexClick(hex)"
+            (mouseenter)="onHexHover(hex)"
           />
           <!-- Legal-move dot -->
           <circle
@@ -209,47 +270,73 @@ function computeLegalMoves(
             class="legal-dot"
             (click)="onHexClick(hex)"
           />
-          <!-- Hex number (toggled from the game room) -->
+          <!-- Unit: inner hex plate, icon in the opposite colour, and the
+               stats ringed around it (HP top, attack right, move left). -->
+          <ng-container *ngIf="hex.piece as pc">
+            <polygon
+              [attr.points]="hex.innerPoints"
+              class="unit-plate"
+              [class.plate-white]="pc.color === 'white'"
+              [class.plate-black]="pc.color === 'black'"
+              [class.plate-selected]="hex.key === selectedHex"
+              [class.plate-hovered]="hex.key === hoveredHex"
+              (click)="onHexClick(hex)"
+              (mouseenter)="onHexHover(hex)"
+            />
+            <!-- Numbering mode replaces the unit's face with its hex number. -->
+            <ng-container *ngIf="!showNumbers">
+              <text
+                [attr.x]="hex.cx"
+                [attr.y]="hex.cy + 1"
+                class="piece-symbol"
+                [class.piece-white]="pc.color === 'white'"
+                [class.piece-black]="pc.color === 'black'"
+                [class.piece-selected]="hex.key === selectedHex"
+                (click)="onHexClick(hex)"
+              >{{ getPieceSymbol(pc) }}</text>
+              <text *ngIf="hex.stats?.hp != null"
+                    [attr.x]="hex.cx" [attr.y]="hex.cy - 14"
+                    class="stat stat-hp" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
+              >{{ statText(hex.stats?.hp) }}</text>
+              <text *ngIf="hex.stats?.def != null"
+                    [attr.x]="hex.cx - 13" [attr.y]="hex.cy + 14"
+                    class="stat stat-def" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
+              >{{ statText(hex.stats?.def) }}</text>
+              <text *ngIf="hex.stats?.atk != null"
+                    [attr.x]="hex.cx + 13" [attr.y]="hex.cy + 14"
+                    class="stat stat-atk" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
+              >{{ hex.stats?.atk }}</text>
+              <!-- Veterancy pips: 1 -> top-left, 2 -> +top-right, 3 -> +bottom -->
+              <text *ngIf="hex.vet >= 1" [attr.x]="hex.cx - 14" [attr.y]="hex.cy - 12"
+                    class="vet-star" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex">&#9733;</text>
+              <text *ngIf="hex.vet >= 2" [attr.x]="hex.cx + 14" [attr.y]="hex.cy - 12"
+                    class="vet-star" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex">&#9733;</text>
+              <text *ngIf="hex.vet >= 3" [attr.x]="hex.cx" [attr.y]="hex.cy + 16"
+                    class="vet-star" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex">&#9733;</text>
+            </ng-container>
+          </ng-container>
+
+          <!-- Painted last so it sits ON TOP of the unit plate - on a black
+               plate as much as a white one. -->
           <text
             *ngIf="showNumbers"
             [attr.x]="hex.cx"
-            [attr.y]="hex.cy - 10"
+            [attr.y]="hex.cy"
             class="hex-number"
             [class.on-panel]="hex.filler"
+            [class.on-plate]="!!hex.piece"
           >{{ hex.num }}</text>
-          <!-- Piece symbol -->
-          <text
-            *ngIf="hex.piece"
-            [attr.x]="hex.cx"
-            [attr.y]="hex.cy + 5"
-            class="piece-symbol"
-            [class.piece-white]="hex.piece.color === 'white'"
-            [class.piece-black]="hex.piece.color === 'black'"
-            (click)="onHexClick(hex)"
-          >{{ getPieceSymbol(hex.piece) }}</text>
         </g>
       </svg>
 
       <!-- Turn / status bar -->
-      <div class="status-bar" *ngIf="currentTurn || endReason">
-        <span *ngIf="!endReason">
-          Turn {{ turnNumber }} -
-          <strong [class.my-turn]="isMyTurn">{{ isMyTurn ? 'Your move' : currentTurn + "'s move" }}</strong>
-          <span *ngIf="turnTimeLimit > 0" class="timer-badge" [class.timer-low]="timerSeconds <= 10">
-            ⏱ {{ timerSeconds }}s
-          </span>
+      <!-- Whose turn it is now lives in the History header; the clock is all
+           that still needs space on the board. The result is the game room's
+           to show: it swaps the board out for its banner when a game ends. -->
+      <div class="status-bar" *ngIf="turnTimeLimit > 0 && !endReason">
+        <span class="timer-badge" [class.timer-low]="timerSeconds <= 10">
+          &#9201; {{ timerSeconds }}s
         </span>
-        <span *ngIf="endReason" class="game-over-label">
-          {{ endReasonLabel }}
-        </span>
-      </div>
-
-      <!-- Post-game overlay -->
-      <div class="post-game-overlay" *ngIf="endReason">
-        <div class="overlay-card">
-          <h2>{{ winner ? (winner === username ? 'You won!' : 'You lost!') : 'Draw' }}</h2>
-          <p>{{ endReasonLabel }}</p>
-        </div>
       </div>
     </div>
   `,
@@ -299,7 +386,11 @@ function computeLegalMoves(
        battlefield. Colour-coded per corner; no meaning or interaction yet. */
     .hex-filler {
       stroke: rgba(255, 255, 255, 0.10);
-      cursor: default;
+      cursor: pointer;
+    }
+    .hex-filler:hover {
+      stroke: rgba(255, 255, 255, 0.55);
+      stroke-width: 2;
     }
     /* Panel colours follow each player's OWN left/right, not the screen's. The
        board never flips - white is always at the bottom, black at the top -
@@ -327,6 +418,22 @@ function computeLegalMoves(
 
     .hex-legal:hover {
       fill: #a0d4a0 !important;
+    }
+
+    /* An enemy the selected unit can hit right now - click to attack. */
+    .hex-attack-target {
+      fill: #d9534f !important;
+      cursor: crosshair;
+    }
+
+    /* Preview of another unit's reach: where it could stand ... */
+    .hex-move-preview {
+      fill: #cfe6cf !important;
+    }
+
+    /* ... and where it could not stand but could still strike. */
+    .hex-attack-preview {
+      fill: #e9a7a2 !important;
     }
 
     .hex-last-from {
@@ -364,26 +471,88 @@ function computeLegalMoves(
     .hex-number.on-panel {
       fill: rgba(255, 255, 255, 0.92);
     }
+    /* Sitting on a unit plate instead of the bare board. */
+    .hex-number.on-plate {
+      fill: #ffd34d;
+      stroke: rgba(0, 0, 0, 0.9);
+      stroke-width: 3.5;
+      paint-order: stroke;
+    }
+
+    /* The plate carries the side's colour; the icon takes the opposite one.
+       Outlined in the board's own fill so it reads as a thin ring. */
+    .unit-plate {
+      stroke: #f0d9b5;
+      stroke-width: 1;
+      cursor: pointer;
+    }
+    .plate-white { fill: #ffffff; }
+    .plate-black { fill: #141414; }
+    /* Selection greys the plate, whichever side it belongs to. */
+    .plate-selected { fill: #9aa0a6 !important; }
+    /* Hover just shadows it, so it reads as a preview and not a selection. */
+    .plate-hovered {
+      stroke: rgba(0, 0, 0, 0.55);
+      stroke-width: 3;
+      filter: brightness(0.86);
+    }
 
     .piece-symbol {
-      font-size: 22px;
+      /* As large as fits between the HP number above and the ATK/DEF pair
+         below - the plate is 23 and the stats sit at +/-14. */
+      font-size: 23px;
       text-anchor: middle;
       dominant-baseline: central;
       pointer-events: none;
       user-select: none;
     }
 
-    .piece-white {
-      fill: #ffffff;
-      stroke: #333333;
-      stroke-width: 0.5;
+    .piece-white { fill: #141414; }
+    .piece-black { fill: #ffffff; }
+    /* Grey plate reads as light, so the glyph goes dark either way. */
+    .piece-selected { fill: #141414 !important; }
+
+    /* Stats sit ON the plate now that it fills most of the cell, so each one
+       needs a light and a dark variant - a single colour cannot carry both a
+       white and a near-black background. Halo flips with it. Readability of
+       these numbers outranks everything else in the cell. */
+    .stat {
+      font-weight: 700;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+      user-select: none;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.95);
+      stroke-width: 2.5;
+    }
+    .stat.on-dark {
+      stroke: rgba(0, 0, 0, 0.95);
     }
 
-    .piece-black {
-      fill: #222222;
-      stroke: #666666;
-      stroke-width: 0.5;
+    .vet-star {
+      font-size: 13px;
+      text-anchor: middle;
+      dominant-baseline: central;
+      fill: #ffd34d;
+      stroke: rgba(0, 0, 0, 0.65);
+      stroke-width: 2;
+      paint-order: stroke;
+      pointer-events: none;
     }
+    // A dark halo vanishes into a black plate; go bright and ring it in white.
+    .vet-star.on-dark {
+      fill: #ffe066;
+      stroke: rgba(255, 255, 255, 0.9);
+    }
+
+    .stat-hp { font-size: 16px; fill: #15803d; }
+    .stat-atk { font-size: 15px; fill: #b91c1c; }
+    .stat-def { font-size: 15px; fill: #1d4ed8; }
+
+    .stat-hp.on-dark { fill: #4ade80; }
+    .stat-atk.on-dark { fill: #f87171; }
+    .stat-def.on-dark { fill: #7dd3fc; }
 
     .status-bar {
       /* Overlaid on the board rather than stacked below it - see .hex-board. */
@@ -404,11 +573,6 @@ function computeLegalMoves(
       color: #66bb6a;
     }
 
-    .game-over-label {
-      font-weight: bold;
-      color: #ffa726;
-    }
-
     .timer-badge {
       margin-left: 8px;
       padding: 2px 8px;
@@ -426,34 +590,6 @@ function computeLegalMoves(
       50% { opacity: 0.6; }
     }
 
-    .post-game-overlay {
-      position: absolute;
-      top: 0; left: 0; right: 0; bottom: 0;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      background: rgba(0,0,0,0.55);
-      border-radius: 6px;
-      z-index: 10;
-    }
-    .overlay-card {
-      background: #1e1e2e;
-      border: 2px solid #ffa726;
-      border-radius: 12px;
-      padding: 24px 40px;
-      text-align: center;
-      color: #e0e0e0;
-    }
-    .overlay-card h2 {
-      margin: 0 0 8px;
-      font-size: 28px;
-      color: #ffa726;
-    }
-    .overlay-card p {
-      margin: 0;
-      font-size: 15px;
-      color: #bbb;
-    }
   `],
 })
 export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
@@ -471,12 +607,21 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   @Input() username = '';
   /** This client's color ('white' | 'black'). */
   @Input() myColor: 'white' | 'black' | '' = '';
-  /** Winner username (or ''). */
-  @Input() winner = '';
   /** End reason (or ''). */
   @Input() endReason = '';
   /** Whether input is enabled (it's my turn and game is active). */
   @Input() interactive = true;
+  /** False once a move is staged: units can still be inspected, not driven. */
+  @Input() canMove = true;
+  /** Steps the staged unit has left this turn, and which unit that is. */
+  @Input() movesLeft: number | null = null;
+  @Input() movesLeftFor: string | null = null;
+  /**
+   * One-turn stat boosts by hex. Only `mov` matters here - it widens the
+   * flood fill for a unit that has not taken its first step yet, after which
+   * `movesLeft` carries the same bonus.
+   */
+  @Input() unitBuffs: Record<string, { mov: number }> = {};
   /** Seconds allowed per turn (0 = unlimited). */
   @Input() turnTimeLimit = 0;
   /** ISO timestamp when the current turn started. */
@@ -485,11 +630,28 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   @Input() config: any = null;
   /** Overlay each battlefield hex with its reading-order number. */
   @Input() showNumbers = false;
+  /** Solo play: this client drives both sides, not just its own colour. */
+  @Input() controlAllSides = false;
+  /** Colour of whoever's turn it is - what controlAllSides selects with. */
+  @Input() turnColor: 'white' | 'black' | '' = '';
 
   // -- Outputs --------------------------------------------------------
 
   /** Emitted when the player makes a move: {from: "q,r", to: "q,r"}. */
-  @Output() moveMade = new EventEmitter<{ from: string; to: string }>();
+  @Output() moveMade = new EventEmitter<{ from: string; to: string; cost: number }>();
+  /** Emitted with the selected unit's details, or null when nothing is on it. */
+  @Output() hexSelected = new EventEmitter<SelectedUnit | null>();
+  /**
+   * The same payload, but only when the player actually picked the unit.
+   * `hexSelected` also fires when the board changes underneath a standing
+   * selection, which must not read as a click - an ability waiting for a
+   * target would fire itself on the opponent's move.
+   */
+  @Output() hexClicked = new EventEmitter<SelectedUnit | null>();
+  /** Attack from `to` (where the unit stands) against the enemy on `attack`. */
+  @Output() attackMade = new EventEmitter<{ from: string; to: string; attack: string }>();
+  /** Same payload for the hex under the cursor - a preview, not a selection. */
+  @Output() hexHovered = new EventEmitter<SelectedUnit | null>();
 
   // -- Internal state -------------------------------------------------
 
@@ -498,6 +660,29 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   selectedHex: string | null = null;
   legalTargets = new Set<string>();
+  /** Enemies the selected unit can hit from where it stands. */
+  attackTargets = new Set<string>();
+  /** Step cost of each legal destination, for charging the move budget. */
+  private moveCosts = new Map<string, number>();
+  /** Which hexes make up each corner panel, keyed 'bl' | 'br' | 'tr' | 'tl'. */
+  private panelZones = new Map<string, Set<string>>();
+  /**
+   * Units waiting in the corner panels: red and light green are white's, dark
+   * red and dark green are black's. Client-side only - the server's board is
+   * the radius-N battlefield and rejects anything outside it, and how a
+   * reserve enters play is still to be designed. Until then they are confined
+   * to their own panel: they shuffle inside it and can neither move nor
+   * strike out of it, and nothing on the board can strike into it.
+   * ponytail: not persisted and not sent anywhere; a reload re-deals them.
+   */
+  private reserves: Record<string, PieceData> = {};
+  private reservesKey = '';
+  /** Board plus reserves - what the flood fill treats as occupied. */
+  private occupancy: BoardState = {};
+  /** Reach of whatever unit is being shown - hover first, else the selection. */
+  previewMoves = new Set<string>();
+  previewAttacks = new Set<string>();
+  private previewKey: string | null = null;
   lastMoveFrom = '';
   lastMoveTo = '';
   lastDamagedHex = '';  // hex that was attacked but unit survived
@@ -510,17 +695,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     return this.currentTurn === this.username;
   }
 
-  get endReasonLabel(): string {
-    const isWinner = this.winner === this.username;
-    switch (this.endReason) {
-      case 'elimination': return isWinner ? 'You won - all enemies eliminated!' : 'You lost - all units eliminated';
-      case 'resign':      return isWinner ? 'You won by resignation' : 'You lost by resignation';
-      case 'timeout':     return isWinner ? 'You won - opponent timed out' : 'You lost - time out';
-      case 'disconnect':  return isWinner ? 'You won - opponent disconnected' : 'You lost - disconnected';
-      case 'draw_agreed': return 'Draw by agreement';
-      case 'draw_max_turns': return 'Draw - max turns reached';
-      default:            return 'Game over';
-    }
+  /** Which side this client may pick up right now. */
+  get activeColor(): 'white' | 'black' | '' {
+    return this.controlAllSides ? this.turnColor : this.myColor;
   }
 
   // -- Lifecycle ------------------------------------------------------
@@ -538,10 +715,24 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (changes['boardState'] || changes['radius'] || changes['config']) {
       this.buildCells();
     }
-    // If a move was just made (turnNumber changed), clear selection
+    // A move ends the ability to move again, but the selection itself sticks
+    // until another unit is clicked - the Unit panel stays pinned to it.
     if (changes['turnNumber'] && !changes['turnNumber'].firstChange) {
-      this.selectedHex = null;
-      this.legalTargets.clear();
+      this.clearTargets();
+    }
+    // The board just changed underneath the selection: re-read the stats from
+    // the new cell so a piece that moved keeps its panel, and drop a selection
+    // whose unit is gone.
+    if (changes['boardState'] && this.selectedHex) {
+      const cell = this.cells.find(c => c.key === this.selectedHex);
+      if (!cell?.piece) this.selectedHex = null;
+      this.hexSelected.emit(cell?.piece ? this.describe(cell) : null);
+    }
+    // A boost landing mid-turn widens the reach of a unit already selected.
+    if (changes['boardState'] || changes['config'] || changes['radius'] || changes['unitBuffs']) {
+      this.invalidatePreview();
+      // A staged step moved the unit: its remaining reach moved with it.
+      this.refreshTargets();
     }
     // Restart timer when turn changes
     if (changes['turnStartedAt'] || changes['turnTimeLimit']) {
@@ -552,36 +743,56 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   // -- Click handler --------------------------------------------------
 
   onHexClick(hex: HexCell): void {
-    // Filler hexes are off the battlefield - nothing to select.
-    if (hex.filler) {
+    this.handleClick(hex);
+    // Any branch above may have moved the selection, and the preview follows it.
+    this.invalidatePreview();
+  }
+
+  private handleClick(hex: HexCell): void {
+    if (!this.interactive || this.endReason) {
       return;
     }
-    if (!this.interactive || !this.isMyTurn || this.endReason) {
-      return;
-    }
+    // Clicking a unit always inspects it. Driving one additionally needs the
+    // turn (unless we hold both sides) and a move still to spend.
+    // Driving both sides means "my turn" is irrelevant - the active colour is.
+    const canDrive = this.canMove && (this.controlAllSides || this.isMyTurn);
 
     // If clicking a legal target -> emit the move
-    if (this.selectedHex && this.legalTargets.has(hex.key)) {
-      this.lastMoveFrom = this.selectedHex;
-      this.lastMoveTo = hex.key;
-      this.moveMade.emit({ from: this.selectedHex, to: hex.key });
-      this.selectedHex = null;
-      this.legalTargets.clear();
+    // An enemy inside reach: swing at it. That spends the unit's turn, so it
+    // goes out immediately instead of staging like a move does.
+    if (this.selectedHex && this.attackTargets.has(hex.key)) {
+      this.attackMade.emit({ from: this.selectedHex, to: this.selectedHex, attack: hex.key });
+      this.clearTargets();
       return;
     }
 
-    // If clicking own piece -> select it and compute legal moves
-    if (hex.piece && hex.piece.color === this.myColor) {
-      this.selectedHex = hex.key;
-      // Compute client-side legal-move preview
-      if (this.config) {
-        const [sq, sr] = hex.key.split(',').map(Number);
-        this.legalTargets = computeLegalMoves(
-          this.boardState, sq, sr, this.config, this.radius
-        );
-      } else {
-        this.legalTargets.clear();
+    if (this.selectedHex && this.legalTargets.has(hex.key)) {
+      // A reserve never reaches the server: it is shuffling inside its panel.
+      if (this.reserves[this.selectedHex]) {
+        this.moveReserve(this.selectedHex, hex.key);
+        return;
       }
+      this.lastMoveFrom = this.selectedHex;
+      this.lastMoveTo = hex.key;
+      this.moveMade.emit({
+        from: this.selectedHex,
+        to: hex.key,
+        // What the walk actually costs, detours included.
+        cost: this.moveCosts.get(hex.key) ?? 1,
+      });
+      // The selection rides along to the destination so its stats stay pinned.
+      this.selectedHex = hex.key;
+      this.clearTargets();
+      return;
+    }
+
+    // Any unit can be selected: it highlights and pins to the Unit panel. Only
+    // one we're allowed to drive gets a legal-move preview - an enemy, or any
+    // unit once the turn's move is spent, is inspect-only.
+    if (hex.piece) {
+      this.selectedHex = hex.key;
+      this.emitSelected(hex);
+      this.refreshTargets(canDrive);
       return;
     }
 
@@ -590,18 +801,20 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       if (hex.key !== this.selectedHex) {
         // If we have legal targets computed, only move to legal targets (already handled above).
         // If no legal targets were computed (no config), submit anyway (server validates).
-        if (this.legalTargets.size === 0 && !this.config) {
+        if (canDrive && !hex.filler && this.legalTargets.size === 0 && !this.config) {
           this.lastMoveFrom = this.selectedHex;
           this.lastMoveTo = hex.key;
-          this.moveMade.emit({ from: this.selectedHex, to: hex.key });
+          this.moveMade.emit({ from: this.selectedHex, to: hex.key, cost: 1 });
         }
         this.selectedHex = null;
-        this.legalTargets.clear();
+        this.clearTargets();
+        this.hexSelected.emit(null);
         return;
       }
       // Clicking same hex deselects
       this.selectedHex = null;
-      this.legalTargets.clear();
+      this.clearTargets();
+      this.hexSelected.emit(null);
     }
   }
 
@@ -613,87 +826,249 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   private buildCells(): void {
-    const cells: HexCell[] = [];
     const r = this.radius;
     const orientation = this.orientation;
+    // Shared with hexNumberMap(), so the numbers drawn here are the same ones
+    // the game room quotes in move history.
+    const coords = gridCoords(r, orientation);
 
-    // Square off the board: fill every hex whose centre falls inside the
-    // battlefield's own centre-bounds, symmetric about both axes. Fill by row
-    // *count* instead and the half-cell stagger on odd rows shifts the whole
-    // block sideways, leaving one flank a column short.
-    let limitX = 0, limitY = 0;
-    for (let q = -r; q <= r; q++) {
-      for (let ri = -r; ri <= r; ri++) {
-        if (Math.max(Math.abs(q), Math.abs(ri), Math.abs(q + ri)) > r) continue;
-        const { x, y } = axialToPixel(q, ri, orientation);
-        limitX = Math.max(limitX, Math.abs(x));
-        limitY = Math.max(limitY, Math.abs(y));
-      }
+    // Panels first: the reserves that live in them decide what the cells hold.
+    this.panelZones = new Map();
+    for (const c of coords) {
+      if (c.onBattlefield) continue;
+      const panel = panelOf(c.x, c.y);
+      let zone = this.panelZones.get(panel);
+      if (!zone) this.panelZones.set(panel, zone = new Set<string>());
+      zone.add(`${c.q},${c.r}`);
     }
-    // ...then out by HALF a column on each flank. Odd rows are staggered half a
-    // cell, so half a step reaches them and not the even rows: every row ends
-    // up flush at the same outer edge, instead of even rows jutting out past
-    // odd ones. A full step would add a cell to every row and put that
-    // alternating overhang back.
-    limitX += Math.abs(axialToPixel(1, 0, orientation).x - axialToPixel(0, 0, orientation).x) / 2;
+    this.buildReserves();
+    this.occupancy = { ...this.boardState, ...this.reserves };
 
-    const EPS = 0.001; // float slack - these are products of sqrt(3)
-    const scan = 2 * r + 3;
-    for (let q = -scan; q <= scan; q++) {
-      for (let ri = -scan; ri <= scan; ri++) {
-        const { x, y } = axialToPixel(q, ri, orientation);
-        const onBattlefield = Math.max(Math.abs(q), Math.abs(ri), Math.abs(q + ri)) <= r;
-        // The bounds trim filler ONLY. Guarding on !onBattlefield means no
-        // amount of tuning limitX/limitY can start shaving hexes off the board
-        // itself - which is otherwise exactly what narrowing them does.
-        if (!onBattlefield && (Math.abs(x) > limitX + EPS || Math.abs(y) > limitY + EPS)) continue;
+    this.cells = coords.map((c, i) => {
+      const key = `${c.q},${c.r}`;
+      const piece = (c.onBattlefield ? this.boardState[key] : this.reserves[key]) || null;
+      const def = piece ? this.config?.units?.[piece.unit_id] : null;
+      return {
+        q: c.q,
+        r: c.r,
+        key,
+        cx: c.x,
+        cy: c.y,
+        points: hexPoints(c.x, c.y, orientation),
+        innerPoints: hexPoints(c.x, c.y, orientation, PLATE_SIZE),
+        piece,
+        stats: piece
+          ? {
+              hp: twoDigits(piece.hp),
+              atk: attackText(piece.unit_id, this.config),
+              def: twoDigits(def?.defense),
+            }
+          : null,
+        // Keyed on the unit, not the hex: veterancy that changed every time
+        // a unit walked would flicker the ability slots it gates.
+        vet: piece ? placeholderVet(piece.uid ?? key, piece.unit_id) : 0,
+        filler: !c.onBattlefield,
+        panel: c.onBattlefield ? '' : panelOf(c.x, c.y),
+        // Four panels around the hexagon, one per corner.
+        zoneClass: c.onBattlefield ? '' : `hex-filler panel-${panelOf(c.x, c.y)}`,
+        num: i + 1,
+      };
+    });
 
-        const key = `${q},${ri}`;
-        cells.push({
-          q,
-          r: ri,
-          key,
-          cx: x,
-          cy: y,
-          points: hexPoints(x, y, orientation),
-          // Filler hexes are never occupied - nothing is played on them yet.
-          piece: onBattlefield ? (this.boardState[key] || null) : null,
-          filler: !onBattlefield,
-          // Four panels around the hexagon, one per corner.
-          zoneClass: onBattlefield
-            ? ''
-            : `hex-filler panel-${y < 0 ? 't' : 'b'}${x < 0 ? 'l' : 'r'}`,
-          num: 0,
-        });
-      }
-    }
-
-    // Reading order over EVERY hex, panels included: 1 at the very top-left of
-    // the top-left panel, rightwards along each row, then down, ending at the
-    // bottom-right of the bottom-right panel. Rows share a cy exactly, so a
-    // (cy, cx) sort is the row-by-row order.
-    [...cells]
-      .sort((a, b) => a.cy - b.cy || a.cx - b.cx)
-      .forEach((cell, i) => { cell.num = i + 1; });
-
-    this.cells = cells;
-
-    // Compute SVG viewBox to fit all hexes
-    if (cells.length > 0) {
-      const xs = cells.map(c => c.cx);
-      const ys = cells.map(c => c.cy);
+    if (this.cells.length > 0) {
+      const xs = this.cells.map(c => c.cx);
+      const ys = this.cells.map(c => c.cy);
       const pad = VIEWBOX_PADDING;
       const minX = Math.min(...xs) - pad;
       const minY = Math.min(...ys) - pad;
-      const maxX = Math.max(...xs) + pad;
-      const maxY = Math.max(...ys) + pad;
-      const w = maxX - minX;
-      const h = maxY - minY;
+      const w = Math.max(...xs) + pad - minX;
+      const h = Math.max(...ys) + pad - minY;
       this.viewBox = `${minX.toFixed(1)} ${minY.toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`;
     }
   }
 
+  /**
+   * Deal each panel a placeholder squad, once. Re-dealt only if the roster or
+   * the board geometry changes, so a reserve that has been shuffled around
+   * its panel stays where it was put.
+   */
+  private buildReserves(): void {
+    const roster = Object.entries(this.config?.units ?? {})
+      // The commander belongs on the board; losing it is how a side loses.
+      .filter(([, d]: [string, any]) => !d?.commander)
+      .slice(0, 5);
+    const stamp = `${this.radius}|${this.orientation}|${roster.map(([id]) => id).join(',')}`;
+    if (stamp === this.reservesKey) return;
+    this.reservesKey = stamp;
+    this.reserves = {};
+    if (!roster.length) return;
+
+    for (const [panel, hexes] of this.panelZones) {
+      const color: 'white' | 'black' = panel[0] === 'b' ? 'white' : 'black';
+      // Every third hex in reading order: spread out, with room to shuffle.
+      const spots = [...hexes].filter((_, i) => i % 3 === 0);
+      roster.forEach(([id, def]: [string, any], i) => {
+        const at = spots[i];
+        if (!at) return;
+        const hp = def?.hp ?? 1;
+        this.reserves[at] = { unit_id: id, color, hp, max_hp: hp, uid: `r${panel}${i}` };
+      });
+    }
+  }
+
+  /** Walk a reserve to another hex of its own panel - local, and free. */
+  private moveReserve(from: string, to: string): void {
+    this.reserves[to] = this.reserves[from];
+    delete this.reserves[from];
+    this.selectedHex = to;
+    this.buildCells();
+    const cell = this.cells.find(c => c.key === to);
+    if (cell) this.emitSelected(cell);
+    this.refreshTargets();
+  }
+
   // -- Helpers --------------------------------------------------------
+
+  /** Two-character stat, exposed for the template. */
+  statText = statText;
+
+  /** Hex currently under the cursor, for the hover shadow. */
+  hoveredHex: string | null = null;
+
+  /** Hovering previews a unit in the Unit panel without selecting it. */
+  onHexHover(hex: HexCell | null): void {
+    this.hoveredHex = hex && hex.piece ? hex.key : null;
+    this.hexHovered.emit(hex && hex.piece ? this.describe(hex) : null);
+    this.refreshPreview();
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Show the reach of the unit under the cursor, or of the selection when the
+   * cursor is elsewhere - either side's, since knowing what an enemy threatens
+   * is the point. Movement is where it can stand; the attack layer is what it
+   * could hit from there but not step onto.
+   */
+  private clearTargets(): void {
+    this.legalTargets.clear();
+    this.attackTargets.clear();
+    this.moveCosts.clear();
+  }
+
+  /**
+   * What the selected unit may do from where it now stands: hexes still
+   * inside its remaining move budget, and enemies inside its attack range.
+   * Recomputed after every staged step, because both change as it walks.
+   */
+  private refreshTargets(canDrive = this.canDriveNow()): void {
+    this.clearTargets();
+    const key = this.selectedHex;
+    if (!key || !this.config || !canDrive) return;
+    const cell = this.cells.find(c => c.key === key);
+    if (!cell?.piece || cell.piece.color !== this.activeColor) return;
+
+    // A reserve is confined to its own panel, and shuffling it is not the
+    // turn's action - so the staging lock below does not apply to it.
+    const zone = cell.panel ? this.panelZones.get(cell.panel) : undefined;
+    if (zone) {
+      if (!this.controlAllSides && !this.isMyTurn) return;
+    } else {
+      if (!canDrive) return;
+      // One unit acts per turn: once something is staged, nothing else may be
+      // driven, or the staged origin and the unit on screen part ways.
+      if (this.movesLeftFor && key !== this.movesLeftFor) return;
+    }
+
+    const [sq, sr] = key.split(',').map(Number);
+    const budget = this.budgetFor(cell);
+    this.moveCosts = computeMoveCosts(
+      this.occupancy, sq, sr, this.config, this.radius, budget, zone,
+    );
+    this.legalTargets = new Set(this.moveCosts.keys());
+
+    const range: number = this.config?.units?.[cell.piece.unit_id]?.attackRange ?? 1;
+    for (const other of this.cells) {
+      if (!other.piece || other.piece.color === cell.piece.color) continue;
+      // Nothing reaches across the panel wall, in either direction.
+      if (other.panel !== cell.panel) continue;
+      if (hexDistanceKeys(key, other.key) <= range) this.attackTargets.add(other.key);
+    }
+  }
+
+  /**
+   * Steps the unit at `key` may spend: what is left of a staged turn, or its
+   * own move stat plus any boost. `undefined` lets the rules read the stat.
+   */
+  private budgetFor(cell: HexCell): number | undefined {
+    if (cell.key === this.movesLeftFor) return this.movesLeft ?? undefined;
+    const bonus = this.unitBuffs[this.uidOf(cell)]?.mov ?? 0;
+    if (!bonus) return undefined;
+    const base = this.config?.units?.[cell.piece?.unit_id ?? '']?.move ?? 0;
+    return Math.max(0, base + bonus);
+  }
+
+  /** A unit's identity, falling back to its hex for boards without one. */
+  private uidOf(cell: HexCell): string {
+    return cell.piece?.uid ?? cell.key;
+  }
+
+  /** The seat rules half of "may I drive this?" - see onHexClick. */
+  private canDriveNow(): boolean {
+    return this.canMove && (this.controlAllSides || this.isMyTurn);
+  }
+
+  private refreshPreview(): void {
+    const key = this.hoveredHex ?? this.selectedHex;
+    const cell = key ? this.cells.find(c => c.key === key) : null;
+    // A unit that has walked has less left to show, so the budget is part of
+    // the preview's identity - not just which unit it belongs to.
+    const budget = cell?.piece ? this.budgetFor(cell) : undefined;
+    const memo = `${key}:${budget}`;
+    if (memo === this.previewKey) return;
+    this.previewKey = memo;
+    this.previewMoves = new Set<string>();
+    this.previewAttacks = new Set<string>();
+    if (!key || !this.config || !cell?.piece) return;
+    const [q, r] = key.split(',').map(Number);
+    const zone = cell.panel ? this.panelZones.get(cell.panel) : undefined;
+    this.previewMoves = computeLegalMoves(
+      this.occupancy, q, r, this.config, this.radius, budget, zone,
+    );
+    // The strike layer sits just outside whatever movement is left.
+    this.previewAttacks = computeAttackZone(
+      key, this.previewMoves, this.config, cell.piece.unit_id, this.radius, zone,
+    );
+  }
+
+  /** The board or the selection moved under the preview - recompute it. */
+  private invalidatePreview(): void {
+    this.previewKey = null;
+    this.refreshPreview();
+  }
+
+  private describe(hex: HexCell): SelectedUnit {
+    const pc = hex.piece!;
+    const def = this.config?.units?.[pc.unit_id];
+    return {
+      key: hex.key,
+      uid: this.uidOf(hex),
+      name: def?.name ?? pc.unit_id,
+      color: pc.color,
+      hp: twoDigits(pc.hp),
+      hpMax: twoDigits(pc.max_hp ?? def?.hp),
+      atk: hex.stats?.atk ?? '',
+      def: hex.stats?.def ?? null,
+      mv: twoDigits(def?.move),
+      vet: hex.vet,
+    };
+  }
+
+  /** Hand the game room what its Unit panel shows for the hex just clicked. */
+  private emitSelected(hex: HexCell): void {
+    const unit = hex.piece ? this.describe(hex) : null;
+    this.hexSelected.emit(unit);
+    this.hexClicked.emit(unit);
+  }
 
   /** Glyph comes from the unit's config entry - nothing is hardcoded per unit. */
   getPieceSymbol(piece: PieceData): string {

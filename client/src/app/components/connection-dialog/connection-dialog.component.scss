@@ -89,3 +89,17 @@ p {
 .login-button:hover {
   background-color: #c0392b;
 }
+.offline-button {
+  background-color: #27ae60;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 4px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.offline-button:hover {
+  background-color: #219a52;
+}

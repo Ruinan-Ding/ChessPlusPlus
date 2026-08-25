@@ -18,8 +18,14 @@
          used to be clipped into the hexagon's corners, which left far too
          little usable area for their controls. -->
     <div class="match-panels">
-      <section class="match-panel history-panel">
-        <h3>History</h3>
+      <section class="match-panel history-panel" [class.expanded]="historyExpanded">
+        <h3>
+          <span>{{ historyTitle }}</span>
+          <button class="expand-btn" type="button"
+                  (click)="historyExpanded = !historyExpanded"
+                  [title]="historyExpanded ? 'Collapse history' : 'Expand history'"
+          >{{ historyExpanded ? '⤡' : '⤢' }}</button>
+        </h3>
         <div class="panel-body">
           <div class="history-item" *ngFor="let message of historyMessages">
             <span class="history-text">{{ message.content }}</span>
@@ -27,40 +33,80 @@
           </div>
           <div class="panel-empty" *ngIf="historyMessages.length === 0">No history yet.</div>
         </div>
+        <!-- A move is staged on the board until one of these resolves it. -->
+        <div class="turn-controls">
+          <button class="undo-btn" type="button" (click)="undoMove()" [disabled]="!pendingMove">Undo<span *ngIf="shortcutsActive"> (R)</span></button>
+          <button class="end-turn-btn" type="button" (click)="endTurn()" [disabled]="!canEndTurn">End Turn<span *ngIf="shortcutsActive"> (TAB)</span></button>
+        </div>
       </section>
 
-      <!-- Placeholder until unit selection is plumbed from the board up here. -->
-      <section class="match-panel stats-panel">
-        <h3>Unit</h3>
+      <!-- Mirrors the selected hex. 2x2 so the panel stays short and History
+           gets the height. Colours match the numbers drawn on the board. -->
+      <section class="match-panel stats-panel" *ngIf="!historyExpanded">
+        <h3>{{ unitPanelTitle }}</h3>
         <div class="panel-body">
-          <div class="stat-row"><span>Unit</span><strong>—</strong></div>
-          <div class="stat-row"><span>HP</span><strong>— / —</strong></div>
-          <div class="stat-row"><span>Attack</span><strong>—</strong></div>
-          <div class="stat-row"><span>Move</span><strong>—</strong></div>
+          <div class="stat-grid">
+            <div class="stat-cell hp"><span>HP</span>
+              <strong>{{ displayUnit ? displayUnit.hp + '/' + displayUnit.hpMax : '—' }}</strong></div>
+            <div class="stat-cell atk"><span>ATK</span>
+              <strong [class.boosted]="!!displayBuff?.atk">{{ statAtk }}</strong></div>
+            <div class="stat-cell def"><span>DEF</span>
+              <strong [class.boosted]="!!displayBuff?.def">{{ statDef }}</strong></div>
+            <div class="stat-cell mov"><span>MOV</span>
+              <strong [class.boosted]="!!displayBuff?.mov">{{ statMov }}</strong></div>
+          </div>
           <div class="panel-buttons">
-            <button class="scaffold-btn" type="button">Ability 1</button>
-            <button class="scaffold-btn" type="button">Ability 2</button>
+            <ng-container *ngFor="let cd of unitCooldowns; index as i">
+              <!-- The passive is always on, so it is a label, not a control. -->
+              <span *ngIf="isPassive(i)" class="passive-row"
+                    [class.locked]="!vetUnlocked(i)" [title]="abilityHint(i)"
+              >{{ abilityLabel(i, cd) }}</span>
+              <button *ngIf="!isPassive(i)" class="scaffold-btn" type="button"
+                      [class.arming]="isArmed('mine', i)"
+                      [title]="abilityHint(i)"
+                      [disabled]="!vetUnlocked(i) || !canAfford('mine', i, cd)"
+                      (click)="useAbility('mine', i, unitCooldowns)"
+              >{{ abilityLabel(i, cd) }}</button>
+            </ng-container>
+          </div>
+          <p class="arming-hint" *ngIf="pendingAbility">Click a unit to boost it.</p>
+        </div>
+      </section>
+
+      <!-- Same shape as Your Abilities. Live only on the opponent's turn, and
+           only when you are driving both sides - never in multiplayer. -->
+      <section class="match-panel opponent-panel" *ngIf="!historyExpanded">
+        <h3 class="panel-head"><span>Opponent</span><span class="points">{{ opponentPoints }}</span></h3>
+        <div class="panel-body">
+          <div class="panel-buttons">
+            <ng-container *ngFor="let cd of opponentCooldowns; index as i">
+              <span *ngIf="isPassive(i)" class="passive-row" [title]="abilityHint(i)"
+              >{{ abilityLabel(i, cd) }}</span>
+              <button *ngIf="!isPassive(i)" class="scaffold-btn" type="button"
+                      [class.arming]="isArmed('opponent', i)"
+                      [title]="abilityHint(i)"
+                      [disabled]="!canAfford('opponent', i, cd)"
+                      (click)="useAbility('opponent', i, opponentCooldowns)"
+              >{{ abilityLabel(i, cd) }}</button>
+            </ng-container>
           </div>
         </div>
       </section>
 
-      <section class="match-panel opponent-panel">
-        <h3>Opponent Abilities</h3>
-        <div class="panel-body">
-          <div class="ability-row">Ability A</div>
-          <div class="ability-row">Ability B</div>
-          <div class="ability-row">Ability C</div>
-        </div>
-      </section>
-
-      <section class="match-panel abilities-panel">
-        <h3>Your Abilities</h3>
+      <section class="match-panel abilities-panel" *ngIf="!historyExpanded">
+        <h3 class="panel-head"><span>Abilities</span><span class="points">{{ myPoints }}</span></h3>
         <div class="panel-body">
           <div class="panel-buttons">
-            <button class="scaffold-btn" type="button">Ability 1</button>
-            <button class="scaffold-btn" type="button">Ability 2</button>
-            <button class="scaffold-btn" type="button">Ability 3</button>
-            <button class="scaffold-btn" type="button">Ability 4</button>
+            <ng-container *ngFor="let cd of myCooldowns; index as i">
+              <span *ngIf="isPassive(i)" class="passive-row" [title]="abilityHint(i)"
+              >{{ abilityLabel(i, cd) }}</span>
+              <button *ngIf="!isPassive(i)" class="scaffold-btn" type="button"
+                      [class.arming]="isArmed('mine', i)"
+                      [title]="abilityHint(i)"
+                      [disabled]="!canAfford('mine', i, cd)"
+                      (click)="useAbility('mine', i, myCooldowns)"
+              >{{ abilityLabel(i, cd) }}</button>
+            </ng-container>
           </div>
         </div>
       </section>
@@ -70,7 +116,7 @@
         type="button"
         [class.active]="showHexNumbers"
         (click)="showHexNumbers = !showHexNumbers"
-      >{{ showHexNumbers ? 'Hide' : 'Show' }} Hex Numbers</button>
+      >{{ showHexNumbers ? 'Hide' : 'Show' }} Hex Numbers<span *ngIf="shortcutsActive"> (S)</span></button>
     </div>
 
     <!-- Centre: the board. app-game-board squares itself off with filler hexes. -->
@@ -78,52 +124,42 @@
       <div class="game-board-panel"
            [class.your-turn]="gameStarted && !state.endReason && state.currentTurn === username"
            [class.their-turn]="gameStarted && !state.endReason && !!state.currentTurn && state.currentTurn !== username">
-        <!-- Keep the board visible after the game ends so the final position
-             and the win/loss overlay remain on screen. -->
+        <!-- A finished game gives the panel back to the mode screen, which
+             carries the result banner - see below. -->
         <app-game-board
-          *ngIf="gameStarted || state.endReason"
-          [boardState]="state.boardState"
+          *ngIf="gameStarted && !state.endReason"
+          [boardState]="stagedBoard ?? state.boardState"
           [radius]="state.config?.board?.radius ?? 11"
           [currentTurn]="state.currentTurn"
           [turnNumber]="state.turnNumber"
           [username]="username"
           [myColor]="gameState.myColor(username)"
-          [winner]="state.winner"
           [endReason]="state.endReason"
           [interactive]="gameState.myColor(username) !== '' && !state.endReason"
+          [canMove]="!hasAttacked"
+          [controlAllSides]="isSinglePlayer"
+          [turnColor]="gameState.myColor(state.currentTurn)"
           [turnTimeLimit]="state.turnTimeLimit"
           [turnStartedAt]="state.turnStartedAt"
           [config]="state.config"
           [showNumbers]="showHexNumbers"
+          [movesLeft]="movesLeft"
+          [movesLeftFor]="pendingMove?.to ?? null"
+          [unitBuffs]="buffs"
           (moveMade)="onPlayerMove($event)"
+          (attackMade)="onPlayerAttack($event)"
+          (hexSelected)="onHexSelected($event)"
+          (hexClicked)="onHexClicked($event)"
+          (hexHovered)="onHexHovered($event)"
         ></app-game-board>
 
-        <!-- Show placeholder when game hasn't started -->
-        <div class="waiting-placeholder" *ngIf="!gameStarted && !state.endReason">
-          <p>Waiting for game to start...</p>
-        </div>
-
-        <!-- Post-game message -->
-        <div class="post-game-message" *ngIf="state.endReason">
-          <p *ngIf="state.winner === username" class="win-message">You won</p>
-          <p *ngIf="state.winner && state.winner !== username" class="loss-message">You lost</p>
-          <p *ngIf="!state.winner" class="draw-message">Draw</p>
-        </div>
-      </div>
-    </div>
-
-    <!-- Right column: Game and Lobby share one tabbed rail. -->
-    <div class="side-rail">
-      <div class="rail-tabs">
-        <button [class.active]="activeSideTab === 'game'" (click)="activeSideTab = 'game'">Game</button>
-        <button [class.active]="activeSideTab === 'lobby'" (click)="activeSideTab = 'lobby'">Lobby</button>
-      </div>
-
-      <!-- ---------------- GAME TAB ---------------- -->
-      <ng-container *ngIf="activeSideTab === 'game'">
-        <!-- Mode is only selectable before the game starts; once it is running
-             the mode is already locked in, so the whole block goes away. -->
-        <div class="rail-section game-settings-panel" *ngIf="!gameStarted">
+        <!-- Pre-game the board is empty, so the mode picker lives here rather
+             than stealing rail width. It goes away once play starts. -->
+        <div class="board-game-mode" *ngIf="!gameStarted || state.endReason">
+          <h2 class="result-banner" *ngIf="state.endReason"
+              [class.won]="state.winner === username"
+              [class.lost]="!!state.winner && state.winner !== username"
+          >{{ resultBanner }}</h2>
           <div class="game-mode-selection" *ngIf="isInviter">
             <h3>Game Mode</h3>
             <div class="mode-options">
@@ -148,8 +184,9 @@
                 <label for="custom-mode">Custom Mode</label>
               </div>
 
-              <!-- Reveal checkbox (custom mode only, and not mid-request) -->
+              <!-- Reveal / Fog (custom mode only, and not mid-request) -->
               <div class="custom-options" *ngIf="gameMode === 'custom'">
+                <p class="coming-soon">Coming Soon...</p>
                 <div class="checkbox-option" *ngIf="isInviter && !showRevealWaitingModal && !otherPlayerConfiguring">
                   <input
                     type="checkbox"
@@ -158,6 +195,12 @@
                     (change)="updateGameOptions()"
                   >
                   <label for="reveal-option">Reveal</label>
+                </div>
+
+                <!-- Fog needs no opponent confirmation, unlike Reveal. -->
+                <div class="checkbox-option" *ngIf="isInviter">
+                  <input type="checkbox" id="fog-option" [(ngModel)]="fogEnabled" (change)="updateGameOptions()">
+                  <label for="fog-option">Fog</label>
                 </div>
 
                 <div class="reveal-display" *ngIf="!isInviter && !showRevealRequestModal">
@@ -176,7 +219,21 @@
           </div>
         </div>
 
-        <div class="rail-section players-section">
+      </div>
+    </div>
+
+    <!-- Right column: Game and Lobby share one tabbed rail. -->
+    <div class="side-rail">
+      <div class="rail-tabs">
+        <button [class.active]="activeSideTab === 'game'" (click)="activeSideTab = 'game'">Game</button>
+        <button [class.active]="activeSideTab === 'lobby'" (click)="activeSideTab = 'lobby'">Lobby</button>
+      </div>
+
+      <!-- ---------------- GAME TAB ---------------- -->
+      <ng-container *ngIf="activeSideTab === 'game'">
+        <!-- Mode is only selectable before the game starts; once it is running
+             the mode is already locked in, so the whole block goes away. -->
+        <div class="rail-section players-section" *ngIf="!chatExpanded">
           <h3>Players</h3>
           <div class="player-list">
             <div class="player-item"
@@ -195,11 +252,20 @@
                     title="Disconnected - waiting for them to reconnect">⚠️</span>
               <span class="player-status" *ngIf="player.status === 'configuring'" title="Configuring setup">⚙️</span>
               <span class="ready-checkmark" *ngIf="player.isReady">✓</span>
+              <!-- Solo rooms: the placeholder seat has no user to act on, so
+                   the menu becomes a shortcut to configure its setup. -->
+              <button
+                class="action-button gear-button"
+                *ngIf="isSinglePlayer && player.username !== username"
+                (click)="openSetup()"
+                [disabled]="gameStarted"
+                title="Configure this opponent's setup"
+              >⚙</button>
               <button
                 class="action-button"
                 (click)="openUserMenu($event, { username: player.username, status: player.status || 'in-game' })"
                 [disabled]="player.username === username"
-                *ngIf="player.username !== username"
+                *ngIf="!isSinglePlayer && player.username !== username"
               >⋮</button>
             </div>
           </div>
@@ -207,12 +273,25 @@
           <!-- Pre-game: get ready / start. In a running game these are replaced
                by the match controls below. -->
           <div class="ready-section" *ngIf="!gameStarted">
+            <div class="game-actions">
             <button
+              *ngIf="!isSinglePlayer"
               class="ready-btn"
               [class.ready-state]="isReady"
               (click)="toggleReady()"
             >
               {{ isReady ? 'Unready' : 'Ready' }}
+            </button>
+            <!-- Solo: pick your side instead of readying up. The placeholder
+                 always takes the other colour. -->
+            <button
+              *ngIf="isSinglePlayer"
+              class="color-toggle-btn"
+              [class.as-black]="soloColor === 'black'"
+              (click)="toggleSoloColor()"
+              title="Click to switch sides"
+            >
+              You: {{ soloColor === 'white' ? 'White' : 'Black' }}
             </button>
             <button
               *ngIf="isInviter"
@@ -222,6 +301,7 @@
             >
               Start Game
             </button>
+            </div>
           </div>
 
           <div class="ready-section" *ngIf="gameStarted">
@@ -240,7 +320,10 @@
           </div>
         </div>
 
-        <div class="rail-section chat-panel">
+        <div class="rail-section chat-panel" [class.expanded]="chatExpanded">
+          <h3 class="rail-head"><span>Chat</span>
+            <button class="expand-btn" type="button" (click)="chatExpanded = !chatExpanded"
+            >{{ chatExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="chat-content">
             <div class="game-room-messages">
               <div
@@ -267,6 +350,8 @@
                 type="text"
                 [(ngModel)]="gameRoomMessageContent"
                 placeholder="Type a message..."
+                (focus)="chatFocused = true"
+                (blur)="chatFocused = false"
                 (keyup.enter)="sendGameRoomMessage()"
               >
               <button (click)="sendGameRoomMessage()">Send</button>
@@ -277,8 +362,10 @@
 
       <!-- ---------------- LOBBY TAB ---------------- -->
       <ng-container *ngIf="activeSideTab === 'lobby'">
-        <div class="rail-section users-panel">
-          <h3>Online Users</h3>
+        <div class="rail-section users-panel" [class.expanded]="usersExpanded">
+          <h3 class="rail-head"><span [class.offline-head]="!serverOnline">{{ serverOnline ? 'Online Users' : 'Offline' }}</span>
+            <button class="expand-btn" type="button" (click)="usersExpanded = !usersExpanded"
+            >{{ usersExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="users-list">
             <div
               class="user-item"
@@ -311,8 +398,10 @@
           </div>
         </div>
 
-        <div class="rail-section lobby-chat">
-          <h3>Lobby</h3>
+        <div class="rail-section lobby-chat" [class.expanded]="lobbyChatExpanded">
+          <h3 class="rail-head"><span>Lobby</span>
+            <button class="expand-btn" type="button" (click)="lobbyChatExpanded = !lobbyChatExpanded"
+            >{{ lobbyChatExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="lobby-messages">
             <div class="message-item" *ngFor="let message of lobbyMessages"
               [ngClass]="{'system-message': message.type === 'system','my-message': message.username === username}">
@@ -329,7 +418,9 @@
             </div>
           </div>
           <div class="chat-input">
-            <input type="text" [(ngModel)]="lobbyMessageContent" placeholder="Type a message..." (keyup.enter)="sendLobbyMessage()">
+            <input type="text" [(ngModel)]="lobbyMessageContent" placeholder="Type a message..."
+                   (focus)="chatFocused = true" (blur)="chatFocused = false"
+                   (keyup.enter)="sendLobbyMessage()">
             <button (click)="sendLobbyMessage()">Send</button>
           </div>
         </div>
@@ -360,7 +451,6 @@
         <p>{{ endModalDetail }}</p>
         <div class="end-actions">
           <button class="lobby-btn" (click)="returnToLobby()">Back to Lobby</button>
-          <button class="stay-btn" (click)="showEndModal = false">Stay here</button>
         </div>
       </div>
     </div>

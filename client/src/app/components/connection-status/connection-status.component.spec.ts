@@ -8,7 +8,10 @@ import { WebsocketService } from '../../services/websocket.service';
 const mockWebsocketService = {
   connectionStatus$: new BehaviorSubject(false),
   messages$: new BehaviorSubject(null),
+  offline$: new BehaviorSubject(false),
   isConnected: () => false,
+  isOffline: () => false,
+  reconnectToServer: () => {},
   connect: () => {},
   disconnect: () => {},
   sendMessage: () => {},

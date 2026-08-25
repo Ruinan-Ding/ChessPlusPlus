@@ -2,7 +2,7 @@
   <h2>Welcome to ChessPlusPlus</h2>
   <div class="login-form">
     <div class="form-group">
-      <label for="username">Enter your username:</label>
+      <label for="username">Enter your username (blank picks one for you):</label>
       <input 
         type="text" 
         id="username" 
@@ -16,8 +16,10 @@
         {{ username.length }}/24
       </div>
     </div>
-    <button (click)="login()" [disabled]="!username.trim()" class="login-button">
+    <button (click)="login()" class="login-button">
       Enter Lobby
     </button>
   </div>
 </div>
+
+<app-connection-dialog></app-connection-dialog>
