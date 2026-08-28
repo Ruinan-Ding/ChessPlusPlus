@@ -18,6 +18,7 @@ from game.engine.move_validator import (
     is_legal_move,
 )
 from game.engine.game_logic import (
+    defeated_sides,
     find_defeated,
     ranged_damage,
     resolve_combat,
@@ -505,6 +506,20 @@ class GameLogicTestCase(TestCase):
         result = resolve_combat(board, (0, 0), (1, 0), config)
 
         self.assertTrue(result['attacker_eliminated'])
+        self.assertEqual(find_defeated(board, config), 'white')
+
+    def test_both_sides_can_fall_in_one_exchange(self):
+        """A mutual kill is a draw, not a win for whichever side sorts first."""
+        board = HexBoard(5)
+        board.set(0, 0, 'pawn', 'white', hp=20, max_hp=20)
+        board.set(1, 0, 'pawn', 'black', hp=20, max_hp=20)
+        config = self._cfg()
+        config['rules']['objective'] = 'regicide'
+
+        # Neither side has a commander, so both are beaten at once.
+        self.assertEqual(defeated_sides(board, config), ['white', 'black'])
+        # find_defeated still answers with one, for callers that only ask
+        # whether the game is over.
         self.assertEqual(find_defeated(board, config), 'white')
 
     def test_resolve_combat_attack_eliminates(self):

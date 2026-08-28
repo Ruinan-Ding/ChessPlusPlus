@@ -183,19 +183,29 @@ def find_defeated(board: HexBoard, config: Dict[str, Any]) -> Optional[str]:
     on the board is out, so a config with no commander still terminates.
 
     Both sides can fall in the same exchange (a counter-attack that kills the
-    last commander of the attacker); white is reported first, arbitrarily.
+    last commander of the attacker); white is reported first, arbitrarily. Use
+    :func:`defeated_sides` where that difference decides a result - crediting
+    the win by list order hands the game to a side that is just as dead.
     """
+    sides = defeated_sides(board, config)
+    return sides[0] if sides else None
+
+
+def defeated_sides(board: HexBoard, config: Dict[str, Any]) -> List[str]:
+    """Every colour that has lost, in board order - both when both fell."""
     objective = config.get('rules', {}).get('objective', 'regicide')
     units = config.get('units', {})
 
+    out: List[str] = []
     for color in ('white', 'black'):
         pieces = board.pieces_by_color(color)
         if not pieces:
-            return color
-        if objective == 'regicide':
-            if not any(units.get(cell['unit_id'], {}).get('commander') for cell in pieces.values()):
-                return color
-    return None
+            out.append(color)
+        elif objective == 'regicide' and not any(
+            units.get(cell['unit_id'], {}).get('commander') for cell in pieces.values()
+        ):
+            out.append(color)
+    return out
 
 
 def detect_outcome(

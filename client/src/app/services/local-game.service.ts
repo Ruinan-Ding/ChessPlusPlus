@@ -92,7 +92,10 @@ export class LocalGameService {
         break;
 
       case 'start_game':
-        this.start(msg.hostColor === 'black' ? 'black' : 'white');
+        // The server rejects a replayed start while a match is running; here
+        // it would silently re-deal the board out from under the player.
+        if (this.game?.started && !this.game.endReason) break;
+        this.start(msg.hostColor === 'black' ? 'black' : 'white', msg.turnTimeLimit);
         break;
 
       case 'make_move':
@@ -168,9 +171,13 @@ export class LocalGameService {
     };
   }
 
-  private start(hostColor: 'white' | 'black'): void {
+  private start(hostColor: 'white' | 'black', turnTimeLimit?: number): void {
     const username = this.game?.username ?? '';
-    const config = this.configService.getConfig();
+    const config = JSON.parse(JSON.stringify(this.configService.getConfig()));
+    const selectedTime = Number.isInteger(turnTimeLimit) ? turnTimeLimit : this.game?.options?.turnTimeLimit;
+    if (Number.isInteger(selectedTime)) {
+      config.rules = { ...(config.rules ?? {}), turnTimeLimit: selectedTime };
+    }
     this.game = {
       ...this.blank(username),
       hostColor,
@@ -280,7 +287,11 @@ export class LocalGameService {
 
     g.boardState = board;
     g.moveHistory = [...g.moveHistory, record];
-    const defeated = this.findDefeated(board);
+    const defeated = this.defeatedSides(board);
+    // The server checks the turn limit against the turn just played, before
+    // it counts the next one - mirror that or the two disagree by a ply.
+    const maxTurns: number = g.config?.rules?.maxTurns ?? 0;
+    const outOfTurns = maxTurns > 0 && g.turnNumber >= maxTurns;
     g.turnNumber += 1;
     g.currentTurn = this.other(g.currentTurn);
     g.turnStartedAt = new Date().toISOString();
@@ -295,29 +306,43 @@ export class LocalGameService {
     });
 
     // Whoever lost their commander loses, whichever side was moving - a
-    // counter-attack can take the attacker's king on the attacker's own turn.
-    if (defeated) {
-      this.over(this.seat(defeated === 'white' ? 'black' : 'white'), 'elimination');
+    // counter-attack can take the attacker's king on the attacker's own turn,
+    // and can take both commanders at once, which is nobody's win.
+    if (defeated.length === 2) {
+      this.over('', 'draw_mutual');
+    } else if (defeated.length) {
+      this.over(this.seat(defeated[0] === 'white' ? 'black' : 'white'), this.endReasonName());
+    } else if (outOfTurns) {
+      this.over('', 'draw_max_turns');
     }
   }
 
+  /** What the objective calls a decided game. Mirrors consumers.py. */
+  private endReasonName(): string {
+    return (this.game?.config?.rules?.objective ?? 'regicide') === 'regicide'
+      ? 'regicide' : 'elimination';
+  }
+
   /**
-   * The colour that has lost, or null. Mirrors find_defeated() in
-   * game_logic.py: no commander under `regicide`, no units at all otherwise.
+   * Every colour that has lost. Mirrors defeated_sides() in game_logic.py: no
+   * commander under `regicide`, no units at all otherwise. Both can fall in
+   * one exchange, and that is a draw rather than a win for the survivor of a
+   * list order.
    */
-  private findDefeated(board: Record<string, any>): 'white' | 'black' | null {
+  private defeatedSides(board: Record<string, any>): Array<'white' | 'black'> {
     const config = this.game?.config;
     const objective = config?.rules?.objective ?? 'regicide';
     const cells = Object.values(board);
+    const out: Array<'white' | 'black'> = [];
     for (const color of ['white', 'black'] as const) {
       const mine = cells.filter((c: any) => c.color === color);
-      if (!mine.length) return color;
-      if (objective === 'regicide'
+      if (!mine.length) out.push(color);
+      else if (objective === 'regicide'
           && !mine.some((c: any) => config?.units?.[c.unit_id]?.commander)) {
-        return color;
+        out.push(color);
       }
     }
-    return null;
+    return out;
   }
 
   /** End the turn having done nothing - a unit turn is optional. */
@@ -326,6 +351,8 @@ export class LocalGameService {
     if (!g || !g.started || g.endReason) return;
     const passedBy = g.currentTurn;
     const color = this.colorOf(passedBy);
+    const maxTurns: number = g.config?.rules?.maxTurns ?? 0;
+    const outOfTurns = maxTurns > 0 && g.turnNumber >= maxTurns;
     g.turnNumber += 1;
     g.currentTurn = this.other(passedBy);
     g.turnStartedAt = new Date().toISOString();
@@ -334,6 +361,7 @@ export class LocalGameService {
       type: 'turn_passed', passedBy, color,
       currentTurn: g.currentTurn, turnNumber: g.turnNumber, turnStartedAt: g.turnStartedAt,
     });
+    if (outOfTurns) this.over('', 'draw_max_turns');
   }
 
   private over(winner: string, endReason: string, extra: any = {}): void {
@@ -378,8 +406,11 @@ export class LocalGameService {
     if (!name || name === g.username) return;
     const old = g.username;
     g.username = name;
-    if (g.currentTurn === old) g.currentTurn = username;
-    if (g.winner === old) g.winner = username;
+    // The seat name, not the raw one: a player calling themselves "Opponent"
+    // would otherwise write the placeholder's own name into currentTurn, and
+    // every one of their moves comes back illegal.
+    if (g.currentTurn === old) g.currentTurn = name;
+    if (g.winner === old) g.winner = name;
     this.persist();
   }
 

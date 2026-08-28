@@ -20,10 +20,15 @@ import { takeUntil } from 'rxjs/operators';
   `,
   styles: [`
     .connection-status {
-      padding: 10px;
-      margin: 10px 0;
+      /* Sits in headers that have to stay one line, so it takes the font size
+         it is given and never wraps - "Disconnected from Game Server" is long
+         enough to break the lobby header on its own. */
+      padding: 2px 0;
       border-radius: 4px;
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
     }
     
     .connected {
@@ -42,19 +47,21 @@ import { takeUntil } from 'rxjs/operators';
     }
 
     .reconnect-btn {
-      margin-left: 8px;
-      padding: 2px 10px;
+      margin-left: 6px;
+      padding: 2px 8px;
       border: 1px solid #2c3e50;
       border-radius: 4px;
       background: #fff;
       color: #2c3e50;
-      font-size: 0.85rem;
+      font-size: 0.85em;
+      white-space: nowrap;
       cursor: pointer;
     }
 
     .reconnect-btn:hover {
       background: #eef2f6;
     }
+
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })

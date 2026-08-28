@@ -1,4 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { BehaviorSubject } from 'rxjs';
 
 import { LobbyComponent } from './lobby.component';
@@ -33,6 +34,9 @@ describe('LobbyComponent', () => {
     await TestBed.configureTestingModule({
       imports: [LobbyComponent],
       providers: [
+        // The lobby reads ?solo=1 off ActivatedRoute, which only exists with
+        // a router configured.
+        provideRouter([]),
         { provide: WebsocketService, useValue: mockWebsocketService }
       ]
     })

@@ -90,14 +90,17 @@ def validate_game_options(options: dict) -> None:
     if not isinstance(options, dict):
         raise ValidationError('INVALID_OPTIONS', 'Game options must be a dictionary')
     
-    # Only 'reveal' is currently supported
-    allowed_keys = {'reveal'}
+    allowed_keys = {'reveal', 'turnTimeLimit'}
     for key in options.keys():
         if key not in allowed_keys:
             raise ValidationError('INVALID_OPTION_KEY', f'Unknown option: {key}')
     
     if 'reveal' in options and not isinstance(options['reveal'], bool):
         raise ValidationError('INVALID_OPTION_VALUE', 'reveal option must be boolean')
+    if 'turnTimeLimit' in options:
+        value = options['turnTimeLimit']
+        if isinstance(value, bool) or not isinstance(value, int) or value not in {0, 15, 30, 60, 120, 180, 240, 300}:
+            raise ValidationError('INVALID_OPTION_VALUE', 'turnTimeLimit must be one of the supported timer values')
 
 
 def validate_chat_message(content: str) -> None:

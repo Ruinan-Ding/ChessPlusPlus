@@ -16,7 +16,7 @@
   padding: 30px;
   border-radius: 8px;
   box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
-  max-width: 400px;
+  max-width: 520px;
   width: 90%;
   text-align: center;
 }
@@ -70,9 +70,24 @@ p {
 
 .button-group {
   display: flex;
+  // Three buttons on one row: they give up padding and text size before they
+  // give up the line.
+  flex-wrap: nowrap;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
   margin-top: 15px;
+}
+
+.button-group button {
+  // One width for all three, set by the row rather than by the label - the
+  // longest one ("Retry Connection") is what has to fit inside it.
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: clamp(0.75rem, 1.7vw, 0.95rem);
+  padding: 10px 8px;
+  // .retry-button carries a margin-top from when these stacked.
+  margin: 0;
+  white-space: nowrap;
 }
 
 .login-button {

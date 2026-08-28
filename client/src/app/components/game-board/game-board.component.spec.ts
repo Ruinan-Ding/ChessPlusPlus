@@ -172,6 +172,67 @@ describe('GameBoardComponent reach preview', () => {
     expect(clicked.length).toBe(0);    // ... but nobody picked anything
   });
 
+  it('forecasts both halves of a trade before it is made', () => {
+    // Adjacent: the archer (4 atk) hits the guard (2 def) for 2, and the
+    // guard (3 atk) counters the archer (1 def) for 2.
+    const trade: Record<string, any> = {
+      '0,0': { unit_id: 'archer', color: 'white', hp: 5, max_hp: 5 },
+      '1,0': { unit_id: 'guard', color: 'black', hp: 9, max_hp: 9 },
+    };
+    board.boardState = trade;
+    board.ngOnChanges({ boardState: new SimpleChange(boardState, trade, false) });
+    board.interactive = true;
+    board.controlAllSides = true;
+    board.turnColor = 'white';
+    board.onHexClick(cell('0,0'));
+
+    expect(board.forecastDamage('1,0')).toBeNull();  // nothing hovered yet
+
+    board.onHexHover(cell('1,0'));
+    expect(board.forecastDamage('1,0')).toBe('-2');  // dealt by our strike
+    expect(board.forecastDamage('0,0')).toBe('-2');  // taken from the counter
+    expect(board.wouldDie('1,0')).toBeFalse();
+  });
+
+  it('forecasts a ranged strike that draws no counter', () => {
+    // The archer reaches two rings; the guard reaches one, so nothing comes
+    // back and the flight path spans the gap between the two hexes.
+    const trade: Record<string, any> = {
+      '0,0': { unit_id: 'archer', color: 'white', hp: 5, max_hp: 5 },
+      '2,0': { unit_id: 'guard', color: 'black', hp: 9, max_hp: 9 },
+    };
+    board.boardState = trade;
+    board.ngOnChanges({ boardState: new SimpleChange(boardState, trade, false) });
+    board.interactive = true;
+    board.controlAllSides = true;
+    board.turnColor = 'white';
+    board.onHexClick(cell('0,0'));
+
+    board.onHexHover(cell('2,0'));
+    expect(board.forecastDamage('2,0')).not.toBeNull();
+    expect(board.forecastDamage('0,0')).toBeNull();  // out of the guard's reach
+  });
+
+  it('marks a kill with a skull, on whichever side would die', () => {
+    const trade: Record<string, any> = {
+      '0,0': { unit_id: 'archer', color: 'white', hp: 1, max_hp: 5 },
+      '1,0': { unit_id: 'guard', color: 'black', hp: 2, max_hp: 9 },
+    };
+    board.boardState = trade;
+    board.ngOnChanges({ boardState: new SimpleChange(boardState, trade, false) });
+    board.interactive = true;
+    board.controlAllSides = true;
+    board.turnColor = 'white';
+    board.onHexClick(cell('0,0'));
+    board.onHexHover(cell('1,0'));
+
+    // 2 damage on 2 HP kills it - and a dead unit never counters, so we live.
+    expect(board.wouldDie('1,0')).toBeTrue();
+    expect(board.forecastDamage('1,0')).toBe('-2');
+    expect(board.wouldDie('0,0')).toBeFalse();
+    expect(board.forecastDamage('0,0')).toBeNull();
+  });
+
   it('draws single-digit stats without a leading zero', () => {
     expect(board.statText(4)).toBe('4');
     expect(board.statText(12)).toBe('12');

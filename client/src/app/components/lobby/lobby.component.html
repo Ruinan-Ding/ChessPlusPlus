@@ -1,6 +1,22 @@
 <div class="lobby-container">
   <div class="header">
-    <h1>ChessPlusPlus Lobby</h1>
+    <h1><span>ChessPlusPlus Lobby</span></h1>
+    <!-- Outside the <h1>: a heading takes phrasing content, not a control
+         group. Focus opens it too, or the slider is mouse-only. -->
+    <div class="volume-control"
+         (mouseenter)="volumeOpen = true" (mouseleave)="volumeOpen = false"
+         (focusin)="volumeOpen = true" (focusout)="volumeOpen = false">
+        <button type="button" class="speaker-button" (click)="audio.toggleMute()"
+                [attr.aria-label]="audio.muted ? 'Unmute sounds' : 'Mute sounds'">
+          {{ audio.muted ? '🔇' : '🔊' }}
+        </button>
+        <input *ngIf="volumeOpen" class="volume-slider" type="range" min="0" max="100"
+               [ngModel]="audio.volume * 100"
+               (ngModelChange)="audio.setVolume($event / 100)"
+               (change)="audio.previewVolume()"
+               aria-label="Volume">
+        <span *ngIf="volumeOpen" class="volume-value">{{ audio.volume * 100 | number:'1.0-0' }}%</span>
+    </div>
     <div class="user-info">
       <div class="username-display">
         <span>Playing as: <strong>{{ username }}</strong></span>

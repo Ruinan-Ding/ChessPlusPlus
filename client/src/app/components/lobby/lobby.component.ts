@@ -6,10 +6,11 @@ import { Subject } from 'rxjs';
 import { takeUntil, filter, take } from 'rxjs/operators';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
 import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { AuthService } from '../../services/auth.service';
+import { AudioService } from '../../services/audio.service';
 
 @Component({
   selector: 'app-lobby',
@@ -33,6 +34,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
 
   /** False whenever the socket is down, offline mode included. */
   serverOnline = false;
+  volumeOpen = false;
   messages: ChatMessage[] = [];
   messageContent: string = '';
   newUsername: string = '';
@@ -57,7 +59,9 @@ export class LobbyComponent implements OnInit, OnDestroy {
 
   constructor(
     private wsService: WebsocketService,
+    public audio: AudioService,
     private router: Router,
+    private route: ActivatedRoute,
     private sharedDataService: SharedDataService,
     private navigationState: NavigationStateService,
     private cdr: ChangeDetectorRef,
@@ -367,6 +371,12 @@ export class LobbyComponent implements OnInit, OnDestroy {
       filter(connected => connected === true),
       takeUntil(this.destroy$)
     ).subscribe(() => joinLobby());
+
+    // Sent here by the game room's Single Player button: there is no server to
+    // come back to, so deal a local game rather than land in a dead lobby.
+    if (this.route.snapshot.queryParamMap.get('solo') === '1') {
+      this.startSinglePlayer();
+    }
   }
   
   ngOnDestroy(): void {

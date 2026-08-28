@@ -11,7 +11,9 @@ import {
   ChangeDetectorRef,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { attackTiers, computeAttackZone, computeLegalMoves, computeMoveCosts, hexDistanceKeys } from '../../services/hex-rules';
+import {
+  attackTiers, computeAttackZone, computeLegalMoves, computeMoveCosts, hexDistanceKeys, strikeDamage,
+} from '../../services/hex-rules';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,13 +38,43 @@ export interface SelectedUnit {
   color: 'white' | 'black';
   hp: number | null;
   hpMax: number | null;
+  /** HP left after the trade currently being hovered, else null. */
+  hpAfter: number | null;
   atk: string;                       // damage per ring, e.g. "26,19"
   def: number | null;
   mv: number | null;                 // full move budget
   vet: number;                       // 0-3
+  panel?: string;                    // reserve panel, when outside the battlefield
 }
 
 /** Internal render model for a single hex. */
+/** Blades where a blow landed next door, flight paths for the rest. */
+interface StrikeMarks {
+  swords: Array<{ x: number; y: number }>;
+  lines: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+}
+
+/** A unit that died, and the hex it died on. */
+export interface FallenUnit {
+  key: string;
+  unit_id: string;
+  color: 'white' | 'black';
+}
+
+/** The same, resolved to what the board draws for it. */
+interface FallenDrawing {
+  x: number;
+  y: number;
+  points: string;
+  symbol: string;
+  atk: string;
+  def: number | null;
+  mov: number | null;
+  rangeLow: number;
+  rangeHigh: number;
+  dark: boolean;
+}
+
 interface HexCell {
   q: number;
   r: number;
@@ -62,7 +94,13 @@ interface HexCell {
   /** Smaller hex drawn under an occupying unit. */
   innerPoints: string;
   /** Stats shown around the unit; null when the hex is empty. */
-  stats: { hp: number | null; atk: string; def: number | null } | null;
+  stats: {
+    hp: number | null;
+    atk: string;
+    def: number | null;
+    rangeLow: number;
+    rangeHigh: number;
+  } | null;
   /** Veterancy 0-3, currently a placeholder derived from the unit's position. */
   vet: number;
 }
@@ -81,9 +119,15 @@ export type BoardOrientation = 'edge-up' | 'vertex-up';
 
 const HEX_SIZE = 28; // radius of a single hex in SVG pixels
 
+/** Centre to edge midpoint. Two adjacent centres are exactly twice this. */
+
 /** Radius of the inner hex a unit sits on. Close to HEX_SIZE so only a thin
  *  ring of board shows around it - the stats sit ON the plate, not beside it. */
-const PLATE_SIZE = 23;
+/* Two adjacent centres are exactly two inradii apart, so stepping one in
+   from each centre lands on the edge between them - the shared one next
+   door, and the near edge of each hex across a gap. */
+const HEX_INRADIUS = HEX_SIZE * Math.sqrt(3) / 2;
+const PLATE_SIZE = 25;
 
 /** Padding around the outermost hex centres in the viewBox. Must match buildCells(). */
 const VIEWBOX_PADDING = HEX_SIZE + 4;
@@ -170,6 +214,18 @@ function attackText(unitId: string, config: any): string {
   return attackTiers(unitId, config).map(d => String(twoDigits(d))).join(',');
 }
 
+function attackCellText(unitId: string, config: any, bonus = 0): string {
+  return String(twoDigits((attackTiers(unitId, config)[0] ?? 0) + bonus));
+}
+
+/** The far end of a unit's reach; the near end is a ring away from itself. */
+function rangeHigh(unitId: string, config: any): number {
+  return config?.units?.[unitId]?.attackRange ?? 1;
+}
+
+/** Nothing strikes its own hex, so the near end of every reach is 1 today. */
+const RANGE_LOW = 1;
+
 /** Stat as drawn on the hex: plain digits, two at most (see twoDigits). */
 function statText(v: number | null | undefined): string {
   return v === null || v === undefined ? '' : String(v);
@@ -241,9 +297,62 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       <svg
         [attr.viewBox]="viewBox"
         class="hex-board"
+        [class.board-flipped]="rotateBoard"
         preserveAspectRatio="xMidYMid meet"
         (mouseleave)="onHexHover(null)"
       >
+        <defs>
+          <marker id="movement-arrowhead" markerWidth="8" markerHeight="8"
+                  refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L8,4 L0,8 Z" class="movement-arrowhead" />
+          </marker>
+          <marker id="opponent-movement-arrowhead" markerWidth="8" markerHeight="8"
+                  refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L8,4 L0,8 Z" class="opponent-movement-arrowhead" />
+          </marker>
+        </defs>
+        <ng-template #fallenUnit let-fallen let-marker="marker">
+            <g class="fallen">
+              <polygon [attr.points]="fallen.points" class="unit-plate"
+                       [class.plate-white]="!fallen.dark"
+                       [class.plate-black]="fallen.dark" />
+              <text [attr.x]="fallen.x" [attr.y]="fallen.y + 1"
+                    [attr.transform]="textTransform(fallen.x, fallen.y)"
+                    class="piece-symbol"
+                    [class.piece-white]="!fallen.dark"
+                    [class.piece-black]="fallen.dark"
+              >{{ fallen.symbol }}</text>
+              <text [attr.x]="fallen.x" [attr.y]="fallen.y - 19"
+                    [attr.transform]="textTransform(fallen.x, fallen.y)"
+                    class="stat stat-hp" [class.on-dark]="fallen.dark">0</text>
+              <text *ngIf="fallen.def !== null"
+                    [attr.x]="fallen.x - 17" [attr.y]="fallen.y + 15"
+                    [attr.transform]="textTransform(fallen.x, fallen.y)"
+                    class="stat stat-def" [class.on-dark]="fallen.dark"
+              >{{ fallen.def }}</text>
+              <text [attr.x]="fallen.x + 17" [attr.y]="fallen.y + 15"
+                    [attr.transform]="textTransform(fallen.x, fallen.y)"
+                    class="stat stat-atk" [class.on-dark]="fallen.dark"
+              >{{ fallen.atk }}</text>
+              <text *ngIf="fallen.mov !== null"
+                    [attr.x]="fallen.x - 17" [attr.y]="fallen.y - 15"
+                    [attr.transform]="textTransform(fallen.x, fallen.y)"
+                    class="stat stat-mov" [class.on-dark]="fallen.dark"
+              >{{ fallen.mov }}</text>
+              <text [attr.x]="fallen.x + 17" [attr.y]="fallen.y - 15"
+                    [attr.transform]="textTransform(fallen.x, fallen.y)"
+                    class="stat stat-range" [class.on-dark]="fallen.dark"
+              >{{ fallen.rangeHigh }}</text>
+              <text [attr.x]="fallen.x + 19" [attr.y]="fallen.y"
+                    [attr.transform]="textTransform(fallen.x, fallen.y)"
+                    class="stat stat-range" [class.on-dark]="fallen.dark"
+              >{{ fallen.rangeLow }}</text>
+            </g>
+            <text [attr.x]="fallen.x" [attr.y]="fallen.y"
+                  [attr.transform]="textTransform(fallen.x, fallen.y)"
+                  [attr.class]="marker">&#9760;</text>
+        </ng-template>
+
         <!-- Hex cells -->
         <g *ngFor="let hex of cells; trackBy: trackByKey">
           <polygon
@@ -251,19 +360,22 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [class.hex-cell]="true"
             [ngClass]="hex.zoneClass"
             [class.hex-selected]="hex.key === selectedHex"
-            [class.hex-legal]="legalTargets.has(hex.key)"
-            [class.hex-move-preview]="previewMoves.has(hex.key) && !legalTargets.has(hex.key)"
+            [class.hex-legal]="showingSelection && legalTargets.has(hex.key)"
+            [class.hex-move-preview]="previewMoves.has(hex.key) && (!showingSelection || !legalTargets.has(hex.key))"
             [class.hex-attack-preview]="previewAttacks.has(hex.key)"
-            [class.hex-attack-target]="attackTargets.has(hex.key)"
-            [class.hex-last-from]="hex.key === lastMoveFrom"
-            [class.hex-last-to]="hex.key === lastMoveTo"
+            [class.hex-attack-target]="showingSelection && attackTargets.has(hex.key)"
+            [class.preview-dim]="previewDim"
+            [class.reach-up]="movWave === 'up' && (legalTargets.has(hex.key) || previewMoves.has(hex.key))"
+            [class.reach-down]="movWave === 'down' && (legalTargets.has(hex.key) || previewMoves.has(hex.key))"
             [class.hex-damaged]="hex.key === lastDamagedHex"
+            [class.ability-friendly-target]="isAbilityTarget(hex, 'friendly')"
+            [class.ability-enemy-target]="isAbilityTarget(hex, 'enemy')"
             (click)="onHexClick(hex)"
             (mouseenter)="onHexHover(hex)"
           />
           <!-- Legal-move dot -->
           <circle
-            *ngIf="legalTargets.has(hex.key) && !hex.piece"
+            *ngIf="showingSelection && legalTargets.has(hex.key) && !hex.piece"
             [attr.cx]="hex.cx"
             [attr.cy]="hex.cy"
             [attr.r]="6"
@@ -280,48 +392,174 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
               [class.plate-black]="pc.color === 'black'"
               [class.plate-selected]="hex.key === selectedHex"
               [class.plate-hovered]="hex.key === hoveredHex"
+              [class.unit-buffed]="hasLift(pc.uid)"
+              [class.unit-debuffed]="hasDrag(pc.uid)"
+              [class.unit-both-effects]="hasLift(pc.uid) && hasDrag(pc.uid)"
+              [class.ability-friendly-target]="isAbilityTarget(hex, 'friendly')"
+              [class.ability-enemy-target]="isAbilityTarget(hex, 'enemy')"
+              [class.doomed]="wouldDie(hex.key)"
               (click)="onHexClick(hex)"
               (mouseenter)="onHexHover(hex)"
+            />
+            <!-- The unit in hand. Its own element rather than a class on the
+                 plate: the plate's filter already belongs to the buff and
+                 debuff animations, and this must show through those. -->
+            <polygon
+              *ngIf="hex.key === selectedHex || hex.key === movesLeftFor"
+              [attr.points]="hex.innerPoints"
+              class="acting-ring"
             />
             <!-- Numbering mode replaces the unit's face with its hex number. -->
             <ng-container *ngIf="!showNumbers">
               <text
                 [attr.x]="hex.cx"
                 [attr.y]="hex.cy + 1"
+                [attr.transform]="textTransform(hex.cx, hex.cy)"
                 class="piece-symbol"
                 [class.piece-white]="pc.color === 'white'"
                 [class.piece-black]="pc.color === 'black'"
                 [class.piece-selected]="hex.key === selectedHex"
+                [class.doomed]="wouldDie(hex.key)"
+                [class.wave-acted-light]="hasActed(hex) && pc.color === 'white'"
+                [class.wave-acted-dark]="hasActed(hex) && pc.color === 'black'"
                 (click)="onHexClick(hex)"
               >{{ getPieceSymbol(pc) }}</text>
-              <text *ngIf="hex.stats?.hp != null"
-                    [attr.x]="hex.cx" [attr.y]="hex.cy - 14"
-                    class="stat stat-hp" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
-              >{{ statText(hex.stats?.hp) }}</text>
-              <text *ngIf="hex.stats?.def != null"
-                    [attr.x]="hex.cx - 13" [attr.y]="hex.cy + 14"
-                    class="stat stat-def" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
-              >{{ statText(hex.stats?.def) }}</text>
-              <text *ngIf="hex.stats?.atk != null"
-                    [attr.x]="hex.cx + 13" [attr.y]="hex.cy + 14"
-                    class="stat stat-atk" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
-              >{{ hex.stats?.atk }}</text>
-              <!-- Veterancy pips: 1 -> top-left, 2 -> +top-right, 3 -> +bottom -->
-              <text *ngIf="hex.vet >= 1" [attr.x]="hex.cx - 14" [attr.y]="hex.cy - 12"
-                    class="vet-star" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex">&#9733;</text>
-              <text *ngIf="hex.vet >= 2" [attr.x]="hex.cx + 14" [attr.y]="hex.cy - 12"
-                    class="vet-star" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex">&#9733;</text>
-              <text *ngIf="hex.vet >= 3" [attr.x]="hex.cx" [attr.y]="hex.cy + 16"
-                    class="vet-star" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex">&#9733;</text>
             </ng-container>
           </ng-container>
+        </g>
+        <ng-container *ngFor="let arrow of movementArrowSegments">
+          <line [attr.x1]="arrow.x1" [attr.y1]="arrow.y1"
+                [attr.x2]="arrow.x2" [attr.y2]="arrow.y2"
+                class="movement-arrow"
+                marker-end="url(#movement-arrowhead)" />
+        </ng-container>
+        <ng-container *ngFor="let arrow of opponentMovementArrowSegments">
+          <line [attr.x1]="arrow.x1" [attr.y1]="arrow.y1"
+                [attr.x2]="arrow.x2" [attr.y2]="arrow.y2"
+                class="opponent-movement-arrow"
+                marker-end="url(#opponent-movement-arrowhead)" />
+        </ng-container>
+        <!-- A blow that was struck. In arm's reach that is crossed blades
+             on the edge the two hexes share; from further out the shot's
+             path runs under them, edge to edge across the gap. -->
+        <ng-container *ngFor="let shot of attackStrikes.lines">
+          <line [attr.x1]="shot.x1" [attr.y1]="shot.y1"
+                [attr.x2]="shot.x2" [attr.y2]="shot.y2"
+                class="attack-line" />
+        </ng-container>
+        <ng-container *ngFor="let sword of attackStrikes.swords">
+          <text [attr.x]="sword.x" [attr.y]="sword.y"
+                [attr.transform]="textTransform(sword.x, sword.y)"
+                class="attack-sword">&#9876;</text>
+        </ng-container>
+        <!-- What used to stand here: the unit exactly as it was drawn, faded
+             out and down to 0 HP, under its own skull. Nothing can be done
+             with it, and anything that steps onto the hex takes it off. -->
+        <ng-container *ngFor="let fallen of killMarkerPositions">
+          <ng-container *ngTemplateOutlet="fallenUnit; context: { $implicit: fallen, marker: 'kill-marker' }"></ng-container>
+        </ng-container>
+        <!-- The opponent's last turn, drawn beside our own overlays. Inside
+             the per-hex group these were painted once per occupied unit, each
+             copy at that hex's z-order. -->
+        <ng-container *ngFor="let shot of opponentAttackStrikes.lines">
+          <line [attr.x1]="shot.x1" [attr.y1]="shot.y1"
+                [attr.x2]="shot.x2" [attr.y2]="shot.y2"
+                class="opponent-attack-line" />
+        </ng-container>
+        <ng-container *ngFor="let sword of opponentAttackStrikes.swords">
+          <text [attr.x]="sword.x" [attr.y]="sword.y"
+                [attr.transform]="textTransform(sword.x, sword.y)"
+                class="opponent-attack-sword">&#9876;</text>
+        </ng-container>
+        <ng-container *ngFor="let fallen of opponentKillMarkerPositions">
+          <ng-container *ngTemplateOutlet="fallenUnit; context: { $implicit: fallen, marker: 'opponent-kill-marker' }"></ng-container>
+        </ng-container>
 
-          <!-- Painted last so it sits ON TOP of the unit plate - on a black
-               plate as much as a white one. -->
+        <!-- Labels last. An arrow or a pair of crossed blades running across
+             the board has to pass UNDER the numbers and pips it crosses, or
+             the hex it points at is the one that cannot be read. -->
+        <g *ngFor="let hex of cells; trackBy: trackByKey">
+          <ng-container *ngIf="hex.piece as pc">
+            <ng-container *ngIf="!showNumbers">
+              <!-- Hovering a reachable enemy answers the only question that
+                   matters before swinging: what does this cost both of us. -->
+              <text *ngIf="hex.stats?.hp != null"
+                    [attr.x]="hex.cx" [attr.y]="hex.cy - 19"
+                    [attr.transform]="textTransform(hex.cx, hex.cy)"
+                    class="stat stat-hp"
+                    [class.wave-hurt]="isWounded(hex)"
+                    [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
+              >{{ statText(hex.stats?.hp) }}</text>
+              <text *ngIf="hex.stats?.def != null"
+                    [attr.x]="hex.cx - 17" [attr.y]="hex.cy + 15"
+                    [attr.transform]="textTransform(hex.cx, hex.cy)"
+                    class="stat stat-def" [ngClass]="statWave(hex, 'def')"
+                    [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
+              >{{ statText(hex.stats?.def) }}</text>
+              <text *ngIf="hex.stats?.atk != null"
+                    [attr.x]="hex.cx + 17" [attr.y]="hex.cy + 15"
+                    [attr.transform]="textTransform(hex.cx, hex.cy)"
+                    class="stat stat-atk" [ngClass]="statWave(hex, 'atk')"
+                    [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
+              >{{ hex.stats?.atk }}</text>
+              <!-- Top corners: what it has left to walk on the left, how far
+                   it can strike on the right. The far end of the reach sits up
+                   there; the near end is on the side below it - a melee unit
+                   reads 1 and 1. -->
+              <text [attr.x]="hex.cx - 17" [attr.y]="hex.cy - 15"
+                    [attr.transform]="textTransform(hex.cx, hex.cy)"
+                    class="stat stat-mov" [ngClass]="statWave(hex, 'mov')"
+                    [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
+              >{{ movText(hex) }}</text>
+              <text [attr.x]="hex.cx + 17" [attr.y]="hex.cy - 15"
+                    [attr.transform]="textTransform(hex.cx, hex.cy)"
+                    class="stat stat-range"
+                    [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
+              >{{ hex.stats?.rangeHigh }}</text>
+              <text [attr.x]="hex.cx + 19" [attr.y]="hex.cy"
+                    [attr.transform]="textTransform(hex.cx, hex.cy)"
+                    class="stat stat-range"
+                    [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
+              >{{ hex.stats?.rangeLow }}</text>
+              <!-- Whoever the hovered trade would kill wears it on the face,
+                   and fades out under it (see .doomed on the plate). -->
+              <text *ngIf="wouldDie(hex.key)"
+                    [attr.x]="hex.cx" [attr.y]="hex.cy + 1"
+                    [attr.transform]="textTransform(hex.cx, hex.cy)"
+                    class="kill-forecast">&#9760;</text>
+              <!-- What the trade costs, over the face paying it: red for the
+                   blow we land, purple for the counter that comes back. Drawn
+                   after the skull so the number stays readable over it. -->
+              <text *ngIf="forecastDamage(hex.key) as damage"
+                    [attr.x]="hex.cx" [attr.y]="hex.cy + 1"
+                    [attr.transform]="textTransform(hex.cx, hex.cy)"
+                    class="damage-forecast"
+                    [class.counter]="takesCounter(hex.key)"
+              >{{ damage }}</text>
+              <!-- Left side: which way this unit has been meddled with. Both
+                   arrows show when it is carrying a boost and a drag at once,
+                   and a dash when it is carrying neither. -->
+              <text *ngFor="let arrow of effectArrows(hex)"
+                    [attr.x]="arrow.x" [attr.y]="hex.cy"
+                    [attr.transform]="textTransform(hex.cx, hex.cy)"
+                    class="effect-arrow" [ngClass]="arrow.kind"
+                    [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
+              >{{ arrow.glyph }}</text>
+              <!-- Veterancy pips, all in the hex's bottom taper: a dash, one,
+                   a pair, then a triangle - see vetPips. -->
+              <text *ngFor="let pip of vetPips(hex)"
+                    [attr.x]="pip.x" [attr.y]="pip.y"
+                    [attr.transform]="textTransform(hex.cx, hex.cy)"
+                    class="vet-star" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
+              >{{ pip.glyph }}</text>
+            </ng-container>
+          </ng-container>
+          <!-- Numbering mode replaces every face with its hex number. -->
           <text
             *ngIf="showNumbers"
             [attr.x]="hex.cx"
             [attr.y]="hex.cy"
+            [attr.transform]="textTransform(hex.cx, hex.cy)"
             class="hex-number"
             [class.on-panel]="hex.filler"
             [class.on-plate]="!!hex.piece"
@@ -329,15 +567,6 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
         </g>
       </svg>
 
-      <!-- Turn / status bar -->
-      <!-- Whose turn it is now lives in the History header; the clock is all
-           that still needs space on the board. The result is the game room's
-           to show: it swaps the board out for its banner when a game ends. -->
-      <div class="status-bar" *ngIf="turnTimeLimit > 0 && !endReason">
-        <span class="timer-badge" [class.timer-low]="timerSeconds <= 10">
-          &#9201; {{ timerSeconds }}s
-        </span>
-      </div>
     </div>
   `,
   styles: [`
@@ -368,6 +597,10 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       display: block;
       width: 100%;
       height: 100%;
+    }
+
+    .hex-board.board-flipped {
+      transform: rotate(180deg);
     }
 
     .hex-cell {
@@ -411,6 +644,29 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       stroke-width: 2;
     }
 
+    /* A unit's reach: where it could stand ... */
+    .hex-move-preview {
+      fill: #cfe6cf !important;
+    }
+
+    /* ... and where it could not stand but could still strike. */
+    .hex-attack-preview {
+      fill: #e9a7a2 !important;
+    }
+
+    /* The reach of a unit you cannot act with - an enemy, or one of yours
+       once the turn is spent on another. Washed-out greys of the real thing:
+       it is information, not somewhere anything can be sent this turn.
+       Declared BEFORE the live classes so that where both land on one hex the
+       actionable colour is the one that survives. */
+    .hex-move-preview.preview-dim {
+      fill: #ccd8cb !important;
+    }
+
+    .hex-attack-preview.preview-dim {
+      fill: #d6bcb9 !important;
+    }
+
     .hex-legal {
       fill: #c6e2c6 !important;
       cursor: pointer;
@@ -426,28 +682,34 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       cursor: crosshair;
     }
 
-    /* Preview of another unit's reach: where it could stand ... */
-    .hex-move-preview {
-      fill: #cfe6cf !important;
-    }
-
-    /* ... and where it could not stand but could still strike. */
-    .hex-attack-preview {
-      fill: #e9a7a2 !important;
-    }
-
-    .hex-last-from {
-      fill: #cdd26a;
-    }
-
-    .hex-last-to {
-      fill: #aab23a;
-    }
-
     .hex-damaged {
       fill: #ffb3b3 !important;
       stroke: #cc5555;
       stroke-width: 2;
+    }
+
+    .ability-friendly-target {
+      fill: #f4d03f !important;
+      stroke: #9a7600 !important;
+      stroke-width: 3 !important;
+      animation: ability-friendly-wave 0.9s ease-in-out infinite;
+    }
+
+    .ability-enemy-target {
+      fill: #e74c3c !important;
+      stroke: #8f1d14 !important;
+      stroke-width: 3 !important;
+      animation: ability-enemy-wave 0.9s ease-in-out infinite;
+    }
+
+    @keyframes ability-friendly-wave {
+      0%, 100% { filter: brightness(0.95); }
+      50% { filter: brightness(1.12); }
+    }
+
+    @keyframes ability-enemy-wave {
+      0%, 100% { filter: brightness(0.95); }
+      50% { filter: brightness(1.12); }
     }
 
     .legal-dot {
@@ -479,6 +741,88 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       paint-order: stroke;
     }
 
+    .movement-arrow {
+      stroke: #ffffff;
+      stroke-width: 3;
+      stroke-linecap: round;
+      opacity: 0.9;
+      pointer-events: none;
+    }
+
+    .movement-arrowhead {
+      fill: #ffffff;
+    }
+
+    .opponent-movement-arrow {
+      stroke: #f1c40f;
+      stroke-width: 3;
+      stroke-linecap: round;
+      opacity: 0.9;
+      pointer-events: none;
+    }
+
+    .opponent-movement-arrowhead {
+      fill: #f1c40f;
+    }
+
+    /* Struck this turn (red) and struck last turn by the other side (purple).
+       Same glyph, so a clash reads as a clash whoever swung. */
+    .attack-sword,
+    .opponent-attack-sword {
+      font-size: 20px;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+      user-select: none;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 3px;
+    }
+
+    .attack-sword { fill: #d63031; }
+
+    /* The shot, in the same colour as the blades it stands in for. */
+    .attack-line,
+    .opponent-attack-line {
+      stroke-width: 3;
+      stroke-linecap: round;
+      opacity: 0.9;
+      filter: drop-shadow(0 0 2px #fff);
+      pointer-events: none;
+    }
+
+    .attack-line { stroke: #d63031; }
+
+    .opponent-attack-line { stroke: #8e44ad; }
+
+    .opponent-attack-sword { fill: #8e44ad; }
+
+    .kill-marker {
+      fill: #d63031;
+      font-size: 22px;
+      font-weight: 900;
+      font-family: Arial, sans-serif;
+      text-anchor: middle;
+      dominant-baseline: central;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 2px;
+      pointer-events: none;
+    }
+
+    .opponent-kill-marker {
+      fill: #6c3483;
+      font-size: 20px;
+      font-weight: 900;
+      font-family: Arial, sans-serif;
+      text-anchor: middle;
+      dominant-baseline: central;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 2px;
+      pointer-events: none;
+    }
+
     /* The plate carries the side's colour; the icon takes the opposite one.
        Outlined in the board's own fill so it reads as a thin ring. */
     .unit-plate {
@@ -486,10 +830,53 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       stroke-width: 1;
       cursor: pointer;
     }
+
+    .unit-plate.unit-buffed {
+      animation: unit-buff-glow 1.2s ease-in-out infinite alternate;
+    }
+
+    .unit-plate.unit-debuffed {
+      animation: unit-debuff-glow 1.2s ease-in-out infinite alternate;
+    }
+
+    .unit-plate.unit-both-effects {
+      animation: unit-both-glow 1.2s ease-in-out infinite;
+    }
+
+    @keyframes unit-buff-glow {
+      from { filter: drop-shadow(0 0 2px #27ae60); }
+      to { filter: drop-shadow(0 0 10px #2ecc71); }
+    }
+
+    @keyframes unit-debuff-glow {
+      from { filter: drop-shadow(0 0 2px #c0392b); }
+      to { filter: drop-shadow(0 0 10px #e74c3c); }
+    }
+
+    @keyframes unit-both-glow {
+      0%, 49% { filter: drop-shadow(0 0 9px #2ecc71); }
+      50%, 100% { filter: drop-shadow(0 0 9px #e74c3c); }
+    }
     .plate-white { fill: #ffffff; }
     .plate-black { fill: #141414; }
     /* Selection greys the plate, whichever side it belongs to. */
     .plate-selected { fill: #9aa0a6 !important; }
+    /* Whichever unit you are commanding: selected, or - once the turn is
+       spent on it - the one that acted, which keeps the ring after you click
+       another unit to read it. */
+    .acting-ring {
+      fill: none;
+      pointer-events: none;
+      stroke: #ffcc00;
+      stroke-width: 3;
+      animation: acting-glow 1.1s ease-in-out infinite alternate;
+    }
+
+    @keyframes acting-glow {
+      from { stroke: #ffe680; filter: drop-shadow(0 0 2px #ffcc00); }
+      to   { stroke: #ffae00; filter: drop-shadow(0 0 8px #ffc400); }
+    }
+
     /* Hover just shadows it, so it reads as a preview and not a selection. */
     .plate-hovered {
       stroke: rgba(0, 0, 0, 0.55);
@@ -498,9 +885,10 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
     }
 
     .piece-symbol {
-      /* As large as fits between the HP number above and the ATK/DEF pair
-         below - the plate is 23 and the stats sit at +/-14. */
-      font-size: 23px;
+      /* Fills what the labels leave: they sit on the corners and the flat
+         sides, which leaves a box about 22 across and 26 tall in the middle.
+         The plate is 25, so the face runs right up to the numbers. */
+      font-size: 31px;
       text-anchor: middle;
       dominant-baseline: central;
       pointer-events: none;
@@ -530,8 +918,91 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       stroke: rgba(0, 0, 0, 0.95);
     }
 
+    /* What the trade would cost this unit, written over its face. Red for
+       waving, so it never reads as the HP the unit actually has. */
+    .damage-forecast {
+      font-size: 17px;
+      font-weight: 900;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+      user-select: none;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.95);
+      stroke-width: 3;
+      fill: #d63031;
+      animation: stat-wave 1s ease-in-out infinite;
+    }
+
+    /* The blow coming back at us, in the same purple the board uses for
+       everything the other side does. */
+    .damage-forecast.counter {
+      fill: #8e44ad;
+    }
+
+    /* A number that is off its printed value pulses out of its own ink and
+       back: to white when the stat was lifted, to black when it was dragged
+       down, and to dark green while the unit is carrying a wound. The single
+       50% stop is what keeps the starting colour the number's own. */
+    .stat.wave-up { animation: wave-up 1.1s ease-in-out infinite; }
+    @keyframes wave-up { 50% { fill: #ffffff; } }
+
+    .stat.wave-down { animation: wave-down 1.1s ease-in-out infinite; }
+    @keyframes wave-down { 50% { fill: #000000; } }
+
+    .stat.wave-hurt { animation: wave-hurt 1.4s ease-in-out infinite; }
+    @keyframes wave-hurt { 50% { fill: #14532d; } }
+
+    /* A unit that has spent an ability wears it on its face, pulsing to its
+       own side's colour - white for white, black for black - and back to the
+       ink the face is drawn in. */
+    .piece-symbol.wave-acted-light { animation: wave-acted-light 1.2s ease-in-out infinite; }
+    @keyframes wave-acted-light { 50% { fill: #ffffff; } }
+
+    .piece-symbol.wave-acted-dark { animation: wave-acted-dark 1.2s ease-in-out infinite; }
+    @keyframes wave-acted-dark { 50% { fill: #000000; } }
+
+    /* Reach belonging to a unit whose MOV has been meddled with: the hexes
+       themselves pulse, brighter for a boost and darker for a drag. Done with
+       brightness rather than fill because the reach colours are !important,
+       which a keyframe setting fill would lose to. */
+    .hex-cell.reach-up { animation: reach-up 1.2s ease-in-out infinite; }
+    @keyframes reach-up { 50% { filter: brightness(1.35); } }
+
+    .hex-cell.reach-down { animation: reach-down 1.2s ease-in-out infinite; }
+    @keyframes reach-down { 50% { filter: brightness(0.6); } }
+
+    /* Whoever this trade kills shows through, the way a fallen unit does. */
+    .doomed {
+      opacity: 0.4;
+    }
+    @keyframes stat-wave {
+      50% { opacity: 0.35; }
+    }
+
+    /* The unit that fell here, in its own colours and faded through. Not a
+       piece: it takes no clicks, and the moment anything steps onto the hex
+       the ghost is dropped rather than drawn beneath it. */
+    .fallen {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+
+    /* Over the face, because that is the unit this is about to happen to. */
+    .kill-forecast {
+      font-size: 26px;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+      user-select: none;
+      paint-order: stroke;
+      stroke: rgba(0, 0, 0, 0.9);
+      stroke-width: 3.5;
+      fill: #ff5555;
+    }
+
     .vet-star {
-      font-size: 13px;
+      font-size: 12px;
       text-anchor: middle;
       dominant-baseline: central;
       fill: #ffd34d;
@@ -550,9 +1021,39 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
     .stat-atk { font-size: 15px; fill: #b91c1c; }
     .stat-def { font-size: 15px; fill: #1d4ed8; }
 
+    /* Reach is a fact about the unit, not a number that moves - grey, and
+       quiet. Move is yellow, and waves with whatever was done to it. */
+    .stat-range { font-size: 15px; fill: #6b7280; }
+
+    /* Which way the unit has been meddled with: green up, red down, and a
+       dash in the numbers' own ink when it is neither. */
+    .effect-arrow {
+      font-size: 14px;
+      font-weight: 700;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+      user-select: none;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.95);
+      stroke-width: 2.5;
+      fill: #1f2937;
+    }
+
+    .effect-arrow.on-dark {
+      stroke: rgba(0, 0, 0, 0.95);
+      fill: #f1f5f9;
+    }
+
+    .effect-arrow.up, .effect-arrow.up.on-dark { fill: #22c55e; }
+    .effect-arrow.down, .effect-arrow.down.on-dark { fill: #ef4444; }
+    .stat-mov { font-size: 15px; fill: #e0a800; }
+
     .stat-hp.on-dark { fill: #4ade80; }
     .stat-atk.on-dark { fill: #f87171; }
     .stat-def.on-dark { fill: #7dd3fc; }
+    .stat-range.on-dark { fill: #cbd5e1; }
+    .stat-mov.on-dark { fill: #fcd34d; }
 
     .status-bar {
       /* Overlaid on the board rather than stacked below it - see .hex-board. */
@@ -621,19 +1122,30 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * flood fill for a unit that has not taken its first step yet, after which
    * `movesLeft` carries the same bonus.
    */
-  @Input() unitBuffs: Record<string, { mov: number }> = {};
-  /** Seconds allowed per turn (0 = unlimited). */
-  @Input() turnTimeLimit = 0;
-  /** ISO timestamp when the current turn started. */
-  @Input() turnStartedAt = '';
+  @Input() unitBuffs: Record<string, {
+    mov: number; atk?: number; def?: number; up?: boolean; down?: boolean;
+  }> = {};
+  /** Units that have spent an ability this turn, keyed by uid. */
+  @Input() unitActed: Record<string, boolean> = {};
+  @Input() movementArrows: Array<{ from: string; to: string }> = [];
+  @Input() attackMarkers: Array<{ from: string; to: string }> = [];
+  @Input() opponentMovementArrows: Array<{ from: string; to: string }> = [];
+  @Input() opponentAttackMarkers: Array<{ from: string; to: string }> = [];
+  @Input() opponentKillMarkers: FallenUnit[] = [];
   /** Game config (for legal-move preview). */
   @Input() config: any = null;
   /** Overlay each battlefield hex with its reading-order number. */
   @Input() showNumbers = false;
   /** Solo play: this client drives both sides, not just its own colour. */
   @Input() controlAllSides = false;
+  /** Rotate the rendered board for a solo player choosing Black. */
+  @Input() rotateBoard = false;
   /** Colour of whoever's turn it is - what controlAllSides selects with. */
   @Input() turnColor: 'white' | 'black' | '' = '';
+  /** Targeting mode for the selected scaffold ability. */
+  @Input() abilityMode: 'friendly' | 'enemy' | null = null;
+  /** Colour of the unit whose ability is being aimed. */
+  @Input() abilityCasterColor: 'white' | 'black' | '' = '';
 
   // -- Outputs --------------------------------------------------------
 
@@ -653,9 +1165,225 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   /** Same payload for the hex under the cursor - a preview, not a selection. */
   @Output() hexHovered = new EventEmitter<SelectedUnit | null>();
 
+  /**
+   * A stat that is not what the unit was built with pulses: lifted in light
+   * red, dragged down in dark red. Each number answers for itself, so a unit
+   * with a boosted attack and a sapped defence shows both at once.
+   */
+  statWave(hex: HexCell, stat: 'atk' | 'def' | 'mov'): string {
+    const moved = this.unitBuffs[this.uidOf(hex)]?.[stat] ?? 0;
+    return moved > 0 ? 'wave-up' : moved < 0 ? 'wave-down' : '';
+  }
+
+  /**
+   * Whether the reach on screen was lent or taken away: the hexes pulse with
+   * it, so a boosted or sapped MOV is visible on the board itself and not
+   * only in the unit panel.
+   */
+  get movWave(): string {
+    const key = this.hoveredHex ?? this.selectedHex;
+    const cell = key ? this.cellsByKey.get(key) : null;
+    const mov = cell ? (this.unitBuffs[this.uidOf(cell)]?.mov ?? 0) : 0;
+    return mov > 0 ? 'up' : mov < 0 ? 'down' : '';
+  }
+
+  /**
+   * Up for a boost, down for a drag, and both stacked when the unit is under
+   * the two at once - the plate's glow says something is on it, this says
+   * which way.
+   */
+  effectArrows(hex: HexCell): Array<{ x: number; glyph: string; kind: string }> {
+    const uid = this.uidOf(hex);
+    const up = { glyph: '↑', kind: 'up' };
+    const down = { glyph: '↓', kind: 'down' };
+    const boosted = this.hasLift(uid);
+    const dragged = this.hasDrag(uid);
+    // Both stand side by side on the one line, up first. A unit with nothing
+    // on it keeps the slot with a dash, so the row never looks half-drawn.
+    if (boosted && dragged) return [{ x: hex.cx - 23, ...up }, { x: hex.cx - 15, ...down }];
+    if (boosted) return [{ x: hex.cx - 19, ...up }];
+    if (dragged) return [{ x: hex.cx - 19, ...down }];
+    return [{ x: hex.cx - 19, glyph: '-', kind: 'none' }];
+  }
+
+  /**
+   * Where a unit's veterancy pips go: all along the bottom, where nothing
+   * else is drawn. One sits on the centre line, two straddle it, and three
+   * make a triangle that narrows the way the hex does.
+   */
+  vetPips(hex: HexCell): Array<{ x: number; y: number; glyph: string }> {
+    const { cx, cy } = hex;
+    const star = '★';
+    // Nothing earned yet still holds the slot, so the row reads as a rank of
+    // zero rather than as a unit whose pips failed to draw.
+    if (hex.vet <= 0) return [{ x: cx, y: cy + 19, glyph: '-' }];
+    if (hex.vet === 1) return [{ x: cx, y: cy + 19, glyph: star }];
+    if (hex.vet === 2) {
+      return [{ x: cx - 7, y: cy + 19, glyph: star }, { x: cx + 7, y: cy + 19, glyph: star }];
+    }
+    return [
+      { x: cx - 7, y: cy + 16, glyph: star },
+      { x: cx + 7, y: cy + 16, glyph: star },
+      { x: cx, y: cy + 25, glyph: star },
+    ];
+  }
+
+  /**
+   * The walk this unit has left. For the one being moved that is what the
+   * staged step left it - the number counts down as it goes - and for
+   * everything else its full budget, boost included.
+   */
+  movText(hex: HexCell): string {
+    const pc = hex.piece;
+    if (!pc) return '';
+    if (hex.key === this.movesLeftFor && this.movesLeft != null) {
+      return statText(twoDigits(this.movesLeft));
+    }
+    const base = this.config?.units?.[pc.unit_id]?.move ?? 0;
+    const bonus = this.unitBuffs[this.uidOf(hex)]?.mov ?? 0;
+    return statText(twoDigits(Math.max(0, base + bonus)));
+  }
+
+  /** Has spent an ability this turn - its face pulses to its own colour. */
+  hasActed(hex: HexCell): boolean {
+    return !!this.unitActed[this.uidOf(hex)];
+  }
+
+  /** Carrying damage it has not healed - its HP pulses until it does. */
+  isWounded(hex: HexCell): boolean {
+    const pc = hex.piece;
+    return !!pc && !!pc.max_hp && pc.hp < pc.max_hp;
+  }
+
+  hasPositiveEffect(uid?: string): boolean {
+    const effect = uid ? this.unitBuffs[uid] : undefined;
+    return !!effect && [effect.mov, effect.atk, effect.def].some(value => (value ?? 0) > 0);
+  }
+
+  textTransform(cx: number, cy: number): string | null {
+    return this.rotateBoard ? `rotate(180 ${cx} ${cy})` : null;
+  }
+
+  hasNegativeEffect(uid?: string): boolean {
+    const effect = uid ? this.unitBuffs[uid] : undefined;
+    return !!effect && [effect.mov, effect.atk, effect.def].some(value => (value ?? 0) < 0);
+  }
+
+  /**
+   * Which way a unit has been pushed. The mark on the entry is what counts,
+   * not the sign of the numbers: a boost and a drag that cancel out still
+   * leave both marks, and a purely damaging cast leaves a drag with no
+   * numbers at all.
+   */
+  hasLift(uid?: string): boolean {
+    const effect = uid ? this.unitBuffs[uid] : undefined;
+    return !!effect?.up || this.hasPositiveEffect(uid);
+  }
+
+  hasDrag(uid?: string): boolean {
+    const effect = uid ? this.unitBuffs[uid] : undefined;
+    return !!effect?.down || this.hasNegativeEffect(uid);
+  }
+
+  get movementArrowSegments(): Array<{ x1: number; y1: number; x2: number; y2: number }> {
+    return this.movementArrows.flatMap(arrow => {
+      const from = this.cellsByKey.get(arrow.from);
+      const to = this.cellsByKey.get(arrow.to);
+      return from && to && from.key !== to.key
+        ? [{ x1: from.cx, y1: from.cy, x2: to.cx, y2: to.cy }]
+        : [];
+    });
+  }
+
+  get attackStrikes(): StrikeMarks {
+    return this.strikeMarks(this.attackMarkers);
+  }
+
+  get opponentAttackStrikes(): StrikeMarks {
+    return this.strikeMarks(this.opponentAttackMarkers);
+  }
+
+  /**
+   * How a blow is drawn: crossed blades halfway between the two hexes - on
+   * the shared edge when they touch - and, for anything struck from further
+   * out, the shot's own path under them, edge to edge so neither face is
+   * covered.
+   */
+  private strikeMarks(markers: Array<{ from: string; to: string }>): StrikeMarks {
+    const marks: StrikeMarks = { swords: [], lines: [] };
+    for (const marker of markers) {
+      const from = this.cellsByKey.get(marker.from);
+      const to = this.cellsByKey.get(marker.to);
+      if (!from || !to) continue;
+      marks.swords.push({ x: (from.cx + to.cx) / 2, y: (from.cy + to.cy) / 2 });
+      if (hexDistanceKeys(marker.from, marker.to) <= 1) continue;
+      const dx = to.cx - from.cx, dy = to.cy - from.cy;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = (dx / len) * HEX_INRADIUS, uy = (dy / len) * HEX_INRADIUS;
+      marks.lines.push({
+        x1: from.cx + ux, y1: from.cy + uy,
+        x2: to.cx - ux, y2: to.cy - uy,
+      });
+    }
+    return marks;
+  }
+
+  @Input() killMarkers: FallenUnit[] = [];
+
+  get killMarkerPositions(): FallenDrawing[] {
+    return this.fallenDrawings(this.killMarkers);
+  }
+
+  /**
+   * A unit that died where it stood, drawn as it was and faded out, for as
+   * long as the hex stays empty. Anything that walks onto the hex is the
+   * board's truth, so the ghost goes rather than being drawn under it.
+   */
+  private fallenDrawings(fallen: FallenUnit[]): FallenDrawing[] {
+    return fallen.flatMap(unit => {
+      const cell = this.cellsByKey.get(unit.key);
+      if (!cell || cell.piece) return [];
+      return [{
+        x: cell.cx,
+        y: cell.cy,
+        points: cell.innerPoints,
+        symbol: this.getPieceSymbol({ unit_id: unit.unit_id, color: unit.color } as PieceData),
+        // Its own numbers, unbuffed - whatever it was carrying died with it.
+        atk: attackCellText(unit.unit_id, this.config),
+        def: twoDigits(this.config?.units?.[unit.unit_id]?.defense),
+        mov: twoDigits(this.config?.units?.[unit.unit_id]?.move),
+        rangeLow: RANGE_LOW,
+        rangeHigh: rangeHigh(unit.unit_id, this.config),
+        dark: unit.color === 'black',
+      }];
+    });
+  }
+
+  get opponentMovementArrowSegments(): Array<{ x1: number; y1: number; x2: number; y2: number }> {
+    return this.lineSegments(this.opponentMovementArrows);
+  }
+
+  get opponentKillMarkerPositions(): FallenDrawing[] {
+    return this.fallenDrawings(this.opponentKillMarkers);
+  }
+
+  private lineSegments(lines: Array<{ from: string; to: string }>): Array<{ x1: number; y1: number; x2: number; y2: number }> {
+    return lines.flatMap(line => {
+      const from = this.cellsByKey.get(line.from);
+      const to = this.cellsByKey.get(line.to);
+      return from && to ? [{ x1: from.cx, y1: from.cy, x2: to.cx, y2: to.cy }] : [];
+    });
+  }
+
   // -- Internal state -------------------------------------------------
 
   cells: HexCell[] = [];
+  /**
+   * Same cells, by key. Every overlay resolves hexes by key, several times
+   * per entry, and the game room's clock drives change detection four times
+   * a second - a linear scan of ~800 cells per lookup adds up fast.
+   */
+  private cellsByKey = new Map<string, HexCell>();
   viewBox = '0 0 100 100';
 
   selectedHex: string | null = null;
@@ -683,11 +1411,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   previewMoves = new Set<string>();
   previewAttacks = new Set<string>();
   private previewKey: string | null = null;
-  lastMoveFrom = '';
-  lastMoveTo = '';
   lastDamagedHex = '';  // hex that was attacked but unit survived
-  timerSeconds = 0;
-  private timerInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(private cdr: ChangeDetectorRef) {}
 
@@ -703,16 +1427,16 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   // -- Lifecycle ------------------------------------------------------
 
   ngOnInit(): void {
-    this.startTimer();
+    // Nothing to start: the clock lives in the game room's header.
   }
 
   ngOnDestroy(): void {
-    this.stopTimer();
+    // Nothing to stop.
   }
 
   ngOnChanges(changes: SimpleChanges): void {
     // Recalculate cells whenever board, radius, or config (orientation) changes
-    if (changes['boardState'] || changes['radius'] || changes['config']) {
+    if (changes['boardState'] || changes['radius'] || changes['config'] || changes['unitBuffs']) {
       this.buildCells();
     }
     // A move ends the ability to move again, but the selection itself sticks
@@ -724,7 +1448,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // the new cell so a piece that moved keeps its panel, and drop a selection
     // whose unit is gone.
     if (changes['boardState'] && this.selectedHex) {
-      const cell = this.cells.find(c => c.key === this.selectedHex);
+      const cell = this.cellsByKey.get(this.selectedHex);
       if (!cell?.piece) this.selectedHex = null;
       this.hexSelected.emit(cell?.piece ? this.describe(cell) : null);
     }
@@ -733,10 +1457,6 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       this.invalidatePreview();
       // A staged step moved the unit: its remaining reach moved with it.
       this.refreshTargets();
-    }
-    // Restart timer when turn changes
-    if (changes['turnStartedAt'] || changes['turnTimeLimit']) {
-      this.startTimer();
     }
   }
 
@@ -750,6 +1470,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   private handleClick(hex: HexCell): void {
     if (!this.interactive || this.endReason) {
+      return;
+    }
+    // An armed offensive ability takes the next unit click as its target,
+    // rather than allowing the regular attack-selection path to intercept it.
+    if (this.abilityMode === 'enemy' && hex.piece) {
+      this.emitSelected(hex);
       return;
     }
     // Clicking a unit always inspects it. Driving one additionally needs the
@@ -772,8 +1498,6 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         this.moveReserve(this.selectedHex, hex.key);
         return;
       }
-      this.lastMoveFrom = this.selectedHex;
-      this.lastMoveTo = hex.key;
       this.moveMade.emit({
         from: this.selectedHex,
         to: hex.key,
@@ -802,8 +1526,6 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         // If we have legal targets computed, only move to legal targets (already handled above).
         // If no legal targets were computed (no config), submit anyway (server validates).
         if (canDrive && !hex.filler && this.legalTargets.size === 0 && !this.config) {
-          this.lastMoveFrom = this.selectedHex;
-          this.lastMoveTo = hex.key;
           this.moveMade.emit({ from: this.selectedHex, to: hex.key, cost: 1 });
         }
         this.selectedHex = null;
@@ -860,8 +1582,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         stats: piece
           ? {
               hp: twoDigits(piece.hp),
-              atk: attackText(piece.unit_id, this.config),
+              atk: attackCellText(piece.unit_id, this.config, this.unitBuffs[piece.uid ?? '']?.atk ?? 0),
               def: twoDigits(def?.defense),
+              rangeLow: RANGE_LOW,
+              rangeHigh: rangeHigh(piece.unit_id, this.config),
             }
           : null,
         // Keyed on the unit, not the hex: veterancy that changed every time
@@ -874,6 +1598,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         num: i + 1,
       };
     });
+
+    this.cellsByKey = new Map(this.cells.map(c => [c.key, c]));
 
     if (this.cells.length > 0) {
       const xs = this.cells.map(c => c.cx);
@@ -922,7 +1648,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     delete this.reserves[from];
     this.selectedHex = to;
     this.buildCells();
-    const cell = this.cells.find(c => c.key === to);
+    const cell = this.cellsByKey.get(to);
     if (cell) this.emitSelected(cell);
     this.refreshTargets();
   }
@@ -935,9 +1661,36 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   /** Hex currently under the cursor, for the hover shadow. */
   hoveredHex: string | null = null;
 
+  /**
+   * The selection's own layers - legal moves, attackable enemies, the dots -
+   * belong to it alone, so they come off the board while the cursor is
+   * reading someone else. Two units' ranges on screen at once is unreadable.
+   */
+  get showingSelection(): boolean {
+    return !this.hoveredHex || this.hoveredHex === this.selectedHex;
+  }
+
+  /**
+   * Whether the reach on screen belongs to a unit that can still be given an
+   * order - the only kind that earns the live colours.
+   *
+   * Once something is staged the turn is spent on that unit (refreshTargets
+   * enforces the same lock), so it is the last one left in colour; clicking
+   * another of your own to read it must not look like you can send it
+   * somewhere. Undo puts the turn back and every unit of yours with it.
+   */
+  get previewDim(): boolean {
+    const key = this.hoveredHex ?? this.selectedHex;
+    if (!key) return false;
+    if (this.movesLeftFor) return key !== this.movesLeftFor;
+    const piece = this.cellsByKey.get(key)?.piece;
+    return !piece || piece.color !== this.activeColor || !this.canDriveNow();
+  }
+
   /** Hovering previews a unit in the Unit panel without selecting it. */
   onHexHover(hex: HexCell | null): void {
     this.hoveredHex = hex && hex.piece ? hex.key : null;
+    this.refreshForecast();
     this.hexHovered.emit(hex && hex.piece ? this.describe(hex) : null);
     this.refreshPreview();
     this.cdr.markForCheck();
@@ -963,12 +1716,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   private refreshTargets(canDrive = this.canDriveNow()): void {
     this.clearTargets();
     const key = this.selectedHex;
-    if (!key || !this.config || !canDrive) return;
-    const cell = this.cells.find(c => c.key === key);
+    if (!key || !this.config) return;
+    const cell = this.cellsByKey.get(key);
     if (!cell?.piece || cell.piece.color !== this.activeColor) return;
 
     // A reserve is confined to its own panel, and shuffling it is not the
-    // turn's action - so the staging lock below does not apply to it.
+    // turn's action - so neither the staging lock nor canDrive applies to it.
+    // Testing canDrive above this froze the panels the moment the turn's unit
+    // swung, which is exactly what the branch below exists to prevent.
     const zone = cell.panel ? this.panelZones.get(cell.panel) : undefined;
     if (zone) {
       if (!this.controlAllSides && !this.isMyTurn) return;
@@ -993,6 +1748,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       if (other.panel !== cell.panel) continue;
       if (hexDistanceKeys(key, other.key) <= range) this.attackTargets.add(other.key);
     }
+    this.refreshForecast();
   }
 
   /**
@@ -1019,7 +1775,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   private refreshPreview(): void {
     const key = this.hoveredHex ?? this.selectedHex;
-    const cell = key ? this.cells.find(c => c.key === key) : null;
+    const cell = key ? this.cellsByKey.get(key) : null;
     // A unit that has walked has less left to show, so the budget is part of
     // the preview's identity - not just which unit it belongs to.
     const budget = cell?.piece ? this.budgetFor(cell) : undefined;
@@ -1040,6 +1796,75 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     );
   }
 
+  /**
+   * What the hovered trade would do. Both halves of it: our strike on them,
+   * and their counter on us if we are inside their range and they survive.
+   * Recomputed on hover rather than read per change-detection pass.
+   */
+  private forecast: { target: string; targetHp: number; attacker: string; attackerHp: number } | null = null;
+
+  private refreshForecast(): void {
+    this.forecast = null;
+    const from = this.selectedHex;
+    const to = this.hoveredHex;
+    if (!from || !to || !this.config || !this.attackTargets.has(to)) return;
+    const me = this.cellsByKey.get(from)?.piece;
+    const them = this.cellsByKey.get(to)?.piece;
+    if (!me || !them) return;
+
+    const distance = hexDistanceKeys(from, to);
+    const dealt = strikeDamage(me.unit_id, them.unit_id, distance, this.config);
+    const targetHp = Math.max(0, (them.hp ?? 0) - dealt);
+    // A unit at 0 never counters, and a counter only comes back if we are
+    // standing inside its own range - see Combat in AGENTS.md.
+    const theirRange: number = this.config?.units?.[them.unit_id]?.attackRange ?? 1;
+    const counter = targetHp > 0 && distance <= theirRange
+      ? strikeDamage(them.unit_id, me.unit_id, distance, this.config)
+      : 0;
+    this.forecast = {
+      target: to,
+      targetHp,
+      attacker: from,
+      attackerHp: Math.max(0, (me.hp ?? 0) - counter),
+    };
+  }
+
+  /** "-6" for either unit in the hovered trade, else null. */
+  forecastDamage(key: string): string | null {
+    const f = this.forecast;
+    if (!f) return null;
+    // The cell draws twoDigits(hp), so the delta has to be against the same
+    // number the player is looking at.
+    const hp = this.cellsByKey.get(key)?.stats?.hp ?? 0;
+    const after = key === f.target ? f.targetHp : key === f.attacker ? f.attackerHp : null;
+    if (after === null) return null;
+    const dealt = hp - twoDigits(after)!;
+    // A strike armour absorbed entirely still shows the unit's real HP: a
+    // pulsing green "-0" reads as a bug, not as "nothing happens".
+    return dealt > 0 ? `-${dealt}` : null;
+  }
+
+  /** True for our own unit in the hovered trade - the one taking the counter. */
+  takesCounter(key: string): boolean {
+    return !!this.forecast && key === this.forecast.attacker;
+  }
+
+  /** True while the hovered trade would leave this unit dead. */
+  wouldDie(key: string): boolean {
+    const f = this.forecast;
+    if (!f) return false;
+    return (key === f.target && f.targetHp <= 0) || (key === f.attacker && f.attackerHp <= 0);
+  }
+
+  /** HP this unit would be left with, for the Unit panel. */
+  private forecastHpAfter(key: string): number | null {
+    const f = this.forecast;
+    if (!f) return null;
+    if (key === f.target) return f.targetHp;
+    if (key === f.attacker) return f.attackerHp;
+    return null;
+  }
+
   /** The board or the selection moved under the preview - recompute it. */
   private invalidatePreview(): void {
     this.previewKey = null;
@@ -1056,10 +1881,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       color: pc.color,
       hp: twoDigits(pc.hp),
       hpMax: twoDigits(pc.max_hp ?? def?.hp),
-      atk: hex.stats?.atk ?? '',
+      hpAfter: this.forecastHpAfter(hex.key),
+      atk: attackText(pc.unit_id, this.config),
       def: hex.stats?.def ?? null,
       mv: twoDigits(def?.move),
       vet: hex.vet,
+      panel: hex.panel || undefined,
     };
   }
 
@@ -1082,30 +1909,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     return hex.key;
   }
 
-  // -- Timer ----------------------------------------------------------
-
-  private startTimer(): void {
-    this.stopTimer();
-    if (!this.turnTimeLimit || this.turnTimeLimit <= 0 || !this.turnStartedAt || this.endReason) {
-      this.timerSeconds = 0;
-      return;
-    }
-    this.updateTimerTick();
-    this.timerInterval = setInterval(() => {
-      this.updateTimerTick();
-      this.cdr.markForCheck();
-    }, 500);
+  isAbilityTarget(hex: HexCell, target: 'friendly' | 'enemy'): boolean {
+    if (!this.abilityMode || !this.abilityCasterColor || !hex.piece || hex.panel) return false;
+    const isFriendly = hex.piece.color === this.abilityCasterColor;
+    return target === 'friendly' ? this.abilityMode === 'friendly' && isFriendly
+      : this.abilityMode === 'enemy' && !isFriendly;
   }
 
-  private stopTimer(): void {
-    if (this.timerInterval !== null) {
-      clearInterval(this.timerInterval);
-      this.timerInterval = null;
-    }
-  }
-
-  private updateTimerTick(): void {
-    const elapsed = (Date.now() - new Date(this.turnStartedAt).getTime()) / 1000;
-    this.timerSeconds = Math.max(0, Math.round(this.turnTimeLimit - elapsed));
-  }
 }

@@ -77,6 +77,30 @@ describe('LocalGameService', () => {
     expect(last('move_made')).toBeUndefined();
   });
 
+  it('keeps the seat name when the player renames themselves Opponent', async () => {
+    // The placeholder's own name: writing it raw into currentTurn used to make
+    // every one of the player's moves come back illegal.
+    service.send({ type: 'join_game_room', username: LOCAL_OPPONENT });
+    await flush();
+    service.send({ type: 'make_move', from: '-7,10', to: '-8,10' });
+    await flush();
+    expect(last('invalid_move')).toBeUndefined();
+    expect(last('move_made').boardState['-8,10'].unit_id).toBe('pawn');
+  });
+
+  it('refuses to re-deal a game that is still running', async () => {
+    service.send({ type: 'make_move', from: '-7,10', to: '-8,10' });
+    await flush();
+    service.send({ type: 'start_game', hostColor: 'white' });
+    await flush();
+    // Still the position we played into, not a fresh board on turn 1.
+    service.send({ type: 'request_game_state' });
+    await flush();
+    const state = last('game_state_update');
+    expect(state.turnNumber).toBe(2);
+    expect(state.boardState['-8,10'].unit_id).toBe('pawn');
+  });
+
   it('ends on resign, with the other seat winning', async () => {
     service.send({ type: 'resign' });
     await flush();

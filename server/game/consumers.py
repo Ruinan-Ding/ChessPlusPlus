@@ -37,7 +37,11 @@ from .utils import (
 )
 from .engine import load_config, build_initial_board, DEFAULT_CONFIG
 from .engine.board import HexBoard, parse_coord, hex_distance
-from .engine.game_logic import get_legal_moves_filtered, resolve_combat, find_defeated
+from .engine.game_logic import (
+    defeated_sides,
+    get_legal_moves_filtered,
+    resolve_combat,
+)
 
 logger = logging.getLogger('game')
 
@@ -906,10 +910,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return
             
             options = {}
-            if mode == 'custom':
-                if 'options' in data:
-                    validate_game_options(data['options'])
-                    options = data['options']
+            if 'options' in data:
+                validate_game_options(data['options'])
+                options = data['options']
             
             await self._update_game_mode(game_id, mode, options)
 
@@ -1165,6 +1168,28 @@ class GameConsumer(AsyncWebsocketConsumer):
             except ValueError as e:
                 await send_error(self, 'INVALID_CONFIG', f'Saved custom config is invalid: {e}')
                 return
+            requested_time = data.get('turnTimeLimit')
+            selected_time = requested_time
+            if selected_time is None:
+                selected_time = (game.game_options or {}).get('turnTimeLimit')
+            if selected_time is None:
+                # 0 means unlimited and is the shipped default, so `or 60`
+                # would arm a clock on every game that never asked for one.
+                selected_time = config.get('rules', {}).get('turnTimeLimit', 60)
+            # Somebody asked for this clock, rather than it coming from the
+            # config the room already carries.
+            chosen = requested_time is not None or (game.game_options or {}).get('turnTimeLimit') is not None
+            if chosen:
+                # One allow-list, in the validator that already owns it.
+                try:
+                    validate_game_options({'turnTimeLimit': selected_time})
+                except ValidationError as e:
+                    await send_error(self, e.code, e.message)
+                    return
+                config.setdefault('rules', {})['turnTimeLimit'] = selected_time
+            elif not isinstance(selected_time, int) or isinstance(selected_time, bool) or selected_time < 0:
+                await send_error(self, 'INVALID_CONFIG', 'rules.turnTimeLimit must be a non-negative integer')
+                return
             board = build_initial_board(config)
 
             await self._update_player_status(game.host, 'in-game')
@@ -1245,8 +1270,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         async def _timer_task():
             try:
                 await asyncio.sleep(time_limit)
-                # Timer expired - the current player loses, unless the game
-                # has already moved on since this timer was armed.
+                # Timer expiration is an automatic pass, not a game loss.
                 state = await self._get_game_state(game_id)
                 if not state or state.is_finished:
                     return
@@ -1254,16 +1278,60 @@ class GameConsumer(AsyncWebsocketConsumer):
                     logger.info(f"Stale turn timer for game {game_id} (armed for turn {turn_number}) ignored")
                     return
 
-                winner = state.player_black if state.current_turn == state.player_white else state.player_white
-                if await self._end_game(game_id, state, winner, 'timeout'):
-                    await self._broadcast_game_over(game_id, winner, 'timeout')
-                    logger.info(f"Turn timer expired in game {game_id} - {winner} wins")
+                mover = state.current_turn
+                next_player = state.player_black if mover == state.player_white else state.player_white
+                my_color = 'white' if mover == state.player_white else 'black'
+                # A timeout is a pass, so it ends the game on the same terms
+                # a deliberate pass does - otherwise two idle players run past
+                # maxTurns forever and the draw never arrives.
+                end_reason = ''
+                max_turns = (state.config_snapshot or {}).get('rules', {}).get('maxTurns', 0)
+                if max_turns > 0 and state.turn_number >= max_turns:
+                    end_reason = 'draw_max_turns'
+                turn_started_dt = timezone.now()
+                applied = await self._update_game_state(
+                    game_id=game_id,
+                    board_state=state.board_state,
+                    current_turn=next_player if not end_reason else state.current_turn,
+                    turn_number=state.turn_number + 1,
+                    move_history=list(state.move_history),
+                    winner='',
+                    end_reason=end_reason,
+                    expected_turn_number=state.turn_number,
+                    turn_started_at=turn_started_dt,
+                )
+                if not applied:
+                    return
+                await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
+                    'type': 'turn_passed',
+                    'passedBy': mover,
+                    'color': my_color,
+                    'currentTurn': next_player if not end_reason else '',
+                    'turnNumber': state.turn_number + 1,
+                    'turnStartedAt': turn_started_dt.isoformat(),
+                    'timedOut': True,
+                })
+                if end_reason:
+                    await self._broadcast_game_over(game_id, '', end_reason)
+                    return
+                # Only keep the clock running while somebody is still there to
+                # watch it: an abandoned room would otherwise re-arm itself
+                # every `time_limit` seconds for the life of the process.
+                if not await self._any_player_connected([state.player_white, state.player_black]):
+                    logger.info(f"Turn timer for game {game_id} stopped: nobody connected")
+                    return
+                await self._start_turn_timer(
+                    game_id, time_limit, turn_number=state.turn_number + 1,
+                    current_turn=next_player,
+                )
+                logger.info(f"Turn timer expired in game {game_id}; turn passed")
             except asyncio.CancelledError:
                 pass
             except Exception as e:
                 logger.error(f"Error in turn timer for game {game_id}: {e}", exc_info=True)
             finally:
-                _pending_turn_timers.pop(game_id, None)
+                if _pending_turn_timers.get(game_id) is asyncio.current_task():
+                    _pending_turn_timers.pop(game_id, None)
 
         task = asyncio.create_task(_timer_task())
         _pending_turn_timers[game_id] = task
@@ -1525,11 +1593,21 @@ class GameConsumer(AsyncWebsocketConsumer):
             end_reason = ''
             # Who lost is a property of the board, not of who moved: a
             # counter-attack can kill the attacker's commander on their own turn.
-            defeated = find_defeated(board, config)
-            if defeated:
+            defeated_all = defeated_sides(board, config)
+            if len(defeated_all) == 2:
+                # A counter-attack can kill the attacker's commander on the
+                # attacker's own turn: nobody won that.
+                end_reason = 'draw_mutual'
+                logger.info(f"Game {self.game_id} drawn: both sides fell in one exchange")
+            elif defeated_all:
+                defeated = defeated_all[0]
                 loser = state.player_white if defeated == 'white' else state.player_black
                 winner = state.player_black if defeated == 'white' else state.player_white
-                end_reason = 'elimination'
+                # The objective names the ending: a regicide leaves most of the
+                # army standing, so calling it an elimination reads as a bug.
+                end_reason = ('regicide'
+                              if config.get('rules', {}).get('objective', 'regicide') == 'regicide'
+                              else 'elimination')
                 logger.info(f"Game {self.game_id} decided: {loser} lost ({defeated})")
 
             max_turns = config.get('rules', {}).get('maxTurns', 0)
@@ -1874,6 +1952,21 @@ class GameConsumer(AsyncWebsocketConsumer):
         qs.delete()
     
     @database_sync_to_async
+    def _any_player_connected(self, usernames):
+        """True while at least one of *usernames* is still heartbeating.
+
+        A row outlives an unclean drop - it is only swept when some other
+        request happens to call _get_all_online_users - so a row on its own
+        proves nothing. The heartbeat behind it is what does, on the same
+        45-second threshold that sweep uses.
+        """
+        fresh = timezone.now() - timedelta(seconds=45)
+        return PlayerConnection.objects.filter(  # type: ignore
+            username__in=[u for u in usernames if u],
+            last_activity__gte=fresh,
+        ).exists()
+
+    @database_sync_to_async
     def _get_all_online_users(self):
         """Get all currently online users, deleting stale connections first"""
         # Consider connections stale if no heartbeat in 45 seconds
@@ -2203,6 +2296,10 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'players': players,
                 'isInviter': is_inviter,
                 'singlePlayer': bool((game.game_options or {}).get('singlePlayer')),
+                # Settings only ever reached a client through the live
+                # game_mode_changed broadcast, so whoever joined after the
+                # host chose was shown the component's default instead.
+                'gameOptions': game.game_options or {},
             })
         except Exception as e:
             logger.error(f"Error sending game player list: {e}")

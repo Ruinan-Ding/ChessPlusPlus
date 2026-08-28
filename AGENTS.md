@@ -31,8 +31,8 @@ combat deals damage rather than capturing outright.
 ```bash
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
-DJANGO_DEBUG=true python manage.py test               # 75 tests
-DJANGO_DEBUG=true python manage.py test game.testsuite  # 71 tests, engine + consumers + models
+DJANGO_DEBUG=true python manage.py test               # 89 tests
+DJANGO_DEBUG=true python manage.py test game.testsuite  # 85 tests, engine + consumers + models
 
 # Client (from client/)
 ng serve                                              # serve on :4200
@@ -157,6 +157,11 @@ Decided so far:
   enemy blocks equally, so a blocked path must be routed around. Implemented in
   `move_validator.get_legal_moves()`. Placeholder: every unit in `DEFAULT_CONFIG` currently gets
   `move: 6`; real per-unit values come with the real roster.
+- **Running out of time passes the turn**, it does not lose the game (superseded: the turn
+  timer used to end the match against whoever was on the clock). The server owns that clock and
+  passes for you; the client renders it and, if you had a turn staged, tries to commit it first.
+  Timer choices are `{0, 15, 30, 60, 120, 180, 240, 300}` seconds, 0 meaning unlimited, and the
+  allow-list lives in `validators.validate_game_options`.
 - **One unit acts per turn**, alternating plies (confirmed — the existing chess-like turn
   plumbing stays as-is; move + attack + ability all resolve inside a single player action).
 - **Attack is decoupled from movement.** Units carry `attackRange` in rings of `hex_distance`.
@@ -193,7 +198,12 @@ Decided so far:
     or out of them and no server model: the rules above (left plane untouchable, right plane
     deployable and attackable in specific ways) are the owner's spec, not the code. Do not add
     staging/deployment UI unprompted.
-  - **Left and right are from each player's own perspective**, and the board never flips —
+  - **Left and right are from each player's own perspective.** The board is drawn white-at-the
+    bottom, and a solo game played as Black rotates the whole SVG 180° (`rotateBoard`) so the
+    player still faces up the screen; glyphs counter-rotate through `textTransform()`. That is
+    presentation only - `panelOf()` and `buildReserves()` key off unrotated geometry, so panel
+    ownership never moves. Multiplayer never rotates.
+  - Historically the board never flipped —
     white always sits at the bottom, black at the top, so black faces the other way and his
     left is *screen-right*. The panels therefore pair up diagonally, not by column:
 
@@ -291,8 +301,11 @@ and `attack` names the hex it strikes from there.
 - **Losing**: the objective is `regicide` - a side is beaten when it has no unit flagged
   `commander: true` left (the king). `elimination` (no units at all) is the other accepted
   value, and a side with nothing on the board is out either way. Who lost is read off the
-  board by `find_defeated()`, never inferred from who moved: a counter-attack can kill the
-  attacker's own commander on the attacker's turn.
+  board by `defeated_sides()`, never inferred from who moved: a counter-attack can kill the
+  attacker's own commander on the attacker's turn - and can take both commanders in one
+  exchange, which ends `draw_mutual` rather than crediting the survivor of a list order.
+  The end reason names the objective (`regicide` / `elimination`); `find_defeated()` still
+  answers "is it over" for callers that need nothing else.
 - **Reach** is `units.<id>.attackRange` in rings of hex distance, ignoring obstacles. Damage
   falls off `rules.rangeFalloff` (0.25) per ring past the first, floored, never under 1 — see
   `ranged_damage()`.
@@ -379,20 +392,25 @@ wholesale, so a divergence corrects itself on commit rather than persisting.
 
 ## Ability panels
 
-Both side boxes render the same four slots. Each is live only on its own side's turn, via
+Both side boxes render the same six slots. Each is live only on its own side's turn, via
 `canUseAbilities('mine' | 'opponent')`. The opponent's box additionally requires
 `isSinglePlayer`, so in multiplayer it is permanently disabled — you can see your opponent's
-abilities but never press them. The Unit panel carries the two slots every unit has: **Ability1
-and Passive1**.
+abilities but never press them. Ability effects are **client-side only**, so activation is
+disabled in multiplayer entirely: nothing about them reaches the server, and a boost the
+server never heard of would desync the board. The Unit panel carries one ability and the
+passive, for whichever unit is selected.
 
-- **Slot 2 is the passive** (`isPassive()` — index 1, in every box). It renders as a label, not
-  a button: always on, never cast, no cost and no cooldown.
-- **Both of a unit's slots are earned**: Ability1 at ★1, Passive1 at ★2 (`vetNeeded()`), read
-  off the displayed unit's veterancy. A unit below the rank sees the slot locked.
-- **Casting is click-then-target.** `useAbility()` arms the slot rather than firing it; the next
-  unit clicked on the board receives the effect, and clicking the button again calls it off.
-  Points and cooldown are spent on landing, not on arming. Aiming at an enemy just disarms —
-  boosts go on your own units.
+- **Six slots**: four actives, then the passive (`isPassive()` — index 4) and the ultimate
+  (`isUltimate()` — index 5) on their own bottom row. The passive is always on, never cast, no
+  cost and no cooldown; the ultimate costs more and is once per game.
+- **The passive is earned**: ★2 (`vetNeeded()`), read off the displayed unit's veterancy. The
+  actives are not gated - `vetNeeded()` returns 0 for them, and `abilityHint()` leaves the
+  requirement clause out entirely rather than printing an empty one.
+- **Casting is click-then-target.** `selectAbility()` arms the slot rather than firing it; the
+  next unit clicked on the board receives it. A friendly-target ability buffs, an enemy-target
+  one damages, and clicking the wrong kind cancels. Points and cooldown are spent on landing,
+  not on arming. An offensive cast **stages like a move** - it pushes onto `stagedActions`, so
+  it shows through a staged step and Undo takes it back.
 - **Effects are one-turn stat boosts** (`abilityEffects`, arbitrary placeholder numbers): +MOV,
   +ATK, +DEF. They live in `buffs`, keyed by hex, and expire in `beginTurnFor()` when the side
   that cast them comes round again. The Unit panel shows boosted-over-base (`statAtk` etc.), so
@@ -456,7 +474,7 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
   optional `attack` field on `make_move` (see Combat). An "attack by moving onto an enemy" click
   does nothing; that path is gone for good.
 - `server/game/tests_disabled/` is **not** disabled. Its 4 tests match Django's `test*.py`
-  discovery pattern and run under a bare `manage.py test` (75 vs 71). They pass. Left as-is.
+  discovery pattern and run under a bare `manage.py test` (89 vs 85). They pass. Left as-is.
 - `client/src/app/components/setup-config/setup-config.component.html` is still a raw JSON
   `<textarea>` with a "Configuration UI will be added here" placeholder.
 - `abilities` exists in the schema and in `DEFAULT_CONFIG` as `{}`. The engine does not read
