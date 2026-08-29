@@ -161,12 +161,17 @@ export function hexDistanceKeys(a: string, b: string): number {
 /**
  * Damage one unit lands on another: ring-scaled attack less the defender's
  * defence, floored at 0. Mirrors strike_damage() in game_logic.py.
+ *
+ * A one-turn ability boost rides on top of the scaled numbers rather than the
+ * raw stat, because that is where the hex and the unit panel show it: a +2 on
+ * a unit whose second ring reads 19 makes that ring 21, not 21 less falloff.
  */
 export function strikeDamage(
   attackerId: string, defenderId: string, distance: number, config: any,
+  atkBonus = 0, defBonus = 0,
 ): number {
   const attacker = config?.units?.[attackerId] ?? {};
   const defender = config?.units?.[defenderId] ?? {};
-  const attack = rangedDamage(attacker.attack ?? 1, distance, config);
-  return Math.max(0, attack - (defender.defense ?? 0));
+  const attack = rangedDamage(attacker.attack ?? 1, distance, config) + atkBonus;
+  return Math.max(0, attack - ((defender.defense ?? 0) + defBonus));
 }

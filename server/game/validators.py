@@ -77,6 +77,12 @@ def validate_game_mode(mode: str) -> None:
         raise ValidationError('INVALID_GAME_MODE', f'Mode must be one of: {", ".join(valid_modes)}')
 
 
+# The only settings a room carries. Named here because the consumer has to
+# filter what it sends back to clients by the same list it validates against -
+# anything else is echoed to the server on the next change and rejected.
+GAME_OPTION_KEYS = frozenset({'reveal', 'turnTimeLimit'})
+
+
 def validate_game_options(options: dict) -> None:
     """
     Validate game options structure
@@ -90,9 +96,8 @@ def validate_game_options(options: dict) -> None:
     if not isinstance(options, dict):
         raise ValidationError('INVALID_OPTIONS', 'Game options must be a dictionary')
     
-    allowed_keys = {'reveal', 'turnTimeLimit'}
     for key in options.keys():
-        if key not in allowed_keys:
+        if key not in GAME_OPTION_KEYS:
             raise ValidationError('INVALID_OPTION_KEY', f'Unknown option: {key}')
     
     if 'reveal' in options and not isinstance(options['reveal'], bool):

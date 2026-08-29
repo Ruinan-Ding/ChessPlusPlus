@@ -43,6 +43,63 @@ describe('GameBoardComponent reach preview', () => {
 
   const cell = (key: string) => board.cells.find(c => c.key === key)!;
 
+  it('drops the rest of an attack when a new turn interrupts it', async () => {
+    // Cancelling resolves the promise the chain is waiting on; it does not
+    // unwind the chain. Without a token check between beats the abandoned
+    // attack lunges again and flashes a hex belonging to whatever replaced it.
+    const attack = [{ kind: 'attack' as const, from: '0,0', to: '3,0' }];
+    board.playback = attack;
+    board.ngOnChanges({ playback: new SimpleChange([], attack, false) });
+    await new Promise(resolve => setTimeout(resolve, 60));   // mid-lunge
+
+    board.playback = [];
+    board.ngOnChanges({ playback: new SimpleChange(attack, [], false) });
+    // Past the second lunge and into where the hit flash would have been.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(board.hitHex).toBe('');
+    expect(board.mover).toBeNull();
+  });
+
+  it('flies a copy of the unit while a committed move plays', async () => {
+    const steps = [{ kind: 'move' as const, from: '0,0', to: '3,0' }];
+    board.playback = steps;
+    board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
+
+    // Mid-flight: the copy is up and the hex it lands on is holding its place.
+    await new Promise(resolve => setTimeout(resolve, 80));
+    expect(board.mover).not.toBeNull();
+    expect(board.isMoving('3,0')).toBeTrue();
+
+    // And it puts itself away when the beat ends.
+    await new Promise(resolve => setTimeout(resolve, 600));
+    expect(board.mover).toBeNull();
+    expect(board.isMoving('3,0')).toBeFalse();
+  });
+
+  it('shines the hex an ability lands on, then stops', async () => {
+    const steps = [{ kind: 'ability' as const, from: '0,0', to: '3,0' }];
+    board.playback = steps;
+    board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
+
+    expect(board.glowHex).toBe('3,0');
+    await new Promise(resolve => setTimeout(resolve, 900));
+    expect(board.glowHex).toBe('');
+  });
+
+  it('paints five separate zones of the same size on a full-size board', () => {
+    // The shipped radius: on the tiny board these tests otherwise use, five
+    // patches two rings across have nowhere to go.
+    board.radius = 11;
+    board.ngOnChanges({ radius: new SimpleChange(4, 11, false) });
+
+    const zoned = board.cells.filter(hex => hex.zoneClass === 'zone');
+    expect(zoned.every(hex => !hex.filler)).toBeTrue();  // never on the panels
+    // Five patches of nineteen (a hex plus two rings). A hex can only carry
+    // the class once, so the full count is also the proof they do not overlap
+    // and that none of them ran off the board.
+    expect(zoned.length).toBe(5 * 19);
+  });
+
   it('splits a hovered unit into where it can stand and where it can only strike', () => {
     board.onHexHover(cell('0,0'));
 

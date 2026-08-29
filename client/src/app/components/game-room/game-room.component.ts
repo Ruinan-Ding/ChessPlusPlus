@@ -10,9 +10,11 @@ import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { GameStateService } from '../../services/game-state.service';
 import { AuthService } from '../../services/auth.service';
-import { FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap } from '../game-board/game-board.component';
+import { AnimStep, FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap } from '../game-board/game-board.component';
 import { hexDistanceKeys, strikeDamage } from '../../services/hex-rules';
+import { buildPlayback } from '../../services/playback';
 import { AudioService } from '../../services/audio.service';
+import { readStore, removeStore, writeStore } from '../../services/storage';
 
 interface GameOptions {
   reveal?: boolean;
@@ -27,6 +29,10 @@ interface LocalUiState {
   unitCooldowns: number[];
   opponentCooldowns: number[];
   myCooldowns: number[];
+  myLoadout: number[];
+  opponentLoadout: number[];
+  myPath: number | null;
+  opponentPath: number | null;
   myUltimateUsed: boolean;
   opponentUltimateUsed: boolean;
   buffs: Record<string, UnitBuff>;
@@ -49,6 +55,21 @@ interface UnitBuff {
   /** Which directions this unit has been pushed - it can be both at once. */
   up?: boolean;
   down?: boolean;
+  /**
+   * What is on the unit, one entry per cast. The numbers above are the sum
+   * the board reads; this is the list the unit panel shows, because "-2 ATK"
+   * on its own never says what put it there or when it lifts.
+   */
+  effects: UnitEffect[];
+}
+
+interface UnitEffect {
+  name: string;
+  mov: number;
+  atk: number;
+  def: number;
+  /** Turns left. Everything cast today runs to the caster's next turn. */
+  turns: number;
 }
 
 /**
@@ -102,8 +123,12 @@ interface AbilitySpend {
   row: 'mine' | 'opponent' | 'unit';
   index: number;
   cost: number;
+  /** Points the cast handed back, to take away again on Undo. */
+  gain?: number;
   uid: string;
   priorCooldown: number;
+  /** Whether that side had already spent its ultimate. */
+  priorUltimate?: boolean;
   priorBuff: UnitBuff | null;
   priorUsed: boolean;
 }
@@ -192,34 +217,34 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const isReturningFromSetup = this.navigationState.getNavigationContext() === 'game-room' && 
                                   this.navigationState.isIntentionalNavigation();
     if (isReturningFromSetup) {
-      const saved = localStorage.getItem('gameRoomMessages');
+      const saved = readStore('local', 'gameRoomMessages');
       if (saved) {
         try {
           this.gameRoomMessages = JSON.parse(saved);
         } catch {
           this.gameRoomMessages = [];
         }
-        localStorage.removeItem('gameRoomMessages');
+        removeStore('local', 'gameRoomMessages');
       }
-      const savedMode = localStorage.getItem('gameRoomMode');
+      const savedMode = readStore('local', 'gameRoomMode');
       if (savedMode === 'default' || savedMode === 'custom') {
         this.gameMode = savedMode;
       }
-      const savedReveal = localStorage.getItem('gameRoomReveal');
+      const savedReveal = readStore('local', 'gameRoomReveal');
       if (savedReveal !== null) {
         try {
           this.revealEnabled = JSON.parse(savedReveal);
         } catch { this.revealEnabled = false; }
       }
-      const savedOptions = localStorage.getItem('gameRoomOptions');
+      const savedOptions = readStore('local', 'gameRoomOptions');
       if (savedOptions) {
         try {
           this.gameOptions = JSON.parse(savedOptions);
         } catch { this.gameOptions = {}; }
       }
-      localStorage.removeItem('gameRoomMode');
-      localStorage.removeItem('gameRoomReveal');
-      localStorage.removeItem('gameRoomOptions');
+      removeStore('local', 'gameRoomMode');
+      removeStore('local', 'gameRoomReveal');
+      removeStore('local', 'gameRoomOptions');
     } else {
       // Clear any prior game room messages to avoid stale system logs
       this.gameRoomMessages = [];
@@ -342,8 +367,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
     this.gameState.reset();
     
-    // Only send leave message if not already sent via leaveGameRoom()
-    if (!isIntentionalNav) {
+    // Only send leave message if not already sent via leaveGameRoom().
+    // Never for a solo room: leave_game_room is what clears the saved game,
+    // and a browser Back is not the player throwing their position away.
+    if (!isIntentionalNav && !this.wsService.isLocal()) {
       this.wsService.sendMessage({
         type: 'leave_game_room',
         username: this.username,
@@ -365,6 +392,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       unitCooldowns: this.unitCooldowns,
       opponentCooldowns: this.opponentCooldowns,
       myCooldowns: this.myCooldowns,
+      myLoadout: this.myLoadout,
+      opponentLoadout: this.opponentLoadout,
+      myPath: this.myPath,
+      opponentPath: this.opponentPath,
       myUltimateUsed: this.myUltimateUsed,
       opponentUltimateUsed: this.opponentUltimateUsed,
       buffs: this.buffs,
@@ -375,7 +406,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       opponentMoveVisuals: this.opponentMoveVisuals,
     };
     try {
-      localStorage.setItem(LOCAL_UI_STATE_KEY, JSON.stringify(state));
+      writeStore('local', LOCAL_UI_STATE_KEY, JSON.stringify(state));
     } catch {
       console.warn('[GameRoom] Could not persist local ability state');
     }
@@ -384,7 +415,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   private restoreLocalUiState(): void {
     if (this.gameId !== 'local') return;
     try {
-      const raw = localStorage.getItem(LOCAL_UI_STATE_KEY);
+      const raw = readStore('local', LOCAL_UI_STATE_KEY);
       if (!raw) return;
       const state = JSON.parse(raw) as Partial<LocalUiState>;
       if (Number.isFinite(state.myPoints)) this.myPoints = state.myPoints!;
@@ -392,6 +423,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (Array.isArray(state.unitCooldowns)) this.unitCooldowns = state.unitCooldowns;
       if (Array.isArray(state.opponentCooldowns)) this.opponentCooldowns = state.opponentCooldowns;
       if (Array.isArray(state.myCooldowns)) this.myCooldowns = state.myCooldowns;
+      if (Array.isArray(state.myLoadout)) this.myLoadout = state.myLoadout;
+      if (Array.isArray(state.opponentLoadout)) this.opponentLoadout = state.opponentLoadout;
+      if (typeof state.myPath === 'number' || state.myPath === null) this.myPath = state.myPath;
+      if (typeof state.opponentPath === 'number' || state.opponentPath === null) {
+        this.opponentPath = state.opponentPath;
+      }
       if (typeof state.myUltimateUsed === 'boolean') this.myUltimateUsed = state.myUltimateUsed;
       if (typeof state.opponentUltimateUsed === 'boolean') this.opponentUltimateUsed = state.opponentUltimateUsed;
       if (state.buffs && typeof state.buffs === 'object') this.buffs = state.buffs;
@@ -423,14 +460,22 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.gameState.reset();
         this.gameState.applyGameStarted(actualMessage);
         
+        // Cleared first: these two lines are the only word the player gets on
+        // which colour they were dealt, and a reset below them ate both.
+        this.gameRoomMessages = [];
         const myColor = actualMessage.playerWhite === this.username ? 'White' : 'Black';
         this.addSystemMessage(`Game started! You are playing as ${myColor}.`);
         this.addSystemMessage(`${actualMessage.playerWhite} (White) moves first.`);
         this.myPoints = 0;
         this.opponentPoints = 0;
-        this.unitCooldowns = [0, 0];
-        this.opponentCooldowns = [0, 0, 0, 0, 0, 0];
-        this.myCooldowns = [0, 0, 0, 0, 0, 0];
+        this.unitCooldowns = this.abilityEffects.map(() => 0);
+        this.opponentCooldowns = this.abilityEffects.map(() => 0);
+        this.myCooldowns = this.abilityEffects.map(() => 0);
+        this.myLoadout = [];
+        this.opponentLoadout = [];
+        this.myPath = null;
+        this.opponentPath = null;
+        this.abilityGlow = { mine: null, opponent: null };
         this.myUltimateUsed = false;
         this.opponentUltimateUsed = false;
         this.buffs = {};
@@ -440,7 +485,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // to drop what belonged to the old one - a staged board outlives the
         // game it was staged in otherwise, and hides the new position.
         this.stagedActions = [];
-        this.gameRoomMessages = [];
+        this.submittedTurn = -1;
         this.beginTurnFor('white');
         this.playTurnSoundIfNeeded(null);
         this.startTurnClock();
@@ -851,7 +896,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // A rejected move must not leave the staged position on screen - but
         // a chat, invite or username error has nothing to do with it, and
         // must not silently bin a turn the player has been building.
-        if (MOVE_ERROR_CODES.has(actualMessage.code)) this.stagedActions = [];
+        if (MOVE_ERROR_CODES.has(actualMessage.code)) {
+          this.stagedActions = [];
+          // The turn did not go through, so it can be built and sent again -
+          // otherwise the one-commit-per-turn guard leaves the player unable
+          // to end a turn the server just refused.
+          this.submittedTurn = -1;
+        }
         // Handle case when game room no longer exists (e.g., host disconnected)
         if (message.message === 'Game room not found') {
           this.addSystemMessage('Game room no longer exists. Returning to lobby...');
@@ -942,7 +993,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const limit = Number(value);
     if (!this.turnTimeChoices.includes(limit)) return;
     this.gameOptions = { ...this.gameOptions, turnTimeLimit: limit };
-    localStorage.setItem('gameRoomOptions', JSON.stringify(this.gameOptions));
+    writeStore('local', 'gameRoomOptions', JSON.stringify(this.gameOptions));
     this.wsService.sendMessage({
       type: 'change_game_mode',
       mode: this.gameMode,
@@ -1091,10 +1142,17 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   get unitPanelTitle(): string {
     const u = this.displayUnit;
     if (!u) return 'Unit';
-    const side = u.color === 'white' ? 'White' : 'Black';
     // Veterancy rides right behind the name, same stars the hex draws.
     const stars = '\u2605'.repeat(Math.max(0, Math.min(3, u.vet)));
-    return `${u.name}${stars ? ' ' + stars : ''} - ${side}`;
+    // The side is not part of the name - it sits at the far end of the tab,
+    // see unitSideLabel.
+    return `${u.name}${stars ? ' ' + stars : ''} - ${u.points} pts`;
+  }
+
+  /** Whose unit this is, drawn at the far end of the panel's tab. */
+  get unitSideLabel(): string {
+    const u = this.displayUnit;
+    return u ? (u.color === 'white' ? 'White' : 'Black') : '';
   }
 
   get unitAbilityTitle(): string {
@@ -1111,6 +1169,54 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const moved = this.displayBuff?.[stat] ?? 0;
     if (!moved) return '';
     return moved > 0 ? 'wave-up' : 'wave-down';
+  }
+
+  /**
+   * Everything riding on the unit the panel is showing: each cast that landed
+   * on it, and the passive it has earned. Casts run to the caster's next turn
+   * - one turn - and a passive never lifts.
+   */
+  get displayEffects(): Array<{ name: string; detail: string; life: string }> {
+    const rows = (this.displayBuff?.effects ?? []).map(effect => ({
+      name: effect.name,
+      detail: this.effectSummary(effect),
+      life: `${effect.turns} turn${effect.turns === 1 ? '' : 's'}`,
+    }));
+
+    // A third star is worth something different to every unit.
+    const unit = this.displayUnit;
+    if (unit && unit.vet >= 3) {
+      const bonus = this.vetBonus[unit.unitId];
+      if (bonus) {
+        rows.push({
+          name: 'Veteran',
+          detail: this.effectSummary({ mov: bonus.mov ?? 0, atk: bonus.atk ?? 0, def: bonus.def ?? 0 }),
+          life: 'always',
+        });
+      }
+    }
+
+    // The passive is the path's, and it is on every unit this side owns.
+    const path = this.pathChoice('mine');
+    const passive = path ? this.abilityEffects[path.passive] : null;
+    if (passive && (this.displayUnit?.vet ?? 0) >= 1) {
+      rows.push({
+        name: passive.name,
+        detail: this.effectSummary(passive) || 'passive',
+        life: 'always',
+      });
+    }
+    return rows;
+  }
+
+  /** "+2 ATK, -1 MOV" for one effect, or '' when it moves no stat. */
+  private effectSummary(effect: { mov: number; atk: number; def: number }): string {
+    const parts: string[] = [];
+    const sign = (n: number) => `${n > 0 ? '+' : ''}${n}`;
+    if (effect.mov) parts.push(`${sign(effect.mov)} MOV`);
+    if (effect.atk) parts.push(`${sign(effect.atk)} ATK`);
+    if (effect.def) parts.push(`${sign(effect.def)} DEF`);
+    return parts.join(', ');
   }
 
   /** Wounded units pulse their remaining HP, as they do on the board. */
@@ -1206,11 +1312,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       ...this.buffs,
       [unit.uid]: this.stack(unit.uid, effect, this.casterColor(armed.side), true),
     };
+    this.playSteps([
+      { kind: 'ability', from: unit.key, to: unit.key, index: armed.index, hostile: true },
+    ]);
     if (armed.side === 'mine') this.myPoints -= cost; else this.opponentPoints -= cost;
     armed.cooldowns[armed.index] = 3;
+    this.markUsed(armed.side, armed.index);
     this.pendingAbility = null;
     this.clearAbilityFocus();
-    this.playDebuffSound();
     this.persistLocalUiState();
     this.addSystemMessage(`${effect.name} hit ${target.unit_id} for ${effect.damage ?? 0} damage (scaffold).`);
     this.cdr.markForCheck();
@@ -1235,20 +1344,100 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /** Slot 5 is the passive every unit carries - always on, never cast. */
   isPassive(index: number): boolean {
-    return index === 4;
+    return this.abilityPaths.some(path => path.passive === index);
   }
 
   isUltimate(index: number): boolean {
-    return index === 5;
+    return this.abilityPaths.some(path => path.ultimate === index);
+  }
+
+  /** The path a side took, or null. */
+  pathOf(side: 'mine' | 'opponent'): number | null {
+    return side === 'mine' ? this.myPath : this.opponentPath;
+  }
+
+  pathChoice(side: 'mine' | 'opponent') {
+    const taken = this.pathOf(side);
+    return taken === null ? null : this.abilityPaths[taken];
+  }
+
+  /** "Bastion - 6", for the three buttons standing in for a locked path. */
+  pathLabel(index: number): string {
+    const path = this.abilityPaths[index];
+    return `${path.name} - ${path.cost}`;
+  }
+
+  pathHint(index: number): string {
+    const path = this.abilityPaths[index];
+    return `${path.cost} points: ${this.abilityEffects[path.passive].name} on every unit you own, `
+      + `plus ${this.abilityEffects[path.skill].name} and `
+      + `${this.abilityEffects[path.ultimate].name}.`;
+  }
+
+  canUnlockPath(side: 'mine' | 'opponent', index: number): boolean {
+    if (this.pathOf(side) !== null || !this.canUseAbilities(side)) return false;
+    const points = side === 'mine' ? this.myPoints : this.opponentPoints;
+    return points >= this.abilityPaths[index].cost;
+  }
+
+  /** Take a path. One per match, paid for once, kept for the rest of it. */
+  unlockPath(side: 'mine' | 'opponent', index: number): void {
+    if (!this.canUnlockPath(side, index)) return;
+    const path = this.abilityPaths[index];
+    if (side === 'mine') { this.myPoints -= path.cost; this.myPath = index; }
+    else { this.opponentPoints -= path.cost; this.opponentPath = index; }
+    this.addSystemMessage(`${side === 'mine' ? 'You' : 'Your opponent'} took the ${path.name} path.`);
+    this.persistLocalUiState();
+    this.cdr.markForCheck();
   }
 
   /**
-   * Which veterancy rank unlocks a slot. Both of a unit's own two slots are
-   * earned, not given: one star for the ability, two for the passive.
+   * The pool in its own order. Picking marks an ability rather than moving
+   * it: a list that reshuffles under the cursor is harder to read than one
+   * that stays put.
+   */
+  abilityOrder(side: 'mine' | 'opponent'): number[] {
+    return this.abilityPool;
+  }
+
+  loadout(side: 'mine' | 'opponent'): number[] {
+    return side === 'mine' ? this.myLoadout : this.opponentLoadout;
+  }
+
+  isPicked(side: 'mine' | 'opponent', index: number): boolean {
+    return this.loadout(side).includes(index);
+  }
+
+  /** Still a free slot, and this one is not already in it. */
+  canPick(side: 'mine' | 'opponent', index: number): boolean {
+    return !this.isPicked(side, index) && this.loadout(side).length < this.abilitySlots;
+  }
+
+  /**
+   * Take an ability into the four. A pick is for the match - there is no
+   * putting one back - and the other player sees which one it was, glowing
+   * on your list through their next turn.
+   */
+  pickAbility(side: 'mine' | 'opponent', index: number): void {
+    if (this.isPassive(index) || this.isUltimate(index)) return;
+    if (!this.canPick(side, index)) return;
+    const next = [...this.loadout(side), index];
+    if (side === 'mine') this.myLoadout = next; else this.opponentLoadout = next;
+    this.markUsed(side, index);
+    // Picking is the whole point of opening it - straight back to the list.
+    this.clearAbilityFocus();
+    this.persistLocalUiState();
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Which veterancy rank unlocks a slot: the passive comes first at one star,
+   * the unit's active skill at two. Three is not a slot at all - it is the
+   * stat bonus in `vetBonus`.
    * ponytail: a flat table, not per-unit - the roster does not exist yet.
    */
   private vetNeeded(index: number): number {
-    return this.isPassive(index) ? 2 : 0;
+    return this.isPassive(index) ? 1 : 2;
   }
 
   /** True when the displayed unit has earned that slot. */
@@ -1259,9 +1448,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /** "Ability1 - 3 (2)" while cooling down, "Passive1" for the passive row. */
   abilityLabel(index: number, cooldown: number): string {
     const name = this.abilityEffects[index]?.name ?? `Ability${index + 1}`;
+    // A passive costs nothing and never cools down, so it is just its name.
     if (this.isPassive(index)) return name;
     const cost = this.abilityCosts[index] ?? 0;
-    return cooldown > 0 ? `${name} - ${cost} (${cooldown})` : `${name} - ${cost}`;
+    return `${name} (${cooldown ?? 0}) - ${cost}`;
   }
 
   private ultimateUsed(side: 'mine' | 'opponent'): boolean {
@@ -1341,7 +1531,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // displayUnit follows the cursor, so a reserve the pointer crossed on the
     // way to the button must not be what the points are spent on.
     return this.isSinglePlayer && !!focus && !this.isPassive(focus.index) && !!unit &&
-      !unit.panel &&
+      !unit.panel && this.isPicked('mine', focus.index) &&
       unit.color === this.casterColor('mine') &&
       this.vetUnlocked(focus.index) &&
       this.canAfford('mine', focus.index, focus.cooldowns[focus.index] ?? 0);
@@ -1361,11 +1551,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       [unit.uid]: this.stack(unit.uid, effect, this.casterColor('mine')),
     };
     this.abilityUsed = { ...this.abilityUsed, [unit.uid]: true };
+    // A unit's own ability shines on the unit and nowhere else.
+    this.playSteps([{ kind: 'ability', from: unit.key, to: unit.key }]);
+    this.markUsed('mine', focus.index);
     this.stageSpend(spend);
     this.addSystemMessage(`${effect.name} applied to ${unit.name}.`);
     this.persistLocalUiState();
     this.unitAbilityFocus = null;
-    this.playBuffSound();
     this.cdr.markForCheck();
   }
 
@@ -1429,7 +1621,26 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   private abilityCanActivate(side: 'mine' | 'opponent', index: number, cooldown: number): boolean {
     if (this.isPassive(index) || (this.isUltimate(index) && this.ultimateUsed(side))) return false;
+    // A path's own skill and ultimate come with the path; everything else on
+    // the panel is pool, and only the four a side carries can be used.
+    const path = this.pathChoice(side);
+    if (path && (index === path.skill || index === path.ultimate)) return this.canAfford(side, index, cooldown);
+    if (this.isUltimate(index) || this.abilityPool.indexOf(index) < 0) return false;
+    if (!this.isPicked(side, index)) return false;
     return this.canAfford(side, index, cooldown);
+  }
+
+  /**
+   * Remember what a side just cast, so the other player can see it on their
+   * own turn. beginTurnFor clears it when the caster comes round again.
+   */
+  private markUsed(side: 'mine' | 'opponent', index: number): void {
+    this.abilityGlow = { ...this.abilityGlow, [side]: index };
+  }
+
+  /** True while this ability is the one that side used last. */
+  isRecent(side: 'mine' | 'opponent', index: number): boolean {
+    return this.abilityGlow[side] === index;
   }
 
   clearAbilityFocus(): void {
@@ -1441,17 +1652,22 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   activateFocusedAbility(): void {
     if (!this.abilityFocus || !this.focusedAbilityIsUniversal || !this.focusedAbilityCanActivate()) return;
     const { side, index, cooldowns } = this.abilityFocus;
+    // Noted before anything is spent: a cast that changes no hex still has to
+    // be undoable, or its points and its ultimate are gone for good.
+    const spend = this.spendOf('', side, side, index);
     const cost = this.abilityCosts[index] ?? 0;
     if (side === 'mine') this.myPoints -= cost; else this.opponentPoints -= cost;
     const points = this.abilityEffects[index].points ?? 0;
     if (side === 'mine') this.myPoints += points; else this.opponentPoints += points;
     cooldowns[index] = 3;
+    this.playSteps([{ kind: 'ability', from: '', to: '', index }]);
     if (this.isUltimate(index)) {
       if (side === 'mine') this.myUltimateUsed = true;
       else this.opponentUltimateUsed = true;
     }
     this.playAbilitySound();
     this.addSystemMessage(`${this.abilityEffects[index].name} used.`);
+    this.stageSpend(spend);
     this.persistLocalUiState();
     this.clearAbilityFocus();
   }
@@ -1488,13 +1704,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // Undo and the server's own confirmation of the move. A fresh object,
       // so the board sees the change and redraws its reach.
       const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index);
+      this.playSteps([{ kind: 'ability', from: unit.key, to: unit.key, index: armed.index }]);
       this.buffs = {
         ...this.buffs,
         [unit.uid]: this.stack(unit.uid, e, this.casterColor(armed.side)),
       };
       this.abilityUsed = { ...this.abilityUsed, [unit.uid]: true };
+      this.markUsed(armed.side, armed.index);
       this.stageSpend(spend);
-      this.playBuffSound();
     }
     this.pendingAbility = null;
     this.clearAbilityFocus();
@@ -1526,14 +1743,23 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       label: effect.name,
       up: held?.up || lifted,
       down: held?.down || dragged,
+      effects: [
+        ...(held?.effects ?? []),
+        { name: effect.name, mov: effect.mov, atk: effect.atk, def: effect.def, turns: 1 },
+      ],
     };
   }
 
-  /** Extra steps lent to whatever unit stands on `key`, staged board first. */
-  private moveBonusFor(key: string): number {
+  /** A one-turn boost on whatever unit stands on `key`, staged board first. */
+  private bonusFor(key: string, stat: 'mov' | 'atk' | 'def'): number {
     const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
     const uid = board?.[key]?.uid;
-    return (uid ? this.buffs[uid]?.mov : undefined) ?? 0;
+    return (uid ? this.buffs[uid]?.[stat] : undefined) ?? 0;
+  }
+
+  /** Extra steps lent to whatever unit stands on `key`. */
+  private moveBonusFor(key: string): number {
+    return this.bonusFor(key, 'mov');
   }
 
   /** The boost on the unit the panel is showing, if it carries one. */
@@ -1599,6 +1825,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.awardPoints(color, 1);
     const mine = this.gameState.myColor(this.username);
     const isMine = mine ? color === mine : color === 'white';
+    // The glow is for the other player's turn: it lifts when whoever cast it
+    // is up again.
+    const side = isMine ? 'mine' : 'opponent';
+    if (this.abilityGlow[side] !== null) this.abilityGlow = { ...this.abilityGlow, [side]: null };
     const tick = (cds: number[]) => cds.forEach((cd, i) => (cds[i] = Math.max(0, cd - 1)));
     if (isMine) {
       tick(this.myCooldowns);
@@ -1650,7 +1880,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   hoveredUnit: SelectedUnit | null = null;
 
   /** What each ability costs in points. Placeholder until abilities exist. */
-  abilityCosts = [3, 5, 1, 4, 0, 8];
+  // Pool, then each path's passive (free with the path), skill and ultimate.
+  abilityCosts = [3, 5, 1, 4, 3, 2, 4, 2, 0, 4, 8, 0, 5, 8, 0, 3, 8];
 
   /**
    * What each slot does. Arbitrary numbers - this is the proof of concept
@@ -1659,15 +1890,78 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * the unit carries once it has the rank for it.
    */
   readonly abilityEffects = [
+    // Slots 0-7 are the pool a side picks four of; between them they can put
+    // a unit into every state the board draws: lifted, dragged, wounded.
     { name: 'Dash', target: 'friendly' as const, mov: 2, atk: 0, def: 0 },
     { name: 'Focus', target: 'friendly' as const, mov: 0, atk: 2, def: 0 },
     { name: 'Bulwark', target: 'friendly' as const, mov: 0, atk: 0, def: 3 },
-    // Between them the four clickable slots can put a unit into every state
-    // the board draws: lifted, dragged down, and wounded.
     { name: 'Sap', target: 'enemy' as const, mov: -2, atk: -2, def: -2, damage: 6 },
-    { name: 'Vigil', target: 'friendly' as const, mov: 0, atk: 0, def: 0 },
-    { name: 'Cataclysm', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 3 },
+    { name: 'Arc Bolt', target: 'enemy' as const, mov: 0, atk: 0, def: 0, damage: 8 },
+    { name: 'Mire', target: 'enemy' as const, mov: -3, atk: 0, def: 0 },
+    { name: 'Temper', target: 'friendly' as const, mov: 0, atk: 1, def: 1 },
+    { name: 'Rally', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 1 },
+    // 8-16: three paths of three. A side unlocks one path and gets its
+    // passive (global, on every unit it owns), its skill and its ultimate.
+    { name: 'Bastion', target: 'friendly' as const, mov: 0, atk: 0, def: 1 },
+    { name: 'Anchor', target: 'friendly' as const, mov: 0, atk: 0, def: 4 },
+    { name: 'Fortress', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 4 },
+
+    { name: 'Onslaught', target: 'friendly' as const, mov: 0, atk: 1, def: 0 },
+    { name: 'Cleave', target: 'enemy' as const, mov: 0, atk: 0, def: 0, damage: 10 },
+    { name: 'Ruin', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 5 },
+
+    { name: 'Tempo', target: 'friendly' as const, mov: 1, atk: 0, def: 0 },
+    { name: 'Surge', target: 'friendly' as const, mov: 3, atk: 0, def: 0 },
+    { name: 'Blitz', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 3 },
   ];
+
+  /**
+   * The three ways a side can go, named for the passive each one grants. One
+   * per match: unlocking costs points, and what it buys - a global passive, a
+   * skill and an ultimate - is that path's alone.
+   */
+  readonly abilityPaths = [
+    { name: 'Bastion', cost: 6, passive: 8, skill: 9, ultimate: 10 },
+    { name: 'Onslaught', cost: 7, passive: 11, skill: 12, ultimate: 13 },
+    { name: 'Tempo', cost: 5, passive: 14, skill: 15, ultimate: 16 },
+  ];
+
+  /** Which path each side took, or null while the choice is still open. */
+  myPath: number | null = null;
+  opponentPath: number | null = null;
+
+  /**
+   * What a third star is worth, per unit. Placeholder numbers, and shown in
+   * the unit panel only.
+   * ponytail: display-only - veterancy itself is a client-side placeholder
+   * (placeholderVet), and neither engine knows about it, so feeding these
+   * into combat would put the two sides' maths out of step. Wire it through
+   * hex-rules and the server together, or not at all.
+   */
+  readonly vetBonus: Record<string, { mov?: number; atk?: number; def?: number }> = {
+    king:   { def: 2 },
+    queen:  { atk: 2 },
+    rook:   { def: 2, atk: 1 },
+    bishop: { atk: 2 },
+    knight: { mov: 1, atk: 1 },
+    pawn:   { atk: 1, def: 1 },
+  };
+
+  /** Indices of the pool a side picks from, and how many it may hold. */
+  readonly abilityPool = [0, 1, 2, 3, 4, 5, 6, 7];
+  readonly abilitySlots = 4;
+  /**
+   * The four each side is carrying, in the order they were picked. Empty
+   * until then: nothing is chosen for you, the picks happen in the game.
+   */
+  myLoadout: number[] = [];
+  opponentLoadout: number[] = [];
+  /**
+   * The ability each side used last, for the other player to see. It glows on
+   * that side's list until the side that cast it comes round again - one turn
+   * of the opponent's, which is the turn they need it in.
+   */
+  abilityGlow: { mine: number | null; opponent: number | null } = { mine: null, opponent: null };
 
   /**
    * One-turn stat boosts, keyed by the hex the unit stands on.
@@ -1684,9 +1978,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   pendingAbility: { side: 'mine' | 'opponent'; index: number; cooldowns: number[] } | null = null;
 
   /** Placeholder ability cooldowns, in turns. Nothing decrements them yet. */
-  unitCooldowns = [0, 0];
-  opponentCooldowns = [0, 0, 0, 0, 0, 0];
-  myCooldowns = [0, 0, 0, 0, 0, 0];
+  // One slot per ability: the pool of eight, then three paths of three.
+  unitCooldowns = new Array(17).fill(0);
+  opponentCooldowns = new Array(17).fill(0);
+  myCooldowns = new Array(17).fill(0);
   myUltimateUsed = false;
   opponentUltimateUsed = false;
 
@@ -1855,7 +2150,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       used: (prev?.used ?? 0) + event.cost,
       attack: null,
     });
-    this.playMoveSound();
+    // Each step plays as it is staged, and never blocks the next one.
+    this.playSteps([{ kind: 'move', from: event.from, to: event.to }]);
     this.persistLocalUiState();
     this.cdr.markForCheck();
   }
@@ -1874,7 +2170,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (!attacker || !target) return;
 
     const distance = hexDistanceKeys(event.to, event.attack);
-    const dealt = strikeDamage(attacker.unit_id, target.unit_id, distance, config);
+    // An ATK or DEF boost is real damage, not just a number in the panel.
+    const dealt = strikeDamage(
+      attacker.unit_id, target.unit_id, distance, config,
+      this.bonusFor(event.to, 'atk'), this.bonusFor(event.attack, 'def'));
     const hurt = { ...target, hp: target.hp - dealt };
 
     // At most one of the two dies: a defender that falls never counters.
@@ -1889,7 +2188,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       board[event.attack] = hurt;
       const theirRange = config?.units?.[target.unit_id]?.attackRange ?? 1;
       if (distance <= theirRange) {
-        const counter = strikeDamage(target.unit_id, attacker.unit_id, distance, config);
+        const counter = strikeDamage(
+          target.unit_id, attacker.unit_id, distance, config,
+          this.bonusFor(event.attack, 'atk'), this.bonusFor(event.to, 'def'));
         const mine = { ...attacker, hp: attacker.hp - counter };
         if (mine.hp <= 0) {
           delete board[event.to];
@@ -1913,7 +2214,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       killed,
       killedUnit,
     });
-    this.playAttackSound();
+    // The blow, then the answer - unless that blow was the end of them.
+    this.playSteps(killed === event.attack
+      ? [{ kind: 'attack', from: event.to, to: event.attack }]
+      : [
+          { kind: 'attack', from: event.to, to: event.attack },
+          { kind: 'counter', from: event.attack, to: event.to },
+        ]);
     this.persistLocalUiState();
     this.cdr.markForCheck();
   }
@@ -1963,6 +2270,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   private startTurnClock(): void {
     this.clearTurnClock();
+    // Each turn starts owing nothing; what its own replay costs is added back
+    // as that replay ends.
+    this.playbackOwed = 0;
     // Arriving into a turn that has already run out must not fire the
     // end-of-turn beep and pass on the spot, so an expired clock starts
     // already spent.
@@ -1977,7 +2287,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const state = this.gameState.snapshot;
     const limit = state.turnTimeLimit;
     if (!this.gameStarted || state.endReason || limit <= 0 || !state.turnStartedAt) return 0;
-    const elapsed = (Date.now() - new Date(state.turnStartedAt).getTime()) / 1000;
+    const elapsed = (Date.now() - new Date(state.turnStartedAt).getTime() - this.playbackOwed) / 1000;
     return Math.max(0, Math.ceil(limit - elapsed));
   }
 
@@ -1989,6 +2299,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   private updateTurnClock(): void {
+    // A turn being replayed is not a turn being spent.
+    if (this.playbackRunning) return;
     const state = this.gameState.snapshot;
     if (!this.gameStarted || state.endReason || state.turnTimeLimit <= 0 || !state.turnStartedAt) {
       this.turnSecondsRemaining = 0;
@@ -2008,6 +2320,69 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // turn number, so the loser is rejected rather than applied twice.
       if (this.canEndTurn && (this.isSinglePlayer || this.pendingMove)) this.endTurn();
     }
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * The turn just committed, one beat at a time: each step walked, each blow
+   * struck and answered, each cast lit. Staging stays instant - this is the
+   * replay, and it runs after the move has already gone to the server.
+   */
+  playback: AnimStep[] = [];
+  /** True while the board is playing; the clock waits for it. */
+  playbackRunning = false;
+  private playbackStarted = 0;
+  /** Milliseconds of animation to forgive the current turn's clock. */
+  private playbackOwed = 0;
+
+  /**
+   * Hand the board something to play. A new list interrupts whatever is still
+   * running, which is what makes rapid input feel instant: the board is
+   * already showing the position, so the beats nobody waited for are dropped.
+   */
+  /** Fill in which ability beats were cast at an enemy. */
+  private markHostile(steps: AnimStep[]): AnimStep[] {
+    return steps.map(step => step.kind === 'ability' && step.index != null
+      ? { ...step, hostile: this.abilityTargetMode(step.index) === 'enemy' }
+      : step);
+  }
+
+  private playSteps(steps: AnimStep[]): void {
+    if (!steps.length) return;
+    this.playback = steps;
+    this.playbackRunning = true;
+    this.playbackStarted = Date.now();
+  }
+
+  /** The slot lighting up with the unit it is landing on, or null. */
+  castingIndex: number | null = null;
+  /** That shine belongs to the end-of-turn recap, so it runs short. */
+  castingBrief = false;
+
+  /** One sound per beat, as the board reaches it, and the slot behind it. */
+  onPlaybackStep(step: AnimStep): void {
+    this.castingIndex = step.kind === 'ability' ? step.index ?? null : null;
+    this.castingBrief = !!step.brief;
+    if (step.kind === 'move') this.playMoveSound();
+    else if (step.kind === 'ability') this.playAbilitySound();
+    else this.playAttackSound();
+    this.cdr.markForCheck();
+  }
+
+  /** True while this slot is the one being cast in the replay. */
+  isCasting(index: number): boolean {
+    return this.castingIndex === index;
+  }
+
+  onPlaybackDone(): void {
+    if (!this.playbackRunning) return;
+    this.playbackRunning = false;
+    this.castingIndex = null;
+    // Watching the replay is not thinking time: the clock is handed back
+    // whatever the animation took.
+    this.playbackOwed += Date.now() - this.playbackStarted;
+    this.playback = [];
+    this.updateTurnClock();
     this.cdr.markForCheck();
   }
 
@@ -2049,8 +2424,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return {
       side, row, index,
       cost: this.abilityCosts[index] ?? 0,
+      gain: this.abilityEffects[index]?.points ?? 0,
       uid,
       priorCooldown: this.cooldownRow(row)[index] ?? 0,
+      priorUltimate: this.ultimateUsed(side),
       priorBuff: this.buffs[uid] ?? null,
       priorUsed: !!this.abilityUsed[uid],
     };
@@ -2062,8 +2439,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   private refund(spend: AbilitySpend): void {
-    if (spend.side === 'mine') this.myPoints += spend.cost;
-    else this.opponentPoints += spend.cost;
+    // A stack restored from disk predates the two fields below.
+    const net = spend.cost - (spend.gain ?? 0);
+    if (spend.side === 'mine') {
+      this.myPoints += net;
+      this.myUltimateUsed = spend.priorUltimate ?? this.myUltimateUsed;
+    } else {
+      this.opponentPoints += net;
+      this.opponentUltimateUsed = spend.priorUltimate ?? this.opponentUltimateUsed;
+    }
     this.cooldownRow(spend.row)[spend.index] = spend.priorCooldown;
 
     const buffs = { ...this.buffs };
@@ -2078,11 +2462,24 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /** Commit the staged move, which also hands the turn over. */
+  /** The turn a commit has already gone out for; a second click is a no-op. */
+  private submittedTurn = -1;
+
   endTurn(): void {
     if (!this.canEndTurn) return;
+    // A double-click, or the clock firing into a click, sends a second
+    // make_move for the same turn. The server rejects the late one as
+    // GAME_OVER, and that error clears a turn already staged behind it.
+    if (this.submittedTurn === this.gameState.snapshot.turnNumber) return;
+    this.submittedTurn = this.gameState.snapshot.turnNumber;
     // Opponent action overlays describe the immediately preceding opponent
     // turn. Once our turn ends, they no longer belong on the board.
     this.opponentMoveVisuals = [];
+    // A new turn interrupts whatever is still playing: a fresh list is its own
+    // instruction to the board to drop the rest and start again.
+    // The whole turn again, with the walk collapsed into the one line it
+    // amounted to, and every cast lit in the order it was made.
+    this.playSteps(this.markHostile(buildPlayback(this.stagedActions, true)));
     this.persistLocalUiState();
     this.playEndTurnSound();
     // Ending a turn cancels any ability detail/targeting state, including
@@ -2101,12 +2498,24 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // Both engines re-check the walk from where it started, so they need to
     // be told about the extra steps or they reject the move outright.
     const moveBonus = this.moveBonusFor(pending.to);
+    // ponytail: the local engine honours these; a server game does not, for
+    // the same reason it ignores moveBonus - abilities live on the client, so
+    // taking the client's word for a stat would be a free upgrade. Move
+    // abilities into the engine and both sides can read them off the board.
+    const bonuses = {
+      atk: this.bonusFor(pending.to, 'atk'),
+      def: this.bonusFor(pending.to, 'def'),
+      targetAtk: attack ? this.bonusFor(attack, 'atk') : 0,
+      targetDef: attack ? this.bonusFor(attack, 'def') : 0,
+    };
+    const boosted = Object.values(bonuses).some(v => v !== 0);
     this.wsService.sendMessage({
       type: 'make_move',
       from: pending.from,
       to: pending.to,
       ...(attack ? { attack } : {}),
       ...(moveBonus ? { moveBonus } : {}),
+      ...(boosted ? { bonuses } : {}),
     });
     this.persistLocalUiState();
     // The staged board stays up until move_made confirms it - see the handler.
@@ -2181,14 +2590,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   openSetup(): void {
     if (this.gameStarted) return;
 
-    localStorage.setItem('gameRoomMode', this.gameMode);
-    localStorage.setItem('gameRoomReveal', JSON.stringify(this.revealEnabled));
-    localStorage.setItem('gameRoomOptions', JSON.stringify(this.gameOptions));
+    writeStore('local', 'gameRoomMode', this.gameMode);
+    writeStore('local', 'gameRoomReveal', JSON.stringify(this.revealEnabled));
+    writeStore('local', 'gameRoomOptions', JSON.stringify(this.gameOptions));
     // Set navigation state before navigating - use 'game-room' context to return here
     this.navigationState.setIntentionalNavigation('game-room');
 
-    localStorage.setItem('returnToGameRoom', this.gameId);
-    localStorage.setItem('gameRoomToken', this.accessToken);
+    writeStore('local', 'returnToGameRoom', this.gameId);
+    writeStore('local', 'gameRoomToken', this.accessToken);
 
     this.wsService.sendMessage({
       type: 'player_unready',
@@ -2197,7 +2606,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       silent: true
     });
 
-    localStorage.setItem('gameRoomMessages', JSON.stringify(this.gameRoomMessages));
+    writeStore('local', 'gameRoomMessages', JSON.stringify(this.gameRoomMessages));
 
     this.wsService.sendMessage({
       type: 'set_status',
@@ -2210,7 +2619,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   
   leaveGameRoom(): void {
     if (this.isSinglePlayer || this.gameId === 'local') {
-      localStorage.removeItem(LOCAL_UI_STATE_KEY);
+      removeStore('local', LOCAL_UI_STATE_KEY);
     }
     this.wsService.sendMessage({
       type: 'leave_game_room',

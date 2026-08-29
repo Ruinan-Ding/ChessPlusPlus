@@ -71,7 +71,11 @@ export class LocalGameService {
   send(msg: any): void {
     switch (msg?.type) {
       case 'create_single_player_game':
-        this.game = this.blank(msg.username);
+        // A saved game outlives the page, so entering solo play resumes it
+        // rather than dealing over the top of a position in progress. A
+        // finished one is re-dealt by start_game; leaving the room clears it.
+        if (!this.game) this.game = this.blank(msg.username);
+        else this.rename(msg.username);
         this.persist();
         this.emit({ type: 'single_player_game_created', gameId: LOCAL_GAME_ID, token: LOCAL_GAME_ID });
         break;
@@ -99,7 +103,7 @@ export class LocalGameService {
         break;
 
       case 'make_move':
-        this.move(msg.from, msg.to, msg.attack, msg.moveBonus);
+        this.move(msg.from, msg.to, msg.attack, msg.moveBonus, msg.bonuses);
         break;
 
       case 'pass_turn':
@@ -212,7 +216,10 @@ export class LocalGameService {
     return board;
   }
 
-  private move(from: string, to: string, attack?: string, moveBonus?: number): void {
+  private move(
+    from: string, to: string, attack?: string, moveBonus?: number,
+    bonuses?: { atk?: number; def?: number; targetAtk?: number; targetDef?: number },
+  ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
 
@@ -224,6 +231,11 @@ export class LocalGameService {
     const relocating = to !== from;
     // Steps lent by a one-turn ability, on top of the unit's own move stat.
     const bonus = Math.max(0, Math.min(10, Number(moveBonus) || 0));
+    // One-turn ability boosts, the client's word for them - taken because
+    // solo play has nobody to cheat. Clamped like the move bonus above.
+    const stat = (v: unknown) => Math.max(-20, Math.min(20, Number(v) || 0));
+    const atkUp = stat(bonuses?.atk), defUp = stat(bonuses?.def);
+    const theirAtkUp = stat(bonuses?.targetAtk), theirDefUp = stat(bonuses?.targetDef);
     const budget = bonus
       ? (g.config?.units?.[piece?.unit_id]?.move ?? 0) + bonus
       : undefined;
@@ -254,7 +266,8 @@ export class LocalGameService {
         return;
       }
       const distance = hexDistanceKeys(to, attack);
-      const dealt = strikeDamage(piece.unit_id, target.unit_id, distance, g.config);
+      const dealt = strikeDamage(
+        piece.unit_id, target.unit_id, distance, g.config, atkUp, theirDefUp);
       const hurt = { ...target, hp: target.hp - dealt };
       record.attacked = true;
       record.attackedHex = attack;
@@ -272,7 +285,8 @@ export class LocalGameService {
         // The survivor answers, if we are inside its own reach.
         const theirRange = g.config?.units?.[target.unit_id]?.attackRange ?? 1;
         if (distance <= theirRange) {
-          const counter = strikeDamage(target.unit_id, piece.unit_id, distance, g.config);
+          const counter = strikeDamage(
+            target.unit_id, piece.unit_id, distance, g.config, theirAtkUp, defUp);
           record.counter_damage = counter;
           const mine = { ...board[to], hp: board[to].hp - counter };
           if (mine.hp <= 0) {

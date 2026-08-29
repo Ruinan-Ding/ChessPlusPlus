@@ -27,7 +27,7 @@ from .models import (
     GameState,
 )
 from .validators import (
-    ValidationError, validate_required_fields, validate_username,
+    ValidationError, GAME_OPTION_KEYS, validate_required_fields, validate_username,
     validate_status, validate_game_mode, validate_game_options,
     validate_chat_message
 )
@@ -58,9 +58,17 @@ _pending_reveal_requests: dict = {}
 # ending an active game, while still resolving a real abandonment.
 DISCONNECT_GRACE_SECONDS = 30
 
-# Placeholder occupying the second seat in a solo room. It never connects,
-# so it has no PlayerConnection and never shows up in the lobby user list.
-SINGLE_PLAYER_OPPONENT = 'Opponent'
+# How long a PlayerConnection row stays believable without a heartbeat. The
+# heartbeat runs every 15 seconds, so this is three missed in a row. One
+# constant: the roster sweep and the turn timer's liveness check have to agree
+# on who is still there, and two literals cannot.
+STALE_AFTER = timedelta(seconds=45)
+
+# How many turns a clock may pass with nobody moving before it stops arming
+# itself. A tab left open keeps heartbeating, so "connected" is not "playing",
+# and with no turn limit set an abandoned room would otherwise write a state
+# row every time_limit seconds for the life of the process.
+IDLE_PASS_LIMIT = 6
 
 # Global dictionary to track pending disconnect-grace-period tasks.
 # Key: (game_id, username), Value: asyncio.Task
@@ -265,7 +273,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'request_reveal_mode': self._handle_request_reveal_mode,
                 'reveal_response': self._handle_reveal_response,
                 'start_game': self._handle_start_game,
-                'create_single_player_game': self._handle_create_single_player_game,
                 'request_user_list': self._handle_request_user_list,
                 'heartbeat': self._handle_heartbeat,
                 # Gameplay handlers (in-game)
@@ -909,7 +916,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'PERMISSION_DENIED', 'Only the host can change game mode')
                 return
             
-            options = {}
+            # None, not {}: a mode change that names no options is not a
+            # request to forget the clock the host already picked.
+            options = None
             if 'options' in data:
                 validate_game_options(data['options'])
                 options = data['options']
@@ -1093,42 +1102,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.error(f"Error in _handle_reveal_response: {e}")
             await send_error(self, 'INTERNAL_ERROR', 'Failed to handle reveal response')
     
-    async def _handle_create_single_player_game(self, data):
-        """
-        Create a solo room: you as host plus a placeholder opponent seat.
-
-        The placeholder has no PlayerConnection and never joins, so it shows in
-        the room's player list but not the lobby. Readiness is skipped and the
-        host picks the colours - see _handle_start_game.
-        """
-        try:
-            validate_required_fields(data, ['username'])
-            username = data.get('username', '').strip()
-            if self.username != username:
-                await send_error(self, 'INVALID_REQUEST', 'Can only start a game as yourself')
-                return
-            if username == SINGLE_PLAYER_OPPONENT:
-                await send_error(self, 'INVALID_REQUEST',
-                                 f'"{SINGLE_PLAYER_OPPONENT}" is reserved for solo games')
-                return
-
-            game_id = str(uuid.uuid4())
-            game = await self._create_game_room(
-                username, SINGLE_PLAYER_OPPONENT, game_id, single_player=True
-            )
-            await self._update_player_status(username, 'in-game')
-            await self._send_user_list()
-
-            await send_json_response(self, {
-                'type': 'single_player_game_created',
-                'gameId': game_id,
-                'token': game.host_token,
-            })
-            structured_log('info', 'single_player_game_created',
-                           host=username, game_id=game_id)
-        except ValidationError as e:
-            await send_error(self, e.code, e.message)
-
     async def _handle_start_game(self, data):
         """Handle game start request: initialise and broadcast the game state."""
         try:
@@ -1141,13 +1114,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             if self.username != game.host:
                 await send_error(self, 'PERMISSION_DENIED', 'Only the host can start the game')
                 return
-            single_player = bool((game.game_options or {}).get('singlePlayer'))
-            # Solo rooms have nobody to ready up, so the host starts directly.
-            if not single_player:
-                all_ready = await self._all_players_ready(game_id)
-                if not all_ready:
-                    await send_error(self, 'NOT_ALL_READY', 'Not all players are ready')
-                    return
+            all_ready = await self._all_players_ready(game_id)
+            if not all_ready:
+                await send_error(self, 'NOT_ALL_READY', 'Not all players are ready')
+                return
 
             # Reject a replayed start_game while a match is in progress.
             # Ready statuses persist after start, so without this a duplicate
@@ -1197,15 +1167,9 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self._send_user_list()
             await self._send_game_player_list(game_id, is_inviter=(self.username == game.host))
 
-            # Solo: the host picked a side, so honour it. Two-player games stay
-            # random - nobody gets to choose their colour there.
-            host_color = str(data.get('hostColor') or '').strip().lower()
-            if single_player and host_color in ('white', 'black'):
-                if host_color == 'white':
-                    p_white, p_black = game.host, game.opponent
-                else:
-                    p_white, p_black = game.opponent, game.host
-            elif random.random() < 0.5:
+            # Nobody chooses their colour in a two-player game, which is every
+            # game the server runs: solo play is served by the browser engine.
+            if random.random() < 0.5:
                 p_white, p_black = game.host, game.opponent
             else:
                 p_white, p_black = game.opponent, game.host
@@ -1252,8 +1216,14 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     # ==================== Turn Timer ====================
 
-    async def _start_turn_timer(self, game_id: str, time_limit: int, turn_number: int, current_turn: str):
+    async def _start_turn_timer(self, game_id: str, time_limit: int, turn_number: int,
+                                current_turn: str, idle_passes: int = 0):
         """Start (or restart) the turn timer for the given game.
+
+        *idle_passes* counts how many turns in a row this clock has passed
+        for nobody: it re-arms itself after each expiry, and with no turn limit
+        configured a room left open would pass turns for the life of the
+        process. A real move arms a fresh timer at zero.
 
         turn_number/current_turn fix the exact turn this timer is watching.
         If a move (or any other game-ending event) has already moved the
@@ -1320,9 +1290,17 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if not await self._any_player_connected([state.player_white, state.player_black]):
                     logger.info(f"Turn timer for game {game_id} stopped: nobody connected")
                     return
+                # A tab left open still heartbeats, so "connected" is not
+                # "playing". After this many passes with nobody moving, stop
+                # writing a state row every time_limit seconds and wait for a
+                # move to start the clock again.
+                if idle_passes + 1 >= IDLE_PASS_LIMIT:
+                    logger.info(f"Turn timer for game {game_id} stopped: "
+                                f"{IDLE_PASS_LIMIT} turns passed with no move")
+                    return
                 await self._start_turn_timer(
                     game_id, time_limit, turn_number=state.turn_number + 1,
-                    current_turn=next_player,
+                    current_turn=next_player, idle_passes=idle_passes + 1,
                 )
                 logger.info(f"Turn timer expired in game {game_id}; turn passed")
             except asyncio.CancelledError:
@@ -1479,16 +1457,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             if state.is_finished:
                 await send_error(self, 'GAME_OVER', 'This game has already ended')
                 return
-            # Solo rooms: the host plays both sides, so they may also move for
-            # the placeholder seat. Everywhere below, the *mover* is whoever's
-            # turn it is - not necessarily the sender.
-            game = await self._get_game_by_id(self.game_id)
-            controls_both = bool(
-                game
-                and (game.game_options or {}).get('singlePlayer')
-                and self.username == game.host
-            )
-            if state.current_turn != self.username and not controls_both:
+            if state.current_turn != self.username:
                 await send_error(self, 'NOT_YOUR_TURN', 'It is not your turn')
                 return
             mover = state.current_turn
@@ -1523,20 +1492,14 @@ class GameConsumer(AsyncWebsocketConsumer):
             # ends up (possibly where it already stands) and `attack` names a
             # hex it strikes from there.
             attack_coord = data.get('attack')
-            # Extra steps lent by a one-turn ability. Abilities live on the
-            # client for now, so this is the client's word for it - taken only
-            # in a solo room, where the same client already drives both sides
-            # and has nobody to cheat. In a real game it would be a free
-            # movement upgrade for anyone willing to edit a message.
-            move_bonus = 0
-            if controls_both:
-                try:
-                    move_bonus = max(0, min(10, int(data.get('moveBonus') or 0)))
-                except (TypeError, ValueError):
-                    move_bonus = 0
+            # A message may also carry moveBonus/bonuses - one-turn ability
+            # boosts. They are ignored here: abilities live on the client, so
+            # honouring them would hand a free stat upgrade to anyone willing
+            # to edit a message. The browser engine that runs solo play takes
+            # them, having nobody to cheat.
             if (tq, tr) != (fq, fr):
                 legal_dests = get_legal_moves_filtered(
-                    board, (fq, fr), config, my_color, move_bonus)
+                    board, (fq, fr), config, my_color)
                 if (tq, tr) not in legal_dests:
                     await send_error(self, 'INVALID_MOVE', 'Illegal move for this piece')
                     return
@@ -1675,14 +1638,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'GAME_OVER', 'This game has already ended')
                 return
 
-            # Same seat rules as a move: solo hosts pass for either side.
-            game = await self._get_game_by_id(self.game_id)
-            controls_both = bool(
-                game
-                and (game.game_options or {}).get('singlePlayer')
-                and self.username == game.host
-            )
-            if state.current_turn != self.username and not controls_both:
+            if state.current_turn != self.username:
                 await send_error(self, 'NOT_YOUR_TURN', 'It is not your turn')
                 return
 
@@ -1774,17 +1730,6 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             if state.draw_offered_by:
                 await send_error(self, 'DRAW_ALREADY_OFFERED', 'A draw offer is already pending')
-                return
-
-            # Solo rooms have nobody on the other side to accept, so an offer
-            # is simply a draw.
-            game = await self._get_game_by_id(self.game_id)
-            if game and (game.game_options or {}).get('singlePlayer'):
-                if await self._end_game_with_retry(self.game_id, '', 'draw_agreed'):
-                    await self._broadcast_game_over(self.game_id, '', 'draw_agreed')
-                    logger.info(f"Solo draw taken in game {self.game_id}")
-                else:
-                    await send_error(self, 'GAME_OVER', 'This game has already ended')
                 return
 
             await self._set_draw_offer(self.game_id, self.username)
@@ -1958,9 +1903,9 @@ class GameConsumer(AsyncWebsocketConsumer):
         A row outlives an unclean drop - it is only swept when some other
         request happens to call _get_all_online_users - so a row on its own
         proves nothing. The heartbeat behind it is what does, on the same
-        45-second threshold that sweep uses.
+        threshold that sweep uses.
         """
-        fresh = timezone.now() - timedelta(seconds=45)
+        fresh = timezone.now() - STALE_AFTER
         return PlayerConnection.objects.filter(  # type: ignore
             username__in=[u for u in usernames if u],
             last_activity__gte=fresh,
@@ -1969,9 +1914,7 @@ class GameConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _get_all_online_users(self):
         """Get all currently online users, deleting stale connections first"""
-        # Consider connections stale if no heartbeat in 45 seconds
-        # (heartbeat interval is 15 seconds, so 3 missed heartbeats = stale)
-        stale_threshold = timezone.now() - timedelta(seconds=45)
+        stale_threshold = timezone.now() - STALE_AFTER
         stale_count, _ = PlayerConnection.objects.filter(last_activity__lt=stale_threshold).delete()  # type: ignore
         if stale_count > 0:
             logger.info(f"[_get_all_online_users] Cleaned up {stale_count} stale connections")
@@ -2010,7 +1953,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         GameChallenge.objects.filter(challenge_id=challenge_id).update(status=status)  # type: ignore
     
     @database_sync_to_async
-    def _create_game_room(self, host, opponent, game_id, single_player=False):
+    def _create_game_room(self, host, opponent, game_id):
         """Create a new game room with access tokens"""
         host_token = secrets.token_hex(32)
         opponent_token = secrets.token_hex(32)
@@ -2024,9 +1967,6 @@ class GameConsumer(AsyncWebsocketConsumer):
             host_token=host_token,
             opponent_token=opponent_token,
             token_expires_at=token_expires,
-            # Rides game_options rather than a new column - it is a JSONField
-            # already carried through the room lifecycle.
-            game_options={'singlePlayer': True} if single_player else {},
         )
         return game
     
@@ -2052,21 +1992,16 @@ class GameConsumer(AsyncWebsocketConsumer):
         """
         Update game mode and options.
 
-        Merges rather than replaces: game_options also carries room-lifetime
-        flags like singlePlayer, and a plain overwrite silently demoted a solo
-        room to a normal one on the first mode change - after which start_game
-        demanded a ready from a placeholder that can never give one.
+        *options* of None means the change named none, which is not the same
+        as naming an empty set: the settings already on the room stand. A host
+        who picked a 60-second clock and then switched mode still has it.
         """
         game = GameRoom.objects.filter(game_id=game_id).first()  # type: ignore
         if not game:
             return
-        merged = dict(options or {})
-        for keep in ('singlePlayer',):
-            if keep in (game.game_options or {}):
-                merged[keep] = game.game_options[keep]
         GameRoom.objects.filter(game_id=game_id).update(  # type: ignore
             game_mode=mode,
-            game_options=merged
+            game_options=(game.game_options or {}) if options is None else options
         )
 
     @database_sync_to_async
@@ -2295,11 +2230,16 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'type': 'player_list',
                 'players': players,
                 'isInviter': is_inviter,
-                'singlePlayer': bool((game.game_options or {}).get('singlePlayer')),
                 # Settings only ever reached a client through the live
                 # game_mode_changed broadcast, so whoever joined after the
-                # host chose was shown the component's default instead.
-                'gameOptions': game.game_options or {},
+                # host chose was shown the component's default instead. Only
+                # the settings the validator accepts: the client sends this
+                # dict straight back on its next change, and a room row left
+                # over from an older build carries keys that are now unknown.
+                'gameOptions': {
+                    k: v for k, v in (game.game_options or {}).items()
+                    if k in GAME_OPTION_KEYS
+                },
             })
         except Exception as e:
             logger.error(f"Error sending game player list: {e}")

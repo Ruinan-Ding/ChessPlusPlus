@@ -2,6 +2,7 @@ import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable, Subject } from 'rxjs';
 import { WEBSOCKET_CONFIG } from './websocket.config';
 import { LocalGameService } from './local-game.service';
+import { readStore, removeStore, writeStore } from './storage';
 
 /** How many messages may wait out an outage before the oldest are dropped. */
 const MAX_QUEUED = 32;
@@ -64,8 +65,8 @@ export class WebsocketService {
   offline$ = this.offlineSubject.asObservable();
 
   constructor(private local: LocalGameService) {
-    this.localGame = sessionStorage.getItem('cpp.localGame') === '1';
-    this.offline = sessionStorage.getItem('cpp.offline') === '1';
+    this.localGame = readStore('session', 'cpp.localGame') === '1';
+    this.offline = readStore('session', 'cpp.offline') === '1';
     this.local.messages$.subscribe(msg => this.messagesSubject.next(msg));
     if (this.offline) this.goLocal();
   }
@@ -85,7 +86,7 @@ export class WebsocketService {
    */
   playOffline(): void {
     this.offline = true;
-    sessionStorage.setItem('cpp.offline', '1');
+    writeStore('session', 'cpp.offline', '1');
     this.goLocal();
   }
 
@@ -96,7 +97,7 @@ export class WebsocketService {
    */
   startLocalGame(): void {
     this.localGame = true;
-    sessionStorage.setItem('cpp.localGame', '1');
+    writeStore('session', 'cpp.localGame', '1');
     // The solo room has no server counterpart, so the socket belongs to the
     // lobby while it runs.
     if (!this.offline) this.connect('lobby');
@@ -105,7 +106,7 @@ export class WebsocketService {
   /** Leaving the solo room: the server (or the attempt to reach it) is back. */
   endLocalGame(): void {
     this.localGame = false;
-    sessionStorage.removeItem('cpp.localGame');
+    removeStore('session', 'cpp.localGame');
     this.local.clear();
   }
 
@@ -117,7 +118,7 @@ export class WebsocketService {
    */
   reconnectToServer(): void {
     this.offline = false;
-    sessionStorage.removeItem('cpp.offline');
+    removeStore('session', 'cpp.offline');
     this.offlineSubject.next(false);
     this.connect(this.currentRoomName);
   }

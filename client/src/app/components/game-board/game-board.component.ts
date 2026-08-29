@@ -34,6 +34,7 @@ type BoardState = Record<string, PieceData>;
 export interface SelectedUnit {
   key: string;                       // "q,r" - lets the room match a staged move
   uid: string;                       // the unit itself, wherever it stands
+  unitId: string;                    // config key, for per-unit lookups
   name: string;
   color: 'white' | 'black';
   hp: number | null;
@@ -43,6 +44,7 @@ export interface SelectedUnit {
   atk: string;                       // damage per ring, e.g. "26,19"
   def: number | null;
   mv: number | null;                 // full move budget
+  points: number;                    // what the unit is worth (config `value`)
   vet: number;                       // 0-3
   panel?: string;                    // reserve panel, when outside the battlefield
 }
@@ -52,6 +54,24 @@ export interface SelectedUnit {
 interface StrikeMarks {
   swords: Array<{ x: number; y: number }>;
   lines: Array<{ x1: number; y1: number; x2: number; y2: number }>;
+}
+
+/**
+ * One beat of the replay a committed turn plays back. The room builds the
+ * list from what it staged; the board is what knows where a hex is.
+ */
+export interface AnimStep {
+  kind: 'move' | 'attack' | 'counter' | 'ability';
+  /** Where the actor stands (attack, ability) or starts from (move). */
+  from: string;
+  /** Where it lands (move) or what it hits (attack, counter, ability). */
+  to: string;
+  /** For an ability beat: which slot cast it, so its button can shine too. */
+  index?: number;
+  /** For an ability beat: cast at an enemy rather than on your own. */
+  hostile?: boolean;
+  /** A recap beat: the same animation, run short. */
+  brief?: boolean;
 }
 
 /** A unit that died, and the hex it died on. */
@@ -128,6 +148,21 @@ const HEX_SIZE = 28; // radius of a single hex in SVG pixels
    door, and the near edge of each hex across a gap. */
 const HEX_INRADIUS = HEX_SIZE * Math.sqrt(3) / 2;
 const PLATE_SIZE = 25;
+/** How far out the outer four zones sit, as a share of the board's radius:
+ *  7 columns to the sides and 6 rows up and down on the shipped radius-11
+ *  board. Rows are the tighter pair - two hexes closer than the geometry
+ *  would put them, which is how the plus is meant to sit. */
+/** How long each beat of a committed turn takes to play. */
+const MOVE_MS = 420;
+const STRIKE_MS = 170;
+const HIT_MS = 260;
+const GLOW_MS = 700;
+/** The same beat in the end-of-turn recap, where there may be several. */
+const GLOW_BRIEF_MS = 280;
+const ZONE_COLS = 7 / 11;
+const ZONE_ROWS = 6 / 11;
+/** Rings of hexes around each zone's centre: 2 makes a 19-hex patch. */
+const ZONE_SPREAD = 2;
 
 /** Padding around the outermost hex centres in the viewBox. Must match buildCells(). */
 const VIEWBOX_PADDING = HEX_SIZE + 4;
@@ -368,6 +403,8 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [class.reach-up]="movWave === 'up' && (legalTargets.has(hex.key) || previewMoves.has(hex.key))"
             [class.reach-down]="movWave === 'down' && (legalTargets.has(hex.key) || previewMoves.has(hex.key))"
             [class.hex-damaged]="hex.key === lastDamagedHex"
+            [class.hex-struck]="hex.key === hitHex"
+            [class.hex-charged]="hex.key === glowHex"
             [class.ability-friendly-target]="isAbilityTarget(hex, 'friendly')"
             [class.ability-enemy-target]="isAbilityTarget(hex, 'enemy')"
             (click)="onHexClick(hex)"
@@ -386,12 +423,16 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
                stats ringed around it (HP top, attack right, move left). -->
           <ng-container *ngIf="hex.piece as pc">
             <polygon
+              *ngIf="!isMoving(hex.key)"
               [attr.points]="hex.innerPoints"
               class="unit-plate"
               [class.plate-white]="pc.color === 'white'"
               [class.plate-black]="pc.color === 'black'"
               [class.plate-selected]="hex.key === selectedHex"
               [class.plate-hovered]="hex.key === hoveredHex"
+              [class.charged]="hex.key === glowHex && !glowHostile"
+              [class.sapped]="hex.key === glowHex && glowHostile"
+              [class.brief]="glowBrief"
               [class.unit-buffed]="hasLift(pc.uid)"
               [class.unit-debuffed]="hasDrag(pc.uid)"
               [class.unit-both-effects]="hasLift(pc.uid) && hasDrag(pc.uid)"
@@ -410,7 +451,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
               class="acting-ring"
             />
             <!-- Numbering mode replaces the unit's face with its hex number. -->
-            <ng-container *ngIf="!showNumbers">
+            <ng-container *ngIf="!showNumbers && !isMoving(hex.key)">
               <text
                 [attr.x]="hex.cx"
                 [attr.y]="hex.cy + 1"
@@ -474,6 +515,17 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
         <ng-container *ngFor="let fallen of opponentKillMarkerPositions">
           <ng-container *ngTemplateOutlet="fallenUnit; context: { $implicit: fallen, marker: 'opponent-kill-marker' }"></ng-container>
         </ng-container>
+
+        <!-- The unit in flight, over the board and under the labels. -->
+        <g *ngIf="mover" [attr.transform]="'translate(' + mover.x + ',' + mover.y + ')'">
+          <polygon [attr.points]="mover.points" class="unit-plate"
+                   [class.plate-white]="!mover.dark" [class.plate-black]="mover.dark" />
+          <text [attr.x]="moverAnchor.x" [attr.y]="moverAnchor.y + 1"
+                [attr.transform]="textTransform(moverAnchor.x, moverAnchor.y)"
+                class="piece-symbol"
+                [class.piece-white]="!mover.dark" [class.piece-black]="mover.dark"
+          >{{ mover.symbol }}</text>
+        </g>
 
         <!-- Labels last. An arrow or a pair of crossed blades running across
              the board has to pass UNDER the numbers and pips it crosses, or
@@ -611,6 +663,12 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       transition: fill 0.1s;
     }
 
+    /* The five zones, one colour: they are one thing in five places. A plain
+       fill, so every state that matters - legal, previewed, attackable,
+       selected - still paints over it (those all carry !important) and a
+       unit's plate reads on top. */
+    .zone { fill: #b9d4f2; }
+
     .hex-cell:not(.hex-filler):hover {
       fill: #e8cf9f;
     }
@@ -680,6 +738,21 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
     .hex-attack-target {
       fill: #d9534f !important;
       cursor: crosshair;
+    }
+
+    /* A blow landing, and an ability charging. Both are moments, not states:
+       the runner clears them as the beat ends. */
+    .hex-struck {
+      fill: #ff8a80 !important;
+      stroke: #c0392b;
+      stroke-width: 3;
+    }
+
+    .hex-charged {
+      fill: #ffe9a8 !important;
+      stroke: #f1c40f;
+      stroke-width: 3;
+      filter: drop-shadow(0 0 6px #f1c40f);
     }
 
     .hex-damaged {
@@ -841,6 +914,34 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
 
     .unit-plate.unit-both-effects {
       animation: unit-both-glow 1.2s ease-in-out infinite;
+    }
+
+    /* The unit itself shining as an ability lands on it: gold for a boost,
+       violet for something being taken away. */
+    .unit-plate.charged {
+      animation: plate-charged 0.7s ease-out;
+    }
+
+    .unit-plate.sapped {
+      animation: plate-sapped 0.7s ease-out;
+    }
+
+    /* The recap runs the same shine, short: a turn can hold several casts. */
+    .unit-plate.charged.brief,
+    .unit-plate.sapped.brief {
+      animation-duration: 0.28s;
+    }
+
+    @keyframes plate-charged {
+      0% { filter: drop-shadow(0 0 0 #f1c40f); }
+      45% { filter: drop-shadow(0 0 12px #ffe066) brightness(1.5); }
+      100% { filter: drop-shadow(0 0 0 #f1c40f); }
+    }
+
+    @keyframes plate-sapped {
+      0% { filter: drop-shadow(0 0 0 #8e44ad); }
+      45% { filter: drop-shadow(0 0 12px #b07cd6) brightness(0.7); }
+      100% { filter: drop-shadow(0 0 0 #8e44ad); }
     }
 
     @keyframes unit-buff-glow {
@@ -1127,6 +1228,30 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }> = {};
   /** Units that have spent an ability this turn, keyed by uid. */
   @Input() unitActed: Record<string, boolean> = {};
+  /**
+   * A committed turn, one beat at a time. A new list interrupts whatever is
+   * still playing: the board is already showing the finished position, so
+   * catching up is just dropping the beats nobody waited to see.
+   */
+  @Input() playback: AnimStep[] = [];
+  /** Each beat as it starts, so the room can sound it and light its slot. */
+  @Output() playbackStep = new EventEmitter<AnimStep>();
+  /** Nothing left to play - the room starts its clock again. */
+  @Output() playbackDone = new EventEmitter<void>();
+
+  /** The unit in flight: a copy drawn over the board while its hex is empty. */
+  mover: { points: string; symbol: string; dark: boolean; x: number; y: number } | null = null;
+  /** Whose piece is hidden while the copy above stands in for it. */
+  private moverHex = '';
+  /** Hexes flashing a hit, and one glowing from an ability. */
+  hitHex = '';
+  glowHex = '';
+  /** The glowing unit is being sapped rather than boosted. */
+  glowHostile = false;
+  /** This glow belongs to the end-of-turn recap, so it runs short. */
+  glowBrief = false;
+  private playing: Array<() => void> = [];
+  private frame = 0;
   @Input() movementArrows: Array<{ from: string; to: string }> = [];
   @Input() attackMarkers: Array<{ from: string; to: string }> = [];
   @Input() opponentMovementArrows: Array<{ from: string; to: string }> = [];
@@ -1431,7 +1556,135 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
-    // Nothing to stop.
+    this.stopPlayback();
+  }
+
+  /** Drop everything mid-flight and leave the board on the real position. */
+  private stopPlayback(): void {
+    // Bumped here rather than in runPlayback: cancelling a promise resolves
+    // it, it does not unwind the chain waiting on it, so an interrupted
+    // attack would go on to lunge again over the top of whatever replaced it.
+    // The token is what the chain checks between beats.
+    this.playbackToken++;
+    for (const cancel of this.playing) cancel();
+    this.playing = [];
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.frame = 0;
+    this.mover = null;
+    this.moverHex = '';
+    this.hitHex = '';
+    this.glowHex = '';
+  }
+
+  /** The hex a flying copy stands in for: its own piece is not drawn. */
+  isMoving(key: string): boolean {
+    return !!this.mover && this.moverHex === key;
+  }
+
+  private async runPlayback(steps: AnimStep[]): Promise<void> {
+    this.stopPlayback();
+    const token = this.playbackToken;
+    for (const step of steps) {
+      if (token !== this.playbackToken) return;   // a newer turn took over
+      this.playbackStep.emit(step);
+      await this.playStep(step);
+    }
+    if (token !== this.playbackToken) return;
+    this.stopPlayback();
+    this.cdr.markForCheck();
+    this.playbackDone.emit();
+  }
+
+  private playbackToken = 0;
+
+  private async playStep(step: AnimStep): Promise<void> {
+    const token = this.playbackToken;
+    const from = this.cellsByKey.get(step.from);
+    const to = this.cellsByKey.get(step.to);
+
+    // An ability is a shine and a noise: on the unit, on the slot that cast
+    // it, or on both. A universal one names no hex and shines in the panel
+    // alone, so it still has to take its beat rather than be skipped.
+    if (step.kind === 'ability') {
+      this.glowBrief = !!step.brief;
+      const ms = step.brief ? GLOW_BRIEF_MS : GLOW_MS;
+      if (!to) return this.wait(ms);
+      this.glowHostile = !!step.hostile;
+      return this.flash('glowHex', step.to, ms);
+    }
+    if (!from || !to) return Promise.resolve();
+
+    switch (step.kind) {
+      case 'move':
+        return this.slide(to, from, to, MOVE_MS);
+      case 'attack':
+      case 'counter': {
+        // A lunge, not a walk: part way in and back, then the hex it landed on
+        // flashes. The counter is the same beat with the two ends swapped.
+        const lunge = { cx: from.cx + (to.cx - from.cx) * 0.45, cy: from.cy + (to.cy - from.cy) * 0.45 };
+        await this.slide(from, from, lunge, STRIKE_MS);
+        if (token !== this.playbackToken) return;
+        await this.slide(from, lunge, from, STRIKE_MS);
+        if (token !== this.playbackToken) return;
+        await this.flash('hitHex', step.to, HIT_MS);
+      }
+    }
+  }
+
+  /** Hold the sequence for a beat that has nothing on the board to show. */
+  private wait(ms: number): Promise<void> {
+    return new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, ms);
+      this.playing.push(() => { clearTimeout(timer); resolve(); });
+    });
+  }
+
+  /** Walk a copy of the unit on `cell` from one point to another. */
+  private slide(
+    cell: HexCell,
+    start: { cx: number; cy: number },
+    end: { cx: number; cy: number },
+    ms: number,
+  ): Promise<void> {
+    const piece = cell.piece;
+    if (!piece) return Promise.resolve();
+    this.moverHex = cell.key;
+    return new Promise<void>(resolve => {
+      const began = performance.now();
+      const tick = () => {
+        const t = Math.min(1, (performance.now() - began) / ms);
+        this.mover = {
+          points: cell.innerPoints,
+          symbol: this.getPieceSymbol(piece),
+          dark: piece.color === 'black',
+          // The copy is drawn at the hex's own coordinates and pushed by a
+          // translate, so one set of points serves the whole flight.
+          x: start.cx + (end.cx - start.cx) * t - cell.cx,
+          y: start.cy + (end.cy - start.cy) * t - cell.cy,
+        };
+        this.cdr.markForCheck();
+        if (t < 1) { this.frame = requestAnimationFrame(tick); return; }
+        this.mover = null;
+        this.moverHex = '';
+        this.cdr.markForCheck();
+        resolve();
+      };
+      this.playing.push(() => resolve());
+      this.frame = requestAnimationFrame(tick);
+    });
+  }
+
+  private flash(field: 'hitHex' | 'glowHex', key: string, ms: number): Promise<void> {
+    this[field] = key;
+    this.cdr.markForCheck();
+    return new Promise<void>(resolve => {
+      const timer = setTimeout(() => {
+        this[field] = '';
+        this.cdr.markForCheck();
+        resolve();
+      }, ms);
+      this.playing.push(() => { clearTimeout(timer); resolve(); });
+    });
   }
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -1457,6 +1710,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       this.invalidatePreview();
       // A staged step moved the unit: its remaining reach moved with it.
       this.refreshTargets();
+    }
+    // Last, and deliberately: a staged step arrives as a new board and a new
+    // step list in the same pass, and the flying copy is read out of the
+    // rebuilt cells. Playing before the rebuild found the unit still on the
+    // hex it had left, and animated nothing.
+    if (changes['playback']) {
+      if (this.playback.length) this.runPlayback(this.playback);
+      else this.stopPlayback();
     }
   }
 
@@ -1542,6 +1803,35 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   // -- Cell building --------------------------------------------------
 
+  /**
+   * Five patches on the battlefield: one in the middle and four around it -
+   * top, bottom, left, right - the same size and the same distance out, so
+   * they read as one set rather than five decisions.
+   *
+   * ponytail: purely cosmetic for now - no rule reads a zone. Give them
+   * meaning (deployment, objectives, terrain) and this wants to come from
+   * config rather than from a constant.
+   */
+  private assignZones(): void {
+    // One step left or right is one column. Up and down goes in pairs of
+    // rows - (1,-2) is straight up - which is what keeps those two zones in
+    // the board's own centre column instead of half a column off it.
+    const cols = Math.max(ZONE_SPREAD + 1, Math.round(this.radius * ZONE_COLS));
+    const pairs = Math.max(1, Math.round((this.radius * ZONE_ROWS) / 2));
+    const centres: Array<[number, number]> = [
+      [0, 0],
+      [cols, 0], [-cols, 0],
+      [pairs, -2 * pairs], [-pairs, 2 * pairs],
+    ];
+
+    for (const [q, r] of centres) {
+      for (const cell of this.cells) {
+        if (cell.filler) continue;
+        if (hexDistanceKeys(cell.key, `${q},${r}`) <= ZONE_SPREAD) cell.zoneClass = 'zone';
+      }
+    }
+  }
+
   /** Board orientation from config (cosmetic); the default board is edge-up. */
   get orientation(): BoardOrientation {
     return this.config?.board?.orientation === 'vertex-up' ? 'vertex-up' : 'edge-up';
@@ -1600,6 +1890,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     });
 
     this.cellsByKey = new Map(this.cells.map(c => [c.key, c]));
+    this.assignZones();
 
     if (this.cells.length > 0) {
       const xs = this.cells.map(c => c.cx);
@@ -1654,6 +1945,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   // -- Helpers --------------------------------------------------------
+
+  /** Where the flying copy's own glyph sits - the hex it came from. */
+  get moverAnchor(): { x: number; y: number } {
+    const cell = this.cellsByKey.get(this.moverHex);
+    return { x: cell?.cx ?? 0, y: cell?.cy ?? 0 };
+  }
 
   /** Two-character stat, exposed for the template. */
   statText = statText;
@@ -1803,6 +2100,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    */
   private forecast: { target: string; targetHp: number; attacker: string; attackerHp: number } | null = null;
 
+  /** A one-turn boost on the unit standing on `key`, or 0. */
+  private buffOf(key: string, stat: 'atk' | 'def'): number {
+    const cell = this.cellsByKey.get(key);
+    return (cell ? this.unitBuffs[this.uidOf(cell)]?.[stat] : undefined) ?? 0;
+  }
+
   private refreshForecast(): void {
     this.forecast = null;
     const from = this.selectedHex;
@@ -1813,13 +2116,17 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (!me || !them) return;
 
     const distance = hexDistanceKeys(from, to);
-    const dealt = strikeDamage(me.unit_id, them.unit_id, distance, this.config);
+    // Boosts are part of the trade, so the forecast has to price them in or
+    // it promises a number the strike will not deliver.
+    const dealt = strikeDamage(me.unit_id, them.unit_id, distance, this.config,
+                               this.buffOf(from, 'atk'), this.buffOf(to, 'def'));
     const targetHp = Math.max(0, (them.hp ?? 0) - dealt);
     // A unit at 0 never counters, and a counter only comes back if we are
     // standing inside its own range - see Combat in AGENTS.md.
     const theirRange: number = this.config?.units?.[them.unit_id]?.attackRange ?? 1;
     const counter = targetHp > 0 && distance <= theirRange
-      ? strikeDamage(them.unit_id, me.unit_id, distance, this.config)
+      ? strikeDamage(them.unit_id, me.unit_id, distance, this.config,
+                     this.buffOf(to, 'atk'), this.buffOf(from, 'def'))
       : 0;
     this.forecast = {
       target: to,
@@ -1877,6 +2184,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     return {
       key: hex.key,
       uid: this.uidOf(hex),
+      unitId: pc.unit_id,
       name: def?.name ?? pc.unit_id,
       color: pc.color,
       hp: twoDigits(pc.hp),
@@ -1885,6 +2193,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       atk: attackText(pc.unit_id, this.config),
       def: hex.stats?.def ?? null,
       mv: twoDigits(def?.move),
+      points: def?.value ?? 0,
       vet: hex.vet,
       panel: hex.panel || undefined,
     };

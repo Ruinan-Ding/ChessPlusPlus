@@ -25,71 +25,83 @@ const DEFAULT_GAME_CONFIG = {
   },
   units: {
     king: {
-      id: 'king', name: 'King', symbol: 'K', value: 0, hp: 45, attack: 16, defense: 15, attackRange: 1, commander: true,
+      id: 'king', name: 'King', symbol: 'K', value: 40, hp: 45, attack: 16, defense: 15, attackRange: 1, commander: true,
       display: { white: '♔', black: '♚' },
       move: 6
     },
     queen: {
-      id: 'queen', name: 'Queen', symbol: 'Q', value: 9, hp: 30, attack: 26, defense: 12, attackRange: 2,
+      id: 'queen', name: 'Queen', symbol: 'Q', value: 30, hp: 30, attack: 26, defense: 12, attackRange: 2,
       display: { white: '♕', black: '♛' },
       move: 6
     },
     rook: {
-      id: 'rook', name: 'Rook', symbol: 'R', value: 5, hp: 40, attack: 20, defense: 13, attackRange: 2,
+      id: 'rook', name: 'Rook', symbol: 'R', value: 18, hp: 40, attack: 20, defense: 13, attackRange: 2,
       display: { white: '♖', black: '♜' },
       move: 6
     },
     bishop: {
-      id: 'bishop', name: 'Bishop', symbol: 'B', value: 3, hp: 22, attack: 22, defense: 10, attackRange: 3,
+      id: 'bishop', name: 'Bishop', symbol: 'B', value: 14, hp: 22, attack: 22, defense: 10, attackRange: 3,
       display: { white: '♗', black: '♝' },
       move: 6
     },
     knight: {
-      id: 'knight', name: 'Knight', symbol: 'N', value: 3, hp: 28, attack: 18, defense: 11, attackRange: 1,
+      id: 'knight', name: 'Knight', symbol: 'N', value: 12, hp: 28, attack: 18, defense: 11, attackRange: 1,
       display: { white: '♘', black: '♞' },
       move: 6
     },
     pawn: {
-      id: 'pawn', name: 'Pawn', symbol: 'P', value: 1, hp: 20, attack: 14, defense: 10, attackRange: 1,
+      id: 'pawn', name: 'Pawn', symbol: 'P', value: 5, hp: 20, attack: 14, defense: 10, attackRange: 1,
       display: { white: '♙', black: '♟' },
       move: 6
     }
   },
   abilities: {},
   setup: {
-    // Placeholder placement on the south/north edge rows of the radius-11
-    // board. White's edge row is r=+11 (q from -11 to 0, 12 cells); black is
-    // the point-mirror (q,r) -> (-q,-r). The 8 back-rank pieces sit
-    // contiguously (the row is too short to space them out).
+    // Three rows on each side of the radius-11 board, spaced so nothing
+    // sits shoulder to shoulder. White's edge row is r=+11; black is the point
+    // mirror (q,r) -> (-q,-r).
+    //   row 1 (r=11): queen and king, five columns apart
+    //   row 2 (r=10): rook knight bishop | bishop knight rook, every other hex
+    //   row 3 (r=9) : eight pawns, every other hex but the middle pair, which
+    //                 straddles the centre line - eight spaced pawns are one
+    //                 hex wider than the row.
+    // Odd separations are what stay centred here: the row holds an even number
+    // of hexes, so an even gap would put the pair off the middle.
     white: {
-      '-5,11':  'king',
-      '-6,11':  'queen',
-      '-4,11':  'bishop',
-      '-7,11':  'bishop',
-      '-3,11':  'knight',
-      '-8,11':  'knight',
-      '-2,11':  'rook',
-      '-9,11':  'rook',
-      '-3,10':  'pawn',
-      '-4,10':  'pawn',
-      '-5,10':  'pawn',
-      '-6,10':  'pawn',
-      '-7,10':  'pawn'
+      '-8,11':   'queen',
+      '-3,11':   'king',
+      '-10,10':  'rook',
+      '-8,10':   'knight',
+      '-6,10':   'bishop',
+      '-4,10':   'bishop',
+      '-2,10':   'knight',
+      '0,10':    'rook',
+      '-11,9':   'pawn',
+      '-9,9':    'pawn',
+      '-7,9':    'pawn',
+      '-5,9':    'pawn',
+      '-4,9':    'pawn',
+      '-2,9':    'pawn',
+      '0,9':     'pawn',
+      '2,9':     'pawn'
     },
     black: {
-      '5,-11':  'king',
-      '6,-11':  'queen',
-      '4,-11':  'bishop',
-      '7,-11':  'bishop',
-      '3,-11':  'knight',
-      '8,-11':  'knight',
-      '2,-11':  'rook',
-      '9,-11':  'rook',
-      '3,-10':  'pawn',
-      '4,-10':  'pawn',
-      '5,-10':  'pawn',
-      '6,-10':  'pawn',
-      '7,-10':  'pawn'
+      '8,-11':   'queen',
+      '3,-11':   'king',
+      '10,-10':  'rook',
+      '8,-10':   'knight',
+      '6,-10':   'bishop',
+      '4,-10':   'bishop',
+      '2,-10':   'knight',
+      '0,-10':   'rook',
+      '11,-9':   'pawn',
+      '9,-9':    'pawn',
+      '7,-9':    'pawn',
+      '5,-9':    'pawn',
+      '4,-9':    'pawn',
+      '2,-9':    'pawn',
+      '0,-9':    'pawn',
+      '-2,-9':   'pawn'
     }
   },
   rules: {
@@ -133,12 +145,39 @@ export class ConfigService {
   }
 
   /**
+   * Fill in what an older config predates, in place, before it is checked.
+   * Mirrors _normalise_config() in config_loader.py: a config saved before
+   * `defense` and `rules.objective` existed is otherwise rejected outright -
+   * every unit missing armour, and under a `regicide` default it never chose,
+   * a setup with no commander. Both get the value they were played with.
+   */
+  private normaliseConfig(config: any): void {
+    if (config?.units && typeof config.units === 'object') {
+      for (const unit of Object.values<any>(config.units)) {
+        if (unit && typeof unit === 'object' && unit.defense === undefined) unit.defense = 0;
+      }
+    }
+    if (config && config.rules === undefined) config.rules = {};
+    const rules = config?.rules;
+    if (rules && typeof rules === 'object' && rules.objective === undefined) {
+      const setup = config.setup;
+      const commanded = ['white', 'black'].every(side => {
+        const placement = setup?.[side];
+        return placement && typeof placement === 'object'
+          && Object.values<any>(placement).some(u => config.units?.[u]?.commander);
+      });
+      rules.objective = commanded ? 'regicide' : 'elimination';
+    }
+  }
+
+  /**
    * Validate the structural rules of a GameConfig object.
    * Checks for required top-level keys, board radius bounds,
    * unit definitions, and placement references.
    */
   validateGameRules(config: any): { valid: boolean; errors?: string[] } {
     const errors: string[] = [];
+    this.normaliseConfig(config);
 
     if (!config.version) {
       errors.push('Missing "version"');

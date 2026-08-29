@@ -46,7 +46,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "symbol": "K",
             "display": {"white": "♔", "black": "♚"},
             "move": 6,
-            "value": 0,
+            "value": 40,
             "hp": 45,
             "attack": 16,
             "attackRange": 1,
@@ -59,7 +59,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "symbol": "Q",
             "display": {"white": "♕", "black": "♛"},
             "move": 6,
-            "value": 9,
+            "value": 30,
             "hp": 30,
             "attack": 26,
             "attackRange": 2,
@@ -71,7 +71,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "symbol": "R",
             "display": {"white": "♖", "black": "♜"},
             "move": 6,
-            "value": 5,
+            "value": 18,
             "hp": 40,
             "attack": 20,
             "attackRange": 2,
@@ -83,7 +83,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "symbol": "B",
             "display": {"white": "♗", "black": "♝"},
             "move": 6,
-            "value": 3,
+            "value": 14,
             "hp": 22,
             "attack": 22,
             "attackRange": 3,
@@ -95,7 +95,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "symbol": "N",
             "display": {"white": "♘", "black": "♞"},
             "move": 6,
-            "value": 3,
+            "value": 12,
             "hp": 28,
             "attack": 18,
             "attackRange": 1,
@@ -107,7 +107,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "symbol": "P",
             "display": {"white": "♙", "black": "♟"},
             "move": 6,
-            "value": 1,
+            "value": 5,
             "hp": 20,
             "attack": 14,
             "attackRange": 1,
@@ -116,40 +116,52 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "abilities": {},
     "setup": {
-        # Placeholder symmetric placement on the south/north edge rows of the
-        # radius-11 board.  White's edge row is r=+11 (q from -11 to 0, 12
-        # cells); black is the point-mirror (q,r) -> (-q,-r).  The 8 back-rank
-        # pieces sit contiguously (the row is too short to space them out).
+        # Three rows on each side of the radius-11 board, spaced so nothing
+        # sits shoulder to shoulder. White's edge row is r=+11; black is the point
+        # mirror (q,r) -> (-q,-r).
+        #   row 1 (r=11): queen and king, five columns apart
+        #   row 2 (r=10): rook knight bishop | bishop knight rook, every other hex
+        #   row 3 (r=9) : eight pawns, every other hex but the middle pair, which
+        #                 straddles the centre line - eight spaced pawns are one
+        #                 hex wider than the row.
+        # Odd separations are what stay centred here: the row holds an even number
+        # of hexes, so an even gap would put the pair off the middle.
         "white": {
-            "-5,11":  "king",
-            "-6,11":  "queen",
-            "-4,11":  "bishop",
-            "-7,11":  "bishop",
-            "-3,11":  "knight",
-            "-8,11":  "knight",
-            "-2,11":  "rook",
-            "-9,11":  "rook",
-            "-3,10":  "pawn",
-            "-4,10":  "pawn",
-            "-5,10":  "pawn",
-            "-6,10":  "pawn",
-            "-7,10":  "pawn",
+            "-8,11":   "queen",
+            "-3,11":   "king",
+            "-10,10":  "rook",
+            "-8,10":   "knight",
+            "-6,10":   "bishop",
+            "-4,10":   "bishop",
+            "-2,10":   "knight",
+            "0,10":    "rook",
+            "-11,9":   "pawn",
+            "-9,9":    "pawn",
+            "-7,9":    "pawn",
+            "-5,9":    "pawn",
+            "-4,9":    "pawn",
+            "-2,9":    "pawn",
+            "0,9":     "pawn",
+            "2,9":     "pawn",
         },
         "black": {
-            "5,-11":  "king",
-            "6,-11":  "queen",
-            "4,-11":  "bishop",
-            "7,-11":  "bishop",
-            "3,-11":  "knight",
-            "8,-11":  "knight",
-            "2,-11":  "rook",
-            "9,-11":  "rook",
-            "3,-10":  "pawn",
-            "4,-10":  "pawn",
-            "5,-10":  "pawn",
-            "6,-10":  "pawn",
-            "7,-10":  "pawn",
-        }
+            "8,-11":   "queen",
+            "3,-11":   "king",
+            "10,-10":  "rook",
+            "8,-10":   "knight",
+            "6,-10":   "bishop",
+            "4,-10":   "bishop",
+            "2,-10":   "knight",
+            "0,-10":   "rook",
+            "11,-9":   "pawn",
+            "9,-9":    "pawn",
+            "7,-9":    "pawn",
+            "5,-9":    "pawn",
+            "4,-9":    "pawn",
+            "2,-9":    "pawn",
+            "0,-9":    "pawn",
+            "-2,-9":   "pawn",
+        },
     },
     "rules": {
         # Fraction of damage lost per ring beyond the first.
@@ -166,6 +178,35 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
+
+def _normalise_config(config: Dict[str, Any]) -> None:
+    """
+    Fill in what an older config predates, in place, before validating it.
+
+    A room saved before `defense` and `rules.objective` existed is otherwise
+    rejected outright - every unit missing armour, and under a `regicide`
+    default it never chose, a setup with no commander. Both get the value they
+    were played with: no armour is 0, and an objective is only regicide if
+    there is a commander to lose.
+    """
+    units = config.get('units')
+    if isinstance(units, dict):
+        for unit in units.values():
+            if isinstance(unit, dict):
+                unit.setdefault('defense', 0)
+
+    rules = config.get('rules')
+    if rules is None and 'rules' not in config:
+        rules = config['rules'] = {}
+    if isinstance(rules, dict) and 'objective' not in rules:
+        setup = config.get('setup') if isinstance(config.get('setup'), dict) else {}
+        commanded = all(
+            isinstance(setup.get(side), dict) and any(
+                (units or {}).get(u, {}).get('commander') for u in setup[side].values())
+            for side in ('white', 'black')
+        )
+        rules['objective'] = 'regicide' if commanded else 'elimination'
+
 
 def _validate_config(config: Dict[str, Any]) -> List[str]:
     """
@@ -200,7 +241,19 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
             if not isinstance(dfn, int) or isinstance(dfn, bool) or dfn < 0:
                 errors.append(f"units.{unit_id}.defense must be an integer >= 0, got {dfn}")
 
-    falloff = config.get('rules', {}).get('rangeFalloff', 0)
+    # `config.get('rules', {})` still hands back None for an explicit null,
+    # and every read below would raise AttributeError out of a handler that
+    # only catches ValueError - an INTERNAL_ERROR traceback for what is
+    # plainly a bad config.
+    rules = config.get('rules')
+    if not isinstance(rules, dict):
+        # Normalisation supplies an absent one, so this is a malformed value:
+        # an explicit null, a list, a string. Mirrors the client's
+        # 'Missing "rules"'.
+        errors.append(f"'rules' must be a dict, got {type(rules).__name__}")
+        rules = {}
+
+    falloff = rules.get('rangeFalloff', 0)
     if not isinstance(falloff, (int, float)) or isinstance(falloff, bool) or not 0 <= falloff <= 1:
         errors.append(f"rules.rangeFalloff must be a number 0-1, got {falloff}")
 
@@ -223,7 +276,7 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
     # The objective decides how a game is lost, so a config that cannot
     # satisfy it is unplayable rather than merely odd: under regicide a side
     # with no commander on the board has already lost before the first move.
-    objective = config.get('rules', {}).get('objective', 'regicide')
+    objective = rules.get('objective', 'regicide')
     if objective not in ('regicide', 'elimination'):
         errors.append(
             f"rules.objective must be 'regicide' or 'elimination', got {objective!r}")
@@ -256,6 +309,7 @@ def load_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return copy.deepcopy(DEFAULT_CONFIG)
 
     config = copy.deepcopy(raw)
+    _normalise_config(config)
     errors = _validate_config(config)
     if errors:
         raise ValueError(f"Invalid game config: {'; '.join(errors)}")

@@ -579,7 +579,7 @@ class GameLifecycleGuardTests(TransactionTestCase):
         try:
             # White makes a move so the board diverges from the initial setup.
             white_comm = host_comm if started['currentTurn'] == 'alice' else opp_comm
-            await white_comm.send_json_to({'type': 'make_move', 'from': '-5,10', 'to': '-5,9'})
+            await white_comm.send_json_to({'type': 'make_move', 'from': '-5,9', 'to': '-5,8'})
             await _receive_until(white_comm, 'move_made')
 
             # Host replays start_game (double-click / crafted message).
@@ -713,7 +713,7 @@ class GameLifecycleGuardTests(TransactionTestCase):
             await black_comm.send_json_to({'type': 'offer_draw'})
             await _receive_until(white_comm, 'draw_offered')
 
-            await white_comm.send_json_to({'type': 'make_move', 'from': '-5,10', 'to': '-5,9'})
+            await white_comm.send_json_to({'type': 'make_move', 'from': '-5,9', 'to': '-5,8'})
             await _receive_until(white_comm, 'move_made')
 
             # The stale offer must be gone server-side too (a reconnect resync

@@ -11,6 +11,7 @@ import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { AuthService } from '../../services/auth.service';
 import { AudioService } from '../../services/audio.service';
+import { readStore, removeStore, writeStore } from '../../services/storage';
 
 @Component({
   selector: 'app-lobby',
@@ -83,8 +84,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
     if (navContext === 'none' && this.isRejoiningFromNavigation) {
       // A solo room never involved another player, so there is nothing to
       // rate-limit - leaving one must not block the next invite.
-      if (sessionStorage.getItem('leftSinglePlayer') === '1') {
-        sessionStorage.removeItem('leftSinglePlayer');
+      if (readStore('session', 'leftSinglePlayer') === '1') {
+        removeStore('session', 'leftSinglePlayer');
         console.log('[Lobby] Returned from a single-player room - no cooldown');
       } else if (this.gameRoomJoinTime > 0) {
         console.log('[Lobby] Detected return from game room - applying remaining cooldown');
@@ -258,7 +259,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
           // Only now is a solo room really entered, so only now does leaving
           // one get to skip the invite cooldown - a create that never landed
           // must not hand out that bypass.
-          sessionStorage.setItem('leftSinglePlayer', '1');
+          writeStore('session', 'leftSinglePlayer', '1');
           this.navigationState.setIntentionalNavigation('game-room');
           this.router.navigate(['/game-room', message.gameId], {
             queryParams: { token: message.token }

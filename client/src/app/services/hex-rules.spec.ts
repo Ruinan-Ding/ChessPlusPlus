@@ -78,6 +78,16 @@ describe('strikeDamage', () => {
     expect(strikeDamage('guard', 'wall', 1, config)).toBe(0);
   });
 
+  it('adds a boost to the scaled ring, which is where the hex shows it', () => {
+    // The hex draws the second ring as 19; +2 makes that ring 21, not
+    // 28 * 0.75. Same ordering as attackCellText on the board.
+    expect(strikeDamage('archer', 'guard', 2, config, 2)).toBe(11);
+    // A defence boost comes off after the scaling, like the panel's "12/10".
+    expect(strikeDamage('archer', 'guard', 1, config, 0, 4)).toBe(12);
+    // Armour still cannot heal.
+    expect(strikeDamage('guard', 'wall', 1, config, 0, 5)).toBe(0);
+  });
+
   it('lists one damage figure per ring for the hex glyph', () => {
     expect(attackTiers('archer', config)).toEqual([26, 19]);
     expect(attackTiers('guard', config)).toEqual([14]);

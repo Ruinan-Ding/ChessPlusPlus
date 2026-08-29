@@ -277,8 +277,10 @@ UUID, no access token, no socket. It runs entirely in the browser.
   freezing the counter and never reaching the state where Retry appears.
 - The room lives at `/game-room/local?token=local`. Those are literals, not identifiers.
 - `LocalGameService` persists the whole game to `localStorage` on every change, so a refresh, a
-  dropped connection or a server that was never up resume the same position. Leaving the room is
-  a deliberate exit and clears it.
+  dropped connection or a server that was never up resume the same position. **Only a deliberate
+  exit clears it**: `leave_game_room` is what calls `clear()`, so the game room does not send one
+  on an incidental unmount (a browser Back), and `create_single_player_game` resumes a saved
+  game rather than dealing over the top of it. Both used to destroy a position in progress.
 - **The offline engine mirrors the server's rules**: setup, movement via `services/hex-rules.ts`,
   combat with counter-attacks, regicide, resign, draw. `hex-rules.ts` is shared by the board's
   preview and the local engine; the damage sums and the defeat check are duplicated from
@@ -286,11 +288,15 @@ UUID, no access token, no socket. It runs entirely in the browser.
   has to land here too, or offline play quietly diverges.
 - **There is no AI.** You drive both sides; the placeholder seat (`Opponent`) has no agency.
 
-The server still carries the old solo path — `create_single_player_game`, `singlePlayer` in
-`game_options`, the `controls_both` branch in `_handle_make_move`, the readiness skip in
-`_handle_start_game`. **The client no longer uses any of it** and no test covers it. Delete it
-when you are sure nothing else wants server-side solo rooms (persistent games across devices,
-say); until then treat it as unexercised.
+**The server has no solo path at all.** `create_single_player_game`, `singlePlayer` in
+`game_options`, the `controls_both` branches, the readiness skip and the `hostColor` pick were
+deleted once the client stopped reaching them: unreachable, untested code that still carried
+live bugs. Every game the server runs has two real players, which is why nobody chooses their
+colour there. Wanting server-side solo rooms back (persistent games across devices, say) means
+writing them against the protocol `LocalGameService` already implements, not restoring that.
+`_send_game_player_list` filters `gameOptions` to `GAME_OPTION_KEYS` on the way out, because a
+room row written by an older build still carries keys the validator now rejects — and the client
+sends that dict straight back on its next mode change.
 
 ## Combat
 
@@ -418,13 +424,15 @@ passive, for whichever unit is selected.
   into `movesLeft` once a step is staged.
 - **Veterancy is drawn beside the name** in `unitPanelTitle` (`Pawn ★★★ - White`), the same
   placeholder rank the hex draws.
-- **A +MOV boost has to be declared on `make_move`.** Both engines re-validate the walk from
-  where the unit started, against the unit's own `move` stat, so a boosted move is rejected as
-  illegal unless `endTurn()` sends `moveBonus` with it. `get_legal_moves(..., move_bonus)` and
-  `LocalGameService.move(..., moveBonus)` add it. Because abilities do not exist server-side,
-  that number is the client's word for it, so the server takes it **only in a solo room**
-  (`controls_both`), clamped 0-10, and ignores it outright in a real game - otherwise it is a
-  free movement upgrade for anyone willing to edit a message.
+- **Boosts have to be declared on `make_move`.** Both engines re-derive the turn from where
+  the unit started, off the unit's own stats, so a boosted move is rejected as illegal and a
+  boosted strike lands base damage unless `endTurn()` says otherwise. It sends `moveBonus` (the
+  extra steps) and `bonuses` (`{atk, def, targetAtk, targetDef}` - both units, because the
+  counter reads the other side's numbers). `LocalGameService.move()` takes them, clamped;
+  `strikeDamage(..., atkBonus, defBonus)` applies them **after** ring falloff, which is where
+  the hex and the unit panel show them. The server ignores all of it: abilities do not exist
+  server-side, so honouring the client's word for a stat is a free upgrade for anyone willing
+  to edit a message. Abilities are therefore a solo feature until they live in the engine.
 - **Only a rejected move clears the staged turn** (`MOVE_ERROR_CODES`). A chat or invite error
   must not silently bin a turn the player has been building.
 - ponytail ceiling: buffs are client-side and hex-keyed. A boost follows a *staged* move, not a

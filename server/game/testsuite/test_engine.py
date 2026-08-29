@@ -233,15 +233,15 @@ class ConfigLoaderTestCase(TestCase):
     def test_build_initial_board_piece_count(self):
         config = load_config(None)
         board = build_initial_board(config)
-        self.assertEqual(len(board.pieces_by_color('white')), 13)
-        self.assertEqual(len(board.pieces_by_color('black')), 13)
+        self.assertEqual(len(board.pieces_by_color('white')), 16)
+        self.assertEqual(len(board.pieces_by_color('black')), 16)
 
     def test_build_initial_board_has_kings(self):
         config = load_config(None)
         board = build_initial_board(config)
         # Check directly that king units exist on the board
-        white_king_cell = board.get(-5, 11)
-        black_king_cell = board.get(5, -11)
+        white_king_cell = board.get(-3, 11)
+        black_king_cell = board.get(3, -11)
         assert white_king_cell is not None
         assert black_king_cell is not None
         self.assertEqual(white_king_cell['unit_id'], 'king')
@@ -252,7 +252,7 @@ class ConfigLoaderTestCase(TestCase):
     def test_build_initial_board_units_have_hp(self):
         config = load_config(None)
         board = build_initial_board(config)
-        white_king = board.get(-5, 11)
+        white_king = board.get(-3, 11)
         assert white_king is not None
         self.assertIn('hp', white_king)
         self.assertIn('max_hp', white_king)
@@ -303,6 +303,41 @@ class ConfigLoaderTestCase(TestCase):
         # The same board is fine when the objective does not need one.
         custom['rules'] = {'objective': 'elimination'}
         self.assertEqual(len(build_initial_board(load_config(custom)).to_dict()), 2)
+
+    def test_a_config_written_before_these_fields_still_loads(self):
+        """Rooms hold configs saved by older builds. Requiring `defense` and
+        defaulting `objective` to regicide made every one of them permanently
+        unloadable - the room could never start again."""
+        old = {
+            'version': '1.0',
+            'board': {'radius': 3},
+            'units': {'king': {'id': 'king', 'name': 'K', 'symbol': 'K',
+                               'value': 0, 'hp': 20, 'attack': 5, 'commander': True}},
+            'abilities': {},
+            'setup': {'white': {'0,3': 'king'}, 'black': {'0,-3': 'king'}},
+            'rules': {'maxTurns': 0, 'turnTimeLimit': 0},
+        }
+        config = load_config(old)
+        self.assertEqual(config['units']['king']['defense'], 0)
+        # It has commanders on both sides, so regicide is what it was played as.
+        self.assertEqual(config['rules']['objective'], 'regicide')
+
+        # One without a commander anywhere never meant regicide.
+        old['units'] = {'pawn': {'id': 'pawn', 'name': 'P', 'symbol': 'P',
+                                 'value': 1, 'hp': 5, 'attack': 2}}
+        old['setup'] = {'white': {'0,3': 'pawn'}, 'black': {'0,-3': 'pawn'}}
+        self.assertEqual(load_config(old)['rules']['objective'], 'elimination')
+
+    def test_malformed_rules_is_a_config_error_not_a_crash(self):
+        """`config.get('rules', {})` hands back None for an explicit null, and
+        every read off it raised AttributeError straight through handlers that
+        only catch ValueError - an INTERNAL_ERROR traceback for a bad paste."""
+        import copy
+        from game.engine.config_loader import DEFAULT_CONFIG
+        bad = copy.deepcopy(DEFAULT_CONFIG)
+        bad['rules'] = None
+        with self.assertRaises(ValueError):
+            load_config(bad)
 
     def test_units_carry_an_identity_that_survives_a_move(self):
         """Per-unit state hangs off `uid`; if a move dropped it, veterancy and
