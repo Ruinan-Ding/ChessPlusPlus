@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
+import { readStore, removeStore, writeStore } from './storage';
 
 @Injectable({
   providedIn: 'root'
@@ -9,14 +10,14 @@ export class AuthService {
   public username$ = this.usernameSubject.asObservable();
   
   constructor() { 
-    const storedUsername = localStorage.getItem('username');
+    const storedUsername = readStore('local', 'username');
     if (storedUsername) {
       this.usernameSubject.next(storedUsername);
     }
   }
   
   setUsername(username: string): void {
-    localStorage.setItem('username', username);
+    writeStore('local', 'username', username);
     this.usernameSubject.next(username);
   }
   
@@ -27,14 +28,14 @@ export class AuthService {
   // ponytail: anonymous per-browser secret, not a real credential. Swap this
   // for real session/JWT storage if real accounts are added later.
   getIdentitySecret(): string {
-    let secret = localStorage.getItem('identitySecret');
+    let secret = readStore('local', 'identitySecret');
     if (!secret) {
       // crypto.getRandomValues works in insecure contexts (e.g. a plain-HTTP
       // LAN address for local play); crypto.randomUUID() does not.
       const bytes = new Uint8Array(16);
       crypto.getRandomValues(bytes);
       secret = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
-      localStorage.setItem('identitySecret', secret);
+      writeStore('local', 'identitySecret', secret);
     }
     return secret;
   }
@@ -44,7 +45,7 @@ export class AuthService {
   }
   
   logout(): void {
-    localStorage.removeItem('username');
+    removeStore('local', 'username');
     this.usernameSubject.next('');
   }
 }

@@ -1,4 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { BehaviorSubject } from 'rxjs';
 
 import { LobbyComponent } from './lobby.component';
@@ -11,6 +12,12 @@ const mockWebsocketService = {
   reconnecting$: new BehaviorSubject(false),
   reconnectAttempts$: new BehaviorSubject(0),
   connectionFailed$: new BehaviorSubject(false),
+  offline$: new BehaviorSubject(false),
+  isLocal: () => false,
+  isOffline: () => false,
+  reconnectToServer: () => {},
+  playOffline: () => {},
+  startLocalGame: () => {},
   isConnected: () => false,
   connect: () => {},
   disconnect: () => {},
@@ -27,6 +34,9 @@ describe('LobbyComponent', () => {
     await TestBed.configureTestingModule({
       imports: [LobbyComponent],
       providers: [
+        // The lobby reads ?solo=1 off ActivatedRoute, which only exists with
+        // a router configured.
+        provideRouter([]),
         { provide: WebsocketService, useValue: mockWebsocketService }
       ]
     })

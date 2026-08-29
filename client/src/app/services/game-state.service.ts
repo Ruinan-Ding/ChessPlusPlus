@@ -150,6 +150,18 @@ export class GameStateService {
     });
   }
 
+  /** Apply a `turn_passed` message - the turn moves on, the board doesn't. */
+  applyTurnPassed(msg: any): void {
+    const prev = this.snapshot;
+    this.stateSubject.next({
+      ...prev,
+      currentTurn: msg.currentTurn ?? prev.currentTurn,
+      turnNumber: msg.turnNumber ?? prev.turnNumber,
+      turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
+      drawOfferedBy: '',
+    });
+  }
+
   /** Apply a `game_over` message. */
   applyGameOver(msg: any): void {
     const prev = this.snapshot;

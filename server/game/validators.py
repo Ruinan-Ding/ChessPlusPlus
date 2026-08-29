@@ -77,6 +77,12 @@ def validate_game_mode(mode: str) -> None:
         raise ValidationError('INVALID_GAME_MODE', f'Mode must be one of: {", ".join(valid_modes)}')
 
 
+# The only settings a room carries. Named here because the consumer has to
+# filter what it sends back to clients by the same list it validates against -
+# anything else is echoed to the server on the next change and rejected.
+GAME_OPTION_KEYS = frozenset({'reveal', 'turnTimeLimit'})
+
+
 def validate_game_options(options: dict) -> None:
     """
     Validate game options structure
@@ -90,14 +96,16 @@ def validate_game_options(options: dict) -> None:
     if not isinstance(options, dict):
         raise ValidationError('INVALID_OPTIONS', 'Game options must be a dictionary')
     
-    # Only 'reveal' is currently supported
-    allowed_keys = {'reveal'}
     for key in options.keys():
-        if key not in allowed_keys:
+        if key not in GAME_OPTION_KEYS:
             raise ValidationError('INVALID_OPTION_KEY', f'Unknown option: {key}')
     
     if 'reveal' in options and not isinstance(options['reveal'], bool):
         raise ValidationError('INVALID_OPTION_VALUE', 'reveal option must be boolean')
+    if 'turnTimeLimit' in options:
+        value = options['turnTimeLimit']
+        if isinstance(value, bool) or not isinstance(value, int) or value not in {0, 15, 30, 60, 120, 180, 240, 300}:
+            raise ValidationError('INVALID_OPTION_VALUE', 'turnTimeLimit must be one of the supported timer values')
 
 
 def validate_chat_message(content: str) -> None:

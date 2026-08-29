@@ -6,10 +6,12 @@ import { Subject } from 'rxjs';
 import { takeUntil, filter, take } from 'rxjs/operators';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
 import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { AuthService } from '../../services/auth.service';
+import { AudioService } from '../../services/audio.service';
+import { readStore, removeStore, writeStore } from '../../services/storage';
 
 @Component({
   selector: 'app-lobby',
@@ -26,12 +28,20 @@ export class LobbyComponent implements OnInit, OnDestroy {
 
   /** Online users with yourself pinned to the top of the list. */
   get sortedUsers(): User[] {
+    // With no server there is no roster to speak of - just you.
+    if (!this.serverOnline) return [{ username: this.username, status: 'online' } as User];
     return selfFirst(this.users, this.username);
   }
+
+  /** False whenever the socket is down, offline mode included. */
+  serverOnline = false;
+  volumeOpen = false;
   messages: ChatMessage[] = [];
   messageContent: string = '';
   newUsername: string = '';
   showChangeUsername: boolean = false;
+  /** The server had to rename us; the panel is open to offer a better one. */
+  nameWasTaken: boolean = false;
   activeInvite: {
     inviter: string;
     inviteId: string;
@@ -50,7 +60,9 @@ export class LobbyComponent implements OnInit, OnDestroy {
 
   constructor(
     private wsService: WebsocketService,
+    public audio: AudioService,
     private router: Router,
+    private route: ActivatedRoute,
     private sharedDataService: SharedDataService,
     private navigationState: NavigationStateService,
     private cdr: ChangeDetectorRef,
@@ -70,7 +82,12 @@ export class LobbyComponent implements OnInit, OnDestroy {
     // If context is 'none', we're returning from a game room - apply remaining invite cooldown
     // Cooldown is 5 seconds from when they joined the game room, not from when they left
     if (navContext === 'none' && this.isRejoiningFromNavigation) {
-      if (this.gameRoomJoinTime > 0) {
+      // A solo room never involved another player, so there is nothing to
+      // rate-limit - leaving one must not block the next invite.
+      if (readStore('session', 'leftSinglePlayer') === '1') {
+        removeStore('session', 'leftSinglePlayer');
+        console.log('[Lobby] Returned from a single-player room - no cooldown');
+      } else if (this.gameRoomJoinTime > 0) {
         console.log('[Lobby] Detected return from game room - applying remaining cooldown');
         const elapsedSeconds = Math.ceil((Date.now() - this.gameRoomJoinTime) / 1000);
         const remainingCooldown = Math.max(0, 5 - elapsedSeconds);
@@ -103,6 +120,11 @@ export class LobbyComponent implements OnInit, OnDestroy {
     this.newUsername = this.username;
     console.log('[Lobby] Username:', this.username);
     
+    this.wsService.connectionStatus$.pipe(takeUntil(this.destroy$)).subscribe(connected => {
+      this.serverOnline = connected;
+      this.cdr.markForCheck();
+    });
+
     this.messages = this.sharedDataService.getLobbyMessages();
     this.sharedDataService.lobbyMessages$.pipe(takeUntil(this.destroy$)).subscribe(msgs => {
       this.messages = msgs;
@@ -227,6 +249,24 @@ export class LobbyComponent implements OnInit, OnDestroy {
           }
           break;
           
+        case 'single_player_game_created': {
+          if (!message.gameId || !message.token) {
+            console.error('Invalid single_player_game_created message', message);
+            break;
+          }
+          // Same hand-off as an accepted challenge: keep the lobby socket alive
+          // across the navigation, then open the room with the host token.
+          // Only now is a solo room really entered, so only now does leaving
+          // one get to skip the invite cooldown - a create that never landed
+          // must not hand out that bypass.
+          writeStore('session', 'leftSinglePlayer', '1');
+          this.navigationState.setIntentionalNavigation('game-room');
+          this.router.navigate(['/game-room', message.gameId], {
+            queryParams: { token: message.token }
+          }).catch(err => console.error('Navigation to solo game room failed:', err));
+          break;
+        }
+
         case 'challenge_declined':
           if (!message.username) {
             console.error('Invalid challenge_declined message: missing username field', message);
@@ -263,11 +303,17 @@ export class LobbyComponent implements OnInit, OnDestroy {
           break;
         
         case 'username_assigned':
-          // Server assigned a different username because the requested one was taken
+          // Someone else has the name we asked for - most often our own old
+          // session, seen again after reconnecting. The server has already put
+          // us on a random one; offer a rename, and keep the random one if the
+          // player would rather not bother.
           console.log('[Lobby] Username was taken, assigned new username:', message.username);
           this.username = message.username;
           this.authService.setUsername(message.username);
           this.addSystemMessage(message.message);
+          this.nameWasTaken = true;
+          this.showChangeUsername = true;
+          this.newUsername = '';
           this.cdr.markForCheck();
           break;
         
@@ -304,38 +350,33 @@ export class LobbyComponent implements OnInit, OnDestroy {
       }
     );
     
-    // Check if already connected (e.g., returning from game room or setup)
-    if (this.wsService.isConnected()) {
-      console.log('[Lobby] Already connected, sending join_lobby message immediately');
+    const joinLobby = () => {
       this.wsService.sendMessage({
         type: 'join_lobby',
         username: this.username,
         rejoining: this.isRejoiningFromNavigation,
         secret: this.authService.getIdentitySecret()
       });
-    } else {
-      console.log('[Lobby] Connecting to WebSocket lobby...');
+    };
+
+    // connect() is a no-op when the socket is already up on this room.
+    if (!this.wsService.isOffline()) {
       this.wsService.connect('lobby');
-      
-      this.wsService.connectionStatus$.pipe(
-        filter(connected => connected === true),
-        take(1),
-        takeUntil(this.destroy$)
-      ).subscribe(
-        () => {
-          console.log('[Lobby] Connection established, sending join_lobby message');
-          this.wsService.sendMessage({
-            type: 'join_lobby',
-            username: this.username,
-            rejoining: this.isRejoiningFromNavigation,
-            secret: this.authService.getIdentitySecret()
-          });
-        },
-        error => {
-          console.error('[Lobby] WebSocket connection error:', error);
-          this.addSystemMessage('Connection error. Please refresh the page.');
-        }
-      );
+    }
+    if (this.wsService.isOffline()) {
+      joinLobby();  // answered locally; there is no socket to wait for
+    }
+    // Join on every connection: now if one is already up, and again after a
+    // reconnect (the Reconnect button, or the retry loop coming good).
+    this.wsService.connectionStatus$.pipe(
+      filter(connected => connected === true),
+      takeUntil(this.destroy$)
+    ).subscribe(() => joinLobby());
+
+    // Sent here by the game room's Single Player button: there is no server to
+    // come back to, so deal a local game rather than land in a dead lobby.
+    if (this.route.snapshot.queryParamMap.get('solo') === '1') {
+      this.startSinglePlayer();
     }
   }
   
@@ -403,8 +444,21 @@ export class LobbyComponent implements OnInit, OnDestroy {
     this.messageContent = '';
   }
   
+  /** Close the rename panel, keeping whatever name we currently hold. */
+  keepAssignedName(): void {
+    this.showChangeUsername = false;
+    this.nameWasTaken = false;
+    this.newUsername = this.username;
+    this.cdr.markForCheck();
+  }
+
   changeUsername(): void {
     const trimmedUsername = this.newUsername.trim();
+    if (!trimmedUsername && this.nameWasTaken) {
+      // Nothing typed after a collision: the random name stands.
+      this.keepAssignedName();
+      return;
+    }
     if (!this.username || typeof this.username !== 'string' || this.username.trim() === '') {
       this.addSystemMessage('You must be logged in to change your username.');
       return;
@@ -433,6 +487,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
   
   toggleChangeUsername(): void {
     this.showChangeUsername = !this.showChangeUsername;
+    this.nameWasTaken = false;
     this.newUsername = this.username;
   }
   
@@ -789,6 +844,17 @@ export class LobbyComponent implements OnInit, OnDestroy {
     return `Player${Math.floor(Math.random() * 10000)}`;
   }
   
+  /** Solo room: you plus a placeholder opponent seat you configure yourself. */
+  startSinglePlayer(): void {
+    // A solo game has no second player, so it runs entirely in the browser -
+    // no room row, no UUID, no token, and it survives losing the server.
+    this.wsService.startLocalGame();
+    this.wsService.sendMessage({
+      type: 'create_single_player_game',
+      username: this.username
+    });
+  }
+
   openSetup(): void {
     this.navigationState.setIntentionalNavigation('setup');
     this.wsService.sendMessage({

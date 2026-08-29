@@ -3,7 +3,13 @@
   "title": "ChessPlusPlus Game Configuration",
   "description": "Configuration schema for a hex-grid tactics game. Uses axial coordinates (q, r). Matches DEFAULT_CONFIG in server/game/engine/config_loader.py and client config.service.ts.",
   "type": "object",
-  "required": ["version", "board", "units", "setup", "rules"],
+  "required": [
+    "version",
+    "board",
+    "units",
+    "setup",
+    "rules"
+  ],
   "properties": {
     "version": {
       "type": "string",
@@ -11,7 +17,9 @@
     },
     "board": {
       "type": "object",
-      "required": ["radius"],
+      "required": [
+        "radius"
+      ],
       "properties": {
         "radius": {
           "type": "integer",
@@ -21,7 +29,10 @@
         },
         "orientation": {
           "type": "string",
-          "enum": ["edge-up", "vertex-up"],
+          "enum": [
+            "edge-up",
+            "vertex-up"
+          ],
           "description": "Cosmetic: how the client draws the board hexagon. Default is edge-up."
         }
       },
@@ -32,17 +43,37 @@
       "description": "Unit type definitions, keyed by unit id.",
       "additionalProperties": {
         "type": "object",
-        "required": ["id", "name", "symbol", "move", "value", "hp", "attack"],
+        "required": [
+          "id",
+          "name",
+          "symbol",
+          "move",
+          "value",
+          "hp",
+          "attack",
+          "defense"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "symbol": { "type": "string", "maxLength": 4 },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string",
+            "maxLength": 4
+          },
           "display": {
             "type": "object",
             "description": "Per-colour display glyphs rendered on the board.",
             "properties": {
-              "white": { "type": "string" },
-              "black": { "type": "string" }
+              "white": {
+                "type": "string"
+              },
+              "black": {
+                "type": "string"
+              }
             },
             "additionalProperties": false
           },
@@ -51,7 +82,10 @@
             "minimum": 0,
             "description": "Number of adjacent-hex steps this unit can move per turn. Movement floods outward through the six hex neighbours, through empty hexes only - a unit can never move through or onto an occupied hex (ally or enemy)."
           },
-          "value": { "type": "integer", "minimum": 0 },
+          "value": {
+            "type": "integer",
+            "minimum": 0
+          },
           "hp": {
             "type": "integer",
             "minimum": 1,
@@ -61,6 +95,21 @@
             "type": "integer",
             "minimum": 0,
             "description": "Attack damage dealt when this unit initiates combat."
+          },
+          "commander": {
+            "type": "boolean",
+            "description": "This unit is the side's commander. Under the 'regicide' objective, losing every commander loses the game. Omitted means false."
+          },
+          "attackRange": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "How many rings of adjacency this unit can strike, by hex distance and ignoring obstacles. 1 = the six neighbouring hexes. Beyond the first ring damage falls off by rules.rangeFalloff per extra ring. Omitted means 1."
+          },
+          "defense": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Flat damage reduction applied when this unit is attacked. strike_damage() subtracts it from the incoming attack, floored at 0."
           }
         },
         "additionalProperties": false
@@ -71,38 +120,66 @@
       "description": "Global ability catalogue, keyed by ability id. PLACEHOLDER: the engine does not read abilities yet.",
       "additionalProperties": {
         "type": "object",
-        "required": ["id", "name", "description", "cooldown"],
+        "required": [
+          "id",
+          "name",
+          "description",
+          "cooldown"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "description": { "type": "string" },
-          "cooldown": { "type": "integer", "minimum": 0 }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "cooldown": {
+            "type": "integer",
+            "minimum": 0
+          }
         },
         "additionalProperties": false
       }
     },
     "setup": {
       "type": "object",
-      "required": ["white", "black"],
+      "required": [
+        "white",
+        "black"
+      ],
       "properties": {
         "white": {
           "type": "object",
           "description": "Map of 'q,r' coordinate strings to unit type ids for white.",
-          "propertyNames": { "pattern": "^-?\\d+,-?\\d+$" },
-          "additionalProperties": { "type": "string" }
+          "propertyNames": {
+            "pattern": "^-?\\d+,-?\\d+$"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "black": {
           "type": "object",
           "description": "Map of 'q,r' coordinate strings to unit type ids for black.",
-          "propertyNames": { "pattern": "^-?\\d+,-?\\d+$" },
-          "additionalProperties": { "type": "string" }
+          "propertyNames": {
+            "pattern": "^-?\\d+,-?\\d+$"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
     },
     "rules": {
       "type": "object",
-      "required": ["maxTurns", "turnTimeLimit"],
+      "required": [
+        "maxTurns",
+        "turnTimeLimit"
+      ],
       "properties": {
         "maxTurns": {
           "type": "integer",
@@ -114,10 +191,19 @@
           "minimum": 0,
           "description": "Per-turn time limit in seconds (0 = unlimited)."
         },
+        "rangeFalloff": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of attack damage lost per ring beyond the first, applied linearly: ring 2 deals (1 - falloff) of the attack stat, ring 3 (1 - 2*falloff), floored, never below 1."
+        },
         "objective": {
           "type": "string",
-          "enum": ["elimination"],
-          "description": "Win condition. Only 'elimination' is implemented."
+          "enum": [
+            "regicide",
+            "elimination"
+          ],
+          "description": "Win condition. 'regicide' (the default): a side loses when it has no commander left. 'elimination': a side loses when it has no units left at all."
         }
       },
       "additionalProperties": false

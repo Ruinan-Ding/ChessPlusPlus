@@ -1,6 +1,10 @@
 <div class="game-room-container" *ngIf="gameState.state$ | async as state">
   <header>
     <h1>Game Room</h1>
+    <div class="turn-indicator" *ngIf="gameStarted" [class.your-turn]="isYourTurn" [class.opponent-turn]="!isYourTurn">
+      <span>{{ isYourTurn ? 'YOUR TURN' : "OPPONENT'S TURN" }}<ng-container
+        *ngIf="state.turnTimeLimit > 0"> - {{ formattedTurnTime }}</ng-container></span>
+    </div>
     <div class="header-actions">
       <button
         class="setup-btn"
@@ -18,59 +22,264 @@
          used to be clipped into the hexagon's corners, which left far too
          little usable area for their controls. -->
     <div class="match-panels">
-      <section class="match-panel history-panel">
-        <h3>History</h3>
-        <div class="panel-body">
-          <div class="history-item" *ngFor="let message of historyMessages">
-            <span class="history-text">{{ message.content }}</span>
-            <span class="history-time">{{ message.timestamp | date:'shortTime' }}</span>
-          </div>
-          <div class="panel-empty" *ngIf="historyMessages.length === 0">No history yet.</div>
-        </div>
-      </section>
 
-      <!-- Placeholder until unit selection is plumbed from the board up here. -->
-      <section class="match-panel stats-panel">
-        <h3>Unit</h3>
-        <div class="panel-body">
-          <div class="stat-row"><span>Unit</span><strong>—</strong></div>
-          <div class="stat-row"><span>HP</span><strong>— / —</strong></div>
-          <div class="stat-row"><span>Attack</span><strong>—</strong></div>
-          <div class="stat-row"><span>Move</span><strong>—</strong></div>
-          <div class="panel-buttons">
-            <button class="scaffold-btn" type="button">Ability 1</button>
-            <button class="scaffold-btn" type="button">Ability 2</button>
-          </div>
-        </div>
-      </section>
-
+      <!-- Mirrors the selected hex. 2x2 so the panel stays short and History
+           gets the height. Colours match the numbers drawn on the board. -->
       <section class="match-panel opponent-panel">
-        <h3>Opponent Abilities</h3>
+        <h3 class="panel-head"><span>{{ abilityHeader('opponent', 'Opponent') }}</span><span class="points">{{ opponentPoints }}</span></h3>
         <div class="panel-body">
-          <div class="ability-row">Ability A</div>
-          <div class="ability-row">Ability B</div>
-          <div class="ability-row">Ability C</div>
+          <div class="ability-detail" *ngIf="isAbilityFocusedSide('opponent'); else opponentAbilityList"
+               [class.ability-disabled]="!focusedAbilityIsPassive && !focusedAbilityCanActivate()">
+            <div class="ability-detail-content">
+              <p>{{ focusedAbilityDescription }}</p>
+              <p class="arming-hint" *ngIf="!focusedAbilityIsPassive && focusedAbilityIsTargeted && focusedAbilityCanActivate()">Select a target on the board.</p>
+              <p class="arming-hint" *ngIf="!focusedAbilityIsPassive && !focusedAbilityCanActivate()">Unavailable: on cooldown, unaffordable, or not your turn.</p>
+            </div>
+            <div class="ability-detail-actions">
+              <!-- Four of the eight travel with you, and a pick is for the
+                   match: it goes to the top of the list and stays there. -->
+              <button *ngIf="abilityFocus && !focusedAbilityIsPassive && !isUltimate(abilityFocus.index)"
+                      class="pick-btn" type="button"
+                      [class.carried]="isPicked(abilityFocus.side, abilityFocus.index)"
+                      [disabled]="!canPick(abilityFocus.side, abilityFocus.index)"
+                      (click)="pickAbility(abilityFocus.side, abilityFocus.index)"
+              >{{ isPicked(abilityFocus.side, abilityFocus.index) ? 'Picked' : 'Pick' }}</button>
+              <button *ngIf="focusedAbilityIsUniversal" class="scaffold-btn"
+                      [disabled]="!focusedAbilityCanActivate()" (click)="activateFocusedAbility()">Use</button>
+              <button class="ability-back-btn" type="button" (click)="clearAbilityFocus()">Back</button>
+            </div>
+          </div>
+          <ng-template #opponentAbilityList><div class="panel-buttons">
+            <!-- Carried four first, the rest of the pool under them. -->
+            <ng-container *ngFor="let i of abilityOrder('opponent')">
+              <button class="scaffold-btn" type="button"
+                      [style.font-size]="abilityFontSize(i, opponentCooldowns[i])"
+                      [class.arming]="isArmed('opponent', i)"
+                      [title]="abilityHint(i)"
+                      [class.focused]="isAbilityFocused('opponent', i)"
+                      [class.recent]="isRecent('opponent', i)"
+                      [class.casting]="isCasting(i)" [class.brief]="castingBrief"
+                      [class.unpicked]="!isPicked('opponent', i)"
+                      [class.ability-unavailable]="!canAfford('opponent', i, opponentCooldowns[i])"
+                      (click)="selectAbility('opponent', i, opponentCooldowns)"
+              >{{ abilityLabel(i, opponentCooldowns[i]) }}</button>
+            </ng-container>
+            <!-- Until a path is taken there is nothing here but the three
+                 it could be, each named for the passive it grants. -->
+            <div class="path-choices" *ngIf="pathOf('opponent') === null">
+              <button *ngFor="let path of abilityPaths; index as p"
+                      class="path-btn" type="button"
+                      [title]="pathHint(p)"
+                      [disabled]="!canUnlockPath('opponent', p)"
+                      (click)="unlockPath('opponent', p)"
+              >{{ pathLabel(p) }}</button>
+            </div>
+            <ng-container *ngIf="pathChoice('opponent') as path">
+              <div class="ability-bottom-row">
+                <button class="passive-row" [title]="abilityHint(path.passive)"
+                        [style.font-size]="abilityFontSize(path.passive, 0)"
+                        (click)="selectAbility('opponent', path.passive, opponentCooldowns)"
+                >{{ abilityLabel(path.passive, 0) }}</button>
+                <button class="scaffold-btn" type="button" [title]="abilityHint(path.skill)"
+                        [style.font-size]="abilityFontSize(path.skill, opponentCooldowns[path.skill])"
+                        [class.arming]="isArmed('opponent', path.skill)"
+                        [class.recent]="isRecent('opponent', path.skill)"
+                        [class.casting]="isCasting(path.skill)" [class.brief]="castingBrief"
+                        [class.ability-unavailable]="!canAfford('opponent', path.skill, opponentCooldowns[path.skill])"
+                        (click)="selectAbility('opponent', path.skill, opponentCooldowns)"
+                >{{ abilityLabel(path.skill, opponentCooldowns[path.skill]) }}</button>
+                <button class="scaffold-btn ultimate-btn" type="button" [title]="abilityHint(path.ultimate)"
+                        [style.font-size]="abilityFontSize(path.ultimate, opponentCooldowns[path.ultimate])"
+                        [class.arming]="isArmed('opponent', path.ultimate)"
+                        [class.recent]="isRecent('opponent', path.ultimate)"
+                        [class.casting]="isCasting(path.ultimate)" [class.brief]="castingBrief"
+                        [class.ability-unavailable]="!canAfford('opponent', path.ultimate, opponentCooldowns[path.ultimate])"
+                        (click)="selectAbility('opponent', path.ultimate, opponentCooldowns)"
+                >{{ abilityLabel(path.ultimate, opponentCooldowns[path.ultimate]) }}</button>
+              </div>
+            </ng-container>
+          </div></ng-template>
         </div>
       </section>
 
       <section class="match-panel abilities-panel">
-        <h3>Your Abilities</h3>
+        <h3 class="panel-head"><span>{{ abilityHeader('mine', 'Abilities') }}</span><span class="points">{{ myPoints }}</span></h3>
         <div class="panel-body">
-          <div class="panel-buttons">
-            <button class="scaffold-btn" type="button">Ability 1</button>
-            <button class="scaffold-btn" type="button">Ability 2</button>
-            <button class="scaffold-btn" type="button">Ability 3</button>
-            <button class="scaffold-btn" type="button">Ability 4</button>
+          <div class="ability-detail" *ngIf="isAbilityFocusedSide('mine'); else myAbilityList"
+               [class.ability-disabled]="!focusedAbilityIsPassive && !focusedAbilityCanActivate()">
+            <div class="ability-detail-content">
+              <p>{{ focusedAbilityDescription }}</p>
+              <p class="arming-hint" *ngIf="!focusedAbilityIsPassive && focusedAbilityIsTargeted && focusedAbilityCanActivate()">Select a target on the board.</p>
+              <p class="arming-hint" *ngIf="!focusedAbilityIsPassive && !focusedAbilityCanActivate()">Unavailable: on cooldown, unaffordable, or not your turn.</p>
+            </div>
+            <div class="ability-detail-actions">
+              <!-- Four of the eight travel with you, and a pick is for the
+                   match: it goes to the top of the list and stays there. -->
+              <button *ngIf="abilityFocus && !focusedAbilityIsPassive && !isUltimate(abilityFocus.index)"
+                      class="pick-btn" type="button"
+                      [class.carried]="isPicked(abilityFocus.side, abilityFocus.index)"
+                      [disabled]="!canPick(abilityFocus.side, abilityFocus.index)"
+                      (click)="pickAbility(abilityFocus.side, abilityFocus.index)"
+              >{{ isPicked(abilityFocus.side, abilityFocus.index) ? 'Picked' : 'Pick' }}</button>
+              <button *ngIf="focusedAbilityIsUniversal" class="scaffold-btn"
+                      [disabled]="!focusedAbilityCanActivate()" (click)="activateFocusedAbility()">Use</button>
+              <button class="ability-back-btn" type="button" (click)="clearAbilityFocus()">Back</button>
+            </div>
           </div>
+          <ng-template #myAbilityList><div class="panel-buttons">
+            <!-- Carried four first, the rest of the pool under them. -->
+            <ng-container *ngFor="let i of abilityOrder('mine')">
+              <button class="scaffold-btn" type="button"
+                      [style.font-size]="abilityFontSize(i, myCooldowns[i])"
+                      [class.arming]="isArmed('mine', i)"
+                      [title]="abilityHint(i)"
+                      [class.focused]="isAbilityFocused('mine', i)"
+                      [class.recent]="isRecent('mine', i)"
+                      [class.casting]="isCasting(i)" [class.brief]="castingBrief"
+                      [class.unpicked]="!isPicked('mine', i)"
+                      [class.ability-unavailable]="!canAfford('mine', i, myCooldowns[i])"
+                      (click)="selectAbility('mine', i, myCooldowns)"
+              >{{ abilityLabel(i, myCooldowns[i]) }}</button>
+            </ng-container>
+            <!-- Until a path is taken there is nothing here but the three
+                 it could be, each named for the passive it grants. -->
+            <div class="path-choices" *ngIf="pathOf('mine') === null">
+              <button *ngFor="let path of abilityPaths; index as p"
+                      class="path-btn" type="button"
+                      [title]="pathHint(p)"
+                      [disabled]="!canUnlockPath('mine', p)"
+                      (click)="unlockPath('mine', p)"
+              >{{ pathLabel(p) }}</button>
+            </div>
+            <ng-container *ngIf="pathChoice('mine') as path">
+              <div class="ability-bottom-row">
+                <button class="passive-row" [title]="abilityHint(path.passive)"
+                        [style.font-size]="abilityFontSize(path.passive, 0)"
+                        (click)="selectAbility('mine', path.passive, myCooldowns)"
+                >{{ abilityLabel(path.passive, 0) }}</button>
+                <button class="scaffold-btn" type="button" [title]="abilityHint(path.skill)"
+                        [style.font-size]="abilityFontSize(path.skill, myCooldowns[path.skill])"
+                        [class.arming]="isArmed('mine', path.skill)"
+                        [class.recent]="isRecent('mine', path.skill)"
+                        [class.casting]="isCasting(path.skill)" [class.brief]="castingBrief"
+                        [class.ability-unavailable]="!canAfford('mine', path.skill, myCooldowns[path.skill])"
+                        (click)="selectAbility('mine', path.skill, myCooldowns)"
+                >{{ abilityLabel(path.skill, myCooldowns[path.skill]) }}</button>
+                <button class="scaffold-btn ultimate-btn" type="button" [title]="abilityHint(path.ultimate)"
+                        [style.font-size]="abilityFontSize(path.ultimate, myCooldowns[path.ultimate])"
+                        [class.arming]="isArmed('mine', path.ultimate)"
+                        [class.recent]="isRecent('mine', path.ultimate)"
+                        [class.casting]="isCasting(path.ultimate)" [class.brief]="castingBrief"
+                        [class.ability-unavailable]="!canAfford('mine', path.ultimate, myCooldowns[path.ultimate])"
+                        (click)="selectAbility('mine', path.ultimate, myCooldowns)"
+                >{{ abilityLabel(path.ultimate, myCooldowns[path.ultimate]) }}</button>
+              </div>
+            </ng-container>
+          </div></ng-template>
         </div>
       </section>
+
+      <section class="match-panel stats-panel">
+        <h3 class="panel-head"><span>{{ unitAbilityTitle }}</span>
+          <span class="unit-side">{{ unitSideLabel }}</span></h3>
+        <div class="panel-body">
+          <div class="stat-grid">
+            <!-- Only the current half of "x/20" answers for the unit's state,
+                 so only it waves. -->
+            <div class="stat-cell hp"><span>HP</span>
+              <strong [class.forecast]="displayUnit?.hpAfter != null">
+                <ng-container *ngIf="displayUnit; else noUnitHp"><span
+                  [ngClass]="hpWave">{{ displayUnit.hpAfter ?? displayUnit.hp }}</span>/{{ displayUnit.hpMax }}</ng-container>
+                <ng-template #noUnitHp>—</ng-template>
+              </strong></div>
+            <div class="stat-cell atk"><span>ATK</span>
+              <strong [ngClass]="panelWave('atk')"
+                      [style.font-size]="statFontSize(statAtk)">{{ statAtk }}</strong></div>
+            <div class="stat-cell def"><span>DEF</span>
+              <strong [ngClass]="panelWave('def')"
+                      [style.font-size]="statFontSize(statDef)">{{ statDef }}</strong></div>
+            <div class="stat-cell mov"><span>MOV</span>
+              <strong [ngClass]="panelWave('mov')"
+                      [style.font-size]="statFontSize(statMov)">{{ statMov }}</strong></div>
+          </div>
+          <div class="ability-detail" *ngIf="unitAbilityFocus; else unitAbilityList"
+               [class.ability-disabled]="!unitAbilityIsPassive() && !unitAbilityCanActivate()">
+            <div class="ability-detail-content">
+              <p>{{ unitAbilityHint(unitAbilityFocus.index) }}</p>
+              <p class="arming-hint" *ngIf="!unitAbilityIsPassive() && !unitAbilityCanActivate()">Unavailable: on cooldown, unaffordable, not earned, or not this unit's turn.</p>
+            </div>
+            <div class="ability-detail-actions">
+              <button *ngIf="!unitAbilityIsPassive()" class="scaffold-btn" type="button"
+                      [disabled]="!unitAbilityCanActivate()"
+                      (click)="activateUnitAbility()">Use</button>
+              <button class="ability-back-btn" type="button" (click)="unitAbilityFocus = null">Back</button>
+            </div>
+          </div>
+          <ng-template #unitAbilityList><div class="panel-buttons">
+            <div class="unit-ability-row">
+              <!-- Earned in this order: the passive at one star, the skill
+                   at two - so the passive leads. -->
+              <button class="passive-row" *ngIf="pathChoice('mine') as path"
+                      [title]="abilityHint(path.passive)"
+                      [style.font-size]="abilityFontSize(path.passive, 0)"
+                      [class.locked]="(displayUnit?.vet ?? 0) < 1"
+                      [disabled]="(displayUnit?.vet ?? 0) < 1 || !!displayUnit?.panel"
+                      (click)="selectUnitAbility(path.passive)"
+              >{{ abilityLabel(path.passive, 0) }}</button>
+              <button class="scaffold-btn" type="button"
+                      [style.font-size]="abilityFontSize(0, unitCooldowns[0])"
+                      [title]="unitAbilityHint(0)"
+                      [class.focused]="unitAbilityFocus?.index === 0"
+                      [class.casting]="isCasting(0)" [class.brief]="castingBrief"
+                      [class.locked]="!vetUnlocked(0)"
+                      [class.ability-unavailable]="!canAfford('mine', 0, unitCooldowns[0])"
+                      [disabled]="!vetUnlocked(0) || !!displayUnit?.panel"
+                      (click)="selectUnitAbility(0)"
+              >{{ abilityLabel(0, unitCooldowns[0]) }}</button>
+            </div>
+          </div></ng-template>
+          <p class="arming-hint" *ngIf="pendingAbility">Click the selected target.</p>
+
+          <!-- What is riding on this unit, and for how long. Scrolls: a unit
+               can carry more than the panel is tall. -->
+          <div class="effects-box">
+            <div class="effects-list">
+              <div class="effect-row" *ngFor="let effect of displayEffects">
+                <span class="effect-name">{{ effect.name }}</span>
+                <span class="effect-detail">{{ effect.detail }}</span>
+                <span class="effect-life">{{ effect.life }}</span>
+              </div>
+              <div class="effect-empty" *ngIf="!displayEffects.length">Nothing in effect.</div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- Same shape as Your Abilities. Live only on the opponent's turn, and
+           only when you are driving both sides - never in multiplayer. -->
+      <!-- A move is staged on the board until one of these resolves it, so
+           they sit with the board rather than off in the rail. -->
+      <div class="turn-controls">
+        <button class="undo-btn" type="button" (click)="undoMove()" [disabled]="!pendingMove">Undo<span *ngIf="shortcutsActive"> (R)</span></button>
+        <button class="end-turn-btn" type="button" (click)="endTurn()" [disabled]="!canEndTurn">End Turn<span *ngIf="shortcutsActive"> (TAB)</span></button>
+      </div>
 
       <button
         class="hex-numbers-btn"
         type="button"
         [class.active]="showHexNumbers"
         (click)="showHexNumbers = !showHexNumbers"
-      >{{ showHexNumbers ? 'Hide' : 'Show' }} Hex Numbers</button>
+      >{{ showHexNumbers ? 'Hide' : 'Show' }} Hex Numbers<span *ngIf="shortcutsActive"> (S)</span></button>
+
+      <!-- The two things you can do to a running game, under the board's own
+           controls rather than in the rail. -->
+      <div class="match-actions"
+           *ngIf="gameStarted && gameState.isGameActive && gameState.myColor(username)">
+        <button class="resign-btn" type="button" (click)="resign()">Resign</button>
+        <button class="draw-btn" type="button" (click)="offerDraw()"
+                [disabled]="!!state.drawOfferedBy">Offer Draw</button>
+      </div>
     </div>
 
     <!-- Centre: the board. app-game-board squares itself off with filler hexes. -->
@@ -78,52 +287,53 @@
       <div class="game-board-panel"
            [class.your-turn]="gameStarted && !state.endReason && state.currentTurn === username"
            [class.their-turn]="gameStarted && !state.endReason && !!state.currentTurn && state.currentTurn !== username">
-        <!-- Keep the board visible after the game ends so the final position
-             and the win/loss overlay remain on screen. -->
+        <!-- A finished game gives the panel back to the mode screen, which
+             carries the result banner - see below. -->
         <app-game-board
-          *ngIf="gameStarted || state.endReason"
-          [boardState]="state.boardState"
+          *ngIf="gameStarted && !state.endReason"
+          [boardState]="stagedBoard ?? state.boardState"
           [radius]="state.config?.board?.radius ?? 11"
           [currentTurn]="state.currentTurn"
           [turnNumber]="state.turnNumber"
           [username]="username"
           [myColor]="gameState.myColor(username)"
-          [winner]="state.winner"
           [endReason]="state.endReason"
           [interactive]="gameState.myColor(username) !== '' && !state.endReason"
-          [turnTimeLimit]="state.turnTimeLimit"
-          [turnStartedAt]="state.turnStartedAt"
+          [canMove]="!hasAttacked"
+          [controlAllSides]="isSinglePlayer"
+          [rotateBoard]="isSinglePlayer && soloColor === 'black'"
+          [turnColor]="gameState.myColor(state.currentTurn)"
           [config]="state.config"
           [showNumbers]="showHexNumbers"
+          [movesLeft]="movesLeft"
+          [movesLeftFor]="pendingMove?.to ?? null"
+          [unitBuffs]="boardBuffs"
+          [unitActed]="abilityUsed"
+          [movementArrows]="movementArrows"
+          [attackMarkers]="attackMarkers"
+          [killMarkers]="killMarkers"
+          [opponentMovementArrows]="opponentMovementArrows"
+          [opponentAttackMarkers]="opponentAttackMarkers"
+          [opponentKillMarkers]="opponentKillMarkers"
+          [abilityMode]="activeBoardAbilityMode()"
+          [abilityCasterColor]="activeBoardAbilityCasterColor()"
+          [playback]="playback"
+          (playbackStep)="onPlaybackStep($event)"
+          (playbackDone)="onPlaybackDone()"
           (moveMade)="onPlayerMove($event)"
+          (attackMade)="onPlayerAttack($event)"
+          (hexSelected)="onHexSelected($event)"
+          (hexClicked)="onHexClicked($event)"
+          (hexHovered)="onHexHovered($event)"
         ></app-game-board>
 
-        <!-- Show placeholder when game hasn't started -->
-        <div class="waiting-placeholder" *ngIf="!gameStarted && !state.endReason">
-          <p>Waiting for game to start...</p>
-        </div>
-
-        <!-- Post-game message -->
-        <div class="post-game-message" *ngIf="state.endReason">
-          <p *ngIf="state.winner === username" class="win-message">You won</p>
-          <p *ngIf="state.winner && state.winner !== username" class="loss-message">You lost</p>
-          <p *ngIf="!state.winner" class="draw-message">Draw</p>
-        </div>
-      </div>
-    </div>
-
-    <!-- Right column: Game and Lobby share one tabbed rail. -->
-    <div class="side-rail">
-      <div class="rail-tabs">
-        <button [class.active]="activeSideTab === 'game'" (click)="activeSideTab = 'game'">Game</button>
-        <button [class.active]="activeSideTab === 'lobby'" (click)="activeSideTab = 'lobby'">Lobby</button>
-      </div>
-
-      <!-- ---------------- GAME TAB ---------------- -->
-      <ng-container *ngIf="activeSideTab === 'game'">
-        <!-- Mode is only selectable before the game starts; once it is running
-             the mode is already locked in, so the whole block goes away. -->
-        <div class="rail-section game-settings-panel" *ngIf="!gameStarted">
+        <!-- Pre-game the board is empty, so the mode picker lives here rather
+             than stealing rail width. It goes away once play starts. -->
+        <div class="board-game-mode" *ngIf="!gameStarted || state.endReason">
+          <h2 class="result-banner" *ngIf="state.endReason"
+              [class.won]="state.winner === username"
+              [class.lost]="!!state.winner && state.winner !== username"
+          >{{ resultBanner }}</h2>
           <div class="game-mode-selection" *ngIf="isInviter">
             <h3>Game Mode</h3>
             <div class="mode-options">
@@ -148,8 +358,22 @@
                 <label for="custom-mode">Custom Mode</label>
               </div>
 
-              <!-- Reveal checkbox (custom mode only, and not mid-request) -->
+              <div class="turn-time-option">
+                <span class="turn-time-label">Turn Timer</span>
+                <div class="turn-time-choices">
+                  <label class="radio-option" *ngFor="let seconds of turnTimeChoices">
+                    <input type="radio" name="turn-time-limit"
+                           [value]="seconds"
+                           [checked]="selectedTurnTimeLimit === seconds"
+                           (change)="setTurnTimeLimit(seconds)">
+                    {{ seconds === 0 ? 'Unlimited' : seconds < 60 ? seconds + 's' : (seconds / 60) + 'm' }}
+                  </label>
+                </div>
+              </div>
+
+              <!-- Reveal / Fog (custom mode only, and not mid-request) -->
               <div class="custom-options" *ngIf="gameMode === 'custom'">
+                <p class="coming-soon">Coming Soon...</p>
                 <div class="checkbox-option" *ngIf="isInviter && !showRevealWaitingModal && !otherPlayerConfiguring">
                   <input
                     type="checkbox"
@@ -158,6 +382,12 @@
                     (change)="updateGameOptions()"
                   >
                   <label for="reveal-option">Reveal</label>
+                </div>
+
+                <!-- Fog needs no opponent confirmation, unlike Reveal. -->
+                <div class="checkbox-option" *ngIf="isInviter">
+                  <input type="checkbox" id="fog-option" [(ngModel)]="fogEnabled" (change)="updateGameOptions()">
+                  <label for="fog-option">Fog</label>
                 </div>
 
                 <div class="reveal-display" *ngIf="!isInviter && !showRevealRequestModal">
@@ -170,14 +400,51 @@
           <div class="game-mode-display" *ngIf="!isInviter">
             <h3>Game Mode</h3>
             <p>{{ gameMode === 'default' ? 'Default Mode' : 'Custom Mode' }}</p>
+            <p>Turn Timer: {{ selectedTurnTimeLimit ? formattedTurnOption(selectedTurnTimeLimit) : 'Unlimited' }}</p>
             <p *ngIf="gameMode === 'custom'" class="custom-options-display">
               Options: <span *ngIf="revealEnabled">Reveal</span><span *ngIf="!revealEnabled">None</span>
             </p>
           </div>
         </div>
 
-        <div class="rail-section players-section">
-          <h3>Players</h3>
+      </div>
+    </div>
+
+    <!-- Right column: Game and Lobby share one tabbed rail. -->
+    <div class="side-rail">
+      <section class="match-panel history-panel" [class.expanded]="historyExpanded">
+        <h3>
+          <span>{{ historyTitle }}</span>
+          <button class="expand-btn" type="button"
+                  (click)="historyExpanded = !historyExpanded"
+                  [title]="historyExpanded ? 'Collapse history' : 'Expand history'"
+          >{{ historyExpanded ? '⤡' : '⤢' }}</button>
+        </h3>
+        <div class="panel-body">
+          <div class="history-item" *ngFor="let message of historyMessages">
+            <span class="history-text">{{ message.content }}</span>
+            <span class="history-time">{{ message.timestamp | date:'shortTime' }}</span>
+          </div>
+          <div class="panel-empty" *ngIf="historyMessages.length === 0">No history yet.</div>
+        </div>
+      </section>
+      <!-- Tabs, roster and chat are one box: the tab strip picks what the
+           box holds, so three bordered slabs read as three unrelated things. -->
+      <div class="rail-box" *ngIf="!historyExpanded">
+      <div class="rail-tabs">
+        <button [class.active]="activeSideTab === 'game'" (click)="activeSideTab = 'game'">Game</button>
+        <button [class.active]="activeSideTab === 'lobby'" (click)="activeSideTab = 'lobby'">Lobby</button>
+      </div>
+
+      <!-- ---------------- GAME TAB ---------------- -->
+      <ng-container *ngIf="activeSideTab === 'game'">
+        <!-- Mode is only selectable before the game starts; once it is running
+             the mode is already locked in, so the whole block goes away. -->
+        <div class="rail-section players-section" *ngIf="!chatExpanded"
+             [class.expanded]="playersExpanded">
+          <h3 class="rail-head"><span>Players</span>
+            <button class="expand-btn" type="button" (click)="playersExpanded = !playersExpanded"
+            >{{ playersExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="player-list">
             <div class="player-item"
                  *ngFor="let player of sortedPlayers"
@@ -195,11 +462,20 @@
                     title="Disconnected - waiting for them to reconnect">⚠️</span>
               <span class="player-status" *ngIf="player.status === 'configuring'" title="Configuring setup">⚙️</span>
               <span class="ready-checkmark" *ngIf="player.isReady">✓</span>
+              <!-- Solo rooms: the placeholder seat has no user to act on, so
+                   the menu becomes a shortcut to configure its setup. -->
+              <button
+                class="action-button gear-button"
+                *ngIf="isSinglePlayer && player.username !== username"
+                (click)="openSetup()"
+                [disabled]="gameStarted"
+                title="Configure this opponent's setup"
+              >⚙</button>
               <button
                 class="action-button"
                 (click)="openUserMenu($event, { username: player.username, status: player.status || 'in-game' })"
                 [disabled]="player.username === username"
-                *ngIf="player.username !== username"
+                *ngIf="!isSinglePlayer && player.username !== username"
               >⋮</button>
             </div>
           </div>
@@ -207,12 +483,25 @@
           <!-- Pre-game: get ready / start. In a running game these are replaced
                by the match controls below. -->
           <div class="ready-section" *ngIf="!gameStarted">
+            <div class="game-actions">
             <button
+              *ngIf="!isSinglePlayer"
               class="ready-btn"
               [class.ready-state]="isReady"
               (click)="toggleReady()"
             >
               {{ isReady ? 'Unready' : 'Ready' }}
+            </button>
+            <!-- Solo: pick your side instead of readying up. The placeholder
+                 always takes the other colour. -->
+            <button
+              *ngIf="isSinglePlayer"
+              class="color-toggle-btn"
+              [class.as-black]="soloColor === 'black'"
+              (click)="toggleSoloColor()"
+              title="Click to switch sides"
+            >
+              You: {{ soloColor === 'white' ? 'White' : 'Black' }}
             </button>
             <button
               *ngIf="isInviter"
@@ -222,6 +511,7 @@
             >
               Start Game
             </button>
+            </div>
           </div>
 
           <div class="ready-section" *ngIf="gameStarted">
@@ -233,14 +523,14 @@
                 <button class="decline-btn" (click)="respondToDraw(false)">Decline</button>
               </ng-container>
             </div>
-            <div class="game-actions" *ngIf="gameState.isGameActive && gameState.myColor(username)">
-              <button class="resign-btn" (click)="resign()">Resign</button>
-              <button class="draw-btn" (click)="offerDraw()" [disabled]="!!state.drawOfferedBy">Offer Draw</button>
-            </div>
           </div>
         </div>
 
-        <div class="rail-section chat-panel">
+        <div class="rail-section chat-panel" *ngIf="!playersExpanded"
+             [class.expanded]="chatExpanded">
+          <h3 class="rail-head"><span>Chat</span>
+            <button class="expand-btn" type="button" (click)="chatExpanded = !chatExpanded"
+            >{{ chatExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="chat-content">
             <div class="game-room-messages">
               <div
@@ -267,6 +557,8 @@
                 type="text"
                 [(ngModel)]="gameRoomMessageContent"
                 placeholder="Type a message..."
+                (focus)="chatFocused = true"
+                (blur)="chatFocused = false"
                 (keyup.enter)="sendGameRoomMessage()"
               >
               <button (click)="sendGameRoomMessage()">Send</button>
@@ -277,8 +569,10 @@
 
       <!-- ---------------- LOBBY TAB ---------------- -->
       <ng-container *ngIf="activeSideTab === 'lobby'">
-        <div class="rail-section users-panel">
-          <h3>Online Users</h3>
+        <div class="rail-section users-panel" [class.expanded]="usersExpanded">
+          <h3 class="rail-head"><span [class.offline-head]="!serverOnline">{{ serverOnline ? 'Online Users' : 'Offline' }}</span>
+            <button class="expand-btn" type="button" (click)="usersExpanded = !usersExpanded"
+            >{{ usersExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="users-list">
             <div
               class="user-item"
@@ -311,8 +605,10 @@
           </div>
         </div>
 
-        <div class="rail-section lobby-chat">
-          <h3>Lobby</h3>
+        <div class="rail-section lobby-chat" [class.expanded]="lobbyChatExpanded">
+          <h3 class="rail-head"><span>Lobby</span>
+            <button class="expand-btn" type="button" (click)="lobbyChatExpanded = !lobbyChatExpanded"
+            >{{ lobbyChatExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="lobby-messages">
             <div class="message-item" *ngFor="let message of lobbyMessages"
               [ngClass]="{'system-message': message.type === 'system','my-message': message.username === username}">
@@ -329,11 +625,14 @@
             </div>
           </div>
           <div class="chat-input">
-            <input type="text" [(ngModel)]="lobbyMessageContent" placeholder="Type a message..." (keyup.enter)="sendLobbyMessage()">
+            <input type="text" [(ngModel)]="lobbyMessageContent" placeholder="Type a message..."
+                   (focus)="chatFocused = true" (blur)="chatFocused = false"
+                   (keyup.enter)="sendLobbyMessage()">
             <button (click)="sendLobbyMessage()">Send</button>
           </div>
         </div>
       </ng-container>
+      </div>
     </div>
 
     <!-- OUR OWN CONNECTION DROPPED: the opponent is told via
@@ -348,6 +647,7 @@
           Could not reconnect. The match may have been forfeited.
         </p>
         <div class="reconnect-actions">
+          <button class="solo-btn" (click)="playSinglePlayer()">Single Player</button>
           <button class="lobby-btn" (click)="returnToLobby()">Back to Lobby</button>
         </div>
       </div>
@@ -360,7 +660,6 @@
         <p>{{ endModalDetail }}</p>
         <div class="end-actions">
           <button class="lobby-btn" (click)="returnToLobby()">Back to Lobby</button>
-          <button class="stay-btn" (click)="showEndModal = false">Stay here</button>
         </div>
       </div>
     </div>

@@ -1,12 +1,32 @@
 <div class="lobby-container">
   <div class="header">
-    <h1>ChessPlusPlus Lobby</h1>
+    <h1><span>ChessPlusPlus Lobby</span></h1>
+    <!-- Outside the <h1>: a heading takes phrasing content, not a control
+         group. Focus opens it too, or the slider is mouse-only. -->
+    <div class="volume-control"
+         (mouseenter)="volumeOpen = true" (mouseleave)="volumeOpen = false"
+         (focusin)="volumeOpen = true" (focusout)="volumeOpen = false">
+        <button type="button" class="speaker-button" (click)="audio.toggleMute()"
+                [attr.aria-label]="audio.muted ? 'Unmute sounds' : 'Mute sounds'">
+          {{ audio.muted ? '🔇' : '🔊' }}
+        </button>
+        <input *ngIf="volumeOpen" class="volume-slider" type="range" min="0" max="100"
+               [ngModel]="audio.volume * 100"
+               (ngModelChange)="audio.setVolume($event / 100)"
+               (change)="audio.previewVolume()"
+               aria-label="Volume">
+        <span *ngIf="volumeOpen" class="volume-value">{{ audio.volume * 100 | number:'1.0-0' }}%</span>
+    </div>
     <div class="user-info">
       <div class="username-display">
         <span>Playing as: <strong>{{ username }}</strong></span>
         <button class="btn-small" (click)="toggleChangeUsername()">Change</button>
       </div>
       <div class="change-username" *ngIf="showChangeUsername">
+        <p class="name-taken" *ngIf="nameWasTaken">
+          "{{ username }}" is yours for now - the name you asked for was taken. Pick another, or
+          keep this one.
+        </p>
         <input 
           type="text" 
           [(ngModel)]="newUsername" 
@@ -18,16 +38,17 @@
           {{ newUsername.length }}/24
         </div>
         <button (click)="changeUsername()">Save</button>
-        <button (click)="showChangeUsername = false">Cancel</button>
+        <button (click)="keepAssignedName()">{{ nameWasTaken ? 'Keep' : 'Cancel' }}</button>
       </div>
       <button class="setup-btn" (click)="openSetup()">Configure Setup</button>
+      <button class="single-player-btn" (click)="startSinglePlayer()">Single Player</button>
       <app-connection-status></app-connection-status>
     </div>
   </div>
   
   <div class="lobby-content">
     <div class="users-panel">
-      <h2>Online Users</h2>
+      <h2 [class.offline-head]="!serverOnline">{{ serverOnline ? 'Online Users' : 'Offline' }}</h2>
       <div class="users-list">
         <div 
           class="user-item" 

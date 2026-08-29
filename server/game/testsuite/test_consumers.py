@@ -153,16 +153,29 @@ class GameStateOptimisticConcurrencyTests(TestCase):
         self.assertEqual(refreshed.winner, 'bob')
 
 
+def _cancel_pending_turn_timers():
+    """Stop every armed turn timer.
+
+    The timeout path re-arms itself, so a test that lets one fire leaves a
+    task writing GameState rows into a database the test runner is about to
+    truncate - and racing its own assertions.
+    """
+    from game import consumers as _consumers
+    for task in list(_consumers._pending_turn_timers.values()):
+        task.cancel()
+    _consumers._pending_turn_timers.clear()
+
+
 class TurnTimerLiveIntegrationTests(TransactionTestCase):
     """
     Drives a real game through the full async WebSocket stack with a short
     turnTimeLimit, proving the turn-timer refactor (turn-scoped identity +
     optimistic-concurrency writes) doesn't regress the ordinary, non-racing
-    timeout path: the real asyncio.sleep-based timer must still end the
-    game and broadcast game_over to both players with a consistent result.
+    timeout path: the real asyncio.sleep-based timer must pass the turn and
+    broadcast turn_passed to both players.
     """
 
-    async def test_real_timeout_ends_game_and_broadcasts_to_both_players(self):
+    async def test_real_timeout_passes_turn_and_broadcasts_to_both_players(self):
         config = copy.deepcopy(DEFAULT_CONFIG)
         config['rules']['turnTimeLimit'] = 1  # 1 second, to keep the test fast
 
@@ -200,22 +213,21 @@ class TurnTimerLiveIntegrationTests(TransactionTestCase):
             self.assertEqual(started_host['currentTurn'], started_opp['currentTurn'])
 
             # Neither player moves - the real 1-second asyncio timer should fire.
-            over_host = await _receive_until(host_comm, 'game_over', timeout=8)
-            over_opp = await _receive_until(opp_comm, 'game_over', timeout=8)
+            passed_host = await _receive_until(host_comm, 'turn_passed', timeout=8)
+            passed_opp = await _receive_until(opp_comm, 'turn_passed', timeout=8)
+            self.assertTrue(passed_host['timedOut'])
+            self.assertTrue(passed_opp['timedOut'])
+            self.assertEqual(passed_host['turnNumber'], 2)
+            self.assertEqual(passed_host['currentTurn'], passed_opp['currentTurn'])
 
-            self.assertEqual(over_host['endReason'], 'timeout')
-            self.assertEqual(over_opp['endReason'], 'timeout')
-            self.assertEqual(over_host['winner'], over_opp['winner'])
-            # The winner must be whoever was NOT on the clock when it expired.
-            self.assertEqual(over_host['winner'], started_host['playerBlack']
-                              if started_host['currentTurn'] == started_host['playerWhite']
-                              else started_host['playerWhite'])
-
-            # DB reflects a single, clean, non-clobbered timeout result.
             state = await GameState.objects.aget(game_id=game.game_id)
-            self.assertEqual(state.end_reason, 'timeout')
-            self.assertEqual(state.winner, over_host['winner'])
+            self.assertEqual(state.end_reason, '')
+            self.assertEqual(state.turn_number, 2)
         finally:
+            # The timeout re-arms itself, so left alone it keeps writing
+            # GameState rows while the test database is torn down under it -
+            # and can pass the turn again before the assertions above run.
+            _cancel_pending_turn_timers()
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
@@ -567,7 +579,7 @@ class GameLifecycleGuardTests(TransactionTestCase):
         try:
             # White makes a move so the board diverges from the initial setup.
             white_comm = host_comm if started['currentTurn'] == 'alice' else opp_comm
-            await white_comm.send_json_to({'type': 'make_move', 'from': '-5,10', 'to': '-5,9'})
+            await white_comm.send_json_to({'type': 'make_move', 'from': '-5,9', 'to': '-5,8'})
             await _receive_until(white_comm, 'move_made')
 
             # Host replays start_game (double-click / crafted message).
@@ -701,7 +713,7 @@ class GameLifecycleGuardTests(TransactionTestCase):
             await black_comm.send_json_to({'type': 'offer_draw'})
             await _receive_until(white_comm, 'draw_offered')
 
-            await white_comm.send_json_to({'type': 'make_move', 'from': '-5,10', 'to': '-5,9'})
+            await white_comm.send_json_to({'type': 'make_move', 'from': '-5,9', 'to': '-5,8'})
             await _receive_until(white_comm, 'move_made')
 
             # The stale offer must be gone server-side too (a reconnect resync
@@ -726,6 +738,31 @@ class GameLifecycleGuardTests(TransactionTestCase):
             await white_comm.send_json_to({'type': 'make_move', 'from': 'garbage', 'to': '0,0'})
             err = await _receive_until(white_comm, 'error', timeout=5)
             self.assertEqual(err['code'], 'INVALID_MOVE')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_passing_hands_the_turn_over_without_touching_the_board(self):
+        game, host_comm, opp_comm, started = await self._start_game()
+        try:
+            white_comm = host_comm if started['currentTurn'] == 'alice' else opp_comm
+            black_comm = opp_comm if white_comm is host_comm else host_comm
+            before = await GameState.objects.aget(game_id=game.game_id)
+
+            # Out of turn: rejected, and the turn stays put.
+            await black_comm.send_json_to({'type': 'pass_turn'})
+            err = await _receive_until(black_comm, 'error', timeout=5)
+            self.assertEqual(err['code'], 'NOT_YOUR_TURN')
+
+            await white_comm.send_json_to({'type': 'pass_turn'})
+            passed = await _receive_until(black_comm, 'turn_passed', timeout=5)
+            self.assertEqual(passed['color'], 'white')
+            self.assertEqual(passed['turnNumber'], before.turn_number + 1)
+
+            after = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(after.board_state, before.board_state)
+            self.assertEqual(list(after.move_history), list(before.move_history))
+            self.assertNotEqual(after.current_turn, before.current_turn)
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()

@@ -29,13 +29,15 @@ def get_legal_moves(
     coord: Coord,
     config: Dict[str, Any],
     color: str,
+    move_bonus: int = 0,
 ) -> List[Coord]:
     """
     Return all legal destination coordinates for the piece at *coord*.
 
     The piece must belong to *color*. An empty or wrong-colour source
     returns an empty list. Movement comes purely from the unit's ``move``
-    stat - there is no per-unit engine logic.
+    stat - there is no per-unit engine logic - plus *move_bonus*, the extra
+    steps a one-turn ability has lent this unit.
     """
     piece = board.get(*coord)
     if not piece or piece['color'] != color:
@@ -45,7 +47,7 @@ def get_legal_moves(
     if not unit_def:
         return []
 
-    move_range = unit_def.get('move', 0)
+    move_range = unit_def.get('move', 0) + max(0, move_bonus)
     if move_range <= 0:
         return []
 

@@ -18,6 +18,9 @@ from game.engine.move_validator import (
     is_legal_move,
 )
 from game.engine.game_logic import (
+    defeated_sides,
+    find_defeated,
+    ranged_damage,
     resolve_combat,
     get_legal_moves_filtered,
     has_any_legal_move,
@@ -198,6 +201,29 @@ class ConfigLoaderTestCase(TestCase):
         self.assertIn('king', config['units'])
         self.assertIn('pawn', config['units'])
 
+    def test_every_default_unit_declares_an_attack_range(self):
+        config = load_config(None)
+        for unit_id, unit in config['units'].items():
+            self.assertGreaterEqual(unit['attackRange'], 1, unit_id)
+
+    def test_out_of_range_attack_range_is_rejected(self):
+        import copy
+        from game.engine.config_loader import DEFAULT_CONFIG
+        bad = copy.deepcopy(DEFAULT_CONFIG)
+        bad['units']['pawn']['attackRange'] = 0
+        with self.assertRaises(ValueError):
+            load_config(bad)
+
+    def test_ranged_damage_falls_off_past_the_first_ring(self):
+        config = load_config(None)
+        # falloff 0.25: full damage adjacent, then -25% of the stat per ring,
+        # floored, and a hit that lands always takes off at least 1.
+        self.assertEqual(ranged_damage(8, 1, config), 8)
+        self.assertEqual(ranged_damage(8, 2, config), 6)
+        self.assertEqual(ranged_damage(8, 3, config), 4)
+        self.assertEqual(ranged_damage(1, 5, config), 1)
+        self.assertEqual(ranged_damage(0, 1, config), 0)
+
     def test_default_config_is_deep_copy(self):
         c1 = load_config(None)
         c2 = load_config(None)
@@ -207,15 +233,15 @@ class ConfigLoaderTestCase(TestCase):
     def test_build_initial_board_piece_count(self):
         config = load_config(None)
         board = build_initial_board(config)
-        self.assertEqual(len(board.pieces_by_color('white')), 13)
-        self.assertEqual(len(board.pieces_by_color('black')), 13)
+        self.assertEqual(len(board.pieces_by_color('white')), 16)
+        self.assertEqual(len(board.pieces_by_color('black')), 16)
 
     def test_build_initial_board_has_kings(self):
         config = load_config(None)
         board = build_initial_board(config)
         # Check directly that king units exist on the board
-        white_king_cell = board.get(-5, 11)
-        black_king_cell = board.get(5, -11)
+        white_king_cell = board.get(-3, 11)
+        black_king_cell = board.get(3, -11)
         assert white_king_cell is not None
         assert black_king_cell is not None
         self.assertEqual(white_king_cell['unit_id'], 'king')
@@ -226,7 +252,7 @@ class ConfigLoaderTestCase(TestCase):
     def test_build_initial_board_units_have_hp(self):
         config = load_config(None)
         board = build_initial_board(config)
-        white_king = board.get(-5, 11)
+        white_king = board.get(-3, 11)
         assert white_king is not None
         self.assertIn('hp', white_king)
         self.assertIn('max_hp', white_king)
@@ -243,7 +269,8 @@ class ConfigLoaderTestCase(TestCase):
             'board': {'radius': 3},
             'units': {
                 'king': {'id': 'king', 'name': 'K', 'symbol': 'K',
-                         'movement': [{'direction': 'E', 'range': 1}], 'value': 0}
+                         'movement': [{'direction': 'E', 'range': 1}], 'value': 0,
+                         'defense': 0, 'commander': True}
             },
             'abilities': {},
             'setup': {
@@ -256,6 +283,82 @@ class ConfigLoaderTestCase(TestCase):
         board = build_initial_board(config)
         self.assertEqual(board.radius, 3)
         self.assertEqual(len(board.to_dict()), 2)
+
+    def test_regicide_config_without_a_commander_is_rejected(self):
+        """find_defeated() declares a commander-less side beaten on the first
+        move, so a config that cannot satisfy its own objective must not
+        load in the first place."""
+        custom = {
+            'version': '1.0',
+            'board': {'radius': 3},
+            'units': {'pawn': {'id': 'pawn', 'name': 'P', 'symbol': 'P',
+                               'value': 1, 'hp': 5, 'attack': 2, 'defense': 1}},
+            'abilities': {},
+            'setup': {'white': {'0,3': 'pawn'}, 'black': {'0,-3': 'pawn'}},
+            'rules': {'objective': 'regicide'},
+        }
+        with self.assertRaises(ValueError):
+            load_config(custom)
+
+        # The same board is fine when the objective does not need one.
+        custom['rules'] = {'objective': 'elimination'}
+        self.assertEqual(len(build_initial_board(load_config(custom)).to_dict()), 2)
+
+    def test_a_config_written_before_these_fields_still_loads(self):
+        """Rooms hold configs saved by older builds. Requiring `defense` and
+        defaulting `objective` to regicide made every one of them permanently
+        unloadable - the room could never start again."""
+        old = {
+            'version': '1.0',
+            'board': {'radius': 3},
+            'units': {'king': {'id': 'king', 'name': 'K', 'symbol': 'K',
+                               'value': 0, 'hp': 20, 'attack': 5, 'commander': True}},
+            'abilities': {},
+            'setup': {'white': {'0,3': 'king'}, 'black': {'0,-3': 'king'}},
+            'rules': {'maxTurns': 0, 'turnTimeLimit': 0},
+        }
+        config = load_config(old)
+        self.assertEqual(config['units']['king']['defense'], 0)
+        # It has commanders on both sides, so regicide is what it was played as.
+        self.assertEqual(config['rules']['objective'], 'regicide')
+
+        # One without a commander anywhere never meant regicide.
+        old['units'] = {'pawn': {'id': 'pawn', 'name': 'P', 'symbol': 'P',
+                                 'value': 1, 'hp': 5, 'attack': 2}}
+        old['setup'] = {'white': {'0,3': 'pawn'}, 'black': {'0,-3': 'pawn'}}
+        self.assertEqual(load_config(old)['rules']['objective'], 'elimination')
+
+    def test_malformed_rules_is_a_config_error_not_a_crash(self):
+        """`config.get('rules', {})` hands back None for an explicit null, and
+        every read off it raised AttributeError straight through handlers that
+        only catch ValueError - an INTERNAL_ERROR traceback for a bad paste."""
+        import copy
+        from game.engine.config_loader import DEFAULT_CONFIG
+        bad = copy.deepcopy(DEFAULT_CONFIG)
+        bad['rules'] = None
+        with self.assertRaises(ValueError):
+            load_config(bad)
+
+    def test_units_carry_an_identity_that_survives_a_move(self):
+        """Per-unit state hangs off `uid`; if a move dropped it, veterancy and
+        boosts would silently jump to whoever stands on the hex next."""
+        board = build_initial_board(load_config())
+        q = r = 0
+        dest = None
+        for (q, r), cell in board.pieces_by_color('white').items():
+            dest = next((c for c in board.valid_neighbours(q, r) if board.get(*c) is None), None)
+            if dest:
+                break
+        self.assertIsNotNone(dest, "no white unit had anywhere to step")
+        uid = board.get(q, r)['uid']
+        self.assertTrue(uid)
+
+        board.move(q, r, *dest)
+        self.assertEqual(board.get(*dest)['uid'], uid)
+
+        # ... and across the wire, both ways.
+        again = HexBoard.from_dict(board.radius, board.to_dict())
+        self.assertEqual(again.get(*dest)['uid'], uid)
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +393,19 @@ class MoveValidatorTestCase(TestCase):
         moves = set(get_legal_moves(board, (0, 0), self._cfg(move=6), 'white'))
         expected = {c for c in board.all_coords() if c != (0, 0)}
         self.assertEqual(moves, expected)
+
+    def test_move_bonus_lends_extra_steps(self):
+        """An ability's +MOV has to reach the validator, or the move it let the
+        player stage on the client comes straight back as illegal."""
+        board = self._make_board(radius=5)
+        board.set(0, 0, 'unit', 'white')
+        cfg = self._cfg(move=2)
+
+        self.assertNotIn((4, 0), get_legal_moves(board, (0, 0), cfg, 'white'))
+        boosted = get_legal_moves(board, (0, 0), cfg, 'white', move_bonus=2)
+        self.assertIn((4, 0), boosted)
+        for m in boosted:
+            self.assertLessEqual(hex_distance((0, 0), m), 4)
 
     def test_move_range_stops_short(self):
         board = self._make_board(radius=5)
@@ -390,47 +506,131 @@ class GameLogicTestCase(TestCase):
         self.assertIsNone(board.get(0, 0))  # vacated
         self.assertIsNotNone(board.get(1, 0))  # moved here
 
-    def test_resolve_combat_attack_eliminates(self):
-        """Attacker kills defender (damage >= HP) and moves in."""
+    def test_losing_the_commander_loses_the_game(self):
+        """Default objective is regicide: no king, no game."""
         board = HexBoard(5)
-        board.set(0, 0, 'queen', 'white', hp=8, max_hp=8)  # attack=6
-        board.set(1, 0, 'pawn', 'black', hp=4, max_hp=4)   # 4 HP < 6 atk
+        board.set(0, 0, 'king', 'white', hp=45, max_hp=45)
+        board.set(1, 0, 'pawn', 'white', hp=20, max_hp=20)
+        board.set(3, 0, 'king', 'black', hp=45, max_hp=45)
         config = self._cfg()
+        self.assertIsNone(find_defeated(board, config))
+
+        board.remove(0, 0)
+        self.assertEqual(find_defeated(board, config), 'white')
+
+    def test_elimination_objective_ignores_the_commander(self):
+        board = HexBoard(5)
+        board.set(1, 0, 'pawn', 'white', hp=20, max_hp=20)
+        board.set(3, 0, 'king', 'black', hp=45, max_hp=45)
+        config = self._cfg()
+        config['rules']['objective'] = 'elimination'
+
+        # White has no king but still has a unit, so it is not out yet.
+        self.assertIsNone(find_defeated(board, config))
+        board.remove(1, 0)
+        self.assertEqual(find_defeated(board, config), 'white')
+
+    def test_counter_attack_can_defeat_the_attacker(self):
+        """The side that lost is the side whose king died, not the side that moved."""
+        board = HexBoard(5)
+        board.set(0, 0, 'king', 'white', hp=2, max_hp=45)
+        board.set(1, 0, 'rook', 'black', hp=40, max_hp=40)
+        board.set(3, 0, 'king', 'black', hp=45, max_hp=45)
+        config = self._cfg()
+
         result = resolve_combat(board, (0, 0), (1, 0), config)
+
+        self.assertTrue(result['attacker_eliminated'])
+        self.assertEqual(find_defeated(board, config), 'white')
+
+    def test_both_sides_can_fall_in_one_exchange(self):
+        """A mutual kill is a draw, not a win for whichever side sorts first."""
+        board = HexBoard(5)
+        board.set(0, 0, 'pawn', 'white', hp=20, max_hp=20)
+        board.set(1, 0, 'pawn', 'black', hp=20, max_hp=20)
+        config = self._cfg()
+        config['rules']['objective'] = 'regicide'
+
+        # Neither side has a commander, so both are beaten at once.
+        self.assertEqual(defeated_sides(board, config), ['white', 'black'])
+        # find_defeated still answers with one, for callers that only ask
+        # whether the game is over.
+        self.assertEqual(find_defeated(board, config), 'white')
+
+    def test_resolve_combat_attack_eliminates(self):
+        """A kill leaves the attacker where it stood - attacking is not a move."""
+        board = HexBoard(5)
+        board.set(0, 0, 'queen', 'white', hp=30, max_hp=30)
+        board.set(1, 0, 'pawn', 'black', hp=5, max_hp=20)
+        config = self._cfg()
+        expected = config['units']['queen']['attack'] - config['units']['pawn']['defense']
+
+        result = resolve_combat(board, (0, 0), (1, 0), config)
+
         self.assertTrue(result['attacked'])
         self.assertTrue(result['defender_eliminated'])
-        self.assertTrue(result['moved'])
-        self.assertEqual(result['damage_dealt'], 6)
-        self.assertIsNone(board.get(0, 0))  # vacated
-        piece = board.get(1, 0)
-        assert piece is not None
-        self.assertEqual(piece['unit_id'], 'queen')  # attacker moved in
+        self.assertFalse(result['moved'])
+        self.assertEqual(result['damage_dealt'], expected)
+        self.assertEqual(result['counter_damage'], 0)  # the dead do not swing back
+        self.assertIsNone(board.get(1, 0))
+        attacker = board.get(0, 0)
+        assert attacker is not None
+        self.assertEqual(attacker['unit_id'], 'queen')
 
-    def test_resolve_combat_attack_defender_survives(self):
-        """Defender survives; attacker stays put."""
+    def test_resolve_combat_defender_survives_and_counters(self):
+        """Damage is attack minus defence, and the survivor hits back the same way."""
         board = HexBoard(5)
-        board.set(0, 0, 'pawn', 'white', hp=4, max_hp=4)  # attack=2
-        board.set(1, 0, 'rook', 'black', hp=12, max_hp=12)  # 12 HP > 2 atk
+        board.set(0, 0, 'pawn', 'white', hp=20, max_hp=20)
+        board.set(1, 0, 'rook', 'black', hp=40, max_hp=40)
         config = self._cfg()
+        units = config['units']
+        dealt = units['pawn']['attack'] - units['rook']['defense']
+        countered = units['rook']['attack'] - units['pawn']['defense']
+
         result = resolve_combat(board, (0, 0), (1, 0), config)
-        self.assertTrue(result['attacked'])
+
         self.assertFalse(result['defender_eliminated'])
-        self.assertFalse(result['moved'])  # attacker stays
-        self.assertEqual(result['damage_dealt'], 2)
-        self.assertEqual(result['defender_hp'], 10)  # 12 - 2
-        # Both pieces still on the board
-        self.assertIsNotNone(board.get(0, 0))
+        self.assertFalse(result['moved'])
+        self.assertEqual(result['damage_dealt'], dealt)
+        self.assertEqual(result['defender_hp'], 40 - dealt)
+        self.assertEqual(result['counter_damage'], countered)
+        self.assertEqual(result['attacker_hp'], 20 - countered)
+        self.assertFalse(result['attacker_eliminated'])
+
+    def test_counter_attack_can_kill_the_attacker(self):
+        board = HexBoard(5)
+        board.set(0, 0, 'pawn', 'white', hp=2, max_hp=20)
+        board.set(1, 0, 'rook', 'black', hp=40, max_hp=40)
+
+        result = resolve_combat(board, (0, 0), (1, 0), self._cfg())
+
+        self.assertTrue(result['attacker_eliminated'])
+        self.assertIsNone(board.get(0, 0))
         self.assertIsNotNone(board.get(1, 0))
 
-    def test_resolve_combat_exact_lethal(self):
-        """Damage exactly equals HP -> elimination."""
+    def test_no_counter_from_outside_the_defenders_reach(self):
+        """A bishop reaches three rings; a pawn cannot answer from two."""
         board = HexBoard(5)
-        board.set(0, 0, 'pawn', 'white', hp=4, max_hp=4)  # attack=2
-        board.set(1, 0, 'pawn', 'black', hp=2, max_hp=4)  # 2 HP == 2 atk
+        board.set(0, 0, 'bishop', 'white', hp=22, max_hp=22)
+        board.set(2, 0, 'pawn', 'black', hp=20, max_hp=20)
         config = self._cfg()
-        result = resolve_combat(board, (0, 0), (1, 0), config)
-        self.assertTrue(result['defender_eliminated'])
-        self.assertTrue(result['moved'])
+
+        result = resolve_combat(board, (0, 0), (2, 0), config)
+
+        self.assertTrue(result['attacked'])
+        self.assertEqual(result['counter_damage'], 0)
+        self.assertEqual(result['attacker_hp'], 22)
+
+    def test_armour_can_absorb_a_hit_entirely(self):
+        """Defence above the attack stat means no damage - never healing."""
+        board = HexBoard(5)
+        board.set(0, 0, 'pawn', 'white', hp=20, max_hp=20)
+        board.set(1, 0, 'king', 'black', hp=45, max_hp=45)  # defence 15 > pawn attack 14
+
+        result = resolve_combat(board, (0, 0), (1, 0), self._cfg())
+
+        self.assertEqual(result['damage_dealt'], 0)
+        self.assertEqual(result['defender_hp'], 45)
 
     # -- is_attacked --------------------------------------------------------
 

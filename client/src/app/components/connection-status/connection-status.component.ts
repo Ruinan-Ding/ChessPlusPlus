@@ -10,17 +10,25 @@ import { takeUntil } from 'rxjs/operators';
   imports: [CommonModule],
   template: `
     <div class="connection-status">
-      <span [ngClass]="{'connected': isConnected, 'disconnected': !isConnected}">
-        {{ isConnected ? 'Connected to Game Server' : 'Disconnected from Game Server' }}
+      <span [ngClass]="{'connected': isConnected, 'offline': !isConnected && isOffline, 'disconnected': !isConnected && !isOffline}">
+        {{ isConnected ? 'Connected to Game Server' : (isOffline ? 'Offline' : 'Disconnected from Game Server') }}
       </span>
+      <!-- Any state without a server needs a visible way back to one. -->
+      <button *ngIf="!isConnected" class="reconnect-btn" (click)="reconnect()"
+              title="Try the game server again">Reconnect</button>
     </div>
   `,
   styles: [`
     .connection-status {
-      padding: 10px;
-      margin: 10px 0;
+      /* Sits in headers that have to stay one line, so it takes the font size
+         it is given and never wraps - "Disconnected from Game Server" is long
+         enough to break the lobby header on its own. */
+      padding: 2px 0;
       border-radius: 4px;
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
     }
     
     .connected {
@@ -32,11 +40,35 @@ import { takeUntil } from 'rxjs/operators';
       color: red;
       font-weight: bold;
     }
+
+    .offline {
+      color: #b7791f;
+      font-weight: bold;
+    }
+
+    .reconnect-btn {
+      margin-left: 6px;
+      padding: 2px 8px;
+      border: 1px solid #2c3e50;
+      border-radius: 4px;
+      background: #fff;
+      color: #2c3e50;
+      font-size: 0.85em;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .reconnect-btn:hover {
+      background: #eef2f6;
+    }
+
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class ConnectionStatusComponent implements OnInit, OnDestroy {
   isConnected = false;
+  /** Deliberately serverless - a different thing from a socket that dropped. */
+  isOffline = false;
   private subscription: Subscription | null = null;
   private destroy$ = new Subject<void>();
 
@@ -46,7 +78,12 @@ export class ConnectionStatusComponent implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit(): void {
-    this.isConnected = this.wsService.isConnected();
+    // Only the socket may claim a server; a solo game is not a connection and
+    // not a disconnection either.
+    this.wsService.offline$.pipe(takeUntil(this.destroy$)).subscribe(off => {
+      this.isOffline = off;
+      this.cdr.markForCheck();
+    });
     this.subscription = this.wsService.connectionStatus$.pipe(takeUntil(this.destroy$)).subscribe(
       (status: boolean) => {
         console.log('Connection status updated:', status);
@@ -54,6 +91,11 @@ export class ConnectionStatusComponent implements OnInit, OnDestroy {
         this.cdr.markForCheck();
       }
     );
+  }
+
+  /** Leave offline mode and try the server again. */
+  reconnect(): void {
+    this.wsService.reconnectToServer();
   }
 
   ngOnDestroy(): void {
