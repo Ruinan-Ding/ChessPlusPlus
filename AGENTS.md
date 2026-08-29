@@ -286,6 +286,11 @@ UUID, no access token, no socket. It runs entirely in the browser.
   preview and the local engine; the damage sums and the defeat check are duplicated from
   `game_logic.py` and have specs pinning them to the same numbers. A rule that lands server-side
   has to land here too, or offline play quietly diverges.
+- **The mirror covers the protocol, not only the rules.** `move_made` and `turn_passed` name
+  **nobody's turn** (`currentTurn: ''`) on the action that ends a game, as consumers.py does -
+  naming the next player starts a clock and sounds a turn for a finished match in the moment
+  before `game_over` lands. `game_started` and `game_state_update` carry the same fields the
+  server sends, field for field.
 - **There is no AI.** You drive both sides; the placeholder seat (`Opponent`) has no agency.
 
 **The server has no solo path at all.** `create_single_player_game`, `singlePlayer` in
@@ -432,7 +437,11 @@ passive, for whichever unit is selected.
   `strikeDamage(..., atkBonus, defBonus)` applies them **after** ring falloff, which is where
   the hex and the unit panel show them. The server ignores all of it: abilities do not exist
   server-side, so honouring the client's word for a stat is a free upgrade for anyone willing
-  to edit a message. Abilities are therefore a solo feature until they live in the engine.
+  to edit a message. Abilities are therefore a solo feature until they live in the engine, and
+  the client says so: **`buffsBind` gates every boost on the local engine being the authority**
+  (`boardBuffs` feeds the board, `bonusFor()` feeds the sums). In a server game the numbers
+  still show on the unit panel and change nothing - offering the extra reach there stages a
+  walk the server rejects as illegal, and the extra damage forecasts a trade it contradicts.
 - **Only a rejected move clears the staged turn** (`MOVE_ERROR_CODES`). A chat or invite error
   must not silently bin a turn the player has been building.
 - ponytail ceiling: buffs are client-side and hex-keyed. A boost follows a *staged* move, not a

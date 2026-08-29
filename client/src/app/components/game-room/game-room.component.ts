@@ -1750,8 +1750,28 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     };
   }
 
+  /**
+   * Whether a boost changes the game or is only drawn on the panel.
+   *
+   * Abilities live on the client, so the only engine that honours them is the
+   * one in this browser. A server game is decided by the server, which ignores
+   * every bonus a message carries: offering the extra reach there stages a
+   * walk it rejects as illegal, and the extra damage promises a trade it then
+   * contradicts. So the numbers still show on the unit, and nothing else.
+   * ponytail: one predicate, to lift the day abilities live in the engine.
+   */
+  get buffsBind(): boolean {
+    return this.isSinglePlayer;
+  }
+
+  /** The boosts the board may act on - none of them in a server game. */
+  get boardBuffs(): Record<string, UnitBuff> {
+    return this.buffsBind ? this.buffs : {};
+  }
+
   /** A one-turn boost on whatever unit stands on `key`, staged board first. */
   private bonusFor(key: string, stat: 'mov' | 'atk' | 'def'): number {
+    if (!this.buffsBind) return 0;
     const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
     const uid = board?.[key]?.uid;
     return (uid ? this.buffs[uid]?.[stat] : undefined) ?? 0;

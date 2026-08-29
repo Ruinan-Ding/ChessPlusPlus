@@ -310,11 +310,15 @@ export class LocalGameService {
     g.currentTurn = this.other(g.currentTurn);
     g.turnStartedAt = new Date().toISOString();
     this.persist();
+    // consumers.py sends `currentTurn: ''` on the move that ends a game -
+    // naming the next player starts a clock and sounds a turn for a match
+    // that is already over, in the moment before game_over lands.
+    const ending = defeated.length > 0 || outOfTurns;
     this.emit({
       type: 'move_made',
       move: record,
       boardState: g.boardState,
-      currentTurn: g.currentTurn,
+      currentTurn: ending ? '' : g.currentTurn,
       turnNumber: g.turnNumber,
       turnStartedAt: g.turnStartedAt,
     });
@@ -373,7 +377,9 @@ export class LocalGameService {
     this.persist();
     this.emit({
       type: 'turn_passed', passedBy, color,
-      currentTurn: g.currentTurn, turnNumber: g.turnNumber, turnStartedAt: g.turnStartedAt,
+      // As above: a pass that runs the turn limit out hands over to nobody.
+      currentTurn: outOfTurns ? '' : g.currentTurn,
+      turnNumber: g.turnNumber, turnStartedAt: g.turnStartedAt,
     });
     if (outOfTurns) this.over('', 'draw_max_turns');
   }

@@ -184,7 +184,9 @@ export class ConfigService {
     }
 
     // Board
-    if (!config.board || typeof config.board.radius !== 'number') {
+    // An integer, as the server insists: a radius of 11.5 passed here and was
+    // rejected by load_config with an error the setup screen never showed.
+    if (!config.board || !Number.isInteger(config.board.radius)) {
       errors.push('Missing or invalid "board.radius"');
     } else if (config.board.radius < 1 || config.board.radius > 50) {
       errors.push('board.radius must be between 1 and 50');
@@ -232,8 +234,10 @@ export class ConfigService {
     }
 
     // Rules
-    if (!config.rules) {
-      errors.push('Missing "rules"');
+    // normaliseConfig supplies an absent one, so anything left that is not a
+    // plain object is malformed - _validate_config says the same.
+    if (!config.rules || typeof config.rules !== 'object' || Array.isArray(config.rules)) {
+      errors.push('"rules" must be an object');
     } else {
       const falloff = config.rules.rangeFalloff ?? 0;
       if (typeof falloff !== 'number' || falloff < 0 || falloff > 1) {

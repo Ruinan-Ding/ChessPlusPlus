@@ -154,6 +154,51 @@ describe('LocalGameService', () => {
     expect(answered.counter_damage).toBe(plain.counter_damage + 6);
   });
 
+  it('hands over to nobody on the move that ends the game', async () => {
+    // consumers.py sends currentTurn '' with the last move_made; naming the
+    // next player starts a clock and sounds a turn for a finished match.
+    const config = (service as any).game.config;
+    localStorage.setItem('cpp.localGame.v1', JSON.stringify({
+      username: 'Solo', hostColor: 'white', started: true, config,
+      boardState: {
+        '0,0': { unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'w0,0' },
+        '1,0': { unit_id: 'king', color: 'black', hp: 5, max_hp: 45, uid: 'b1,0' },
+        '-5,0': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'w-5,0' },
+      },
+      currentTurn: 'Solo', turnNumber: 1, moveHistory: [], winner: '', endReason: '',
+      turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
+    }));
+    const engine = new LocalGameService((service as any).configService);
+    const seen: any[] = [];
+    engine.messages$.subscribe(m => seen.push(m));
+    engine.send({ type: 'make_move', from: '0,0', to: '0,0', attack: '1,0' });
+    await flush();
+
+    const move = seen.find(m => m.type === 'move_made');
+    expect(move.move.defender_eliminated).toBeTrue();
+    expect(move.currentTurn).toBe('');
+    expect(seen.find(m => m.type === 'game_over').endReason).toBe('regicide');
+  });
+
+  it('hands over to nobody when a pass runs the turn limit out', async () => {
+    const config = JSON.parse(JSON.stringify((service as any).game.config));
+    config.rules.maxTurns = 1;
+    localStorage.setItem('cpp.localGame.v1', JSON.stringify({
+      username: 'Solo', hostColor: 'white', started: true, config,
+      boardState: {}, currentTurn: 'Solo', turnNumber: 1, moveHistory: [],
+      winner: '', endReason: '',
+      turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
+    }));
+    const engine = new LocalGameService((service as any).configService);
+    const seen: any[] = [];
+    engine.messages$.subscribe(m => seen.push(m));
+    engine.send({ type: 'pass_turn' });
+    await flush();
+
+    expect(seen.find(m => m.type === 'turn_passed').currentTurn).toBe('');
+    expect(seen.find(m => m.type === 'game_over').endReason).toBe('draw_max_turns');
+  });
+
   it('ends on resign, with the other seat winning', async () => {
     service.send({ type: 'resign' });
     await flush();
