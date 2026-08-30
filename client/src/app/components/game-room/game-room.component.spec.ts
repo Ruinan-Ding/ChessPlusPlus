@@ -79,6 +79,33 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canUseAbilities('mine')).toBeTrue();
   });
 
+  it('stays locked across the handover that lands mid-replay', async () => {
+    const c = room();
+    c.gameState.snapshot.turnTimeLimit = 0;
+    c.gameState.applyTurnPassed = () => {};
+    // The real socket answers in a microtask (local-game.service.ts emit), so
+    // in a solo game the turn changes hands *between* the commit and the
+    // first beat of the replay - the board's run only starts on a timer. That
+    // gap is the window the lock has to survive, and a stubbed-silent socket
+    // never opens it.
+    c.wsService.sendMessage = (msg: any) => {
+      if (msg.type !== 'pass_turn') return;
+      queueMicrotask(() => c.handleWebSocketMessage({ type: 'turn_passed', color: 'white' }));
+    };
+    c.pickAbility('mine', TARGETED);
+
+    c.endTurn();
+    expect(c.recapRunning).toBeTrue();
+
+    await Promise.resolve();
+    // Whoever is nominally up next, the turn on screen is still playing.
+    expect(c.recapRunning).toBeTrue();
+    expect(c.canEndTurn).toBeFalse();
+
+    c.onPlaybackDone();
+    expect(c.canEndTurn).toBeTrue();
+  });
+
   it('does not lock a turn that has nothing to play back', () => {
     const c = room();
     // Nothing staged, nothing picked: there is no replay, so nothing would

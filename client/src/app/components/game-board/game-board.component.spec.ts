@@ -346,4 +346,23 @@ describe('GameBoardComponent reach preview', () => {
     expect(board.statText(12)).toBe('12');
     expect(board.statText(null)).toBe('');
   });
+
+  it('tints the three rows nearest each edge as home ground', () => {
+    // Radius 4, so the setup rows are |r| >= 2 - three of them a side, the
+    // same count the shipped radius-11 board gives r = 9, 10, 11.
+    expect(cell('0,2').home).toBe('mine');
+    expect(cell('0,4').home).toBe('mine');
+    expect(cell('0,-2').home).toBe('theirs');
+    // The rows between the two are nobody's.
+    expect(cell('0,1').home).toBe('');
+    expect(cell('0,0').home).toBe('');
+  });
+
+  it('swaps the two when the seat is the other colour', () => {
+    board.myColor = 'black';
+    board.ngOnChanges({ myColor: new SimpleChange('', 'black', false) });
+    // Black's own rows are the -r edge, so they become the near ones.
+    expect(cell('0,-2').home).toBe('mine');
+    expect(cell('0,2').home).toBe('theirs');
+  });
 });

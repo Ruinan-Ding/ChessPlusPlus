@@ -113,6 +113,8 @@ interface HexCell {
   panel: string;
   /** '' for battlefield, else 'hex-filler panel-xx' picking the panel colour. */
   zoneClass: string;
+  /** Whose setup rows this hex is in, from this client's seat; '' between. */
+  home: 'mine' | 'theirs' | '';
   /** 1-based reading order over every hex, panels included. */
   num: number;
   /** Smaller hex drawn under an occupying unit. */
@@ -394,6 +396,8 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [attr.points]="hex.points"
             [class.hex-cell]="true"
             [ngClass]="hex.zoneClass"
+            [class.home-mine]="hex.home === 'mine'"
+            [class.home-theirs]="hex.home === 'theirs'"
             [class.hex-selected]="hex.key === selectedHex"
             [class.hex-legal]="showingSelection && legalTargets.has(hex.key)"
             [class.hex-move-preview]="previewMoves.has(hex.key) && (!showingSelection || !legalTargets.has(hex.key))"
@@ -676,6 +680,14 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       cursor: pointer;
       transition: fill 0.1s;
     }
+
+    /* Each side's home ground - the three rows up to and including its pawn
+       wall. Yours green and theirs red, the same language the turn indicator
+       uses, and both pale enough that a piece still reads on top of them.
+       Declared above .zone so a capture zone wins where the two overlap: the
+       zone is the one that scores, and it is the one that carries a wash. */
+    .home-mine { fill: #d7ecd9; }
+    .home-theirs { fill: #f0d7d7; }
 
     /* The five zones, one colour: they are one thing in five places. The
        fill is the resting colour; the wash above it is what survives a hex
@@ -1730,7 +1742,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   ngOnChanges(changes: SimpleChanges): void {
     // Recalculate cells whenever board, radius, or config (orientation) changes
-    if (changes['boardState'] || changes['radius'] || changes['config'] || changes['unitBuffs']) {
+    // myColor with them: it decides which set of home rows is drawn as ours.
+    if (changes['boardState'] || changes['radius'] || changes['config']
+        || changes['unitBuffs'] || changes['myColor']) {
       this.buildCells();
     }
     // A move ends the ability to move again, but the selection itself sticks
@@ -1880,6 +1894,22 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   /** Which side holds each capture hex; missing means nobody, or cancelled. */
   captureClaim = new Map<string, 'white' | 'black'>();
 
+  /**
+   * Whose setup rows a row belongs to: the three nearest each edge, which on
+   * the shipped board is up to and including the pawn wall (white fills
+   * r = 11, 10, 9 and black the mirror - see `setup` in config.service.ts).
+   *
+   * Read off the radius rather than off the placement, because the tint marks
+   * the ground a side deploys onto: that is still its ground on a config that
+   * leaves some of those hexes empty. The seat decides which of the two is
+   * the player's own, defaulting to white for a client without one.
+   */
+  private homeOf(r: number): 'mine' | 'theirs' | '' {
+    const edge = Math.max(1, this.radius - 2);
+    if (Math.abs(r) < edge) return '';
+    return (r >= edge ? 'white' : 'black') === (this.myColor || 'white') ? 'mine' : 'theirs';
+  }
+
   /** Board orientation from config (cosmetic); the default board is edge-up. */
   get orientation(): BoardOrientation {
     return this.config?.board?.orientation === 'vertex-up' ? 'vertex-up' : 'edge-up';
@@ -1933,6 +1963,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         panel: c.onBattlefield ? '' : panelOf(c.x, c.y),
         // Four panels around the hexagon, one per corner.
         zoneClass: c.onBattlefield ? '' : `hex-filler panel-${panelOf(c.x, c.y)}`,
+        home: c.onBattlefield ? this.homeOf(c.r) : '',
         num: i + 1,
       };
     });

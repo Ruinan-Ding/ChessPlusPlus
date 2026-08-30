@@ -5,11 +5,13 @@
       <!-- Their standing, the turn, then yours. Both scores take an equal
            share of the row so the turn itself stays on the centre line. -->
       <span class="phase-score theirs" *ngIf="phaseScore('opponent') as them"
-      >🚩 {{ them.cap }} &minus; 💀 {{ them.death }} = {{ them.total }}</span>
+      >🚩 <span class="cap">{{ them.cap }}</span> &minus;
+        💀 <span class="death">{{ them.death }}</span> = {{ them.total }}</span>
       <span class="turn-text">{{ isYourTurn ? 'YOUR TURN' : "OPPONENT'S TURN" }}<ng-container
         *ngIf="state.turnTimeLimit > 0"> - {{ formattedTurnTime }}</ng-container></span>
       <span class="phase-score ours" *ngIf="phaseScore('mine') as us"
-      >🚩 {{ us.cap }} &minus; 💀 {{ us.death }} = {{ us.total }}</span>
+      >🚩 <span class="cap">{{ us.cap }}</span> &minus;
+        💀 <span class="death">{{ us.death }}</span> = {{ us.total }}</span>
     </div>
     <div class="header-actions">
       <button

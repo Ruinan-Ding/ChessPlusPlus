@@ -240,6 +240,13 @@ Decided so far:
   `captureZoneHexes()` / `captureClaims()` in `hex-rules.ts`, read by the board (which colours
   them, white's amber and black's violet) and by the room (which scores them), so the two can
   never disagree. Client-side only - the server does not know a zone from any other hex.
+- **Each side's home rows are tinted.** The three rows nearest a side's edge - its setup area, up
+  to and including the pawn wall, so `r = 9, 10, 11` for white and the mirror for black - carry a
+  pale wash: green for the seat's own, red for the opponent's. `homeOf()` in
+  `game-board.component.ts` reads them off the *radius* (`|r| >= radius - 2`), not off the setup
+  placement, so the ground still reads as a side's own on a config that leaves some of it empty.
+  Which of the two is "mine" follows `myColor`, which in a solo game follows `soloColor` - so the
+  player's own rows stay the near ones under `rotateBoard`. Cosmetic: no rule reads a home row.
 - **The header score is `cap - death`.** Each side's standing shows beside the turn indicator -
   the opponent's to its left, yours to its right - as flag, capture hexes, skull, deaths, total.
   **Cap is what you hold right now**, read off the board every time and gone the moment you walk

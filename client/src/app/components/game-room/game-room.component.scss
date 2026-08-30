@@ -59,6 +59,18 @@
 
       .phase-score.theirs { text-align: right; color: #7c8894; }
       .phase-score.ours { text-align: left; color: #34404a; }
+
+      // Each half in its own colour, mirrored across the two sides: held
+      // hexes are green for you and dark red for them, dead units red for
+      // you and dark green for them. The same fact reads as good or bad news
+      // depending on whose side of the board it is on, so the colour says
+      // which without the player having to work out which score is theirs.
+      // The total keeps the neutral ink - it is the two halves netted, not
+      // news of its own. Emoji ignore `color`, so only the numbers take it.
+      .phase-score.ours .cap { color: #229954; }
+      .phase-score.ours .death { color: #c0392b; }
+      .phase-score.theirs .cap { color: #7b241c; }
+      .phase-score.theirs .death { color: #14532d; }
     }
     
     .header-actions {
