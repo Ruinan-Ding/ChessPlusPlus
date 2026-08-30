@@ -257,7 +257,7 @@
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
-      padding: 10px 12px;
+      padding: 6px 10px;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -337,19 +337,143 @@
     to { box-shadow: 0 0 10px 3px rgba(241, 196, 15, 0.95); }
   }
 
-  // The slot being cast, shining with the unit it is landing on.
+  // The slot being cast, swelling with the unit it is landing on. Lifted
+  // over its neighbours while it does, or the rail clips the corners off it.
   .scaffold-btn.casting,
   .passive-row.casting {
-    animation: slot-casting 0.7s ease-out;
+    animation: slot-casting 1s ease-in-out;
+    transform-origin: center;
+    position: relative;
+    z-index: 3;
 
-    // The end-of-turn recap runs the same shine short, once per cast.
-    &.brief { animation-duration: 0.28s; }
+    // The end-of-turn recap runs the same pop shorter, once per cast.
+    &.brief { animation-duration: 0.6s; }
   }
 
+  // Mostly upward: the button already fills the panel's width, and .panel-body
+  // scrolls, so a wide swell is clipped and drags a scrollbar in with it. Six
+  // per cent sideways is what the padding has room for; the height carries the
+  // rest, and the neighbours it covers are what makes it read as a pop.
   @keyframes slot-casting {
-    0% { box-shadow: 0 0 0 0 rgba(255, 224, 102, 0); }
-    45% { box-shadow: 0 0 12px 4px rgba(255, 224, 102, 0.95); filter: brightness(1.35); }
-    100% { box-shadow: 0 0 0 0 rgba(255, 224, 102, 0); }
+    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 224, 102, 0); }
+    45% {
+      transform: scale(1.06, 1.28);
+      box-shadow: 0 0 16px 6px rgba(255, 224, 102, 0.95);
+      filter: brightness(1.4);
+    }
+    100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 224, 102, 0); }
+  }
+
+  // Reading a path before taking it: the three things it grants, laid out as
+  // the row they will become, plus Pick and Back. No prose - each button
+  // opens its own description, the same as every other ability.
+  // The same stack .ability-bottom-row draws for a path already taken: both
+  // columns of .panel-buttons, one ability per row.
+  .path-detail {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: minmax(30px, auto);
+    gap: 6px;
+    margin-top: 6px;
+    // The same height as the three buttons it replaces, so opening one does
+    // not move anything under it.
+    min-height: 70px;
+  }
+
+  // The passive and its green button, an even half each.
+  .path-passive-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  // Pick and Back, under whatever the panel is showing. A fixed height: with
+  // no label the buttons collapsed to nothing and the panel changed size the
+  // moment anything was opened.
+  .path-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+
+    // Height comes from the buttons' own line box, blank ones included - and
+    // an explicit line-height, so a space and a word measure the same.
+    > button {
+      min-height: 0;
+      line-height: 1.2;
+    }
+  }
+
+  // A slot with nothing in it yet: it holds its place and says nothing. Named
+  // with the class it sits on rather than alone - .pick-btn and the rest set
+  // their own background further down, and one class each would lose to them.
+  .pick-btn.blank,
+  .ability-back-btn.blank,
+  .passive-row.blank,
+  .scaffold-btn.blank {
+    background: #d7dce1;
+    border: 1px solid #c3cad1;
+    color: transparent;
+    cursor: default;
+
+    // A blank has no text, so it had no line to be as tall as and collapsed
+    // to its padding. One space gives it the same line box the real button
+    // gets - the same size at any font, with no number to keep in step.
+    &::before { content: ' a0'; }
+  }
+
+  // A blank takes a washed-out cast of the button it stands in for, so the row
+  // reads as the thing it will hold. Three classes deep on purpose: the plain
+  // .blank rule and each button's own colour are both two, and the later of
+  // the two would otherwise win.
+  .path-actions .pick-btn.blank,
+  .path-actions .ability-back-btn.blank {
+    background: #cfe8d8;
+    border-color: #b3d6c2;
+  }
+
+  .unit-ability-row .scaffold-btn.blank {
+    background: #cfe0f5;
+    border-color: #b4cdea;
+  }
+
+  // ponytail: a colour and a place, nothing more - it does nothing until
+  // there is something for it to do.
+  .path-extra-btn {
+    padding: 4px 0;
+    border: none;
+    border-radius: 6px;
+    background: #16a34a;
+    color: #fff;
+    font-size: 0.9rem;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+
+    &:hover { background: #12833c; }
+  }
+
+  .coming-soon {
+    margin: 0;
+    padding: 12px 0;
+    text-align: center;
+    color: #7a8794;
+    font-style: italic;
+  }
+
+  // A slot being taken up: a short white flash, distinct from the swell a
+  // slot makes when it is used.
+  .scaffold-btn.picking,
+  .passive-row.picking {
+    animation: slot-picked 0.45s ease-out;
+    position: relative;
+    z-index: 3;
+  }
+
+  @keyframes slot-picked {
+    0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); filter: brightness(1); }
+    30% { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.95); filter: brightness(1.9); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); filter: brightness(1); }
   }
 
   // In the pool but not carried: readable, obviously not in play.
@@ -365,35 +489,65 @@
     grid-column: 1 / -1;
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    align-content: start;
     gap: 6px;
     margin-top: 6px;
-    min-height: 108px;
+    // As tall as the two rows each one opens into - passive, then the pair -
+    // so choosing one changes what is in the panel, never how much room it
+    // takes. Pick and Back live under the panel now, in a row of their own
+    // that is there whether anything is open or not.
+    min-height: 70px;
+  }
+
+  // Ultimate and skill side by side - one line of the panel, not two.
+  .path-pair {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
   }
 
   .path-btn {
-    // One line each: three of these share a 260px column, so the label has
-    // to shrink rather than wrap.
+    // Name over cost, so both can be read at a size worth reading: three of
+    // these share a 260px column and one line could not hold either.
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
     min-width: 0;
-    height: 32px;
+    // Full height of the row it sits in - which is as tall as the rows it
+    // opens into, so choosing one shifts nothing.
+    height: 100%;
     padding: 4px 2px;
     border: 1px dashed #b39ddb;
     border-radius: 6px;
     background: #f6f2fc;
     color: #4a3c68;
-    font-size: 0.62rem;
+    font-size: 0.8rem;
     font-weight: 700;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     cursor: pointer;
 
+    .path-name {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .path-cost {
+      font-size: 0.72rem;
+      font-weight: 600;
+      opacity: 0.75;
+    }
+
     &:hover:not(:disabled) { background: #ede4fa; }
     &:disabled { opacity: 0.5; cursor: not-allowed; }
   }
 
   .pick-btn {
-    padding: 6px 14px;
+    padding: 3px 10px;
+    font-size: 0.78rem;
     border: none;
     border-radius: 6px;
     font-weight: 600;
@@ -401,8 +555,6 @@
     background: #16a34a;
     cursor: pointer;
 
-    // Already carried: it says so, and there is no taking it back.
-    &.carried { background: #7f8c8d; }
     &:disabled { opacity: 0.5; cursor: not-allowed; }
   }
 
@@ -491,7 +643,11 @@
 
   .effects-box {
     display: flex;
-    flex: 1 1 auto;
+    // Basis 0, not auto: with auto the box is sized from its own contents, so
+    // every effect added to a unit grew it, grew the panel, and shoved the
+    // stats and the buttons around it. It takes what the panel has spare and
+    // scrolls the rest - what is inside it never moves anything outside it.
+    flex: 1 1 0;
     min-height: 74px;
     margin: 6px 0 0;
     border: 1px solid #e3e7ec;
@@ -534,8 +690,9 @@
   .opponent-panel,
   .abilities-panel { flex: 0 0 auto; }
   // The unit panel takes whatever height the column has left, and the effects
-  // box is what grows into it.
-  .stats-panel { flex: 1 1 auto; min-height: 0; }
+  // box is what grows into it. Basis 0 for the same reason as the box itself:
+  // sized by the space available, never by what happens to be in it.
+  .stats-panel { flex: 1 1 0; min-height: 0; }
 
   // Solo room: side picker standing in for the Ready button.
   .color-toggle-btn {
@@ -573,6 +730,21 @@
     }
   }
 
+  // The list and the detail occupy the same box, so the panel is always the
+  // height of the list - opening an ability used to collapse it by a third.
+  .ability-stack {
+    position: relative;
+    flex: 0 0 auto;
+
+    > .ability-detail {
+      position: absolute;
+      inset: 0;
+      background: #fff;
+    }
+
+    > .panel-buttons.behind { visibility: hidden; }
+  }
+
   .panel-buttons {
     display: grid;
     // minmax(0, 1fr): a plain 1fr floors at the content's own width, which is
@@ -586,14 +758,26 @@
   .ability-bottom-row {
     grid-column: 1 / -1;
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
+    // The same box the three choices and the confirm screen occupy, so the
+    // panel is one height for the whole match.
+    margin-top: 6px;
+    min-height: 70px;
+    align-content: start;
+
+    // Only the passive shares its row; the pair spans both columns.
+    .path-pair { grid-column: 1 / -1; }
   }
 
   .unit-ability-row {
     grid-column: 1 / -1;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+
+    // As with the action row: an explicit line-height, so a blank slot and a
+    // named one measure the same.
+    > button { line-height: 1.2; }
     gap: 6px;
   }
 
@@ -654,7 +838,9 @@
 
   // Ability controls and detail views.
   .scaffold-btn {
-    padding: 8px 6px;
+    // Only as tall as the words in it: the panels have to hold the pool, the
+    // path and a line of text without the column running off the bottom.
+    padding: 4px 6px;
     border: none;
     border-radius: 6px;
     background-color: #2e86de;
@@ -686,6 +872,19 @@
 
   .scaffold-btn.ability-unavailable { background: #8d98a3; color: #e1e5e8; }
 
+  // Taken up last turn: filled yellow rather than ringed, because a pick and
+  // a cast are different news and should not look like the same thing.
+  // Declared AFTER .ability-unavailable deliberately - both are one class on
+  // .scaffold-btn, so the later one owns `background`, and above it every
+  // pick the player could no longer afford went grey. Which is why a turn
+  // that picked three only ever showed the one still within reach.
+  .scaffold-btn.picked-recent,
+  .passive-row.picked-recent {
+    background: #f6c343;
+    color: #3a2f0b;
+    border-color: #d4a017;
+  }
+
   .ability-detail {
     display: flex;
     flex-direction: column;
@@ -716,7 +915,8 @@
   }
 
   .ability-back-btn {
-    padding: 6px 10px;
+    padding: 3px 8px;
+    font-size: 0.78rem;
     border: 1px solid #9aa5b1;
     border-radius: 5px;
     background: transparent;
@@ -1665,10 +1865,16 @@
 }
 
 .arming-hint {
-  margin: 4px 0 0;
-  font-size: 0.75rem;
+  margin: 2px 0 0;
+  line-height: 1.2;
+  font-size: 0.72rem;
   color: #f6c343;
   text-align: center;
+  // One line, always. Wrapping to two made the panel taller and shoved
+  // everything under it, which is the whole reason this line is never empty.
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 // A stat currently carrying a boost.

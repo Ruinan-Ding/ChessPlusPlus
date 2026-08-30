@@ -123,6 +123,8 @@ interface AbilitySpend {
   row: 'mine' | 'opponent' | 'unit';
   index: number;
   cost: number;
+  /** The hex it landed on, or '' for a universal ability that named none. */
+  hex?: string;
   /** Points the cast handed back, to take away again on Undo. */
   gain?: number;
   uid: string;
@@ -475,7 +477,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.opponentLoadout = [];
         this.myPath = null;
         this.opponentPath = null;
-        this.abilityGlow = { mine: null, opponent: null };
+        this.abilityGlow = { mine: [], opponent: [] };
+        this.abilityPickGlow = { mine: [], opponent: [] };
         this.myUltimateUsed = false;
         this.opponentUltimateUsed = false;
         this.buffs = {};
@@ -486,6 +489,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // game it was staged in otherwise, and hides the new position.
         this.stagedActions = [];
         this.submittedTurn = -1;
+        // Anything opened while waiting belongs to the room, not the game.
+        this.abilityFocus = null;
+        this.pathFocus = null;
+        this.unitAbilityFocus = null;
+        this.pendingAbility = null;
         this.beginTurnFor('white');
         this.playTurnSoundIfNeeded(null);
         this.startTurnClock();
@@ -1196,14 +1204,17 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       }
     }
 
-    // The passive is the path's, and it is on every unit this side owns.
+    // The passive is the path's, and it is on every unit this side owns - so
+    // it is always in the list, saying either that it is on or what the unit
+    // still needs before it is.
     const path = this.pathChoice('mine');
     const passive = path ? this.abilityEffects[path.passive] : null;
-    if (passive && (this.displayUnit?.vet ?? 0) >= 1) {
+    if (passive && unit) {
+      const earned = unit.vet >= 1;
       rows.push({
         name: passive.name,
         detail: this.effectSummary(passive) || 'passive',
-        life: 'always',
+        life: earned ? 'always' : 'needs ★',
       });
     }
     return rows;
@@ -1294,7 +1305,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // staged step and Undo takes it back. A held-aside board was invisible
     // whenever anything else was staged, and Undo never cleared it.
     const prev = this.stagedActions[this.stagedActions.length - 1];
-    const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index);
+    const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index, unit.key);
     this.stagedActions.push({
       board: next,
       from: prev?.from ?? '',
@@ -1312,9 +1323,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       ...this.buffs,
       [unit.uid]: this.stack(unit.uid, effect, this.casterColor(armed.side), true),
     };
-    this.playSteps([
-      { kind: 'ability', from: unit.key, to: unit.key, index: armed.index, hostile: true },
-    ]);
+    this.playSteps([{
+      kind: 'ability', from: unit.key, to: unit.key,
+      index: armed.index, side: armed.side, hostile: true,
+    }]);
     if (armed.side === 'mine') this.myPoints -= cost; else this.opponentPoints -= cost;
     armed.cooldowns[armed.index] = 3;
     this.markUsed(armed.side, armed.index);
@@ -1380,12 +1392,59 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return points >= this.abilityPaths[index].cost;
   }
 
+  /**
+   * The path a side is reading about before committing to it. One per match
+   * and paid for once, so it gets the same look-then-confirm the abilities
+   * have rather than going through on the first click.
+   */
+  pathFocus: { side: 'mine' | 'opponent'; index: number } | null = null;
+
+  /** The path this side is currently reading, and what it grants, or null. */
+  pathFocusFor(side: 'mine' | 'opponent') {
+    if (this.pathFocus?.side !== side) return null;
+    return { index: this.pathFocus.index, path: this.abilityPaths[this.pathFocus.index] };
+  }
+
+  focusPath(side: 'mine' | 'opponent', index: number): void {
+    this.pathFocus = this.pathFocus?.side === side && this.pathFocus.index === index
+      ? null : { side, index };
+    this.cdr.markForCheck();
+  }
+
+  clearPathFocus(): void {
+    this.pathFocus = null;
+    this.cdr.markForCheck();
+  }
+
+  /** Why this path cannot be taken, for the confirmation screen to say. */
+  pathBlocker(side: 'mine' | 'opponent', index: number): string {
+    if (this.canUnlockPath(side, index)) return '';
+    if (this.pathOf(side) !== null) return 'You have already taken a path.';
+    if (!this.canUseAbilities(side)) return 'Unavailable: not your turn.';
+    const points = side === 'mine' ? this.myPoints : this.opponentPoints;
+    return `Unavailable: costs ${this.abilityPaths[index].cost}, you have ${points}.`;
+  }
+
+  /**
+   * The line under a path's buttons. Always says something: a line that comes
+   * and goes moves everything under it, and when there is nothing stopping you
+   * the useful thing to say is what the screen is for.
+   */
+  pathNote(side: 'mine' | 'opponent', index: number): string {
+    return this.pathBlocker(side, index)
+      || 'Pick to take the path.';
+  }
+
   /** Take a path. One per match, paid for once, kept for the rest of it. */
   unlockPath(side: 'mine' | 'opponent', index: number): void {
     if (!this.canUnlockPath(side, index)) return;
+    this.pathFocus = null;
     const path = this.abilityPaths[index];
     if (side === 'mine') { this.myPoints -= path.cost; this.myPath = index; }
     else { this.opponentPoints -= path.cost; this.opponentPath = index; }
+    // The passive is what names the path, so it is the slot that flashes -
+    // and markPicked lights the other two with it.
+    this.flashPick(side, path.passive);
     this.addSystemMessage(`${side === 'mine' ? 'You' : 'Your opponent'} took the ${path.name} path.`);
     this.persistLocalUiState();
     this.cdr.markForCheck();
@@ -1408,9 +1467,44 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return this.loadout(side).includes(index);
   }
 
-  /** Still a free slot, and this one is not already in it. */
+  /** Your turn, still a free slot, and this one is not already in it. */
   canPick(side: 'mine' | 'opponent', index: number): boolean {
-    return !this.isPicked(side, index) && this.loadout(side).length < this.abilitySlots;
+    // A pick is a move: it is for the match, the other player is told about
+    // it, and it happens on your own turn. Without this it could be taken at
+    // any moment, including in the middle of theirs.
+    return this.canUseAbilities(side)
+      && this.isPoolAbility(index)
+      && !this.isPicked(side, index)
+      && this.loadout(side).length < this.abilitySlots;
+  }
+
+  /** One of the eight a side chooses four of. Path abilities are not. */
+  isPoolAbility(index: number): boolean {
+    return this.abilityPool.includes(index);
+  }
+
+  /** The path an ability comes with, whether or not anybody has taken it. */
+  pathOwning(index: number) {
+    return this.abilityPaths.find(
+      p => p.passive === index || p.skill === index || p.ultimate === index) ?? null;
+  }
+
+  /** Whether the focused ability is one this side could still take up. */
+  get focusedAbilityCanBePicked(): boolean {
+    const f = this.abilityFocus;
+    return !!f && this.isPoolAbility(f.index) && !this.isPicked(f.side, f.index);
+  }
+
+  /**
+   * Whether the detail shows a Use button at all. A path's ultimate shows one
+   * before the path is taken - greyed, because seeing what you would get is
+   * the point of reading it - but a pool ability you have not picked shows
+   * Pick instead, since picking is the thing to do there.
+   */
+  get focusedAbilityShowsUse(): boolean {
+    const f = this.abilityFocus;
+    if (!f || !this.focusedAbilityIsUniversal) return false;
+    return this.focusedAbilityIsCarried || !!this.pathOwning(f.index);
   }
 
   /**
@@ -1419,12 +1513,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * on your list through their next turn.
    */
   pickAbility(side: 'mine' | 'opponent', index: number): void {
-    if (this.isPassive(index) || this.isUltimate(index)) return;
+    // Only the pool is picked into the four. A path's skill arrives with the
+    // path or not at all - without this it could be taken on its own from the
+    // screen that shows what a path would grant.
+    if (!this.isPoolAbility(index)) return;
     if (!this.canPick(side, index)) return;
     const next = [...this.loadout(side), index];
     if (side === 'mine') this.myLoadout = next; else this.opponentLoadout = next;
-    this.markUsed(side, index);
-    // Picking is the whole point of opening it - straight back to the list.
+    this.flashPick(side, index);
+    // Picking is not using: back to the list with nothing armed, and the
+    // ability is opened again when it is actually wanted.
     this.clearAbilityFocus();
     this.persistLocalUiState();
     this.cdr.markForCheck();
@@ -1477,13 +1575,20 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (e.atk) parts.push(`${e.atk > 0 ? '+' : ''}${e.atk} ATK`);
     if (e.def) parts.push(`${e.def > 0 ? '+' : ''}${e.def} DEF`);
     if (e.damage) parts.push(`${e.damage} damage`);
-    if (e.points) parts.push(`${e.points > 0 ? '+' : ''}${e.points} point`);
+    if (e.points) {
+      parts.push(`${e.points > 0 ? '+' : ''}${e.points} point${Math.abs(e.points) === 1 ? '' : 's'}`);
+    }
     const effect = parts.join(', ') || 'no effect yet';
     const need = this.vetNeeded(index);
     const star = '\u2605'.repeat(need);
 
     if (this.isPassive(index)) {
       return need ? `${effect} while the unit holds ${star}` : `${effect}, always on`;
+    }
+    // A universal ability lands on the side, not on a unit: telling the
+    // player to click one is an instruction they cannot follow.
+    if (e.target === 'universal') {
+      return `${effect} - used from here, it needs no target`;
     }
     const lasts = e.target === 'enemy' ? '' : ' for one turn';
     const how = forOwnUnit
@@ -1543,7 +1648,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (!this.isSinglePlayer || !focus || !unit || !this.unitAbilityCanActivate()) return;
     const effect = this.abilityEffects[focus.index];
     const cost = this.abilityCosts[focus.index] ?? 0;
-    const spend = this.spendOf(unit.uid, 'mine', 'unit', focus.index);
+    const spend = this.spendOf(unit.uid, 'mine', 'unit', focus.index, unit.key);
     this.myPoints -= cost;
     focus.cooldowns[focus.index] = 3;
     this.buffs = {
@@ -1597,11 +1702,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return this.abilityHint(this.abilityFocus.index);
   }
 
-  get focusedAbilityIsTargeted(): boolean {
-    if (!this.abilityFocus) return false;
-    return this.abilityTargetMode(this.abilityFocus.index) !== 'universal';
-  }
-
   get focusedAbilityIsUniversal(): boolean {
     return !!this.abilityFocus && this.abilityTargetMode(this.abilityFocus.index) === 'universal';
   }
@@ -1619,6 +1719,134 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     );
   }
 
+  /**
+   * The line under a focused ability. Always says something, and says a
+   * different thing depending on what you opened: why it cannot be used, or
+   * what to do with it now that it can. A line that comes and goes moves
+   * everything under it, which is the other reason it is never empty.
+   */
+  get focusedAbilityNote(): string {
+    const f = this.abilityFocus;
+    if (!f) return '';
+    if (this.focusedAbilityIsPassive) {
+      return 'Always on at ★.';
+    }
+    const blocked = this.focusedAbilityBlocker;
+    if (blocked) return blocked;
+    switch (this.abilityTargetMode(f.index)) {
+      case 'universal': return 'Ready - press Use.';
+      case 'enemy': return 'Ready - click an enemy to hit.';
+      default: return 'Ready - click one of yours.';
+    }
+  }
+
+  /**
+   * The one line at the bottom of an ability panel. Always there, whatever the
+   * panel is showing - a line that comes and goes moves what is above it, and
+   * a panel with nothing open still owes the player a word about why.
+   */
+  abilityNote(side: 'mine' | 'opponent'): string {
+    if (this.pathFocus?.side === side) return this.pathNote(side, this.pathFocus.index);
+    if (this.abilityFocus?.side === side) return this.focusedAbilityNote;
+    if (!this.gameStarted) return 'The game has not started yet.';
+    return this.canUseAbilities(side)
+      ? 'Click an ability to read it.'
+      : 'Unavailable: not your turn.';
+  }
+
+  /**
+   * The one thing a panel offers right now, in the row beneath it: taking an
+   * ability or a path up, or using one that needs no target. Blank when there
+   * is nothing - the row is drawn either way, so opening something never
+   * changes how tall the panel is.
+   */
+  actionLabel(side: 'mine' | 'opponent'): string {
+    if (this.pathFocusFor(side)) return 'Pick';
+    if (this.abilityFocus?.side !== side) return '';
+    if (this.focusedAbilityCanBePicked) return 'Pick';
+    return this.focusedAbilityShowsUse ? 'Use' : '';
+  }
+
+  actionEnabled(side: 'mine' | 'opponent'): boolean {
+    const path = this.pathFocusFor(side);
+    if (path) return this.canUnlockPath(side, path.index);
+    const f = this.abilityFocus;
+    if (f?.side !== side) return false;
+    if (this.focusedAbilityCanBePicked) return this.canPick(side, f.index);
+    return this.focusedAbilityShowsUse && this.focusedAbilityCanActivate();
+  }
+
+  takeAction(side: 'mine' | 'opponent'): void {
+    const path = this.pathFocusFor(side);
+    if (path) { this.unlockPath(side, path.index); return; }
+    const f = this.abilityFocus;
+    if (f?.side !== side) return;
+    if (this.focusedAbilityCanBePicked) this.pickAbility(side, f.index);
+    else if (this.focusedAbilityShowsUse) this.activateFocusedAbility();
+  }
+
+  /** Something is open in this panel to back out of. */
+  canGoBack(side: 'mine' | 'opponent'): boolean {
+    return !!this.pathFocusFor(side) || this.abilityFocus?.side === side;
+  }
+
+  goBack(side: 'mine' | 'opponent'): void {
+    if (this.abilityFocus?.side === side) this.clearAbilityFocus();
+    else this.clearPathFocus();
+  }
+
+  /** The same line for the unit's own ability, which needs no target. */
+  get unitAbilityNote(): string {
+    const focus = this.unitAbilityFocus;
+    if (!focus) return '';
+    if (this.unitAbilityIsPassive()) {
+      return 'Always on at ★.';
+    }
+    if (this.unitAbilityCanActivate()) return 'Ready - press Use.';
+    const unit = this.displayUnit;
+    if (!unit) return 'Unavailable: no unit selected.';
+    if (!this.isPicked('mine', focus.index)) return 'Not carried - pick it first.';
+    if (unit.vet < this.vetNeeded(focus.index)) {
+      return `Unavailable: needs ${'\u2605'.repeat(this.vetNeeded(focus.index))}.`;
+    }
+    const cooldown = focus.cooldowns[focus.index] ?? 0;
+    if (cooldown > 0) {
+      return `On cooldown: ${cooldown} more turn${cooldown > 1 ? 's' : ''}.`;
+    }
+    if (!this.canUseAbilities('mine')) return 'Unavailable: not your turn.';
+    const cost = this.abilityCosts[focus.index] ?? 0;
+    return `Unavailable: costs ${cost}, you have ${this.myPoints}.`;
+  }
+
+  /** Why the focused ability cannot be used, for the detail view to say. */
+  get focusedAbilityBlocker(): string {
+    const f = this.abilityFocus;
+    if (!f || this.focusedAbilityCanActivate()) return '';
+    if (this.isUltimate(f.index) && this.ultimateUsed(f.side)) return 'Unavailable: already spent.';
+    const path = this.pathChoice(f.side);
+    const fromPath = path && (f.index === path.skill || f.index === path.ultimate);
+    if (!fromPath) {
+      // It may belong to a path nobody has taken - readable from the screen
+      // that shows what that path grants, but not yours until the path is.
+      const owner = this.pathOwning(f.index);
+      if (owner) return `Comes with the ${owner.name} path.`;
+      if (!this.isPicked(f.side, f.index)) {
+        // Whose turn it is comes first: otherwise a full-slots message stands
+        // in for every reason a pick is refused.
+        if (!this.canUseAbilities(f.side)) return 'Unavailable: not your turn.';
+        return this.loadout(f.side).length < this.abilitySlots
+          ? 'Not carried - pick it first.'
+          : 'All four slots are taken.';
+      }
+    }
+    const cooldown = f.cooldowns[f.index] ?? 0;
+    if (cooldown > 0) return `On cooldown: ${cooldown} more turn${cooldown > 1 ? 's' : ''}.`;
+    if (!this.canUseAbilities(f.side)) return 'Unavailable: not your turn.';
+    const points = f.side === 'mine' ? this.myPoints : this.opponentPoints;
+    const cost = this.abilityCosts[f.index] ?? 0;
+    return `Unavailable: costs ${cost}, you have ${points}.`;
+  }
+
   private abilityCanActivate(side: 'mine' | 'opponent', index: number, cooldown: number): boolean {
     if (this.isPassive(index) || (this.isUltimate(index) && this.ultimateUsed(side))) return false;
     // A path's own skill and ultimate come with the path; everything else on
@@ -1634,18 +1862,52 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * Remember what a side just cast, so the other player can see it on their
    * own turn. beginTurnFor clears it when the caster comes round again.
    */
-  private markUsed(side: 'mine' | 'opponent', index: number): void {
-    this.abilityGlow = { ...this.abilityGlow, [side]: index };
+  /**
+   * Note a slot this side took up, for the other player's next turn. A path is
+   * named by its passive, and that is the one slot that lights - the skill and
+   * the ultimate arrive with it and speak for themselves.
+   */
+  private markPicked(side: 'mine' | 'opponent', index: number): void {
+    if (this.abilityPickGlow[side].includes(index)) return;
+    this.abilityPickGlow = {
+      ...this.abilityPickGlow,
+      [side]: [...this.abilityPickGlow[side], index],
+    };
   }
 
-  /** True while this ability is the one that side used last. */
+  /**
+   * Picks the commit replay has not reached yet. Purely a curtain over
+   * abilityPickGlow so the recap can draw them one at a time - the glow
+   * itself never comes down, and this is emptied when the replay ends and
+   * when the turn does, so an interrupted one cannot leave a slot plain.
+   */
+  private pickReveal: Array<{ side: 'mine' | 'opponent'; index: number }> = [];
+
+  /** True while this ability is one of those that side took up last turn. */
+  isRecentPick(side: 'mine' | 'opponent', index: number): boolean {
+    if (!this.abilityPickGlow[side].includes(index)) return false;
+    return !this.pickReveal.some(p => p.side === side && p.index === index);
+  }
+
+  private markUsed(side: 'mine' | 'opponent', index: number): void {
+    // Every one of them, not just the last: a turn spent on three abilities
+    // shows the other player all three.
+    if (this.abilityGlow[side].includes(index)) return;
+    this.abilityGlow = { ...this.abilityGlow, [side]: [...this.abilityGlow[side], index] };
+  }
+
+  /** True while this ability is one of those that side used last turn. */
   isRecent(side: 'mine' | 'opponent', index: number): boolean {
-    return this.abilityGlow[side] === index;
+    return this.abilityGlow[side].includes(index);
   }
 
   clearAbilityFocus(): void {
     this.abilityFocus = null;
     this.pendingAbility = null;
+    // Leaving an ability leaves the path that was open behind it too: a path
+    // read but not taken is not somewhere to come back to, and landing on it
+    // again after backing out of one of its abilities reads as a stuck screen.
+    this.pathFocus = null;
     this.cdr.markForCheck();
   }
 
@@ -1660,16 +1922,32 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const points = this.abilityEffects[index].points ?? 0;
     if (side === 'mine') this.myPoints += points; else this.opponentPoints += points;
     cooldowns[index] = 3;
-    this.playSteps([{ kind: 'ability', from: '', to: '', index }]);
+    this.playSteps([{ kind: 'ability', from: '', to: '', index, side }]);
     if (this.isUltimate(index)) {
       if (side === 'mine') this.myUltimateUsed = true;
       else this.opponentUltimateUsed = true;
     }
+    // The one cast path that never said so: an ultimate, or any universal
+    // ability, was spent without the other player ever seeing it glow.
+    this.markUsed(side, index);
     this.playAbilitySound();
     this.addSystemMessage(`${this.abilityEffects[index].name} used.`);
     this.stageSpend(spend);
     this.persistLocalUiState();
     this.clearAbilityFocus();
+  }
+
+  /**
+   * Whether the focused ability is one this side actually carries - one of
+   * the four picked from the pool, or the skill or ultimate its path granted.
+   * Nothing else can be used, so nothing else offers a Use button.
+   */
+  get focusedAbilityIsCarried(): boolean {
+    const f = this.abilityFocus;
+    if (!f) return false;
+    const path = this.pathChoice(f.side);
+    if (path && (f.index === path.skill || f.index === path.ultimate)) return true;
+    return this.isPicked(f.side, f.index);
   }
 
   /** True while this slot is waiting for the player to pick a target. */
@@ -1682,6 +1960,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (cooldown > 0 || !this.canUseAbilities(side) || (this.isUltimate(index) && this.ultimateUsed(side))) return false;
     const points = side === 'mine' ? this.myPoints : this.opponentPoints;
     return points >= (this.abilityCosts[index] ?? 0);
+  }
+
+  /**
+   * Abilities are a default-mode feature. A custom board can carry units the
+   * pool was never written for, so rather than offer boosts that mean nothing
+   * against them, the three panels say so and stay out of the way.
+   */
+  get abilitiesComingSoon(): boolean {
+    return this.gameMode === 'custom';
   }
 
   /** Which colour a box belongs to - 'mine' is us, whichever seat we hold. */
@@ -1698,13 +1985,19 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (unit.color === this.casterColor(armed.side)) {
       const e = this.abilityEffects[armed.index];
       const cost = this.abilityCosts[armed.index] ?? 0;
-      if (armed.side === 'mine') this.myPoints -= cost; else this.opponentPoints -= cost;
-      armed.cooldowns[armed.index] = 3;
+      // Noted before a thing is spent: taken afterwards it recorded the
+      // cooldown this cast had just set, so Undo put the ability back on a
+      // three-turn cooldown it had never been on.
       // Keyed by the unit, so the boost follows it through a staged step, an
       // Undo and the server's own confirmation of the move. A fresh object,
       // so the board sees the change and redraws its reach.
-      const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index);
-      this.playSteps([{ kind: 'ability', from: unit.key, to: unit.key, index: armed.index }]);
+      const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index, unit.key);
+      if (armed.side === 'mine') this.myPoints -= cost; else this.opponentPoints -= cost;
+      armed.cooldowns[armed.index] = 3;
+      this.playSteps([{
+        kind: 'ability', from: unit.key, to: unit.key,
+        index: armed.index, side: armed.side,
+      }]);
       this.buffs = {
         ...this.buffs,
         [unit.uid]: this.stack(unit.uid, e, this.casterColor(armed.side)),
@@ -1842,13 +2135,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (Object.keys(kept).length !== Object.keys(this.buffs).length) this.buffs = kept;
     // Spending an ability marks the unit for the turn it was spent in.
     this.abilityUsed = {};
+    this.pickedThisTurn = [];
+    this.pickReveal = [];
     this.awardPoints(color, 1);
     const mine = this.gameState.myColor(this.username);
     const isMine = mine ? color === mine : color === 'white';
     // The glow is for the other player's turn: it lifts when whoever cast it
     // is up again.
     const side = isMine ? 'mine' : 'opponent';
-    if (this.abilityGlow[side] !== null) this.abilityGlow = { ...this.abilityGlow, [side]: null };
+    if (this.abilityGlow[side].length) this.abilityGlow = { ...this.abilityGlow, [side]: [] };
+    if (this.abilityPickGlow[side].length) {
+      this.abilityPickGlow = { ...this.abilityPickGlow, [side]: [] };
+    }
     const tick = (cds: number[]) => cds.forEach((cd, i) => (cds[i] = Math.max(0, cd - 1)));
     if (isMine) {
       tick(this.myCooldowns);
@@ -1981,7 +2279,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * that side's list until the side that cast it comes round again - one turn
    * of the opponent's, which is the turn they need it in.
    */
-  abilityGlow: { mine: number | null; opponent: number | null } = { mine: null, opponent: null };
+  abilityGlow: { mine: number[]; opponent: number[] } = { mine: [], opponent: [] };
+  /**
+   * And what each side *took up* last turn, kept apart from what it spent: a
+   * pick and a cast are different news, so they read differently - a pick
+   * fills the slot yellow, a cast glows around it.
+   */
+  abilityPickGlow: { mine: number[]; opponent: number[] } = { mine: [], opponent: [] };
 
   /**
    * One-turn stat boosts, keyed by the hex the unit stands on.
@@ -2360,6 +2664,21 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * running, which is what makes rapid input feel instant: the board is
    * already showing the position, so the beats nobody waited for are dropped.
    */
+  /**
+   * Note a slot just taken up and flash it. Kept for the recap as well: what
+   * a turn did includes what it took up, not only what it spent.
+   */
+  private flashPick(side: 'mine' | 'opponent', index: number): void {
+    // Yellow the moment it is taken, not when its beat plays: the beat is the
+    // flash, and hanging the colour off it meant a replay that was interrupted
+    // - or a tab the browser throttled - left the slot plain for the whole of
+    // the other player's turn, which is exactly when it is meant to be read.
+    this.markPicked(side, index);
+    this.pickedThisTurn = [...this.pickedThisTurn, { side, index }];
+    this.playPickSound();
+    this.playSteps([{ kind: 'pick', from: '', to: '', index, side }]);
+  }
+
   /** Fill in which ability beats were cast at an enemy. */
   private markHostile(steps: AnimStep[]): AnimStep[] {
     return steps.map(step => step.kind === 'ability' && step.index != null
@@ -2376,12 +2695,32 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /** The slot lighting up with the unit it is landing on, or null. */
   castingIndex: number | null = null;
+  /** Whose panel that slot is in - both sides draw the same indices, so
+   *  without this your cast popped the same button on the opponent's list. */
+  castingSide: 'mine' | 'opponent' | null = null;
+  /** Whether that beat is a slot being taken up rather than used. */
+  castingPick = false;
+  /**
+   * What this side took up this turn, in order. Picks are not staged - there
+   * is no taking one back - so they are kept here for the recap to replay,
+   * and cleared when the side comes round again.
+   */
+  private pickedThisTurn: Array<{ side: 'mine' | 'opponent'; index: number }> = [];
   /** That shine belongs to the end-of-turn recap, so it runs short. */
   castingBrief = false;
 
   /** One sound per beat, as the board reaches it, and the slot behind it. */
   onPlaybackStep(step: AnimStep): void {
-    this.castingIndex = step.kind === 'ability' ? step.index ?? null : null;
+    const slotted = step.kind === 'ability' || step.kind === 'pick';
+    this.castingIndex = slotted ? step.index ?? null : null;
+    this.castingSide = slotted ? step.side ?? null : null;
+    this.castingPick = step.kind === 'pick';
+    // Each beat draws its own card back in, so a committed turn's picks come
+    // up one after another rather than all at once.
+    if (step.kind === 'pick' && step.side && step.index != null) {
+      this.pickReveal = this.pickReveal.filter(
+        p => !(p.side === step.side && p.index === step.index));
+    }
     this.castingBrief = !!step.brief;
     if (step.kind === 'move') this.playMoveSound();
     else if (step.kind === 'ability') this.playAbilitySound();
@@ -2390,18 +2729,31 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /** True while this slot is the one being cast in the replay. */
-  isCasting(index: number): boolean {
-    return this.castingIndex === index;
+  isCasting(side: 'mine' | 'opponent', index: number): boolean {
+    return !this.castingPick && this.castingSide === side && this.castingIndex === index;
+  }
+
+  /** True while this slot is the one being taken up. */
+  isPicking(side: 'mine' | 'opponent', index: number): boolean {
+    return this.castingPick && this.castingSide === side && this.castingIndex === index;
   }
 
   onPlaybackDone(): void {
     if (!this.playbackRunning) return;
     this.playbackRunning = false;
     this.castingIndex = null;
+    this.castingSide = null;
+    this.castingPick = false;
     // Watching the replay is not thinking time: the clock is handed back
     // whatever the animation took.
     this.playbackOwed += Date.now() - this.playbackStarted;
-    this.playback = [];
+    // Whatever the replay did or did not reach, nothing stays hidden past it.
+    this.pickReveal = [];
+    // The list is NOT cleared here. Clearing it means a sequence that finishes
+    // just after a longer one replaced it - a commit landing while a pick is
+    // still flashing - hands the board an empty list and stops the run that
+    // superseded it. Every playSteps builds a fresh array, so there is nothing
+    // this needs to clear anyway.
     this.updateTurnClock();
     this.cdr.markForCheck();
   }
@@ -2440,9 +2792,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     side: 'mine' | 'opponent',
     row: 'mine' | 'opponent' | 'unit',
     index: number,
+    /** Where it lands. Only the recap reads it, and only to play it there. */
+    hex = '',
   ): AbilitySpend {
     return {
-      side, row, index,
+      side, row, index, hex,
       cost: this.abilityCosts[index] ?? 0,
       gain: this.abilityEffects[index]?.points ?? 0,
       uid,
@@ -2499,12 +2853,25 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // instruction to the board to drop the rest and start again.
     // The whole turn again, with the walk collapsed into the one line it
     // amounted to, and every cast lit in the order it was made.
-    this.playSteps(this.markHostile(buildPlayback(this.stagedActions, true)));
+    // The glow itself is never taken down - it goes up when a slot is taken
+    // and stays up until this side plays again, so the other player reads it
+    // for their whole turn. What the recap does is draw a curtain over this
+    // turn's picks and lift it one at a time, so committing three of them
+    // looks like three, in order.
+    this.pickReveal = this.pickedThisTurn.map(p => ({ side: p.side, index: p.index }));
+    // What was taken up leads the recap; what it was spent on follows.
+    this.playSteps([
+      ...this.pickedThisTurn.map(p => ({
+        kind: 'pick' as const, from: '', to: '', index: p.index, side: p.side,
+      })),
+      ...this.markHostile(buildPlayback(this.stagedActions, true)),
+    ]);
     this.persistLocalUiState();
     this.playEndTurnSound();
     // Ending a turn cancels any ability detail/targeting state, including
     // the yellow/red target indicators on the board.
     this.abilityFocus = null;
+    this.pathFocus = null;
     this.pendingAbility = null;
     this.unitAbilityFocus = null;
     this.cdr.markForCheck();
@@ -2556,6 +2923,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   private playDebuffSound(): void {
     this.playTone([260, 190, 130], 0.1);
+  }
+
+  /** Taking a slot up: brighter and shorter than using one. */
+  private playPickSound(): void {
+    this.playTone([700, 1050], 0.07);
   }
 
   private playAbilitySound(): void {

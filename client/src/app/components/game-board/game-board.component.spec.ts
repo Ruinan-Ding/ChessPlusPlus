@@ -43,6 +43,35 @@ describe('GameBoardComponent reach preview', () => {
 
   const cell = (key: string) => board.cells.find(c => c.key === key)!;
 
+  it('swells the unit once per cast, however many land on it', () => {
+    // A CSS class only restarts an animation if a frame is rendered with it
+    // off, and between two beats there is no such frame to rely on - three
+    // casts on one unit read as a single long swell. Run on the element, each
+    // beat starts over on its own.
+    const group = () => fixture.nativeElement.querySelector('[data-pop="0,0"]') as SVGGElement;
+    expect(group()).not.toBeNull();
+    expect(group().getAnimations().length).toBe(0);
+
+    const pop = (hostile: boolean) => (board as any).popUnit('0,0', hostile, 400);
+    pop(false);
+    pop(false);
+    pop(true);
+    // Three casts, three animations - not one that swallowed the others.
+    expect(group().getAnimations().length).toBe(3);
+
+    // A boost swells and something taken away shrinks.
+    const frames = group().getAnimations()
+      .map(a => ((a as any).effect.getKeyframes()[1].transform as string));
+    expect(frames.filter(f => f.includes('1.55')).length).toBe(2);
+    expect(frames.filter(f => f.includes('0.55')).length).toBe(1);
+  });
+
+  it('has nothing to swell for an ability that names no hex', () => {
+    // A universal ability shines in the panel alone.
+    expect(() => (board as any).popUnit('', false, 400)).not.toThrow();
+    expect(fixture.nativeElement.querySelectorAll('[data-pop] ').length).toBeGreaterThan(0);
+  });
+
   it('drops the rest of an attack when a new turn interrupts it', async () => {
     // Cancelling resolves the promise the chain is waiting on; it does not
     // unwind the chain. Without a token check between beats the abandoned
@@ -81,9 +110,31 @@ describe('GameBoardComponent reach preview', () => {
     board.playback = steps;
     board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
 
-    expect(board.glowHex).toBe('3,0');
-    await new Promise(resolve => setTimeout(resolve, 900));
+    // Nothing starts inside ngOnChanges. The runner announces each beat as it
+    // begins, and the room lights the slot that cast it - but the room's view
+    // is checked before this child's, so a flag raised mid-pass went up and
+    // came down inside one task and never rendered. A staged cast is one beat,
+    // which is why it only ever showed on the multi-beat recap.
     expect(board.glowHex).toBe('');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(board.glowHex).toBe('3,0');
+
+    // A cast runs a full second now - long enough to follow, so long enough
+    // that a spec has to wait it out.
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    expect(board.glowHex).toBe('');
+  });
+
+  it('keeps a zone readable under a hex lit for reach', () => {
+    const zoned = board.cells.filter(c => c.zoneClass === 'zone');
+    expect(zoned.length).toBeGreaterThan(0);
+
+    const washes = fixture.nativeElement.querySelectorAll('.zone-wash');
+    // A wash over the hex, not a fill under it: every reach colour carries
+    // !important, so as a fill the blue vanished the moment the hex lit up.
+    expect(washes.length).toBe(zoned.length);
+    // And it never eats a click meant for the hex beneath it.
+    expect(getComputedStyle(washes[0]).pointerEvents).toBe('none');
   });
 
   it('paints five separate zones of the same size on a full-size board', () => {

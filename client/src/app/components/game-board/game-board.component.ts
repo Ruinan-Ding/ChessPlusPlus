@@ -9,6 +9,7 @@ import {
   SimpleChanges,
   ChangeDetectionStrategy,
   ChangeDetectorRef,
+  ElementRef,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
@@ -61,13 +62,15 @@ interface StrikeMarks {
  * list from what it staged; the board is what knows where a hex is.
  */
 export interface AnimStep {
-  kind: 'move' | 'attack' | 'counter' | 'ability';
+  kind: 'move' | 'attack' | 'counter' | 'ability' | 'pick';
   /** Where the actor stands (attack, ability) or starts from (move). */
   from: string;
   /** Where it lands (move) or what it hits (attack, counter, ability). */
   to: string;
-  /** For an ability beat: which slot cast it, so its button can shine too. */
+  /** For an ability beat: which slot cast it, so its button can pop too. */
   index?: number;
+  /** Whose panel that slot is in. Both sides draw the same indices. */
+  side?: 'mine' | 'opponent';
   /** For an ability beat: cast at an enemy rather than on your own. */
   hostile?: boolean;
   /** A recap beat: the same animation, run short. */
@@ -156,9 +159,13 @@ const PLATE_SIZE = 25;
 const MOVE_MS = 420;
 const STRIKE_MS = 170;
 const HIT_MS = 260;
-const GLOW_MS = 700;
+const GLOW_MS = 1000;
 /** The same beat in the end-of-turn recap, where there may be several. */
-const GLOW_BRIEF_MS = 280;
+const GLOW_BRIEF_MS = 600;
+/** A slot being taken up - shorter than using one, and board-less. */
+const PICK_MS = 450;
+/** Blank frame between beats, so each one starts its animation over. */
+const BEAT_GAP_MS = 90;
 const ZONE_COLS = 7 / 11;
 const ZONE_ROWS = 6 / 11;
 /** Rings of hexes around each zone's centre: 2 makes a 19-hex patch. */
@@ -410,6 +417,15 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             (click)="onHexClick(hex)"
             (mouseenter)="onHexHover(hex)"
           />
+          <!-- The zone as a wash laid over the hex rather than a fill under
+               it: every reach colour carries !important, so a zone hex lit
+               green or red used to lose its blue entirely. Not clickable -
+               the hex beneath it still takes the pointer. -->
+          <polygon
+            *ngIf="hex.zoneClass === 'zone'"
+            [attr.points]="hex.points"
+            class="zone-wash"
+          />
           <!-- Legal-move dot -->
           <circle
             *ngIf="showingSelection && legalTargets.has(hex.key) && !hex.piece"
@@ -422,50 +438,53 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
           <!-- Unit: inner hex plate, icon in the opposite colour, and the
                stats ringed around it (HP top, attack right, move left). -->
           <ng-container *ngIf="hex.piece as pc">
-            <polygon
-              *ngIf="!isMoving(hex.key)"
-              [attr.points]="hex.innerPoints"
-              class="unit-plate"
-              [class.plate-white]="pc.color === 'white'"
-              [class.plate-black]="pc.color === 'black'"
-              [class.plate-selected]="hex.key === selectedHex"
-              [class.plate-hovered]="hex.key === hoveredHex"
-              [class.charged]="hex.key === glowHex && !glowHostile"
-              [class.sapped]="hex.key === glowHex && glowHostile"
-              [class.brief]="glowBrief"
-              [class.unit-buffed]="hasLift(pc.uid)"
-              [class.unit-debuffed]="hasDrag(pc.uid)"
-              [class.unit-both-effects]="hasLift(pc.uid) && hasDrag(pc.uid)"
-              [class.ability-friendly-target]="isAbilityTarget(hex, 'friendly')"
-              [class.ability-enemy-target]="isAbilityTarget(hex, 'enemy')"
-              [class.doomed]="wouldDie(hex.key)"
-              (click)="onHexClick(hex)"
-              (mouseenter)="onHexHover(hex)"
-            />
-            <!-- The unit in hand. Its own element rather than a class on the
-                 plate: the plate's filter already belongs to the buff and
-                 debuff animations, and this must show through those. -->
-            <polygon
-              *ngIf="hex.key === selectedHex || hex.key === movesLeftFor"
-              [attr.points]="hex.innerPoints"
-              class="acting-ring"
-            />
-            <!-- Numbering mode replaces the unit's face with its hex number. -->
-            <ng-container *ngIf="!showNumbers && !isMoving(hex.key)">
-              <text
-                [attr.x]="hex.cx"
-                [attr.y]="hex.cy + 1"
-                [attr.transform]="textTransform(hex.cx, hex.cy)"
-                class="piece-symbol"
-                [class.piece-white]="pc.color === 'white'"
-                [class.piece-black]="pc.color === 'black'"
-                [class.piece-selected]="hex.key === selectedHex"
+            <!-- Plate, ring and face together, so an ability that swells the
+                 unit swells all of it. On the group rather than the plate:
+                 the plate's own animation belongs to the buff and debuff
+                 glows, and a cast that lands a buff would lose the race. -->
+            <g class="unit-pop" [attr.data-pop]="hex.key">
+              <polygon
+                *ngIf="!isMoving(hex.key)"
+                [attr.points]="hex.innerPoints"
+                class="unit-plate"
+                [class.plate-white]="pc.color === 'white'"
+                [class.plate-black]="pc.color === 'black'"
+                [class.plate-selected]="hex.key === selectedHex"
+                [class.plate-hovered]="hex.key === hoveredHex"
+                [class.unit-buffed]="hasLift(pc.uid)"
+                [class.unit-debuffed]="hasDrag(pc.uid)"
+                [class.unit-both-effects]="hasLift(pc.uid) && hasDrag(pc.uid)"
+                [class.ability-friendly-target]="isAbilityTarget(hex, 'friendly')"
+                [class.ability-enemy-target]="isAbilityTarget(hex, 'enemy')"
                 [class.doomed]="wouldDie(hex.key)"
-                [class.wave-acted-light]="hasActed(hex) && pc.color === 'white'"
-                [class.wave-acted-dark]="hasActed(hex) && pc.color === 'black'"
                 (click)="onHexClick(hex)"
-              >{{ getPieceSymbol(pc) }}</text>
-            </ng-container>
+                (mouseenter)="onHexHover(hex)"
+              />
+              <!-- The unit in hand. Its own element rather than a class on the
+                   plate: the plate's filter already belongs to the buff and
+                   debuff animations, and this must show through those. -->
+              <polygon
+                *ngIf="hex.key === selectedHex || hex.key === movesLeftFor"
+                [attr.points]="hex.innerPoints"
+                class="acting-ring"
+              />
+              <!-- Numbering mode replaces the unit's face with its hex number. -->
+              <ng-container *ngIf="!showNumbers && !isMoving(hex.key)">
+                <text
+                  [attr.x]="hex.cx"
+                  [attr.y]="hex.cy + 1"
+                  [attr.transform]="textTransform(hex.cx, hex.cy)"
+                  class="piece-symbol"
+                  [class.piece-white]="pc.color === 'white'"
+                  [class.piece-black]="pc.color === 'black'"
+                  [class.piece-selected]="hex.key === selectedHex"
+                  [class.doomed]="wouldDie(hex.key)"
+                  [class.wave-acted-light]="hasActed(hex) && pc.color === 'white'"
+                  [class.wave-acted-dark]="hasActed(hex) && pc.color === 'black'"
+                  (click)="onHexClick(hex)"
+                >{{ getPieceSymbol(pc) }}</text>
+              </ng-container>
+            </g>
           </ng-container>
         </g>
         <ng-container *ngFor="let arrow of movementArrowSegments">
@@ -663,11 +682,16 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       transition: fill 0.1s;
     }
 
-    /* The five zones, one colour: they are one thing in five places. A plain
-       fill, so every state that matters - legal, previewed, attackable,
-       selected - still paints over it (those all carry !important) and a
-       unit's plate reads on top. */
+    /* The five zones, one colour: they are one thing in five places. The
+       fill is the resting colour; the wash above it is what survives a hex
+       being lit for reach, since every one of those carries !important. */
     .zone { fill: #b9d4f2; }
+
+    .zone-wash {
+      fill: #4a90d9;
+      fill-opacity: 0.3;
+      pointer-events: none;
+    }
 
     .hex-cell:not(.hex-filler):hover {
       fill: #e8cf9f;
@@ -916,33 +940,14 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       animation: unit-both-glow 1.2s ease-in-out infinite;
     }
 
-    /* The unit itself shining as an ability lands on it: gold for a boost,
-       violet for something being taken away. */
-    .unit-plate.charged {
-      animation: plate-charged 0.7s ease-out;
+    /* An ability landing on the unit swells it - or shrinks it, for something
+       taken away - around its own centre rather than the SVG's. The swell
+       itself is run from popUnit(); this is only where it turns. */
+    .unit-pop {
+      transform-box: fill-box;
+      transform-origin: center;
     }
 
-    .unit-plate.sapped {
-      animation: plate-sapped 0.7s ease-out;
-    }
-
-    /* The recap runs the same shine, short: a turn can hold several casts. */
-    .unit-plate.charged.brief,
-    .unit-plate.sapped.brief {
-      animation-duration: 0.28s;
-    }
-
-    @keyframes plate-charged {
-      0% { filter: drop-shadow(0 0 0 #f1c40f); }
-      45% { filter: drop-shadow(0 0 12px #ffe066) brightness(1.5); }
-      100% { filter: drop-shadow(0 0 0 #f1c40f); }
-    }
-
-    @keyframes plate-sapped {
-      0% { filter: drop-shadow(0 0 0 #8e44ad); }
-      45% { filter: drop-shadow(0 0 12px #b07cd6) brightness(0.7); }
-      100% { filter: drop-shadow(0 0 0 #8e44ad); }
-    }
 
     @keyframes unit-buff-glow {
       from { filter: drop-shadow(0 0 2px #27ae60); }
@@ -1249,7 +1254,6 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   /** The glowing unit is being sapped rather than boosted. */
   glowHostile = false;
   /** This glow belongs to the end-of-turn recap, so it runs short. */
-  glowBrief = false;
   private playing: Array<() => void> = [];
   private frame = 0;
   @Input() movementArrows: Array<{ from: string; to: string }> = [];
@@ -1538,7 +1542,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   private previewKey: string | null = null;
   lastDamagedHex = '';  // hex that was attacked but unit survived
 
-  constructor(private cdr: ChangeDetectorRef) {}
+  constructor(private cdr: ChangeDetectorRef, private host: ElementRef<HTMLElement>) {}
 
   get isMyTurn(): boolean {
     return this.currentTurn === this.username;
@@ -1588,6 +1592,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       if (token !== this.playbackToken) return;   // a newer turn took over
       this.playbackStep.emit(step);
       await this.playStep(step);
+      // A beat ends by clearing the class its animation hangs on, and the next
+      // sets it again in the same task - so the browser never saw it off and
+      // never restarted the animation. Three casts on one unit read as a
+      // single long swell. This gap is the frame in between.
+      if (token !== this.playbackToken) return;
+      await this.wait(BEAT_GAP_MS);
     }
     if (token !== this.playbackToken) return;
     this.stopPlayback();
@@ -1605,9 +1615,16 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // An ability is a shine and a noise: on the unit, on the slot that cast
     // it, or on both. A universal one names no hex and shines in the panel
     // alone, so it still has to take its beat rather than be skipped.
+    // Taking an ability up is its own moment: nothing on the board, a flash
+    // on the slot it landed in.
+    if (step.kind === 'pick') return this.wait(PICK_MS);
     if (step.kind === 'ability') {
-      this.glowBrief = !!step.brief;
       const ms = step.brief ? GLOW_BRIEF_MS : GLOW_MS;
+      // Driven on the element rather than through a CSS class: a class only
+      // restarts an animation if the browser renders a frame with it off, and
+      // between two beats there is no such frame to rely on - three casts on
+      // one unit read as a single long swell. animate() always starts over.
+      this.popUnit(step.to, !!step.hostile, ms);
       if (!to) return this.wait(ms);
       this.glowHostile = !!step.hostile;
       return this.flash('glowHex', step.to, ms);
@@ -1629,6 +1646,25 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         await this.flash('hitHex', step.to, HIT_MS);
       }
     }
+  }
+
+  /**
+   * Swell the unit on `key` - or shrink it, for something being taken away.
+   * Silent when the hex holds nobody: a universal ability names no hex, and
+   * its beat is the panel's alone.
+   */
+  private popUnit(key: string, hostile: boolean, ms: number): void {
+    const el = key
+      ? this.host.nativeElement.querySelector<SVGGElement>(`[data-pop="${key}"]`)
+      : null;
+    if (!el?.animate) return;
+    const peak = hostile ? 0.55 : 1.55;
+    const glow = hostile ? '#b07cd6' : '#ffe066';
+    el.animate([
+      { transform: 'scale(1)', filter: 'drop-shadow(0 0 0 transparent)' },
+      { transform: `scale(${peak})`, filter: `drop-shadow(0 0 10px ${glow})`, offset: 0.45 },
+      { transform: 'scale(1)', filter: 'drop-shadow(0 0 0 transparent)' },
+    ], { duration: ms, easing: 'ease-in-out' });
   }
 
   /** Hold the sequence for a beat that has nothing on the board to show. */
@@ -1716,7 +1752,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // rebuilt cells. Playing before the rebuild found the unit still on the
     // hex it had left, and animated nothing.
     if (changes['playback']) {
-      if (this.playback.length) this.runPlayback(this.playback);
+      const steps = this.playback;
+      // Started *after* this change-detection pass, not inside it. The runner
+      // announces each beat as it begins and the room answers by lighting the
+      // slot that cast it - but the room's own view was checked before this
+      // child's, so that flag went up and came down again inside one task and
+      // never rendered. A staged cast is exactly one beat, which is why it
+      // only ever showed on the multi-beat end-of-turn recap.
+      // setTimeout, not queueMicrotask: zone.js does not patch the latter, so
+      // the whole run - every beat, every timer inside it - escaped Angular's
+      // zone and nothing triggered change detection. The classes the
+      // animations hang on then only changed when some other event happened
+      // to run a pass, which merged consecutive beats into one long swell.
+      if (steps.length) setTimeout(() => { if (this.playback === steps) this.runPlayback(steps); });
       else this.stopPlayback();
     }
   }

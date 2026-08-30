@@ -27,29 +27,21 @@
            gets the height. Colours match the numbers drawn on the board. -->
       <section class="match-panel opponent-panel">
         <h3 class="panel-head"><span>{{ abilityHeader('opponent', 'Opponent') }}</span><span class="points">{{ opponentPoints }}</span></h3>
-        <div class="panel-body">
-          <div class="ability-detail" *ngIf="isAbilityFocusedSide('opponent'); else opponentAbilityList"
+        <div class="panel-body" *ngIf="abilitiesComingSoon">
+          <p class="coming-soon">Coming soon.</p>
+        </div>
+        <div class="panel-body" *ngIf="!abilitiesComingSoon">
+          <!-- The list stays in the layout while a detail is open, hidden
+               under it: taken out, the panel collapsed by a third every time
+               an ability was clicked into. -->
+          <div class="ability-stack">
+          <div class="ability-detail" *ngIf="isAbilityFocusedSide('opponent')"
                [class.ability-disabled]="!focusedAbilityIsPassive && !focusedAbilityCanActivate()">
             <div class="ability-detail-content">
               <p>{{ focusedAbilityDescription }}</p>
-              <p class="arming-hint" *ngIf="!focusedAbilityIsPassive && focusedAbilityIsTargeted && focusedAbilityCanActivate()">Select a target on the board.</p>
-              <p class="arming-hint" *ngIf="!focusedAbilityIsPassive && !focusedAbilityCanActivate()">Unavailable: on cooldown, unaffordable, or not your turn.</p>
-            </div>
-            <div class="ability-detail-actions">
-              <!-- Four of the eight travel with you, and a pick is for the
-                   match: it goes to the top of the list and stays there. -->
-              <button *ngIf="abilityFocus && !focusedAbilityIsPassive && !isUltimate(abilityFocus.index)"
-                      class="pick-btn" type="button"
-                      [class.carried]="isPicked(abilityFocus.side, abilityFocus.index)"
-                      [disabled]="!canPick(abilityFocus.side, abilityFocus.index)"
-                      (click)="pickAbility(abilityFocus.side, abilityFocus.index)"
-              >{{ isPicked(abilityFocus.side, abilityFocus.index) ? 'Picked' : 'Pick' }}</button>
-              <button *ngIf="focusedAbilityIsUniversal" class="scaffold-btn"
-                      [disabled]="!focusedAbilityCanActivate()" (click)="activateFocusedAbility()">Use</button>
-              <button class="ability-back-btn" type="button" (click)="clearAbilityFocus()">Back</button>
             </div>
           </div>
-          <ng-template #opponentAbilityList><div class="panel-buttons">
+          <div class="panel-buttons" [class.behind]="isAbilityFocusedSide('opponent')">
             <!-- Carried four first, the rest of the pool under them. -->
             <ng-container *ngFor="let i of abilityOrder('opponent')">
               <button class="scaffold-btn" type="button"
@@ -58,75 +50,156 @@
                       [title]="abilityHint(i)"
                       [class.focused]="isAbilityFocused('opponent', i)"
                       [class.recent]="isRecent('opponent', i)"
-                      [class.casting]="isCasting(i)" [class.brief]="castingBrief"
+                      [class.picked-recent]="isRecentPick('opponent', i)"
+                      [class.casting]="isCasting('opponent', i)" [class.brief]="castingBrief"
+                      [class.picking]="isPicking('opponent', i)"
                       [class.unpicked]="!isPicked('opponent', i)"
                       [class.ability-unavailable]="!canAfford('opponent', i, opponentCooldowns[i])"
                       (click)="selectAbility('opponent', i, opponentCooldowns)"
               >{{ abilityLabel(i, opponentCooldowns[i]) }}</button>
             </ng-container>
             <!-- Until a path is taken there is nothing here but the three
-                 it could be, each named for the passive it grants. -->
-            <div class="path-choices" *ngIf="pathOf('opponent') === null">
-              <button *ngFor="let path of abilityPaths; index as p"
-                      class="path-btn" type="button"
-                      [title]="pathHint(p)"
-                      [disabled]="!canUnlockPath('opponent', p)"
-                      (click)="unlockPath('opponent', p)"
-              >{{ pathLabel(p) }}</button>
-            </div>
+                 it could be, each named for the passive it grants. A path is
+                 one per match and paid for once, so it is read before it is
+                 taken rather than going through on the first click. -->
+            <ng-container *ngIf="pathOf('opponent') === null">
+              <div class="path-detail" *ngIf="pathFocusFor('opponent') as chosen; else opponentPathChoices">
+                <!-- Laid out as it will be once taken, so the choice is made
+                     against the thing itself: the passive and its green
+                     button, then the ability and the ultimate, then Pick and
+                     Back under the pair. What each ability does is read by
+                     clicking into it, the same as any other; none is carried
+                     yet, so all three wear the unpicked look. -->
+                <div class="path-passive-row">
+                  <button class="passive-row unpicked" type="button"
+                          [title]="abilityHint(chosen.path.passive)"
+                          [style.font-size]="abilityFontSize(chosen.path.passive, 0)"
+                          (click)="selectAbility('opponent', chosen.path.passive, opponentCooldowns)"
+                  >{{ abilityLabel(chosen.path.passive, 0) }}</button>
+                  <!-- ponytail: green, and a place to be - what it does is
+                       still to be decided, so it does nothing rather than
+                       something invented. -->
+                  <button class="path-extra-btn" type="button"
+                          title="Not wired up yet.">+</button>
+                </div>
+                <div class="path-pair">
+                  <button class="scaffold-btn unpicked" type="button"
+                          [title]="abilityHint(chosen.path.skill)"
+                          [style.font-size]="abilityFontSize(chosen.path.skill, 0)"
+                          (click)="selectAbility('opponent', chosen.path.skill, opponentCooldowns)"
+                  >{{ abilityLabel(chosen.path.skill, 0) }}</button>
+                
+                  <button class="scaffold-btn ultimate-btn unpicked" type="button"
+                          [title]="abilityHint(chosen.path.ultimate)"
+                          [style.font-size]="abilityFontSize(chosen.path.ultimate, 0)"
+                          (click)="selectAbility('opponent', chosen.path.ultimate, opponentCooldowns)"
+                  >{{ abilityLabel(chosen.path.ultimate, 0) }}</button>
+                </div>
+              </div>
+              <ng-template #opponentPathChoices>
+                <div class="path-choices">
+                  <button *ngFor="let path of abilityPaths; index as p"
+                          class="path-btn" type="button"
+                          [title]="pathHint(p)"
+                          (click)="focusPath('opponent', p)">
+                    <span class="path-name">{{ path.name }}</span>
+                    <span class="path-cost">{{ path.cost }}</span>
+                  </button>
+                </div>
+              </ng-template>
+            </ng-container>
             <ng-container *ngIf="pathChoice('opponent') as path">
               <div class="ability-bottom-row">
                 <button class="passive-row" [title]="abilityHint(path.passive)"
                         [style.font-size]="abilityFontSize(path.passive, 0)"
+                        [class.picked-recent]="isRecentPick('opponent', path.passive)"
+                        [class.picking]="isPicking('opponent', path.passive)"
                         (click)="selectAbility('opponent', path.passive, opponentCooldowns)"
                 >{{ abilityLabel(path.passive, 0) }}</button>
-                <button class="scaffold-btn" type="button" [title]="abilityHint(path.skill)"
-                        [style.font-size]="abilityFontSize(path.skill, opponentCooldowns[path.skill])"
-                        [class.arming]="isArmed('opponent', path.skill)"
-                        [class.recent]="isRecent('opponent', path.skill)"
-                        [class.casting]="isCasting(path.skill)" [class.brief]="castingBrief"
-                        [class.ability-unavailable]="!canAfford('opponent', path.skill, opponentCooldowns[path.skill])"
-                        (click)="selectAbility('opponent', path.skill, opponentCooldowns)"
-                >{{ abilityLabel(path.skill, opponentCooldowns[path.skill]) }}</button>
-                <button class="scaffold-btn ultimate-btn" type="button" [title]="abilityHint(path.ultimate)"
-                        [style.font-size]="abilityFontSize(path.ultimate, opponentCooldowns[path.ultimate])"
-                        [class.arming]="isArmed('opponent', path.ultimate)"
-                        [class.recent]="isRecent('opponent', path.ultimate)"
-                        [class.casting]="isCasting(path.ultimate)" [class.brief]="castingBrief"
-                        [class.ability-unavailable]="!canAfford('opponent', path.ultimate, opponentCooldowns[path.ultimate])"
-                        (click)="selectAbility('opponent', path.ultimate, opponentCooldowns)"
-                >{{ abilityLabel(path.ultimate, opponentCooldowns[path.ultimate]) }}</button>
+                  <!-- ponytail: green, and a place to be - what it does is
+                       still to be decided, so it does nothing rather than
+                       something invented. -->
+                  <button class="path-extra-btn" type="button"
+                          title="Not wired up yet.">+</button>
+                <!-- Two to a row, ultimate first: they are one line of
+                     the panel, not two. -->
+                <div class="path-pair">
+                  <button class="scaffold-btn" type="button" [title]="abilityHint(path.skill)"
+                          [style.font-size]="abilityFontSize(path.skill, opponentCooldowns[path.skill])"
+                          [class.arming]="isArmed('opponent', path.skill)"
+                          [class.recent]="isRecent('opponent', path.skill)"
+                          [class.picked-recent]="isRecentPick('opponent', path.skill)"
+                          [class.casting]="isCasting('opponent', path.skill)" [class.brief]="castingBrief"
+                          [class.picking]="isPicking('opponent', path.skill)"
+                          [class.ability-unavailable]="!canAfford('opponent', path.skill, opponentCooldowns[path.skill])"
+                          (click)="selectAbility('opponent', path.skill, opponentCooldowns)"
+                  >{{ abilityLabel(path.skill, opponentCooldowns[path.skill]) }}</button>
+                
+                  <button class="scaffold-btn ultimate-btn" type="button" [title]="abilityHint(path.ultimate)"
+                          [style.font-size]="abilityFontSize(path.ultimate, opponentCooldowns[path.ultimate])"
+                          [class.arming]="isArmed('opponent', path.ultimate)"
+                          [class.recent]="isRecent('opponent', path.ultimate)"
+                          [class.picked-recent]="isRecentPick('opponent', path.ultimate)"
+                          [class.casting]="isCasting('opponent', path.ultimate)" [class.brief]="castingBrief"
+                          [class.picking]="isPicking('opponent', path.ultimate)"
+                          [class.ability-unavailable]="!canAfford('opponent', path.ultimate, opponentCooldowns[path.ultimate])"
+                          (click)="selectAbility('opponent', path.ultimate, opponentCooldowns)"
+                  >{{ abilityLabel(path.ultimate, opponentCooldowns[path.ultimate]) }}</button>
+                </div>
               </div>
             </ng-container>
-          </div></ng-template>
+          </div>
+          </div>
+          <!-- One line, always, whatever the panel is showing. -->
+          <!-- Always drawn, whatever is open above it: blank and grey when
+               there is nothing to do, so the panel is one height. -->
+          <div class="path-actions">
+            <button class="pick-btn" type="button"
+                    [class.blank]="!actionLabel('opponent')"
+                    [disabled]="!actionEnabled('opponent')"
+                    (click)="takeAction('opponent')"
+            >{{ actionLabel('opponent') }}</button>
+            <button class="ability-back-btn" type="button"
+                    [class.blank]="!canGoBack('opponent')"
+                    [disabled]="!canGoBack('opponent')"
+                    (click)="goBack('opponent')"
+            >{{ canGoBack('opponent') ? 'Back' : '' }}</button>
+          </div>
+          <p class="arming-hint">{{ abilityNote('opponent') }}</p>
         </div>
       </section>
 
+      <!-- A move is staged on the board until one of these resolves it, so
+           they sit with the board rather than off in the rail. -->
+      <div class="turn-controls">
+        <button class="undo-btn" type="button" (click)="undoMove()" [disabled]="!pendingMove">Undo<span *ngIf="shortcutsActive"> (R)</span></button>
+        <button class="end-turn-btn" type="button" (click)="endTurn()" [disabled]="!canEndTurn">End Turn<span *ngIf="shortcutsActive"> (TAB)</span></button>
+      </div>
+
+      <button
+        class="hex-numbers-btn"
+        type="button"
+        [class.active]="showHexNumbers"
+        (click)="showHexNumbers = !showHexNumbers"
+      >{{ showHexNumbers ? 'Hide' : 'Show' }} Hex Numbers<span *ngIf="shortcutsActive"> (S)</span></button>
+
       <section class="match-panel abilities-panel">
         <h3 class="panel-head"><span>{{ abilityHeader('mine', 'Abilities') }}</span><span class="points">{{ myPoints }}</span></h3>
-        <div class="panel-body">
-          <div class="ability-detail" *ngIf="isAbilityFocusedSide('mine'); else myAbilityList"
+        <div class="panel-body" *ngIf="abilitiesComingSoon">
+          <p class="coming-soon">Coming soon.</p>
+        </div>
+        <div class="panel-body" *ngIf="!abilitiesComingSoon">
+          <!-- The list stays in the layout while a detail is open, hidden
+               under it: taken out, the panel collapsed by a third every time
+               an ability was clicked into. -->
+          <div class="ability-stack">
+          <div class="ability-detail" *ngIf="isAbilityFocusedSide('mine')"
                [class.ability-disabled]="!focusedAbilityIsPassive && !focusedAbilityCanActivate()">
             <div class="ability-detail-content">
               <p>{{ focusedAbilityDescription }}</p>
-              <p class="arming-hint" *ngIf="!focusedAbilityIsPassive && focusedAbilityIsTargeted && focusedAbilityCanActivate()">Select a target on the board.</p>
-              <p class="arming-hint" *ngIf="!focusedAbilityIsPassive && !focusedAbilityCanActivate()">Unavailable: on cooldown, unaffordable, or not your turn.</p>
-            </div>
-            <div class="ability-detail-actions">
-              <!-- Four of the eight travel with you, and a pick is for the
-                   match: it goes to the top of the list and stays there. -->
-              <button *ngIf="abilityFocus && !focusedAbilityIsPassive && !isUltimate(abilityFocus.index)"
-                      class="pick-btn" type="button"
-                      [class.carried]="isPicked(abilityFocus.side, abilityFocus.index)"
-                      [disabled]="!canPick(abilityFocus.side, abilityFocus.index)"
-                      (click)="pickAbility(abilityFocus.side, abilityFocus.index)"
-              >{{ isPicked(abilityFocus.side, abilityFocus.index) ? 'Picked' : 'Pick' }}</button>
-              <button *ngIf="focusedAbilityIsUniversal" class="scaffold-btn"
-                      [disabled]="!focusedAbilityCanActivate()" (click)="activateFocusedAbility()">Use</button>
-              <button class="ability-back-btn" type="button" (click)="clearAbilityFocus()">Back</button>
             </div>
           </div>
-          <ng-template #myAbilityList><div class="panel-buttons">
+          <div class="panel-buttons" [class.behind]="isAbilityFocusedSide('mine')">
             <!-- Carried four first, the rest of the pool under them. -->
             <ng-container *ngFor="let i of abilityOrder('mine')">
               <button class="scaffold-btn" type="button"
@@ -135,54 +208,132 @@
                       [title]="abilityHint(i)"
                       [class.focused]="isAbilityFocused('mine', i)"
                       [class.recent]="isRecent('mine', i)"
-                      [class.casting]="isCasting(i)" [class.brief]="castingBrief"
+                      [class.picked-recent]="isRecentPick('mine', i)"
+                      [class.casting]="isCasting('mine', i)" [class.brief]="castingBrief"
+                      [class.picking]="isPicking('mine', i)"
                       [class.unpicked]="!isPicked('mine', i)"
                       [class.ability-unavailable]="!canAfford('mine', i, myCooldowns[i])"
                       (click)="selectAbility('mine', i, myCooldowns)"
               >{{ abilityLabel(i, myCooldowns[i]) }}</button>
             </ng-container>
             <!-- Until a path is taken there is nothing here but the three
-                 it could be, each named for the passive it grants. -->
-            <div class="path-choices" *ngIf="pathOf('mine') === null">
-              <button *ngFor="let path of abilityPaths; index as p"
-                      class="path-btn" type="button"
-                      [title]="pathHint(p)"
-                      [disabled]="!canUnlockPath('mine', p)"
-                      (click)="unlockPath('mine', p)"
-              >{{ pathLabel(p) }}</button>
-            </div>
+                 it could be, each named for the passive it grants. A path is
+                 one per match and paid for once, so it is read before it is
+                 taken rather than going through on the first click. -->
+            <ng-container *ngIf="pathOf('mine') === null">
+              <div class="path-detail" *ngIf="pathFocusFor('mine') as chosen; else minePathChoices">
+                <!-- Laid out as it will be once taken, so the choice is made
+                     against the thing itself: the passive and its green
+                     button, then the ability and the ultimate, then Pick and
+                     Back under the pair. What each ability does is read by
+                     clicking into it, the same as any other; none is carried
+                     yet, so all three wear the unpicked look. -->
+                <div class="path-passive-row">
+                  <button class="passive-row unpicked" type="button"
+                          [title]="abilityHint(chosen.path.passive)"
+                          [style.font-size]="abilityFontSize(chosen.path.passive, 0)"
+                          (click)="selectAbility('mine', chosen.path.passive, myCooldowns)"
+                  >{{ abilityLabel(chosen.path.passive, 0) }}</button>
+                  <!-- ponytail: green, and a place to be - what it does is
+                       still to be decided, so it does nothing rather than
+                       something invented. -->
+                  <button class="path-extra-btn" type="button"
+                          title="Not wired up yet.">+</button>
+                </div>
+                <div class="path-pair">
+                  <button class="scaffold-btn unpicked" type="button"
+                          [title]="abilityHint(chosen.path.skill)"
+                          [style.font-size]="abilityFontSize(chosen.path.skill, 0)"
+                          (click)="selectAbility('mine', chosen.path.skill, myCooldowns)"
+                  >{{ abilityLabel(chosen.path.skill, 0) }}</button>
+                
+                  <button class="scaffold-btn ultimate-btn unpicked" type="button"
+                          [title]="abilityHint(chosen.path.ultimate)"
+                          [style.font-size]="abilityFontSize(chosen.path.ultimate, 0)"
+                          (click)="selectAbility('mine', chosen.path.ultimate, myCooldowns)"
+                  >{{ abilityLabel(chosen.path.ultimate, 0) }}</button>
+                </div>
+              </div>
+              <ng-template #minePathChoices>
+                <div class="path-choices">
+                  <button *ngFor="let path of abilityPaths; index as p"
+                          class="path-btn" type="button"
+                          [title]="pathHint(p)"
+                          (click)="focusPath('mine', p)">
+                    <span class="path-name">{{ path.name }}</span>
+                    <span class="path-cost">{{ path.cost }}</span>
+                  </button>
+                </div>
+              </ng-template>
+            </ng-container>
             <ng-container *ngIf="pathChoice('mine') as path">
               <div class="ability-bottom-row">
                 <button class="passive-row" [title]="abilityHint(path.passive)"
                         [style.font-size]="abilityFontSize(path.passive, 0)"
+                        [class.picked-recent]="isRecentPick('mine', path.passive)"
+                        [class.picking]="isPicking('mine', path.passive)"
                         (click)="selectAbility('mine', path.passive, myCooldowns)"
                 >{{ abilityLabel(path.passive, 0) }}</button>
-                <button class="scaffold-btn" type="button" [title]="abilityHint(path.skill)"
-                        [style.font-size]="abilityFontSize(path.skill, myCooldowns[path.skill])"
-                        [class.arming]="isArmed('mine', path.skill)"
-                        [class.recent]="isRecent('mine', path.skill)"
-                        [class.casting]="isCasting(path.skill)" [class.brief]="castingBrief"
-                        [class.ability-unavailable]="!canAfford('mine', path.skill, myCooldowns[path.skill])"
-                        (click)="selectAbility('mine', path.skill, myCooldowns)"
-                >{{ abilityLabel(path.skill, myCooldowns[path.skill]) }}</button>
-                <button class="scaffold-btn ultimate-btn" type="button" [title]="abilityHint(path.ultimate)"
-                        [style.font-size]="abilityFontSize(path.ultimate, myCooldowns[path.ultimate])"
-                        [class.arming]="isArmed('mine', path.ultimate)"
-                        [class.recent]="isRecent('mine', path.ultimate)"
-                        [class.casting]="isCasting(path.ultimate)" [class.brief]="castingBrief"
-                        [class.ability-unavailable]="!canAfford('mine', path.ultimate, myCooldowns[path.ultimate])"
-                        (click)="selectAbility('mine', path.ultimate, myCooldowns)"
-                >{{ abilityLabel(path.ultimate, myCooldowns[path.ultimate]) }}</button>
+                  <!-- ponytail: green, and a place to be - what it does is
+                       still to be decided, so it does nothing rather than
+                       something invented. -->
+                  <button class="path-extra-btn" type="button"
+                          title="Not wired up yet.">+</button>
+                <!-- Two to a row, ultimate first: they are one line of
+                     the panel, not two. -->
+                <div class="path-pair">
+                  <button class="scaffold-btn" type="button" [title]="abilityHint(path.skill)"
+                          [style.font-size]="abilityFontSize(path.skill, myCooldowns[path.skill])"
+                          [class.arming]="isArmed('mine', path.skill)"
+                          [class.recent]="isRecent('mine', path.skill)"
+                          [class.picked-recent]="isRecentPick('mine', path.skill)"
+                          [class.casting]="isCasting('mine', path.skill)" [class.brief]="castingBrief"
+                          [class.picking]="isPicking('mine', path.skill)"
+                          [class.ability-unavailable]="!canAfford('mine', path.skill, myCooldowns[path.skill])"
+                          (click)="selectAbility('mine', path.skill, myCooldowns)"
+                  >{{ abilityLabel(path.skill, myCooldowns[path.skill]) }}</button>
+                
+                  <button class="scaffold-btn ultimate-btn" type="button" [title]="abilityHint(path.ultimate)"
+                          [style.font-size]="abilityFontSize(path.ultimate, myCooldowns[path.ultimate])"
+                          [class.arming]="isArmed('mine', path.ultimate)"
+                          [class.recent]="isRecent('mine', path.ultimate)"
+                          [class.picked-recent]="isRecentPick('mine', path.ultimate)"
+                          [class.casting]="isCasting('mine', path.ultimate)" [class.brief]="castingBrief"
+                          [class.picking]="isPicking('mine', path.ultimate)"
+                          [class.ability-unavailable]="!canAfford('mine', path.ultimate, myCooldowns[path.ultimate])"
+                          (click)="selectAbility('mine', path.ultimate, myCooldowns)"
+                  >{{ abilityLabel(path.ultimate, myCooldowns[path.ultimate]) }}</button>
+                </div>
               </div>
             </ng-container>
-          </div></ng-template>
+          </div>
+          </div>
+          <!-- One line, always, whatever the panel is showing. -->
+          <!-- Always drawn, whatever is open above it: blank and grey when
+               there is nothing to do, so the panel is one height. -->
+          <div class="path-actions">
+            <button class="pick-btn" type="button"
+                    [class.blank]="!actionLabel('mine')"
+                    [disabled]="!actionEnabled('mine')"
+                    (click)="takeAction('mine')"
+            >{{ actionLabel('mine') }}</button>
+            <button class="ability-back-btn" type="button"
+                    [class.blank]="!canGoBack('mine')"
+                    [disabled]="!canGoBack('mine')"
+                    (click)="goBack('mine')"
+            >{{ canGoBack('mine') ? 'Back' : '' }}</button>
+          </div>
+          <p class="arming-hint">{{ abilityNote('mine') }}</p>
         </div>
       </section>
 
       <section class="match-panel stats-panel">
         <h3 class="panel-head"><span>{{ unitAbilityTitle }}</span>
           <span class="unit-side">{{ unitSideLabel }}</span></h3>
-        <div class="panel-body">
+        <div class="panel-body" *ngIf="abilitiesComingSoon">
+          <p class="coming-soon">Coming soon.</p>
+        </div>
+        <div class="panel-body" *ngIf="!abilitiesComingSoon">
           <div class="stat-grid">
             <!-- Only the current half of "x/20" answers for the unit's state,
                  so only it waves. -->
@@ -206,7 +357,7 @@
                [class.ability-disabled]="!unitAbilityIsPassive() && !unitAbilityCanActivate()">
             <div class="ability-detail-content">
               <p>{{ unitAbilityHint(unitAbilityFocus.index) }}</p>
-              <p class="arming-hint" *ngIf="!unitAbilityIsPassive() && !unitAbilityCanActivate()">Unavailable: on cooldown, unaffordable, not earned, or not this unit's turn.</p>
+              <p class="arming-hint">{{ unitAbilityNote }}</p>
             </div>
             <div class="ability-detail-actions">
               <button *ngIf="!unitAbilityIsPassive()" class="scaffold-btn" type="button"
@@ -216,24 +367,41 @@
             </div>
           </div>
           <ng-template #unitAbilityList><div class="panel-buttons">
-            <div class="unit-ability-row">
-              <!-- Earned in this order: the passive at one star, the skill
-                   at two - so the passive leads. -->
-              <button class="passive-row" *ngIf="pathChoice('mine') as path"
-                      [title]="abilityHint(path.passive)"
-                      [style.font-size]="abilityFontSize(path.passive, 0)"
-                      [class.locked]="(displayUnit?.vet ?? 0) < 1"
-                      [disabled]="(displayUnit?.vet ?? 0) < 1 || !!displayUnit?.panel"
-                      (click)="selectUnitAbility(path.passive)"
-              >{{ abilityLabel(path.passive, 0) }}</button>
+            <!-- Always drawn, so selecting a unit never resizes the panel.
+                 With nobody selected both slots are blank and grey, the left
+                 one still shaped like the passive it will hold. -->
+            <div class="unit-ability-row" *ngIf="!displayUnit">
+              <button class="passive-row locked blank" type="button" disabled
+                      [style.font-size]="abilityFontSize(0, 0)"></button>
+              <button class="scaffold-btn locked blank" type="button" disabled
+                      [style.font-size]="abilityFontSize(0, 0)"></button>
+            </div>
+            <div class="unit-ability-row" *ngIf="displayUnit">
+              <!-- Passive on the left, the unit's own ability on the right,
+                   and the passive slot is always drawn: without a path there
+                   is none to name yet, but the slot is still where it goes. -->
+              <ng-container *ngIf="pathChoice('mine') as path; else noPassive">
+                <button class="passive-row"
+                        [title]="abilityHint(path.passive)"
+                        [style.font-size]="abilityFontSize(path.passive, 0)"
+                        [class.locked]="displayUnit.vet < 1"
+                        [class.picked-recent]="isRecentPick('mine', path.passive)"
+                        [disabled]="displayUnit.vet < 1 || !!displayUnit.panel"
+                        (click)="selectUnitAbility(path.passive)"
+                >{{ abilityLabel(path.passive, 0) }}</button>
+              </ng-container>
+              <ng-template #noPassive>
+                <button class="passive-row locked" type="button" disabled
+                        title="Take a path to gain its passive."
+                >Passive</button>
+              </ng-template>
               <button class="scaffold-btn" type="button"
                       [style.font-size]="abilityFontSize(0, unitCooldowns[0])"
                       [title]="unitAbilityHint(0)"
                       [class.focused]="unitAbilityFocus?.index === 0"
-                      [class.casting]="isCasting(0)" [class.brief]="castingBrief"
                       [class.locked]="!vetUnlocked(0)"
                       [class.ability-unavailable]="!canAfford('mine', 0, unitCooldowns[0])"
-                      [disabled]="!vetUnlocked(0) || !!displayUnit?.panel"
+                      [disabled]="!vetUnlocked(0) || !!displayUnit.panel"
                       (click)="selectUnitAbility(0)"
               >{{ abilityLabel(0, unitCooldowns[0]) }}</button>
             </div>
@@ -258,19 +426,6 @@
 
       <!-- Same shape as Your Abilities. Live only on the opponent's turn, and
            only when you are driving both sides - never in multiplayer. -->
-      <!-- A move is staged on the board until one of these resolves it, so
-           they sit with the board rather than off in the rail. -->
-      <div class="turn-controls">
-        <button class="undo-btn" type="button" (click)="undoMove()" [disabled]="!pendingMove">Undo<span *ngIf="shortcutsActive"> (R)</span></button>
-        <button class="end-turn-btn" type="button" (click)="endTurn()" [disabled]="!canEndTurn">End Turn<span *ngIf="shortcutsActive"> (TAB)</span></button>
-      </div>
-
-      <button
-        class="hex-numbers-btn"
-        type="button"
-        [class.active]="showHexNumbers"
-        (click)="showHexNumbers = !showHexNumbers"
-      >{{ showHexNumbers ? 'Hide' : 'Show' }} Hex Numbers<span *ngIf="shortcutsActive"> (S)</span></button>
 
       <!-- The two things you can do to a running game, under the board's own
            controls rather than in the rail. -->
