@@ -18,8 +18,13 @@ const HEX_DIRS: [number, number][] = [
   [+1, 0], [-1, 0], [+1, -1], [0, -1], [0, 1], [-1, 1],
 ];
 
+/** Rings from the origin to (q, r) - the hex metric, in one place. */
+export function hexDistance(q: number, r: number): number {
+  return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
+}
+
 export function isInsideBoard(q: number, r: number, radius: number): boolean {
-  return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) <= radius;
+  return hexDistance(q, r) <= radius;
 }
 
 /**
@@ -150,12 +155,118 @@ export function attackTiers(unitId: string, config: any): number[] {
   return tiers;
 }
 
+/**
+ * How far out the outer four capture zones sit, as a share of the board's
+ * radius: 7 columns to the sides and 6 rows up and down on the shipped
+ * radius-11 board. Rows are the tighter pair - two hexes closer than the
+ * geometry would put them, which is how the plus is meant to sit.
+ */
+const ZONE_COLS = 7 / 11;
+const ZONE_ROWS = 6 / 11;
+/** Rings of hexes around each zone's centre: 2 makes a 19-hex patch. */
+const ZONE_SPREAD = 2;
+
+/**
+ * The five capture zones as one set of hexes: a patch in the middle and four
+ * around it - top, bottom, left, right - the same size and the same distance
+ * out, so they read as one set rather than five decisions.
+ *
+ * One flat set rather than five because nothing asks which zone a hex is in.
+ * On the shipped radius-11 board the patches stand well clear of each other;
+ * on a small enough board the centres come close enough that they overlap and
+ * the Set merges them into one larger zone. That is degenerate but not wrong
+ * - claims are clipped to the set either way - and the schema allows a radius
+ * as low as 1, where every hex on the board is a capture hex.
+ * ponytail: no minimum radius is enforced, because what a tiny board should
+ * do with five zones is the owner's call, not a default worth inventing.
+ *
+ * Memoised: the answer depends on nothing but the radius, and this is on the
+ * path that rebuilds the board's cells - every staged step, every buff.
+ */
+const zoneCache = new Map<number, Set<string>>();
+
+export function captureZoneHexes(radius: number): Set<string> {
+  const cached = zoneCache.get(radius);
+  if (cached) return cached;
+  // One step left or right is one column. Up and down goes in pairs of rows -
+  // (1,-2) is straight up - which is what keeps those two zones in the
+  // board's own centre column instead of half a column off it.
+  const cols = Math.max(ZONE_SPREAD + 1, Math.round(radius * ZONE_COLS));
+  const pairs = Math.max(1, Math.round((radius * ZONE_ROWS) / 2));
+  const centres: Array<[number, number]> = [
+    [0, 0],
+    [cols, 0], [-cols, 0],
+    [pairs, -2 * pairs], [-pairs, 2 * pairs],
+  ];
+  const hexes = new Set<string>();
+  for (const [cq, cr] of centres) {
+    // The rows a radius-N patch spans, and the span of each - the same bounds
+    // computeAttackZone walks, rather than a square with the corners thrown
+    // away.
+    for (let dq = -ZONE_SPREAD; dq <= ZONE_SPREAD; dq++) {
+      const lo = Math.max(-ZONE_SPREAD, -dq - ZONE_SPREAD);
+      const hi = Math.min(ZONE_SPREAD, -dq + ZONE_SPREAD);
+      for (let dr = lo; dr <= hi; dr++) {
+        const q = cq + dq, r = cr + dr;
+        if (isInsideBoard(q, r, radius)) hexes.add(`${q},${r}`);
+      }
+    }
+  }
+  zoneCache.set(radius, hexes);
+  return hexes;
+}
+
+/**
+ * Who holds each capture hex. A unit standing in a zone takes the hex under
+ * it and the zone hexes beside it - so the middle of a patch is worth seven,
+ * and a hex on its rim rather less. Adjacency stops at the zone's edge: the
+ * ordinary board around a zone is not worth anything.
+ *
+ * A hex both sides reach is held by neither, which is what cancels two lines
+ * of units that meet in a zone: their claims overlap along the seam where
+ * they touch, and every hex in the overlap goes neutral. Only decided hexes
+ * are returned, so a cancelled one reads the same as an empty one - to the
+ * score and to the board.
+ */
+export function captureClaims(
+  boardState: BoardLike, radius: number,
+): Map<string, 'white' | 'black'> {
+  const zone = captureZoneHexes(radius);
+  const claimed = new Map<string, 'white' | 'black' | 'contested'>();
+  const claim = (key: string, color: 'white' | 'black') => {
+    const held = claimed.get(key);
+    if (held === undefined) claimed.set(key, color);
+    else if (held !== color) claimed.set(key, 'contested');
+  };
+  for (const [key, piece] of Object.entries(boardState)) {
+    if (!piece || !zone.has(key)) continue;
+    const color = piece.color === 'black' ? 'black' : 'white';
+    claim(key, color);
+    const [q, r] = key.split(',').map(Number);
+    for (const [dq, dr] of HEX_DIRS) {
+      const next = `${q + dq},${r + dr}`;
+      if (zone.has(next)) claim(next, color);
+    }
+  }
+  const held = new Map<string, 'white' | 'black'>();
+  for (const [key, color] of claimed) if (color !== 'contested') held.set(key, color);
+  return held;
+}
+
+/** What a side's holdings are worth: a point a hex, every turn it keeps them. */
+export function captureScore(
+  claims: Map<string, 'white' | 'black'>, color: 'white' | 'black',
+): number {
+  let held = 0;
+  for (const owner of claims.values()) if (owner === color) held++;
+  return held;
+}
+
 /** Hex distance between two "q,r" keys. */
 export function hexDistanceKeys(a: string, b: string): number {
   const [aq, ar] = a.split(',').map(Number);
   const [bq, br] = b.split(',').map(Number);
-  const dq = aq - bq, dr = ar - br;
-  return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr));
+  return hexDistance(aq - bq, ar - br);
 }
 
 /**

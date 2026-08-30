@@ -222,6 +222,53 @@ Decided so far:
     deployment cadence ("a couple of phases"), what a "phase of the war" is, which first-row
     hexes a deployment can target, and the specific ways the right plane can be attacked.
 
+- **A carried ability can be swapped out.** The green `+` beside a path's passive offers your
+  carried four back: click one that is **not cooling down** and it leaves the loadout, freeing
+  the slot. **What goes into a slot freed this way comes in on cooldown**, so swapping changes
+  what you carry rather than handing you a ready ability mid-match. Swapping is a pick, so it
+  waits for your own turn. An ability on cooldown cannot be given up.
+  - *Assumed, not specified:* the refill cooldown is **3 turns**, the same a cast leaves behind
+    (`game-room.component.ts`, `pickAbility`). The owner said the replacement arrives on
+    cooldown but not for how long. Confirm before treating 3 as the number.
+- **Five capture zones.** The five 19-hex patches on the battlefield - one in the middle, four
+  around it - are territory. A unit standing in one claims the hex under it and the zone hexes
+  beside it, so the middle of a patch is worth seven and its rim rather less. Adjacency stops at
+  the zone's edge; the open board around a zone is worth nothing. **A hex both sides reach is
+  held by neither**, which is what cancels two lines of units meeting in a zone: their claims
+  overlap along the seam and every hex in the overlap goes neutral - a cancelled hex reads
+  exactly like an empty one, to the score and on the board. Geometry and claims are
+  `captureZoneHexes()` / `captureClaims()` in `hex-rules.ts`, read by the board (which colours
+  them, white's amber and black's violet) and by the room (which scores them), so the two can
+  never disagree. Client-side only - the server does not know a zone from any other hex.
+- **The header score is `cap - death`.** Each side's standing shows beside the turn indicator -
+  the opponent's to its left, yours to its right - as flag, capture hexes, skull, deaths, total.
+  **Cap is what you hold right now**, read off the board every time and gone the moment you walk
+  away; it is not banked and it is *not* ability points. **Death accumulates**: losing a unit
+  costs you its config `value` (a pawn is 5), so a total can be negative. `phaseScore(side)` in
+  `game-room.component.ts`.
+- **The match runs in five phases**, on a fixed turn schedule (`services/phases.ts`):
+
+  | phase | turns | |
+  |---|---|---|
+  | Initialization | 1-3 | |
+  | Phase 1 | 4-13 | halftime after turn 8 |
+  | Phase 2 | 14-23 | halftime after turn 18 |
+  | Phase 3 | 24-33 | halftime after turn 28 |
+  | Overtime | 34+ | runs out the match |
+
+  A halftime splits a ten-turn phase evenly. **The history header counts down to the next
+  change**: `Turn 1 - 2 Until Phase 1`. A change lands at the *end* of the turn it is counted
+  to, so the turn it lands on has already moved on to the next one - turn 3 is the last of the
+  initialization and reads `Turn 3 - 5 Until Phase 1 Halftime`. Past the last change it just
+  says `Turn 44 - Overtime`.
+- **What a phase does is not decided.** The schedule exists and nothing acts on it: no phase
+  change fires anything, no score is banked, no deployment opens. The intent is that each phase
+  ends by banking a snapshot of `cap - death` and the snapshots are summed to decide the winner
+  - `phaseScore()` returns the shape a phase would keep, so adding that is a list and a bank
+  step rather than a rewrite. Do not build phase plumbing unprompted. (This is the same "phase
+  of the war" the reserve planes' deployment cadence refers to; how the two line up is still
+  unspecified.)
+
 Assumed by an agent, **not** yet confirmed by the owner — treat as weaker than the above and
 re-check before building on it:
 

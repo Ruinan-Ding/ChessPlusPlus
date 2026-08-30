@@ -79,12 +79,12 @@ describe('GameBoardComponent reach preview', () => {
     const attack = [{ kind: 'attack' as const, from: '0,0', to: '3,0' }];
     board.playback = attack;
     board.ngOnChanges({ playback: new SimpleChange([], attack, false) });
-    await new Promise(resolve => setTimeout(resolve, 60));   // mid-lunge
+    await new Promise(resolve => setTimeout(resolve, 120));  // mid-lunge
 
     board.playback = [];
     board.ngOnChanges({ playback: new SimpleChange(attack, [], false) });
     // Past the second lunge and into where the hit flash would have been.
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await new Promise(resolve => setTimeout(resolve, 600));
     expect(board.hitHex).toBe('');
     expect(board.mover).toBeNull();
   });
@@ -95,12 +95,12 @@ describe('GameBoardComponent reach preview', () => {
     board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
 
     // Mid-flight: the copy is up and the hex it lands on is holding its place.
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await new Promise(resolve => setTimeout(resolve, 120));
     expect(board.mover).not.toBeNull();
     expect(board.isMoving('3,0')).toBeTrue();
 
     // And it puts itself away when the beat ends.
-    await new Promise(resolve => setTimeout(resolve, 600));
+    await new Promise(resolve => setTimeout(resolve, 1100));
     expect(board.mover).toBeNull();
     expect(board.isMoving('3,0')).toBeFalse();
   });
@@ -119,9 +119,9 @@ describe('GameBoardComponent reach preview', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(board.glowHex).toBe('3,0');
 
-    // A cast runs a full second now - long enough to follow, so long enough
-    // that a spec has to wait it out.
-    await new Promise(resolve => setTimeout(resolve, 1200));
+    // A cast runs two full seconds now - long enough to follow, so long
+    // enough that a spec has to wait it out.
+    await new Promise(resolve => setTimeout(resolve, 2400));
     expect(board.glowHex).toBe('');
   });
 

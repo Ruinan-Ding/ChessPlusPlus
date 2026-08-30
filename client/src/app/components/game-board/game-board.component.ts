@@ -13,7 +13,8 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
-  attackTiers, computeAttackZone, computeLegalMoves, computeMoveCosts, hexDistanceKeys, strikeDamage,
+  attackTiers, captureClaims, captureZoneHexes, computeAttackZone, computeLegalMoves,
+  computeMoveCosts, hexDistanceKeys, strikeDamage,
 } from '../../services/hex-rules';
 
 // ---------------------------------------------------------------------------
@@ -151,25 +152,17 @@ const HEX_SIZE = 28; // radius of a single hex in SVG pixels
    door, and the near edge of each hex across a gap. */
 const HEX_INRADIUS = HEX_SIZE * Math.sqrt(3) / 2;
 const PLATE_SIZE = 25;
-/** How far out the outer four zones sit, as a share of the board's radius:
- *  7 columns to the sides and 6 rows up and down on the shipped radius-11
- *  board. Rows are the tighter pair - two hexes closer than the geometry
- *  would put them, which is how the plus is meant to sit. */
 /** How long each beat of a committed turn takes to play. */
-const MOVE_MS = 420;
-const STRIKE_MS = 170;
-const HIT_MS = 260;
-const GLOW_MS = 1000;
+const MOVE_MS = 840;
+const STRIKE_MS = 340;
+const HIT_MS = 520;
+const GLOW_MS = 2000;
 /** The same beat in the end-of-turn recap, where there may be several. */
-const GLOW_BRIEF_MS = 600;
+const GLOW_BRIEF_MS = 1200;
 /** A slot being taken up - shorter than using one, and board-less. */
-const PICK_MS = 450;
+const PICK_MS = 900;
 /** Blank frame between beats, so each one starts its animation over. */
-const BEAT_GAP_MS = 90;
-const ZONE_COLS = 7 / 11;
-const ZONE_ROWS = 6 / 11;
-/** Rings of hexes around each zone's centre: 2 makes a 19-hex patch. */
-const ZONE_SPREAD = 2;
+const BEAT_GAP_MS = 180;
 
 /** Padding around the outermost hex centres in the viewBox. Must match buildCells(). */
 const VIEWBOX_PADDING = HEX_SIZE + 4;
@@ -425,6 +418,8 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             *ngIf="hex.zoneClass === 'zone'"
             [attr.points]="hex.points"
             class="zone-wash"
+            [class.held-white]="captureClaim.get(hex.key) === 'white'"
+            [class.held-black]="captureClaim.get(hex.key) === 'black'"
           />
           <!-- Legal-move dot -->
           <circle
@@ -692,6 +687,14 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       fill-opacity: 0.3;
       pointer-events: none;
     }
+
+    /* Held: the zone's own blue gives way to the side holding it. Amber and
+       violet rather than the sides' own white and black - a white wash is
+       invisible on a light board and a black one hides the hex under it. A
+       hex both sides reach keeps the plain blue: it is worth nothing to
+       either of them, which is the same as nobody standing there. */
+    .zone-wash.held-white { fill: #ff8c1a; fill-opacity: 0.68; }
+    .zone-wash.held-black { fill: #7b4fbf; fill-opacity: 0.58; }
 
     .hex-cell:not(.hex-filler):hover {
       fill: #e8cf9f;
@@ -1047,17 +1050,19 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
     }
 
     /* A number that is off its printed value pulses out of its own ink and
-       back: to white when the stat was lifted, to black when it was dragged
-       down, and to dark green while the unit is carrying a wound. The single
-       50% stop is what keeps the starting colour the number's own. */
+       back. A lighter cast of that ink when the stat was lifted, not a march
+       to white: the hex under it is pale, and white on pale is nothing at
+       all - so saturation comes down first, because brightness alone hardly
+       moves a colour whose strong channel is already at the top. Darker when
+       the number is down, whether that is a stat dragged down or a wound;
+       they say the same thing at different speeds. The single 50% stop is
+       what keeps the starting colour the number's own. */
     .stat.wave-up { animation: wave-up 1.1s ease-in-out infinite; }
-    @keyframes wave-up { 50% { fill: #ffffff; } }
+    @keyframes wave-up { 50% { filter: saturate(0.5) brightness(2.2); } }
 
-    .stat.wave-down { animation: wave-down 1.1s ease-in-out infinite; }
-    @keyframes wave-down { 50% { fill: #000000; } }
-
-    .stat.wave-hurt { animation: wave-hurt 1.4s ease-in-out infinite; }
-    @keyframes wave-hurt { 50% { fill: #14532d; } }
+    .stat.wave-down { animation: wave-dim 1.1s ease-in-out infinite; }
+    .stat.wave-hurt { animation: wave-dim 1.4s ease-in-out infinite; }
+    @keyframes wave-dim { 50% { filter: brightness(0.45); } }
 
     /* A unit that has spent an ability wears it on its face, pulsing to its
        own side's colour - white for white, black for black - and back to the
@@ -1764,8 +1769,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // zone and nothing triggered change detection. The classes the
       // animations hang on then only changed when some other event happened
       // to run a pass, which merged consecutive beats into one long swell.
+      // Cancelled here rather than inside runPlayback: the new run starts on
+      // a timer, and until it does, a chain still waiting between beats holds
+      // a live token. It would finish in that gap and announce a completion
+      // for a sequence that had already been replaced - which the room reads
+      // as the recap being over, unlocking the board as the recap begins.
+      this.stopPlayback();
       if (steps.length) setTimeout(() => { if (this.playback === steps) this.runPlayback(steps); });
-      else this.stopPlayback();
     }
   }
 
@@ -1852,33 +1862,23 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   // -- Cell building --------------------------------------------------
 
   /**
-   * Five patches on the battlefield: one in the middle and four around it -
-   * top, bottom, left, right - the same size and the same distance out, so
-   * they read as one set rather than five decisions.
+   * The five capture zones, and who is holding what inside them. The shapes
+   * and the claims both come from hex-rules, because the room scores exactly
+   * what is drawn here - two answers to that would be one answer too many.
    *
-   * ponytail: purely cosmetic for now - no rule reads a zone. Give them
-   * meaning (deployment, objectives, terrain) and this wants to come from
-   * config rather than from a constant.
+   * ponytail: client-side, like points and abilities. The server does not
+   * know a zone from any other hex yet.
    */
   private assignZones(): void {
-    // One step left or right is one column. Up and down goes in pairs of
-    // rows - (1,-2) is straight up - which is what keeps those two zones in
-    // the board's own centre column instead of half a column off it.
-    const cols = Math.max(ZONE_SPREAD + 1, Math.round(this.radius * ZONE_COLS));
-    const pairs = Math.max(1, Math.round((this.radius * ZONE_ROWS) / 2));
-    const centres: Array<[number, number]> = [
-      [0, 0],
-      [cols, 0], [-cols, 0],
-      [pairs, -2 * pairs], [-pairs, 2 * pairs],
-    ];
-
-    for (const [q, r] of centres) {
-      for (const cell of this.cells) {
-        if (cell.filler) continue;
-        if (hexDistanceKeys(cell.key, `${q},${r}`) <= ZONE_SPREAD) cell.zoneClass = 'zone';
-      }
+    const zone = captureZoneHexes(this.radius);
+    for (const cell of this.cells) {
+      if (!cell.filler && zone.has(cell.key)) cell.zoneClass = 'zone';
     }
+    this.captureClaim = captureClaims(this.boardState, this.radius);
   }
+
+  /** Which side holds each capture hex; missing means nobody, or cancelled. */
+  captureClaim = new Map<string, 'white' | 'black'>();
 
   /** Board orientation from config (cosmetic); the default board is edge-up. */
   get orientation(): BoardOrientation {

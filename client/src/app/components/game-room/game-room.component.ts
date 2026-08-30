@@ -11,8 +11,11 @@ import { NavigationStateService } from '../../services/navigation-state.service'
 import { GameStateService } from '../../services/game-state.service';
 import { AuthService } from '../../services/auth.service';
 import { AnimStep, FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap } from '../game-board/game-board.component';
-import { hexDistanceKeys, strikeDamage } from '../../services/hex-rules';
+import {
+  captureClaims, captureScore, hexDistanceKeys, strikeDamage,
+} from '../../services/hex-rules';
 import { buildPlayback } from '../../services/playback';
+import { turnHeading } from '../../services/phases';
 import { AudioService } from '../../services/audio.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 
@@ -39,6 +42,7 @@ interface LocalUiState {
   abilityUsed: Record<string, boolean>;
   soloColor: 'white' | 'black';
   stagedActions: StagedAction[];
+  swapDebt: { mine: number; opponent: number };
   gameRoomMessages: ChatMessage[];
   opponentMoveVisuals: OpponentMoveVisual[];
 }
@@ -404,6 +408,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       abilityUsed: this.abilityUsed,
       soloColor: this.soloColor,
       stagedActions: this.stagedActions,
+      swapDebt: this.swapDebt,
       gameRoomMessages: this.gameRoomMessages,
       opponentMoveVisuals: this.opponentMoveVisuals,
     };
@@ -426,6 +431,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (Array.isArray(state.opponentCooldowns)) this.opponentCooldowns = state.opponentCooldowns;
       if (Array.isArray(state.myCooldowns)) this.myCooldowns = state.myCooldowns;
       if (Array.isArray(state.myLoadout)) this.myLoadout = state.myLoadout;
+      // Shape-checked like its neighbours: a stored value from an older
+      // build indexes to undefined, and the arithmetic downstream turns that
+      // into NaN on the panel rather than failing where it went wrong.
+      const debt = state.swapDebt;
+      if (debt && Number.isFinite(debt.mine) && Number.isFinite(debt.opponent)) {
+        this.swapDebt = { mine: debt.mine, opponent: debt.opponent };
+      }
       if (Array.isArray(state.opponentLoadout)) this.opponentLoadout = state.opponentLoadout;
       if (typeof state.myPath === 'number' || state.myPath === null) this.myPath = state.myPath;
       if (typeof state.opponentPath === 'number' || state.opponentPath === null) {
@@ -489,6 +501,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // game it was staged in otherwise, and hides the new position.
         this.stagedActions = [];
         this.submittedTurn = -1;
+        // The recap belongs to the game that just ended. If its board went
+        // away mid-replay there was no playbackDone to unlock anything, and
+        // a lock left standing here makes the new game unplayable.
+        this.recapRunning = false;
+        this.glowReveal = [];
+        this.swapArmed = null;
+        this.swapDebt = { mine: 0, opponent: 0 };
+        this.scoreCache = null;
         // Anything opened while waiting belongs to the room, not the game.
         this.abilityFocus = null;
         this.pathFocus = null;
@@ -571,6 +591,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       case 'game_over': {
         this.clearTurnClock();
         this.gameStarted = false;
+        // The board is about to be taken off the screen. Whatever it was
+        // replaying goes with it, and nothing else will announce that it
+        // finished, so the lock and the curtain come down here.
+        this.recapRunning = false;
+        this.glowReveal = [];
         this.gameState.applyGameOver(actualMessage);
         if (actualMessage.winner) {
           this.addSystemMessage(`Game over - ${actualMessage.winner} wins by ${actualMessage.endReason}!`);
@@ -1237,10 +1262,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       ? 'wave-hurt' : '';
   }
 
-  /** History header carries the turn number. */
+  /** History header carries the turn and where it sits in the schedule. */
   get historyTitle(): string {
     const turn = this.gameState.snapshot.turnNumber;
-    return turn ? `History - Turn ${turn}` : 'History';
+    return turn ? turnHeading(turn) : 'History';
   }
 
   /** The board's number for a "q,r" coord, falling back to the raw coord. */
@@ -1520,10 +1545,84 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (!this.canPick(side, index)) return;
     const next = [...this.loadout(side), index];
     if (side === 'mine') this.myLoadout = next; else this.opponentLoadout = next;
+    // A slot the + freed is refilled cold. Swapping changes what you
+    // carry; it is not a way to hand yourself a ready ability mid-match.
+    // Three turns, the same as any cast leaves behind.
+    if (this.swapDebt[side] > 0) {
+      this.swapDebt[side]--;
+      this.cooldownRow(side)[index] = 3;
+    }
     this.flashPick(side, index);
     // Picking is not using: back to the list with nothing armed, and the
     // ability is opened again when it is actually wanted.
     this.clearAbilityFocus();
+    this.persistLocalUiState();
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Whose + is armed. While it is, that side's carried four are offered back:
+   * clicking one gives it up and frees the slot. Anything else puts it away -
+   * another click on the +, a click on any other ability, Back, or the turn
+   * ending - so it cannot be left armed over a board nobody is looking at.
+   */
+  swapArmed: 'mine' | 'opponent' | null = null;
+
+  /**
+   * Slots given up this way and not yet refilled. One pick each, and each of
+   * those comes in on cooldown. Kept as a count rather than a flag because
+   * two can be given up before either is replaced.
+   */
+  swapDebt = { mine: 0, opponent: 0 };
+
+  /** The + has something to offer: your turn, and one of the four is cold. */
+  canSwap(side: 'mine' | 'opponent'): boolean {
+    return this.canUseAbilities(side)
+      && this.loadout(side).some(i => !(this.cooldownRow(side)[i] ?? 0));
+  }
+
+  toggleSwap(side: 'mine' | 'opponent'): void {
+    if (this.swapArmed !== side && !this.canSwap(side)) return;
+    this.swapArmed = this.swapArmed === side ? null : side;
+    this.cdr.markForCheck();
+  }
+
+  /** Offered back right now - and what the yellow ring is drawn on. */
+  canReset(side: 'mine' | 'opponent', index: number): boolean {
+    return this.swapArmed === side
+      && this.canUseAbilities(side)
+      && this.isPicked(side, index)
+      && !(this.cooldownRow(side)[index] ?? 0);
+  }
+
+  /**
+   * Give a carried ability up, freeing its slot for another. Only a cold one:
+   * an ability is not swapped out from under the cooldown it is serving.
+   */
+  resetAbility(side: 'mine' | 'opponent', index: number): void {
+    if (!this.canReset(side, index)) return;
+    const next = this.loadout(side).filter(i => i !== index);
+    if (side === 'mine') this.myLoadout = next; else this.opponentLoadout = next;
+    this.swapDebt[side]++;
+    this.swapArmed = null;
+    // Taken up and given back inside one turn is not a pick: the glow comes
+    // down with it, and the recap has nothing left to replay for it.
+    this.pickedThisTurn = this.pickedThisTurn.filter(
+      p => !(p.side === side && p.index === index));
+    if (this.abilityPickGlow[side].includes(index)) {
+      this.abilityPickGlow = {
+        ...this.abilityPickGlow,
+        [side]: this.abilityPickGlow[side].filter(i => i !== index),
+      };
+    }
+    // The detail was open on something this side no longer carries, and it
+    // would go on offering to use it. Same reason pickAbility clears it.
+    if (this.abilityFocus?.side === side && this.abilityFocus.index === index) {
+      this.clearAbilityFocus();
+    }
+    const name = this.abilityEffects[index]?.name ?? 'an ability';
+    this.addSystemMessage(
+      `${side === 'mine' ? 'You' : 'Your opponent'} gave up ${name}.`);
     this.persistLocalUiState();
     this.cdr.markForCheck();
   }
@@ -1671,6 +1770,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   selectAbility(side: 'mine' | 'opponent', index: number, cooldowns: number[]): void {
+    // Every ability button on both panels arrives here, so the swap is read
+    // in one place: while the + is armed a click gives that one up rather
+    // than opening it, and a click on anything else puts the + away.
+    if (this.canReset(side, index)) { this.resetAbility(side, index); return; }
+    this.swapArmed = null;
     if (this.isAbilityFocused(side, index)) {
       this.clearAbilityFocus();
       return;
@@ -1746,6 +1850,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * a panel with nothing open still owes the player a word about why.
    */
   abilityNote(side: 'mine' | 'opponent'): string {
+    if (this.swapArmed === side) return 'Click one of the four you carry to give it up.';
     if (this.pathFocus?.side === side) return this.pathNote(side, this.pathFocus.index);
     if (this.abilityFocus?.side === side) return this.focusedAbilityNote;
     if (!this.gameStarted) return 'The game has not started yet.';
@@ -1787,10 +1892,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /** Something is open in this panel to back out of. */
   canGoBack(side: 'mine' | 'opponent'): boolean {
-    return !!this.pathFocusFor(side) || this.abilityFocus?.side === side;
+    return this.swapArmed === side
+      || !!this.pathFocusFor(side) || this.abilityFocus?.side === side;
   }
 
   goBack(side: 'mine' | 'opponent'): void {
+    // Closing the path screen takes the + off the panel with it, so the swap
+    // goes too rather than staying armed with no button to show for it.
+    this.swapArmed = null;
     if (this.abilityFocus?.side === side) this.clearAbilityFocus();
     else this.clearPathFocus();
   }
@@ -1876,17 +1985,30 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Picks the commit replay has not reached yet. Purely a curtain over
-   * abilityPickGlow so the recap can draw them one at a time - the glow
-   * itself never comes down, and this is emptied when the replay ends and
-   * when the turn does, so an interrupted one cannot leave a slot plain.
+   * Slots the commit replay has not reached yet - taken up or spent. Purely a
+   * curtain over the two glows so the recap can draw them one at a time; the
+   * glows themselves never come down, and this is emptied when the replay
+   * ends and when the turn does, so an interrupted one cannot leave a slot
+   * plain for the turn it is meant to be read on.
    */
-  private pickReveal: Array<{ side: 'mine' | 'opponent'; index: number }> = [];
+  private glowReveal: Array<{
+    side: 'mine' | 'opponent'; index: number; kind: 'pick' | 'used';
+  }> = [];
+  // Deliberately NOT cleared in beginTurnFor. Committing a turn hands the
+  // board over and the recap plays afterwards, so in a solo game the reply
+  // that starts the next turn arrives - on a microtask - before the first
+  // beat, which is scheduled on a timer. Clearing it there tore the curtain
+  // down before anything had been drawn behind it, and every slot came up
+  // lit at once. onPlaybackDone lifts what is left; game_started and
+  // game_over clear it for the case where the board goes away mid-recap.
+
+  private hidden(side: 'mine' | 'opponent', index: number, kind: 'pick' | 'used'): boolean {
+    return this.glowReveal.some(g => g.side === side && g.index === index && g.kind === kind);
+  }
 
   /** True while this ability is one of those that side took up last turn. */
   isRecentPick(side: 'mine' | 'opponent', index: number): boolean {
-    if (!this.abilityPickGlow[side].includes(index)) return false;
-    return !this.pickReveal.some(p => p.side === side && p.index === index);
+    return this.abilityPickGlow[side].includes(index) && !this.hidden(side, index, 'pick');
   }
 
   private markUsed(side: 'mine' | 'opponent', index: number): void {
@@ -1898,7 +2020,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /** True while this ability is one of those that side used last turn. */
   isRecent(side: 'mine' | 'opponent', index: number): boolean {
-    return this.abilityGlow[side].includes(index);
+    return this.abilityGlow[side].includes(index) && !this.hidden(side, index, 'used');
   }
 
   clearAbilityFocus(): void {
@@ -2090,31 +2212,121 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /** Boosted over base, so a +4 on a base 26 reads "30/26". */
-  get statAtk(): string {
-    const u = this.displayUnit;
-    if (!u) return '\u2014';
-    const add = this.displayBuff?.atk ?? 0;
+  // The panel draws these from statParts, one span per half so only the
+  // modified number waves. These are the same numbers as one string, and
+  // exist only to be measured - statFontSize sizes the cell by its length.
+  // Derived rather than worked out again: two ways to build "20/20, 15/15"
+  // is two things to keep in step, and the one that drifts is the width.
+  get statAtk(): string { return this.statText('atk'); }
+  get statDef(): string { return this.statText('def'); }
+  get statMov(): string { return this.statText('mov'); }
+
+  private statText(stat: 'atk' | 'def' | 'mov'): string {
+    const parts = this.statParts(stat);
     // Each ring is shown as current/original, e.g. "20/20, 15/15".
-    return u.atk.split(',').map(n => {
-      const original = Number(n);
-      return `${original + add}/${original}`;
-    }).join(', ');
+    return parts.length ? parts.map(p => `${p.now}/${p.base}`).join(', ') : '\u2014';
   }
 
-  get statDef(): string {
+  /**
+   * A stat split into the halves it is drawn as: what the unit has now, and
+   * what it started with. Only the first waves - the base is what the boost
+   * is being read against, and a number that moves is no use as a reference.
+   * Attack comes as one pair per ring.
+   */
+  statParts(stat: 'atk' | 'def' | 'mov'): Array<{ now: string; base: string }> {
     const u = this.displayUnit;
-    if (!u) return '\u2014';
-    return `${(u.def ?? 0) + (this.displayBuff?.def ?? 0)}/${u.def}`;
-  }
-
-  get statMov(): string {
-    const u = this.displayUnit;
-    if (!u) return '\u2014';
-    const base = u.mv ?? 0;
-    return `${base + (this.displayBuff?.mov ?? 0) - this.moveUsed}/${base}`;
+    if (!u) return [];
+    const add = this.displayBuff?.[stat] ?? 0;
+    if (stat === 'atk') {
+      return u.atk.split(',').map(n => {
+        const base = Number(n);
+        return { now: String(base + add), base: String(base) };
+      });
+    }
+    const base = (stat === 'def' ? u.def : u.mv) ?? 0;
+    const spent = stat === 'mov' ? this.moveUsed : 0;
+    return [{ now: String(base + add - spent), base: String(base) }];
   }
 
 /** Credit a side: a point for starting a turn, a point per unit killed. */
+  /**
+   * What a side's dead have cost it, by the config's own unit values - a pawn
+   * is 5 there, so losing one is 5 against you.
+   *
+   * Read off the move history rather than tallied as the moves land. The
+   * server ships the whole history with every state update, so both players
+   * and any reconnect derive the same number from the same record; a running
+   * count only ever matches for a client that watched every move of the game
+   * live, which is exactly the client that does not need one.
+   */
+  private deathsOf(color: 'white' | 'black'): number {
+    const snapshot = this.gameState.snapshot;
+    const units = snapshot.config?.units ?? {};
+    const value = (unitId: string | null | undefined) =>
+      (unitId ? units[unitId]?.value : 0) ?? 0;
+    let total = 0;
+    for (const move of snapshot.moveHistory ?? []) {
+      // The defender belongs to whoever was not moving; a counter-attack
+      // kills the mover's own unit.
+      if (move.defender_eliminated && move.color !== color) total += value(move.captured);
+      if (move.attacker_eliminated && move.color === color) total += value(move.unit_id);
+    }
+    return total;
+  }
+
+  /**
+   * Both halves of the score cost a pass over data the template asks for on
+   * every change-detection run - including one per mouse move across the
+   * board. The board and the history are each replaced wholesale rather than
+   * edited, so their identities are all the cache key needed.
+   */
+  private scoreCache: {
+    board: unknown; history: unknown;
+    claims: Map<string, 'white' | 'black'>;
+    deaths: { white: number; black: number };
+  } | null = null;
+
+  private currentScore(): {
+    claims: Map<string, 'white' | 'black'>; deaths: { white: number; black: number };
+  } {
+    const snapshot = this.gameState.snapshot;
+    // The staged board, the same one being drawn: a unit walked out of a zone
+    // has left it as far as the eye is concerned, so the score says so before
+    // the turn is committed rather than after.
+    const board = this.stagedBoard ?? snapshot.boardState ?? {};
+    const history = snapshot.moveHistory;
+    if (this.scoreCache?.board !== board || this.scoreCache?.history !== history) {
+      this.scoreCache = {
+        board, history,
+        claims: captureClaims(board, snapshot.config?.board?.radius ?? 11),
+        deaths: { white: this.deathsOf('white'), black: this.deathsOf('black') },
+      };
+    }
+    return this.scoreCache;
+  }
+
+  /**
+   * A side's standing: the capture hexes it holds right now against what its
+   * losses have cost it. Cap is read off the board every time rather than
+   * banked - it is what you are holding, and it drops the moment you walk
+   * away - while deaths only ever add up.
+   *
+   * One record rather than two loose numbers because the match is meant to
+   * run in phases: each one ends by taking a snapshot of exactly this, and
+   * the snapshots are summed to decide the winner. This is the shape a phase
+   * would keep, so adding them is a list and a bank step, not a rewrite.
+   * ponytail: one live phase - nothing is banked and nothing is summed yet.
+   */
+  phaseScore(side: 'mine' | 'opponent'): { cap: number; death: number; total: number } {
+    const mine = this.gameState.myColor(this.username) || 'white';
+    const other = mine === 'white' ? 'black' : 'white';
+    const color = (side === 'mine' ? mine : other) === 'black' ? 'black' : 'white';
+    const score = this.currentScore();
+    const cap = captureScore(score.claims, color);
+    const death = score.deaths[color];
+    return { cap, death, total: cap - death };
+  }
+
   private awardPoints(color: string, amount: number): void {
     const mine = this.gameState.myColor(this.username);
     const toMe = mine ? color === mine : color === 'white';
@@ -2136,7 +2348,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // Spending an ability marks the unit for the turn it was spent in.
     this.abilityUsed = {};
     this.pickedThisTurn = [];
-    this.pickReveal = [];
+    this.swapArmed = null;
     this.awardPoints(color, 1);
     const mine = this.gameState.myColor(this.username);
     const isMine = mine ? color === mine : color === 'white';
@@ -2564,6 +2776,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /** The turn can be ended whenever it is ours, move staged or not. */
   get canEndTurn(): boolean {
     const s = this.gameState.snapshot;
+    if (this.recapRunning) return false;
     if (!this.gameStarted || s.endReason || !s.currentTurn) return false;
     return this.isSinglePlayer || s.currentTurn === this.username;
   }
@@ -2655,6 +2868,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   playback: AnimStep[] = [];
   /** True while the board is playing; the clock waits for it. */
   playbackRunning = false;
+  /**
+   * True while a *committed* turn is playing itself back. Staging animations
+   * never lock anything - rapid input is meant to skip them - but the recap
+   * is the turn being shown, and acting over it means acting on a board that
+   * is not the one on screen.
+   */
+  recapRunning = false;
   private playbackStarted = 0;
   /** Milliseconds of animation to forgive the current turn's clock. */
   private playbackOwed = 0;
@@ -2715,11 +2935,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.castingIndex = slotted ? step.index ?? null : null;
     this.castingSide = slotted ? step.side ?? null : null;
     this.castingPick = step.kind === 'pick';
-    // Each beat draws its own card back in, so a committed turn's picks come
-    // up one after another rather than all at once.
-    if (step.kind === 'pick' && step.side && step.index != null) {
-      this.pickReveal = this.pickReveal.filter(
-        p => !(p.side === step.side && p.index === step.index));
+    // Each beat draws its own card back in, so a committed turn's picks and
+    // casts come up one after another rather than all at once.
+    if (slotted && step.side && step.index != null) {
+      const kind = step.kind === 'pick' ? 'pick' : 'used';
+      this.glowReveal = this.glowReveal.filter(
+        g => !(g.side === step.side && g.index === step.index && g.kind === kind));
     }
     this.castingBrief = !!step.brief;
     if (step.kind === 'move') this.playMoveSound();
@@ -2739,6 +2960,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   onPlaybackDone(): void {
+    // Before the guard: whatever else is true, the recap is over. The player
+    // has their board back, and nothing stays curtained past a replay - an
+    // interrupted one would otherwise leave a slot plain for the whole of
+    // the turn it is meant to be read on. Nothing spurious reaches here: the
+    // board cancels a run the moment its list is replaced.
+    this.recapRunning = false;
+    this.glowReveal = [];
     if (!this.playbackRunning) return;
     this.playbackRunning = false;
     this.castingIndex = null;
@@ -2747,8 +2975,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // Watching the replay is not thinking time: the clock is handed back
     // whatever the animation took.
     this.playbackOwed += Date.now() - this.playbackStarted;
-    // Whatever the replay did or did not reach, nothing stays hidden past it.
-    this.pickReveal = [];
     // The list is NOT cleared here. Clearing it means a sequence that finishes
     // just after a longer one replaced it - a commit landing while a pick is
     // still flashing - hands the board an empty list and stops the run that
@@ -2853,19 +3079,29 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // instruction to the board to drop the rest and start again.
     // The whole turn again, with the walk collapsed into the one line it
     // amounted to, and every cast lit in the order it was made.
-    // The glow itself is never taken down - it goes up when a slot is taken
-    // and stays up until this side plays again, so the other player reads it
-    // for their whole turn. What the recap does is draw a curtain over this
-    // turn's picks and lift it one at a time, so committing three of them
-    // looks like three, in order.
-    this.pickReveal = this.pickedThisTurn.map(p => ({ side: p.side, index: p.index }));
     // What was taken up leads the recap; what it was spent on follows.
-    this.playSteps([
+    const recap = [
       ...this.pickedThisTurn.map(p => ({
         kind: 'pick' as const, from: '', to: '', index: p.index, side: p.side,
       })),
       ...this.markHostile(buildPlayback(this.stagedActions, true)),
-    ]);
+    ];
+    // Neither glow is ever taken down - each goes up when its slot is taken
+    // or spent and stays up until this side plays again, so the other player
+    // reads both for their whole turn. What the recap does is draw a curtain
+    // over everything this turn touched and lift it one beat at a time, so a
+    // turn that picked three and cast two looks like five things, in order.
+    this.glowReveal = recap
+      .filter(step => step.side && step.index != null)
+      .map(step => ({
+        side: step.side!,
+        index: step.index!,
+        kind: (step.kind === 'pick' ? 'pick' : 'used') as 'pick' | 'used',
+      }));
+    // Only lock if there is something to watch: a turn that did nothing plays
+    // nothing, so nothing would ever arrive to unlock it again.
+    this.recapRunning = recap.length > 0;
+    this.playSteps(recap);
     this.persistLocalUiState();
     this.playEndTurnSound();
     // Ending a turn cancels any ability detail/targeting state, including
@@ -2955,7 +3191,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   canUseAbilities(side: 'mine' | 'opponent'): boolean {
     // Ability effects are currently client-side scaffolding. Keep them out of
     // multiplayer until the server has an authoritative ability protocol.
-    if (!this.gameStarted || !this.isSinglePlayer) return false;
+    if (!this.gameStarted || !this.isSinglePlayer || this.recapRunning) return false;
     const myTurn = this.gameState.snapshot.currentTurn === this.username;
     return side === 'mine' ? myTurn : !myTurn;
   }

@@ -32,6 +32,8 @@ export interface MoveRecord {
   defender_eliminated: boolean;
   moved: boolean;
   defender_hp?: number;
+  /** Only present on a move that attacked - see move_record in consumers.py. */
+  attacker_eliminated?: boolean;
 }
 
 /** Full snapshot of the client-side game state. */

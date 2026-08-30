@@ -2,8 +2,14 @@
   <header>
     <h1>Game Room</h1>
     <div class="turn-indicator" *ngIf="gameStarted" [class.your-turn]="isYourTurn" [class.opponent-turn]="!isYourTurn">
-      <span>{{ isYourTurn ? 'YOUR TURN' : "OPPONENT'S TURN" }}<ng-container
+      <!-- Their standing, the turn, then yours. Both scores take an equal
+           share of the row so the turn itself stays on the centre line. -->
+      <span class="phase-score theirs" *ngIf="phaseScore('opponent') as them"
+      >🚩 {{ them.cap }} &minus; 💀 {{ them.death }} = {{ them.total }}</span>
+      <span class="turn-text">{{ isYourTurn ? 'YOUR TURN' : "OPPONENT'S TURN" }}<ng-container
         *ngIf="state.turnTimeLimit > 0"> - {{ formattedTurnTime }}</ng-container></span>
+      <span class="phase-score ours" *ngIf="phaseScore('mine') as us"
+      >🚩 {{ us.cap }} &minus; 💀 {{ us.death }} = {{ us.total }}</span>
     </div>
     <div class="header-actions">
       <button
@@ -51,6 +57,7 @@
                       [class.focused]="isAbilityFocused('opponent', i)"
                       [class.recent]="isRecent('opponent', i)"
                       [class.picked-recent]="isRecentPick('opponent', i)"
+                      [class.swappable]="canReset('opponent', i)"
                       [class.casting]="isCasting('opponent', i)" [class.brief]="castingBrief"
                       [class.picking]="isPicking('opponent', i)"
                       [class.unpicked]="!isPicked('opponent', i)"
@@ -76,11 +83,16 @@
                           [style.font-size]="abilityFontSize(chosen.path.passive, 0)"
                           (click)="selectAbility('opponent', chosen.path.passive, opponentCooldowns)"
                   >{{ abilityLabel(chosen.path.passive, 0) }}</button>
-                  <!-- ponytail: green, and a place to be - what it does is
-                       still to be decided, so it does nothing rather than
-                       something invented. -->
+                  <!-- Swap. Give up one of the four you carry - any that is
+                       not cooling down - and the slot is free for another.
+                       What goes into it goes in cold. -->
                   <button class="path-extra-btn" type="button"
-                          title="Not wired up yet.">+</button>
+                          [class.armed]="swapArmed === 'opponent'"
+                          [disabled]="swapArmed !== 'opponent' && !canSwap('opponent')"
+                          [title]="swapArmed === 'opponent'
+                            ? 'Click one of the four you carry to give it up.'
+                            : 'Swap one of the four you carry.'"
+                          (click)="toggleSwap('opponent')">+</button>
                 </div>
                 <div class="path-pair">
                   <button class="scaffold-btn unpicked" type="button"
@@ -116,11 +128,16 @@
                         [class.picking]="isPicking('opponent', path.passive)"
                         (click)="selectAbility('opponent', path.passive, opponentCooldowns)"
                 >{{ abilityLabel(path.passive, 0) }}</button>
-                  <!-- ponytail: green, and a place to be - what it does is
-                       still to be decided, so it does nothing rather than
-                       something invented. -->
+                  <!-- Swap. Give up one of the four you carry - any that is
+                       not cooling down - and the slot is free for another.
+                       What goes into it goes in cold. -->
                   <button class="path-extra-btn" type="button"
-                          title="Not wired up yet.">+</button>
+                          [class.armed]="swapArmed === 'opponent'"
+                          [disabled]="swapArmed !== 'opponent' && !canSwap('opponent')"
+                          [title]="swapArmed === 'opponent'
+                            ? 'Click one of the four you carry to give it up.'
+                            : 'Swap one of the four you carry.'"
+                          (click)="toggleSwap('opponent')">+</button>
                 <!-- Two to a row, ultimate first: they are one line of
                      the panel, not two. -->
                 <div class="path-pair">
@@ -209,6 +226,7 @@
                       [class.focused]="isAbilityFocused('mine', i)"
                       [class.recent]="isRecent('mine', i)"
                       [class.picked-recent]="isRecentPick('mine', i)"
+                      [class.swappable]="canReset('mine', i)"
                       [class.casting]="isCasting('mine', i)" [class.brief]="castingBrief"
                       [class.picking]="isPicking('mine', i)"
                       [class.unpicked]="!isPicked('mine', i)"
@@ -234,11 +252,16 @@
                           [style.font-size]="abilityFontSize(chosen.path.passive, 0)"
                           (click)="selectAbility('mine', chosen.path.passive, myCooldowns)"
                   >{{ abilityLabel(chosen.path.passive, 0) }}</button>
-                  <!-- ponytail: green, and a place to be - what it does is
-                       still to be decided, so it does nothing rather than
-                       something invented. -->
+                  <!-- Swap. Give up one of the four you carry - any that is
+                       not cooling down - and the slot is free for another.
+                       What goes into it goes in cold. -->
                   <button class="path-extra-btn" type="button"
-                          title="Not wired up yet.">+</button>
+                          [class.armed]="swapArmed === 'mine'"
+                          [disabled]="swapArmed !== 'mine' && !canSwap('mine')"
+                          [title]="swapArmed === 'mine'
+                            ? 'Click one of the four you carry to give it up.'
+                            : 'Swap one of the four you carry.'"
+                          (click)="toggleSwap('mine')">+</button>
                 </div>
                 <div class="path-pair">
                   <button class="scaffold-btn unpicked" type="button"
@@ -274,11 +297,16 @@
                         [class.picking]="isPicking('mine', path.passive)"
                         (click)="selectAbility('mine', path.passive, myCooldowns)"
                 >{{ abilityLabel(path.passive, 0) }}</button>
-                  <!-- ponytail: green, and a place to be - what it does is
-                       still to be decided, so it does nothing rather than
-                       something invented. -->
+                  <!-- Swap. Give up one of the four you carry - any that is
+                       not cooling down - and the slot is free for another.
+                       What goes into it goes in cold. -->
                   <button class="path-extra-btn" type="button"
-                          title="Not wired up yet.">+</button>
+                          [class.armed]="swapArmed === 'mine'"
+                          [disabled]="swapArmed !== 'mine' && !canSwap('mine')"
+                          [title]="swapArmed === 'mine'
+                            ? 'Click one of the four you carry to give it up.'
+                            : 'Swap one of the four you carry.'"
+                          (click)="toggleSwap('mine')">+</button>
                 <!-- Two to a row, ultimate first: they are one line of
                      the panel, not two. -->
                 <div class="path-pair">
@@ -344,14 +372,32 @@
                 <ng-template #noUnitHp>—</ng-template>
               </strong></div>
             <div class="stat-cell atk"><span>ATK</span>
-              <strong [ngClass]="panelWave('atk')"
-                      [style.font-size]="statFontSize(statAtk)">{{ statAtk }}</strong></div>
+              <strong [style.font-size]="statFontSize(statAtk)">
+                <ng-container *ngIf="displayUnit; else noATK">
+                  <ng-container *ngFor="let part of statParts('atk'); let i = index"
+                  ><span *ngIf="i">, </span><span
+                    [ngClass]="panelWave('atk')">{{ part.now }}</span>/{{ part.base }}</ng-container>
+                </ng-container>
+                <ng-template #noATK>&#8212;</ng-template>
+              </strong></div>
             <div class="stat-cell def"><span>DEF</span>
-              <strong [ngClass]="panelWave('def')"
-                      [style.font-size]="statFontSize(statDef)">{{ statDef }}</strong></div>
+              <strong [style.font-size]="statFontSize(statDef)">
+                <ng-container *ngIf="displayUnit; else noDEF">
+                  <ng-container *ngFor="let part of statParts('def'); let i = index"
+                  ><span *ngIf="i">, </span><span
+                    [ngClass]="panelWave('def')">{{ part.now }}</span>/{{ part.base }}</ng-container>
+                </ng-container>
+                <ng-template #noDEF>&#8212;</ng-template>
+              </strong></div>
             <div class="stat-cell mov"><span>MOV</span>
-              <strong [ngClass]="panelWave('mov')"
-                      [style.font-size]="statFontSize(statMov)">{{ statMov }}</strong></div>
+              <strong [style.font-size]="statFontSize(statMov)">
+                <ng-container *ngIf="displayUnit; else noMOV">
+                  <ng-container *ngFor="let part of statParts('mov'); let i = index"
+                  ><span *ngIf="i">, </span><span
+                    [ngClass]="panelWave('mov')">{{ part.now }}</span>/{{ part.base }}</ng-container>
+                </ng-container>
+                <ng-template #noMOV>&#8212;</ng-template>
+              </strong></div>
           </div>
           <div class="ability-detail" *ngIf="unitAbilityFocus; else unitAbilityList"
                [class.ability-disabled]="!unitAbilityIsPassive() && !unitAbilityCanActivate()">
@@ -453,7 +499,7 @@
           [username]="username"
           [myColor]="gameState.myColor(username)"
           [endReason]="state.endReason"
-          [interactive]="gameState.myColor(username) !== '' && !state.endReason"
+          [interactive]="gameState.myColor(username) !== '' && !state.endReason && !recapRunning"
           [canMove]="!hasAttacked"
           [controlAllSides]="isSinglePlayer"
           [rotateBoard]="isSinglePlayer && soloColor === 'black'"

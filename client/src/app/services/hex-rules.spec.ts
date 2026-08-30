@@ -1,4 +1,7 @@
-import { attackTiers, computeAttackZone, computeLegalMoves, computeMoveCosts, strikeDamage } from './hex-rules';
+import {
+  attackTiers, captureClaims, captureScore, captureZoneHexes, computeAttackZone,
+  computeLegalMoves, computeMoveCosts, strikeDamage,
+} from './hex-rules';
 
 /**
  * The attack zone is what the board paints red: reachable to strike, not to
@@ -119,5 +122,82 @@ describe('computeMoveCosts', () => {
     const set = computeLegalMoves(board, 0, 0, config, 5);
     expect(new Set(costs.keys())).toEqual(set);
     expect(Math.max(...costs.values())).toBe(4);
+  });
+});
+
+describe('capture zones', () => {
+  /** The shipped board: five 19-hex patches, one of them on the origin. */
+  const R = 11;
+
+  it('lays out five patches of nineteen, one of them in the middle', () => {
+    const zone = captureZoneHexes(R);
+    expect(zone.size).toBe(5 * 19);
+    expect(zone.has('0,0')).toBeTrue();
+    // Two rings out is in; three is not.
+    expect(zone.has('2,0')).toBeTrue();
+    expect(zone.has('3,0')).toBeFalse();
+  });
+
+  it('pays seven for the middle of a patch and less on its rim', () => {
+    const middle = captureClaims({ '0,0': { unit_id: 'u', color: 'white' } }, R);
+    expect(captureScore(middle, 'white')).toBe(7);
+    expect(captureScore(middle, 'black')).toBe(0);
+
+    // On the rim three of the six neighbours are outside the patch, and
+    // adjacency stops at its edge - the open board is worth nothing.
+    const rim = captureClaims({ '2,0': { unit_id: 'u', color: 'white' } }, R);
+    expect(captureScore(rim, 'white')).toBe(4);
+  });
+
+  it('is worth nothing at all outside a zone', () => {
+    // Between the middle patch and the one to its right, in neither.
+    const claims = captureClaims({ '4,0': { unit_id: 'u', color: 'white' } }, R);
+    expect(claims.size).toBe(0);
+  });
+
+  it('cancels the hexes two sides both reach, and keeps the rest', () => {
+    // Two apart down one row, so the claims touch on the hex between them.
+    const claims = captureClaims({
+      '-1,0': { unit_id: 'u', color: 'white' },
+      '1,0': { unit_id: 'u', color: 'black' },
+    }, R);
+    // 0,0 is next to white's hex and next to black's, so neither holds it.
+    expect(claims.get('0,0')).toBeUndefined();
+    // What each still holds on its own side of the seam - six of seven each.
+    expect(claims.get('-1,0')).toBe('white');
+    expect(claims.get('1,0')).toBe('black');
+    expect(captureScore(claims, 'white')).toBe(6);
+    expect(captureScore(claims, 'black')).toBe(6);
+  });
+
+  it('leaves a gap of one alone: claims that do not touch do not cancel', () => {
+    const claims = captureClaims({
+      '-1,0': { unit_id: 'u', color: 'white' },
+      '2,0': { unit_id: 'u', color: 'black' },
+    }, R);
+    // Three apart, so nothing overlaps - white keeps all seven, and black
+    // keeps the four of its own that are still inside the patch.
+    expect(captureScore(claims, 'white')).toBe(7);
+    expect(captureScore(claims, 'black')).toBe(4);
+  });
+
+  it('cancels both units outright when they stand next to each other', () => {
+    const claims = captureClaims({
+      '0,0': { unit_id: 'u', color: 'white' },
+      '1,0': { unit_id: 'u', color: 'black' },
+    }, R);
+    // Each stands on a hex the other is adjacent to, so both go neutral.
+    expect(claims.get('0,0')).toBeUndefined();
+    expect(claims.get('1,0')).toBeUndefined();
+  });
+
+  it('does not double-count a hex two of one side\u2019s units both reach', () => {
+    const claims = captureClaims({
+      '0,0': { unit_id: 'u', color: 'white' },
+      '1,0': { unit_id: 'u', color: 'white' },
+    }, R);
+    // Seven each, less the four hexes they share: their own two and the two
+    // either side of the pair.
+    expect(captureScore(claims, 'white')).toBe(10);
   });
 });
