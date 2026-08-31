@@ -25,6 +25,29 @@ export const PHASES: Phase[] = [
   { name: 'Overtime', turns: Infinity },
 ];
 
+/**
+ * Which phase a turn falls in. The last one runs out the match, so any turn
+ * past the schedule belongs to it.
+ */
+export function phaseAt(turn: number): Phase {
+  let end = 0;
+  for (const phase of PHASES) {
+    if (!Number.isFinite(phase.turns)) return phase;
+    end += phase.turns;
+    if (turn <= end) return phase;
+  }
+  return PHASES[PHASES.length - 1];
+}
+
+/**
+ * The opening turns, where nobody attacks and both sides are still setting
+ * out: three base units and three reserve units a turn, one battlefield unit
+ * for the whole of it, and a unit that has been moved is done for the phase.
+ */
+export function isInitialization(turn: number): boolean {
+  return phaseAt(turn) === PHASES[0];
+}
+
 /** A point the match changes gear: the turn it lands on, and what follows. */
 export interface Milestone {
   /** The last turn played before the change. */

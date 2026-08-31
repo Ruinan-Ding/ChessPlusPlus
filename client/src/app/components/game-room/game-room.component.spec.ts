@@ -410,6 +410,58 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.phaseScore('mine')).toEqual({ cap: 0, death: 5, total: -5 });
   });
 
+  it('takes the seat the host picked, and tosses for Random', () => {
+    const c = room();
+    const sent: any[] = [];
+    c.wsService = { sendMessage: (m: any) => sent.push(m) };
+    c.isInviter = true;
+    c.gameId = 'local';
+    expect(c.seatChoice).toBe('random');
+
+    // Solo settles a random pick itself - the browser engine plays the
+    // colour it is handed - so the seat it starts on is a real one.
+    c.isSinglePlayer = true;
+    c.startGame();
+    expect(['white', 'black']).toContain(sent[0].hostColor);
+    expect(c.soloColor).toBe(sent[0].hostColor);
+
+    // A named pick is taken as given.
+    c.setSeatChoice('black');
+    c.startGame();
+    expect(sent[1].hostColor).toBe('black');
+    expect(c.soloColor).toBe('black');
+
+    // A two-player room sends the choice and lets the server toss: it owns
+    // the seating, so a coin flipped here would be a second opinion.
+    c.isSinglePlayer = false;
+    c.startGame();
+    expect(sent[2].hostColor).toBe('black');
+    c.setSeatChoice('random');
+    c.startGame();
+    expect(sent[3].hostColor).toBeUndefined();
+  });
+
+  it('spends one battlefield move for the whole opening', () => {
+    const c = room();
+    c.gameState.snapshot.currentTurn = 'me';
+    c.gameState.snapshot.turnNumber = 1;
+    c.gameState.snapshot.moveHistory = [];
+    expect(c.initBoardSpent).toBeFalse();
+
+    // One board move on an opening turn is this side's whole allowance.
+    c.gameState.snapshot.moveHistory = [{ color: 'white', turn: 1 }];
+    expect(c.initBoardSpent).toBeTrue();
+
+    // The other side's move is not ours to spend.
+    c.gameState.snapshot.moveHistory = [{ color: 'black', turn: 1 }];
+    expect(c.initBoardSpent).toBeFalse();
+
+    // And past the opening the rule does not apply at all.
+    c.gameState.snapshot.turnNumber = 9;
+    c.gameState.snapshot.moveHistory = [{ color: 'white', turn: 1 }];
+    expect(c.initBoardSpent).toBeFalse();
+  });
+
   it('keeps the recap curtain through the handover a commit triggers', () => {
     const c = room();
     // What ending a turn leaves behind: the beats still to be drawn, and the

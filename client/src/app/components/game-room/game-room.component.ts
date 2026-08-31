@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, HostListener } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, HostListener, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
@@ -15,7 +15,7 @@ import {
   captureClaims, captureScore, hexDistanceKeys, strikeDamage,
 } from '../../services/hex-rules';
 import { buildPlayback } from '../../services/playback';
-import { turnHeading } from '../../services/phases';
+import { isInitialization, turnHeading } from '../../services/phases';
 import { AudioService } from '../../services/audio.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 
@@ -41,6 +41,7 @@ interface LocalUiState {
   buffs: Record<string, UnitBuff>;
   abilityUsed: Record<string, boolean>;
   soloColor: 'white' | 'black';
+  seatChoice: 'random' | 'white' | 'black';
   stagedActions: StagedAction[];
   swapDebt: { mine: number; opponent: number };
   gameRoomMessages: ChatMessage[];
@@ -109,6 +110,8 @@ interface StagedAction {
   used: number;
   /** Hex it struck, or null for a plain step. */
   attack: string | null;
+  /** When it was staged, so Undo can tell it from a panel walk. */
+  at?: number;
   killed?: string;
   /** What died there, so the board can draw its ghost under the skull. */
   killedUnit?: { unit_id: string; color: 'white' | 'black' };
@@ -407,6 +410,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       buffs: this.buffs,
       abilityUsed: this.abilityUsed,
       soloColor: this.soloColor,
+      seatChoice: this.seatChoice,
       stagedActions: this.stagedActions,
       swapDebt: this.swapDebt,
       gameRoomMessages: this.gameRoomMessages,
@@ -448,6 +452,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (state.buffs && typeof state.buffs === 'object') this.buffs = state.buffs;
       if (state.abilityUsed && typeof state.abilityUsed === 'object') this.abilityUsed = state.abilityUsed;
       if (state.soloColor === 'white' || state.soloColor === 'black') this.soloColor = state.soloColor;
+      if (state.seatChoice === 'random' || state.seatChoice === 'white'
+          || state.seatChoice === 'black') {
+        this.seatChoice = state.seatChoice;
+      }
       if (Array.isArray(state.stagedActions)) this.stagedActions = state.stagedActions;
       if (Array.isArray(state.gameRoomMessages)) {
         this.gameRoomMessages = state.gameRoomMessages.filter(
@@ -1262,6 +1270,41 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       ? 'wave-hurt' : '';
   }
 
+  /**
+   * Whether the side to move has already spent its one battlefield move of
+   * the initialization. Through the opening a side moves three base units
+   * and three reserve units a turn, but only one unit on the board for the
+   * whole phase.
+   *
+   * Read off the move history rather than counted as it goes: a panel walk
+   * is client-side and never reaches the record, so every move in there is a
+   * battlefield move, and deriving it means a reload and the other player
+   * see the same thing.
+   */
+  get initBoardSpent(): boolean {
+    const s = this.gameState.snapshot;
+    if (!isInitialization(s.turnNumber)) return false;
+    const color = this.gameState.myColor(s.currentTurn);
+    if (!color) return false;
+    return (s.moveHistory ?? []).some(
+      m => m.color === color && isInitialization(m.turn));
+  }
+
+  /** Points the side to move has to spend - what the board prices a wrap against. */
+  get movePoints(): number {
+    const color = this.gameState.myColor(this.gameState.snapshot.currentTurn);
+    const mine = this.gameState.myColor(this.username);
+    return (mine ? color === mine : color === 'white') ? this.myPoints : this.opponentPoints;
+  }
+
+  /** A unit bought its way across the wrap. */
+  onWrapCrossed(cost: number): void {
+    const color = this.gameState.myColor(this.gameState.snapshot.currentTurn);
+    this.awardPoints(color, -cost);
+    this.persistLocalUiState();
+    this.cdr.markForCheck();
+  }
+
   /** History header carries the turn and where it sits in the schedule. */
   get historyTitle(): string {
     const turn = this.gameState.snapshot.turnNumber;
@@ -1332,6 +1375,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const prev = this.stagedActions[this.stagedActions.length - 1];
     const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index, unit.key);
     this.stagedActions.push({
+      at: Date.now(),
       board: next,
       from: prev?.from ?? '',
       to: prev?.to ?? '',
@@ -2679,6 +2723,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // its move until it attacks or the turn ends.
     const prev = this.pendingMove;
     this.stagedActions.push({
+      at: Date.now(),
       board: next,
       from: prev?.from ?? event.from,
       to: event.to,
@@ -2742,6 +2787,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
     const prev = this.pendingMove;
     this.stagedActions.push({
+      at: Date.now(),
       board,
       from: prev?.from ?? event.from,
       to: event.to,
@@ -2866,6 +2912,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * replay, and it runs after the move has already gone to the server.
    */
   playback: AnimStep[] = [];
+  /** Something to take back: a staged board action, or a panel walk. */
+  get canUndo(): boolean {
+    return !!this.pendingMove || !!this.boardRef?.lastPanelMove;
+  }
+
+  /** The board, for the walks it keeps its own stack of. */
+  @ViewChild(GameBoardComponent) private boardRef?: GameBoardComponent;
+
   /** True while the board is playing; the clock waits for it. */
   playbackRunning = false;
   /**
@@ -2986,6 +3040,21 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /** Take back the last staged action - a step, the attack, or a cast. */
   undoMove(): void {
+    // Two stacks: board actions staged here, panel walks kept by the board.
+    // Undo takes back whichever happened last, so it always takes back the
+    // thing just done rather than reaching past it.
+    const staged = this.stagedActions[this.stagedActions.length - 1];
+    const walkedAt = this.boardRef?.lastPanelMove ?? 0;
+    if (walkedAt && walkedAt > (staged?.at ?? 0)) {
+      const refund = this.boardRef!.undoPanelMove();
+      // A crossing it had paid for is paid back with it.
+      if (refund) {
+        this.awardPoints(this.gameState.myColor(this.gameState.snapshot.currentTurn), refund);
+      }
+      this.persistLocalUiState();
+      this.cdr.markForCheck();
+      return;
+    }
     const undone = this.stagedActions.pop();
     // A cast took points, a cooldown, a mark and a stat stack. Popping the
     // board back without those left the ability half-spent for the rest of
@@ -3003,6 +3072,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   private stageSpend(spend: AbilitySpend): void {
     const prev = this.stagedActions[this.stagedActions.length - 1];
     this.stagedActions.push({
+      at: Date.now(),
       board: this.stagedBoard ?? this.gameState.snapshot.boardState,
       from: prev?.from ?? '',
       to: prev?.to ?? '',
@@ -3284,10 +3354,29 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return this.players.length >= 2 && this.players.every(player => player.isReady);
   }
 
-  /** Flip which side you take; the placeholder always gets the other one. */
-  toggleSoloColor(): void {
-    this.soloColor = this.soloColor === 'white' ? 'black' : 'white';
+  /**
+   * Which side the host takes. Random by default, and only the host is asked
+   * - in a two-player room the server refuses a start from anyone else, so
+   * the one seat anybody chooses is this one.
+   */
+  seatChoice: 'random' | 'white' | 'black' = 'random';
+
+  readonly seatChoices: Array<{ value: 'random' | 'white' | 'black'; label: string }> = [
+    { value: 'random', label: 'Random' },
+    { value: 'white', label: 'White' },
+    { value: 'black', label: 'Black' },
+  ];
+
+  setSeatChoice(choice: 'random' | 'white' | 'black'): void {
+    this.seatChoice = choice;
     this.persistLocalUiState();
+    this.cdr.markForCheck();
+  }
+
+  /** The seat to play, with a random pick settled now. */
+  private resolveSeat(): 'white' | 'black' {
+    if (this.seatChoice !== 'random') return this.seatChoice;
+    return Math.random() < 0.5 ? 'white' : 'black';
   }
   
   /**
@@ -3303,9 +3392,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // server through change_game_mode, and sending it unconditionally made
       // every start look like a pick - overwriting a custom config's own
       // limit (an "unlimited" game silently ran on 60s).
-      // Ignored by the server for two-player rooms, where colours stay random.
-      hostColor: this.isSinglePlayer ? this.soloColor : undefined
+      // The host's side. Solo settles a random pick here, because the
+      // browser engine takes the colour it is given; a two-player room sends
+      // the choice itself and lets the server toss for 'random', since the
+      // server is what owns the seating either way.
+      hostColor: this.isSinglePlayer
+        ? (this.soloColor = this.resolveSeat())
+        : (this.seatChoice === 'random' ? undefined : this.seatChoice),
     });
+    if (this.isSinglePlayer) this.persistLocalUiState();
   }
 
   openUserMenu(event: MouseEvent, user: User): void {

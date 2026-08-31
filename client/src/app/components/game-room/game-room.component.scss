@@ -219,6 +219,24 @@
       font-size: 1rem;
     }
 
+    // Laid out like the turn timer under it, so the two read as one column
+    // of settings rather than two ideas.
+    .seat-option {
+      margin-top: 10px;
+    }
+
+    .seat-label {
+      display: block;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .seat-choices {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
     .turn-time-option {
       display: flex;
       flex-direction: column;

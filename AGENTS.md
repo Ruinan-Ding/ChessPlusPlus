@@ -191,22 +191,48 @@ Decided so far:
     radius-N battlefield and `set_cell()` rejects anything outside it - and **confined to their
     own panel**: `computeMoveCosts()` / `computeAttackZone()` take a `zone` set that replaces
     the radius check, and attack targeting requires both hexes to share a panel, so nothing
-    reaches across the wall in either direction. Shuffling a *reserve* inside its panel is local
-    and free of the *board's* move stack: no server message, not on the Undo stack, and a reload
-    re-deals them. Neither panel is free of a move budget - see below.
+    reaches across the wall in either direction. Shuffling a unit inside its panel is local -
+    no server message, and a reload re-deals them - but it is neither free nor beyond recall:
+    it comes out of a move budget, and **Undo takes it back**. A unit that has walked but is
+    not finished carries a mark on its hex (`hasWalked()`), because it is neither untouched
+    nor spent and would otherwise look like the former.
   - **The red plane is the base, the green one the reserve.** **Every panel unit, base and
     reserve alike, gets its own MOV per turn and no more** - spendable a few steps at a time,
-    never an endless shuffle (`panelMoved` in `game-board.component.ts`, keyed by uid). Two
-    rules are the **base's alone**: its units **never attack** - they walk and nothing else -
-    and only **three base units may be moved in a turn** (`BASE_PANELS`,
-    `BASE_MOVERS_PER_TURN`, `baseMovers` - a separate set from the step ledger, so the
-    reserve's walks are not counted against the base's cap). Both allowances reset each ply.
-    Moving a panel unit is still not the turn's one board action - it happens alongside it.
-    Three is the owner's placeholder ("for now"). A panel unit with nothing left - MOV spent,
-    or, in the base, the three movers used up without it - is **dimmed to 0.45**
-    (`isPanelSpent()`), which reads the same conditions the movement rules do, so the grey can
-    never promise a move the board refuses. Only the side whose turn it is greys; the
-    opponent's panels are not the player's to move.
+    never an endless shuffle (`panelMoved` in `game-board.component.ts`, keyed by uid).
+    **No panel unit attacks**, base or reserve: they walk and nothing else. A **reserve unit
+    still counters when it is hit** - *specified, not built*, because nothing can reach into a
+    panel yet and the engines have no reserve to resolve a counter for. Only **three base
+    units may be moved in a turn** (`PANEL_MOVERS_PER_TURN`, `baseMovers` / `reserveMovers` -
+    a set per panel, so one panel's walks are not counted against the other's cap); the
+    reserve carries the same cap **only through the initialization**, and shuffles freely
+    after. Allowances reset each ply. Moving a panel unit is still not the turn's one board
+    action - it happens alongside it. Three is the owner's placeholder ("for now"). A unit
+    with nothing left - MOV spent, its panel's three movers used up without it, or its one
+    move of the opening already taken - is **dimmed** (`isPanelSpent()`), which reads the same
+    conditions the movement rules do, so the grey can never promise a move the board refuses.
+    Each side greys to **its own grey** - light for white, dark for black - because opacity
+    alone made a spent white plate wash out while a spent black one only went mid-grey. Only
+    the side whose turn it is greys; the opponent's panels are not the player's to move.
+  - **The wrap costs points.** Crossing costs the unit's **own worth** - its config `value`,
+    the same number a death is scored by, so a rook is 18 - taken off the crossing side's
+    points (`wrapCost()` / `wrapCrossed` in `game-board.component.ts`, spent by
+    `onWrapCrossed()` in the room). **A side that cannot pay is not offered the crossing at
+    all**: nothing beyond the tip enters the flood, so there is no hex to click. What it can
+    afford is marked - every hex on the far side that the crossing buys carries a red **`-x`**
+    where x is that price, because the price is for making the crossing, not for the hex. An
+    ordinary shuffle inside a panel costs nothing.
+  - **The two ends of the wrap are marked with an arrow**: **up** out of the base, **down**
+    into the reserve - hexes **283** and **306** on white's side of the shipped board, and the
+    reverse of that on black's. Assigned by colour and drawn in board space, so a solo game as
+    black turns them with the board and each player still reads their own base tip as the one
+    pointing up and away (`wrapMarks()`). **Each side's arrows are coloured apart** - yours
+    pale cream, the opponent's the purple the board already uses for what the other side does
+    (`arrowSide` on the cell, set from the seat) - so a glance says whose way in it is without
+    reading which corner it sits in.
+  - **Undo spans two stacks.** Panel walks are kept by the board (`panelHistory` /
+    `undoPanelMove()`), staged board actions by the room; every entry is stamped, and
+    `undoMove()` pops from whichever is newer - so Undo always takes back the thing just done
+    rather than reaching past it. Taking a crossing back hands its price back with it.
   - **The wrap is the only way out of the base.** A unit that reaches its base's outer tip may
     step across to the reserve tip facing it, and **the crossing costs 1 MOV**; whatever is left
     carries on into the reserve. On the shipped board white's pair is hex **283** `(-12,1)` and
@@ -219,9 +245,15 @@ Decided so far:
     satisfies `q + r = radius + 1`). Each is **marked with an arrow pointing at the
     battlefield** - leftward out of white's reserve, rightward out of black's, drawn in board
     space so a solo game as black rotates it and it still points inward (`gatewayHexes()` /
-    `arrowPoints()`). **The mark is drawn; the move is not built** - a placeholder reserve is a
-    client-side fiction the server has never heard of, so walking one onto the battlefield
-    would show a unit the next `game_state_update` wipes. Entry needs the server model first.
+    `arrowPoints()`). **Specified, not built.** Two things
+    block it, and both are the owner's to unblock. *(1)* Neither engine has a reserve model at
+    all - a panel unit is a client-side fiction with an invented uid, so there is nothing for
+    an engine to validate a departure against, and a unit walked onto the battlefield would be
+    wiped by the next `game_state_update`. Solo could go first (`local-game.service.ts` is the
+    engine there), but a client-only version diverges from multiplayer, which the invariants
+    forbid. *(2)* **Which turns allow a crossing is undecided** - the owner has said there
+    will be specific ones - so an ungated passage would invent the rule rather than fill it in.
+    A unit **entering the board cannot attack**.
     (513, not the 516 first mentioned: `(5,10)` touches no battlefield hex. Confirmed by the
     owner since.)
   - **Deployment is not built.** The panels hold units and take clicks, but there is no way in
@@ -260,6 +292,13 @@ Decided so far:
   - *Assumed, not specified:* the refill cooldown is **3 turns**, the same a cast leaves behind
     (`game-room.component.ts`, `pickAbility`). The owner said the replacement arrives on
     cooldown but not for how long. Confirm before treating 3 as the number.
+- **The host takes a side.** The setup panel's **Me** section offers Random (the default),
+  White and Black, between Game Mode and the turn timer. Only the host is asked, because the
+  server refuses `start_game` from anyone else - so this is the one seat in a two-player room
+  that is chosen rather than tossed for. Solo settles a Random pick on the client, since the
+  browser engine plays the colour it is handed; a two-player room sends the choice and lets
+  the server toss, since the server owns the seating. Anything the server does not recognise
+  is a coin flip, so a client that sends nothing gets what it always got.
 - **Five capture zones.** The five 19-hex patches on the battlefield - one in the middle, four
   around it - are territory. A unit standing in one claims the hex under it and the zone hexes
   beside it, so the middle of a patch is worth seven and its rim rather less. Adjacency stops at
@@ -298,6 +337,18 @@ Decided so far:
   to, so the turn it lands on has already moved on to the next one - turn 3 is the last of the
   initialization and reads `Turn 3 - 5 Until Phase 1 Halftime`. Past the last change it just
   says `Turn 44 - Overtime`.
+- **The initialization runs on its own rules.** Through the opening three turns:
+  - **Nobody attacks at all** - not on the battlefield either. No targets are offered and no
+    strike layer is drawn (`isInitialization()` in `services/phases.ts`, read by
+    `refreshTargets` and `refreshPreview`).
+  - A side may move **three base units and three reserve units a turn, and one battlefield
+    unit for the whole phase** - not one a turn. The board move is derived from the move
+    history (`initBoardSpent` in `game-room.component.ts`), so it survives a reload and reads
+    the same for both players; panel walks never reach the history, so every record in it is a
+    board move.
+  - **A unit that has moved is out for the rest of the phase**, not just the turn: the
+    per-turn allowances reset each ply, but `lockedUnits` does not, and is emptied only when
+    the phase ends. So each opening turn is spent on units that have not gone yet.
 - **What a phase does is not decided.** The schedule exists and nothing acts on it: no phase
   change fires anything, no score is banked, no deployment opens. The intent is that each phase
   ends by banking a snapshot of `cap - death` and the snapshots are summed to decide the winner

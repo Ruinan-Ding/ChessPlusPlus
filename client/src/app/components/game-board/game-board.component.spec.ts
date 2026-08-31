@@ -33,6 +33,9 @@ describe('GameBoardComponent reach preview', () => {
     board.boardState = boardState;
     board.config = config;
     board.radius = 4;
+    // Past the initialization, where nobody attacks: these are the strike
+    // previews, and turn 0 would suppress every one of them.
+    board.turnNumber = 20;
     board.ngOnChanges({
       boardState: new SimpleChange(null, boardState, true),
       config: new SimpleChange(null, config, true),
@@ -449,7 +452,7 @@ describe('GameBoardComponent reach preview', () => {
       });
 
       // Six in all, and never on the battlefield or in either base.
-      const marked = board.cells.filter(c => c.gateway);
+      const marked = board.cells.filter(c => c.gateway === 'left' || c.gateway === 'right');
       expect(marked.length).toBe(6);
       expect(marked.every(c => c.filler && !BASE.has(c.panel))).toBeTrue();
 
@@ -519,6 +522,141 @@ describe('GameBoardComponent reach preview', () => {
       expect(board.legalTargets.has('4,1')).toBeFalse();
     });
 
+    it('colours the two sides arrows apart', () => {
+      const side = (key: string) => anyBoard().cellsByKey.get(key).arrowSide;
+      // The seat defaults to white, so white's are the player's own.
+      expect(side('-5,1')).toBe('mine');
+      expect(side('4,1')).toBe('mine');
+      expect(side('5,-1')).toBe('theirs');
+      expect(side('-4,-1')).toBe('theirs');
+
+      // And the gateways with them - three a side.
+      const mine = board.cells.filter(c => c.gateway && c.arrowSide === 'mine');
+      const theirs = board.cells.filter(c => c.gateway && c.arrowSide === 'theirs');
+      expect(mine.length).toBe(5);
+      expect(theirs.length).toBe(5);
+
+      // Taking the other seat swaps which is which.
+      board.myColor = 'black';
+      board.ngOnChanges({ myColor: new SimpleChange('', 'black', false) });
+      expect(side('-5,1')).toBe('theirs');
+      expect(side('5,-1')).toBe('mine');
+    });
+
+    it('points the wrap out of each base and into each reserve', () => {
+      const at = (key: string) => anyBoard().cellsByKey.get(key).gateway;
+      // Radius 4: white's pair is (-5,1) and (4,1), black's the point mirror.
+      expect(at('-5,1')).toBe('up');
+      expect(at('4,1')).toBe('down');
+      // Reversed for the other side, and drawn in board space - so a game
+      // played as black turns the board and each player still reads their
+      // own base tip as the one pointing away.
+      expect(at('5,-1')).toBe('down');
+      expect(at('-4,-1')).toBe('up');
+
+      // An up arrow runs above the hex centre and a down one below it.
+      const y = (key: string) => Number(
+        board.arrowPoints(anyBoard().cellsByKey.get(key)).split(' ')[0].split(',')[1]);
+      expect(y('-5,1')).toBeLessThan(anyBoard().cellsByKey.get('-5,1').cy);
+      expect(y('4,1')).toBeGreaterThan(anyBoard().cellsByKey.get('4,1').cy);
+    });
+
+    it('charges the crossing the unit own worth, and marks what it buys', () => {
+      // The scout is worth 7, so the crossing costs 7 points.
+      (config.units as any).scout.value = 7;
+      anyBoard().reserves = { '-5,1': {
+        unit_id: 'scout', color: 'white', hp: 6, max_hp: 6, uid: 'walker',
+      } };
+      anyBoard().buildCells();
+
+      // Nothing to pay with: the far side is not offered at all, so there is
+      // no hex to click and nothing to explain.
+      board.movePoints = 6;
+      board.onHexClick(anyBoard().cellsByKey.get('-5,1'));
+      expect(board.legalTargets.has('4,1')).toBeFalse();
+      expect(board.wrapTargets.size).toBe(0);
+
+      // Exactly enough, and it is. Every hex the crossing buys carries the
+      // same price - it is for making the crossing, not for the hex.
+      board.selectedHex = null;
+      board.movePoints = 7;
+      board.onHexClick(anyBoard().cellsByKey.get('-5,1'));
+      expect(board.legalTargets.has('4,1')).toBeTrue();
+      expect(board.wrapTargets.get('4,1')).toBe(7);
+      expect([...board.wrapTargets.values()].every(v => v === 7)).toBeTrue();
+      // And only the far side is priced; the base it is standing in is not.
+      expect([...board.wrapTargets.keys()].every(
+        k => anyBoard().cellsByKey.get(k).panel === 'br')).toBeTrue();
+
+      // Making it announces the price for the room to take off.
+      const paid: number[] = [];
+      board.wrapCrossed.subscribe((n: number) => paid.push(n));
+      board.onHexClick(anyBoard().cellsByKey.get('4,1'));
+      expect(paid).toEqual([7]);
+      delete (config.units as any).scout.value;
+    });
+
+    it('marks a unit that has walked, and takes the walk back on undo', () => {
+      // A scout, so a single step leaves MOV to spare - the point of the
+      // mark is a unit that has walked but is not finished.
+      const from = [...anyBoard().panelZones.get('bl')][0];
+      anyBoard().reserves = { [from]: {
+        unit_id: 'scout', color: 'white', hp: 6, max_hp: 6, uid: 'walker',
+      } };
+      anyBoard().buildCells();
+      const start = anyBoard().cellsByKey.get(from);
+      const uid = 'walker';
+      expect(board.hasWalked(start)).toBeFalse();
+
+      board.onHexClick(start);
+      const to = [...board.legalTargets].find(
+        k => !board.wrapTargets.has(k) && anyBoard().moveCosts.get(k) === 1)!;
+      const cost: number = anyBoard().moveCosts.get(to);
+      board.onHexClick(anyBoard().cellsByKey.get(to));
+
+      // Walked, and still with MOV to spend - so it is marked, not greyed.
+      const moved = anyBoard().cellsByKey.get(to);
+      expect(board.hasWalked(moved)).toBeTrue();
+      expect(board.isPanelSpent(moved)).toBeFalse();
+      expect(anyBoard().panelMoved.get(uid)).toBe(cost);
+      expect(board.lastPanelMove).toBeGreaterThan(0);
+
+      // Undo puts the unit, its MOV and its place among the movers back.
+      expect(board.undoPanelMove()).toBe(0);
+      expect(anyBoard().reserves[from]).toBeTruthy();
+      expect(anyBoard().reserves[to]).toBeUndefined();
+      expect(anyBoard().panelMoved.has(uid)).toBeFalse();
+      expect(anyBoard().baseMovers.has(uid)).toBeFalse();
+      expect(board.lastPanelMove).toBe(0);
+      expect(board.hasWalked(anyBoard().cellsByKey.get(from))).toBeFalse();
+    });
+
+    it('hands back what a crossing cost when it is undone', () => {
+      (config.units as any).scout.value = 7;
+      anyBoard().reserves = { '-5,1': {
+        unit_id: 'scout', color: 'white', hp: 6, max_hp: 6, uid: 'walker',
+      } };
+      anyBoard().buildCells();
+      board.movePoints = 7;
+      board.onHexClick(anyBoard().cellsByKey.get('-5,1'));
+      board.onHexClick(anyBoard().cellsByKey.get('4,1'));
+
+      // What it paid comes back with the walk.
+      expect(board.undoPanelMove()).toBe(7);
+      expect(anyBoard().reserves['-5,1']).toBeTruthy();
+      delete (config.units as any).scout.value;
+    });
+
+    it('does not charge an ordinary shuffle inside a panel', () => {
+      const cell = baseCell();
+      const paid: number[] = [];
+      board.wrapCrossed.subscribe((n: number) => paid.push(n));
+      board.onHexClick(cell);
+      const to = [...board.legalTargets].find(k => !board.wrapTargets.has(k))!;
+      board.onHexClick(anyBoard().cellsByKey.get(to));
+      expect(paid).toEqual([]);
+    });
+
     it('lets three move a turn, then no more until the next', () => {
       const cell = baseCell();
       // Three others have already been walked this turn, and this is a fourth.
@@ -528,10 +666,102 @@ describe('GameBoardComponent reach preview', () => {
 
       // A new ply hands the allowance back.
       board.selectedHex = null;
-      board.turnNumber = 2;
-      board.ngOnChanges({ turnNumber: new SimpleChange(1, 2, false) });
+      board.turnNumber = 21;
+      board.ngOnChanges({ turnNumber: new SimpleChange(20, 21, false) });
       board.onHexClick(cell);
       expect(board.legalTargets.size).toBeGreaterThan(0);
+    });
+  });
+
+  /**
+   * The opening three turns run on their own rules: nobody strikes, both
+   * panels are capped, and a unit gets one move for the whole phase rather
+   * than one a turn.
+   */
+  describe('the initialization', () => {
+    const anyBoard = () => board as any;
+    const baseCell = () => board.cells.find(c => c.panel === 'bl' && !!c.piece)!;
+    const reserveCell = () => board.cells.find(c => c.panel === 'br' && !!c.piece)!;
+    const enterTurn = (from: number, to: number) => {
+      board.selectedHex = null;
+      board.turnNumber = to;
+      board.ngOnChanges({ turnNumber: new SimpleChange(from, to, false) });
+    };
+
+    beforeEach(() => {
+      board.interactive = true;
+      board.controlAllSides = true;
+      board.turnColor = 'white';
+      // A black unit within the archer's range, so there is a strike to offer
+      // in the first place.
+      anyBoard().boardState = {
+        ...boardState, '1,0': { unit_id: 'guard', color: 'black', hp: 9, max_hp: 9 },
+      };
+      anyBoard().buildCells();
+      enterTurn(20, 1);
+    });
+
+    it('offers nobody a strike, and draws no strike layer', () => {
+      board.onHexClick(cell('0,0'));
+      expect(board.attackTargets.size).toBe(0);
+      board.onHexHover(cell('0,0'));
+      expect(board.previewAttacks.size).toBe(0);
+
+      // Both come back the moment the opening is over.
+      enterTurn(1, 20);
+      board.onHexClick(cell('0,0'));
+      expect(board.attackTargets.has('1,0')).toBeTrue();
+      board.onHexHover(cell('0,0'));
+      expect(board.previewAttacks.size).toBeGreaterThan(0);
+    });
+
+    it('caps the reserve at three movers a turn, the way the base is', () => {
+      const res = reserveCell();
+      ['a', 'b', 'c'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      board.onHexClick(res);
+      expect(board.legalTargets.size).toBe(0);
+
+      // Outside the opening the reserve shuffles freely, as it always has.
+      enterTurn(1, 20);
+      ['a', 'b', 'c'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      board.onHexClick(res);
+      expect(board.legalTargets.size).toBeGreaterThan(0);
+    });
+
+    it('gives a unit one move for the whole phase, not one a turn', () => {
+      const start = baseCell();
+      board.onHexClick(start);
+      const to = [...board.legalTargets][0];
+      board.onHexClick(anyBoard().cellsByKey.get(to));
+
+      // Next turn of the opening: it has had its move, and says so.
+      enterTurn(1, 3);
+      const moved = anyBoard().cellsByKey.get(to);
+      expect(board.isPanelSpent(moved)).toBeTrue();
+      board.onHexClick(moved);
+      expect(board.legalTargets.size).toBe(0);
+
+      // The lock lifts with the phase, not with the turn.
+      enterTurn(3, 4);
+      expect(board.isPanelSpent(anyBoard().cellsByKey.get(to))).toBeFalse();
+    });
+
+    it('spends one battlefield unit for the whole opening', () => {
+      expect(board.isPanelSpent(cell('0,0'))).toBeFalse();
+
+      board.boardMoveSpent = true;
+      board.selectedHex = null;
+      board.onHexClick(cell('0,0'));
+      expect(board.legalTargets.size).toBe(0);
+      expect(board.isPanelSpent(cell('0,0'))).toBeTrue();
+      // The opponent's units are not this player's to move either way.
+      expect(board.isPanelSpent(cell('1,0'))).toBeFalse();
+
+      // Outside the opening a board unit moves every turn as before.
+      enterTurn(1, 20);
+      board.onHexClick(cell('0,0'));
+      expect(board.legalTargets.size).toBeGreaterThan(0);
+      expect(board.isPanelSpent(cell('0,0'))).toBeFalse();
     });
   });
 

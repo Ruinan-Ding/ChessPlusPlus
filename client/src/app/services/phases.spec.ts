@@ -1,4 +1,4 @@
-import { MILESTONES, PHASES, turnHeading } from './phases';
+import { isInitialization, MILESTONES, PHASES, phaseAt, turnHeading } from './phases';
 
 /**
  * The schedule is arithmetic on a table, so the table is what is worth
@@ -19,6 +19,21 @@ describe('the match schedule', () => {
       { turn: 28, next: 'Phase 3 Halftime' },
       { turn: 33, next: 'Overtime' },
     ]);
+  });
+
+  it('places a turn in its phase, and names the opening', () => {
+    expect([1, 2, 3].map(t => phaseAt(t).name)).toEqual(
+      ['Initialization', 'Initialization', 'Initialization']);
+    expect(phaseAt(4).name).toBe('Phase 1');
+    expect(phaseAt(13).name).toBe('Phase 1');
+    expect(phaseAt(14).name).toBe('Phase 2');
+    expect(phaseAt(33).name).toBe('Phase 3');
+    // Overtime runs out the match, so everything past the schedule is in it.
+    expect(phaseAt(34).name).toBe('Overtime');
+    expect(phaseAt(500).name).toBe('Overtime');
+
+    expect([1, 3].every(isInitialization)).toBeTrue();
+    expect([4, 20].some(isInitialization)).toBeFalse();
   });
 
   it('counts the turns left before the next change', () => {

@@ -1167,9 +1167,17 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self._send_user_list()
             await self._send_game_player_list(game_id, is_inviter=(self.username == game.host))
 
-            # Nobody chooses their colour in a two-player game, which is every
-            # game the server runs: solo play is served by the browser engine.
-            if random.random() < 0.5:
+            # The host picks a side, or leaves it to the coin. Only the host
+            # reaches here at all - the guard above rejects anyone else - so
+            # this is the one seat anybody gets to choose. Anything but the
+            # two colours means random, so an old client that sends nothing
+            # gets what it always got.
+            host_color = data.get('hostColor')
+            if host_color == 'white':
+                p_white, p_black = game.host, game.opponent
+            elif host_color == 'black':
+                p_white, p_black = game.opponent, game.host
+            elif random.random() < 0.5:
                 p_white, p_black = game.host, game.opponent
             else:
                 p_white, p_black = game.opponent, game.host

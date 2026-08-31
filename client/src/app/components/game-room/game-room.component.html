@@ -191,7 +191,7 @@
       <!-- A move is staged on the board until one of these resolves it, so
            they sit with the board rather than off in the rail. -->
       <div class="turn-controls">
-        <button class="undo-btn" type="button" (click)="undoMove()" [disabled]="!pendingMove">Undo<span *ngIf="shortcutsActive"> (R)</span></button>
+        <button class="undo-btn" type="button" (click)="undoMove()" [disabled]="!canUndo">Undo<span *ngIf="shortcutsActive"> (R)</span></button>
         <button class="end-turn-btn" type="button" (click)="endTurn()" [disabled]="!canEndTurn">End Turn<span *ngIf="shortcutsActive"> (TAB)</span></button>
       </div>
 
@@ -506,6 +506,9 @@
           [controlAllSides]="isSinglePlayer"
           [rotateBoard]="isSinglePlayer && soloColor === 'black'"
           [turnColor]="gameState.myColor(state.currentTurn)"
+          [boardMoveSpent]="initBoardSpent"
+          [movePoints]="movePoints"
+          (wrapCrossed)="onWrapCrossed($event)"
           [config]="state.config"
           [showNumbers]="showHexNumbers"
           [movesLeft]="movesLeft"
@@ -559,6 +562,21 @@
                   (change)="changeGameMode('custom')"
                 >
                 <label for="custom-mode">Custom Mode</label>
+              </div>
+
+              <!-- Which side to take. Only drawn for the host: the server
+                   refuses a start from anybody else, so nobody else has a
+                   seat to choose. -->
+              <div class="seat-option">
+                <span class="seat-label">Me</span>
+                <div class="seat-choices">
+                  <label class="radio-option" *ngFor="let seat of seatChoices">
+                    <input type="radio" name="seat-choice"
+                           [checked]="seatChoice === seat.value"
+                           (change)="setSeatChoice(seat.value)">
+                    <span>{{ seat.label }}</span>
+                  </label>
+                </div>
               </div>
 
               <div class="turn-time-option">
@@ -694,17 +712,6 @@
               (click)="toggleReady()"
             >
               {{ isReady ? 'Unready' : 'Ready' }}
-            </button>
-            <!-- Solo: pick your side instead of readying up. The placeholder
-                 always takes the other colour. -->
-            <button
-              *ngIf="isSinglePlayer"
-              class="color-toggle-btn"
-              [class.as-black]="soloColor === 'black'"
-              (click)="toggleSoloColor()"
-              title="Click to switch sides"
-            >
-              You: {{ soloColor === 'white' ? 'White' : 'Black' }}
             </button>
             <button
               *ngIf="isInviter"

@@ -16,6 +16,7 @@ import {
   attackTiers, captureClaims, captureZoneHexes, computeAttackZone, computeLegalMoves,
   computeMoveCosts, hexDistanceKeys, strikeDamage,
 } from '../../services/hex-rules';
+import { isInitialization } from '../../services/phases';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -116,7 +117,13 @@ interface HexCell {
   /** Whose setup rows this hex is in, from this client's seat; '' between. */
   home: 'mine' | 'theirs' | '';
   /** A reserve hex units enter the board from, and which way its arrow points. */
-  gateway: 'left' | 'right' | '';
+  /**
+   * An arrow on the hex: 'left'/'right' on the three gateways onto the
+   * battlefield, 'up'/'down' on the two ends of the wrap.
+   */
+  gateway: 'left' | 'right' | 'up' | 'down' | '';
+  /** Whose arrow it is, so the two sides' are not the same colour. */
+  arrowSide: 'mine' | 'theirs' | '';
   /** 1-based reading order over every hex, panels included. */
   num: number;
   /** Smaller hex drawn under an occupying unit. */
@@ -302,11 +309,13 @@ function panelOf(x: number, y: number): string {
 const BASE_PANELS = new Set(['bl', 'tr']);
 
 /**
- * How many base units may be moved in one turn.
+ * How many units of one panel may be started in a turn. The base carries this
+ * all match; the reserve only through the initialization, where the opening
+ * rules cap it too and it shuffles freely after.
  * ponytail: the owner's placeholder - "3 of these (for now)". A constant
  * because that is all it is; it moves to config when the real number lands.
  */
-const BASE_MOVERS_PER_TURN = 3;
+const PANEL_MOVERS_PER_TURN = 3;
 
 /**
  * The three reserve hexes a side may step onto the battlefield from, each
@@ -319,11 +328,11 @@ const BASE_MOVERS_PER_TURN = 3;
  * reserve and to the right of black's. It is drawn in board space, so a solo
  * game as black rotates it with everything else and it still points inward.
  */
-function gatewayHexes(radius: number): Map<string, 'left' | 'right'> {
-  const out = new Map<string, 'left' | 'right'>();
+function gatewayHexes(radius: number): Map<string, { dir: 'left' | 'right'; color: 'white' | 'black' }> {
+  const out = new Map<string, { dir: 'left' | 'right'; color: 'white' | 'black' }>();
   for (const step of [2, 1, 0]) {
-    out.set(`${step + 1},${radius - step}`, 'left');
-    out.set(`${-step - 1},${step - radius}`, 'right');
+    out.set(`${step + 1},${radius - step}`, { dir: 'left', color: 'white' });
+    out.set(`${-step - 1},${step - radius}`, { dir: 'right', color: 'black' });
   }
   return out;
 }
@@ -461,17 +470,39 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [class.held-white]="captureClaim.get(hex.key) === 'white'"
             [class.held-black]="captureClaim.get(hex.key) === 'black'"
           />
-          <!-- The way onto the battlefield, marked on the three reserve hexes
-               it can be taken from. Under the unit group below, so a reserve
-               standing on the hex covers its middle but not the head. -->
+          <!-- The way onto the battlefield on the three reserve hexes it can
+               be taken from, and the two ends of the wrap. Under the unit
+               group below, so a unit standing on the hex covers its middle
+               but not the head. -->
           <polygon
             *ngIf="hex.gateway"
             [attr.points]="arrowPoints(hex)"
             class="gateway-arrow"
+            [class.arrow-theirs]="hex.arrowSide === 'theirs'"
+          />
+          <!-- What a crossing costs, on every hex it buys. The dot gives way
+               to it: they would sit on the same spot, and the price is the
+               thing worth reading. -->
+          <text
+            *ngIf="showingSelection && wrapTargets.has(hex.key) && !hex.piece"
+            [attr.x]="hex.cx"
+            [attr.y]="hex.cy + 5"
+            class="wrap-cost"
+            (click)="onHexClick(hex)"
+          >-{{ wrapTargets.get(hex.key) }}</text>
+          <!-- Already walked this turn, and maybe with MOV still to spend:
+               not greyed, but not untouched either. -->
+          <circle
+            *ngIf="hasWalked(hex)"
+            [attr.cx]="hex.cx - 13"
+            [attr.cy]="hex.cy - 13"
+            [attr.r]="4.5"
+            class="walked-mark"
           />
           <!-- Legal-move dot -->
           <circle
-            *ngIf="showingSelection && legalTargets.has(hex.key) && !hex.piece"
+            *ngIf="showingSelection && legalTargets.has(hex.key) && !hex.piece
+                   && !wrapTargets.has(hex.key)"
             [attr.cx]="hex.cx"
             [attr.cy]="hex.cy"
             [attr.r]="6"
@@ -869,6 +900,29 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       50% { filter: brightness(1.12); }
     }
 
+    /* The price of a crossing, on each hex it would buy. Red, and outlined
+       so it stays readable over a lit hex as well as a plain one. */
+    .wrap-cost {
+      fill: #b91c1c;
+      font-size: 13px;
+      font-weight: 800;
+      text-anchor: middle;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.9);
+      stroke-width: 3;
+      stroke-linejoin: round;
+      cursor: pointer;
+    }
+
+    /* A panel unit that has already been walked this turn. Sits off the
+       plate's corner so it reads next to the unit rather than on it. */
+    .walked-mark {
+      fill: #f6c343;
+      stroke: #3a2f0b;
+      stroke-width: 1.2;
+      pointer-events: none;
+    }
+
     .legal-dot {
       fill: rgba(0, 128, 0, 0.4);
       pointer-events: none;
@@ -982,13 +1036,19 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
 
     /* The plate carries the side's colour; the icon takes the opposite one.
        Outlined in the board's own fill so it reads as a thin ring. */
-    /* A base unit that is done for the turn - its MOV spent, or the turn's
-       three movers used up without it. Dimmed on the group, so the plate and
-       the glyph fade together. Held at 0.45: far enough to read as spent
-       across a whole panel at a glance, not so far that the unit stops being
-       legible as the unit it is, or that white's plates vanish into a pale
-       panel. */
-    .unit-pop.panel-spent { opacity: 0.45; }
+    /* A unit that is done - its MOV spent, the turn's three movers used up
+       without it, or its one move of the initialization already taken.
+       Dimmed on the group, so the plate and the glyph fade together.
+
+       Each side greys to its own grey rather than to the same fade. Opacity
+       alone is not a colour: it made a spent white plate wash out into a pale
+       panel while a spent black one only went mid-grey, so the same state
+       read as two different things depending on whose unit it was. A light
+       grey and a dark one keep a spent unit legible as the side it belongs
+       to, and the group still fades so that spent still reads as spent. */
+    .unit-pop.panel-spent { opacity: 0.62; }
+    .unit-pop.panel-spent .unit-plate.plate-white { fill: #b9bec4; }
+    .unit-pop.panel-spent .unit-plate.plate-black { fill: #55595f; }
 
     /* The way onto the battlefield. Pale with a dark outline rather than one
        flat colour: the two reserve panels are light green and dark green, and
@@ -1001,6 +1061,14 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       stroke-width: 1.2;
       stroke-linejoin: round;
       pointer-events: none;
+    }
+
+    /* The opponent's, in the purple the board already uses for what the other
+       side does. Yours stay the pale cream, so a glance at a panel says whose
+       way in it is without reading which corner it sits in. */
+    .gateway-arrow.arrow-theirs {
+      fill: #b07cd6;
+      stroke: #3d1f57;
     }
 
     .unit-plate {
@@ -1303,6 +1371,17 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   @Input() interactive = true;
   /** False once a move is staged: units can still be inspected, not driven. */
   @Input() canMove = true;
+  /**
+   * Whether the side to move has already spent its one battlefield move of
+   * the initialization. Derived by the room from the move history, so it
+   * survives a reload and reads the same for both players.
+   */
+  @Input() boardMoveSpent = false;
+  /**
+   * Points the side to move has to spend. The wrap out of the base is bought
+   * as well as walked, and a side that cannot pay is never shown the option.
+   */
+  @Input() movePoints = 0;
   /** Steps the staged unit has left this turn, and which unit that is. */
   @Input() movesLeft: number | null = null;
   @Input() movesLeftFor: string | null = null;
@@ -1374,6 +1453,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   @Output() hexClicked = new EventEmitter<SelectedUnit | null>();
   /** Attack from `to` (where the unit stands) against the enemy on `attack`. */
   @Output() attackMade = new EventEmitter<{ from: string; to: string; attack: string }>();
+
+  /** A unit crossed the wrap: what it cost, for the room to take off. */
+  @Output() wrapCrossed = new EventEmitter<number>();
   /** Same payload for the hex under the cursor - a preview, not a selection. */
   @Output() hexHovered = new EventEmitter<SelectedUnit | null>();
 
@@ -1819,10 +1901,22 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       this.clearTargets();
       // Each side's allowance is its own, and turnNumber counts plies - so a
       // new ply hands whoever is up next their panels' full MOV and three
-      // fresh base movers. Only the active colour is ever offered a panel
+      // fresh movers each. Only the active colour is ever offered a panel
       // move, so clearing both sides at once cannot lend anyone a turn.
+      //
+      // Through the initialization a unit gets one move for the whole phase,
+      // so what walked this ply is locked before the allowances reset. The
+      // moment the phase is over the locks go with it.
+      if (this.initializing) {
+        for (const uid of this.panelMoved.keys()) this.lockedUnits.add(uid);
+      } else {
+        this.lockedUnits.clear();
+      }
       this.panelMoved.clear();
       this.baseMovers.clear();
+      this.reserveMovers.clear();
+      // A turn's walks are only takeable back inside that turn.
+      this.panelHistory = [];
     }
     // The board just changed underneath the selection: re-read the stats from
     // the new cell so a piece that moved keeps its panel, and drop a selection
@@ -1967,16 +2061,48 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   captureClaim = new Map<string, 'white' | 'black'>();
 
   /**
-   * The gateway arrow: a triangle pushed out to the hex edge it points at, so
-   * it still shows around the plate of a unit standing on the hex rather than
-   * hiding underneath it. Pointy-top hexes are flat on the left and right,
-   * and that flat sits at HEX_INRADIUS, so 17 out with a half-width of 7
-   * leaves the whole head inside the cell.
+   * The arrow on a hex: a triangle pushed out to the edge it points at, so it
+   * still shows around the plate of a unit standing there rather than hiding
+   * underneath it.
+   *
+   * Pointy-top hexes are flat on the left and right, and that flat sits at
+   * HEX_INRADIUS, so 17 out with a half-width of 7 leaves a sideways head
+   * inside the cell. Up and down run at the corners instead, where the hex
+   * narrows to a point, so they sit closer in.
    */
   arrowPoints(hex: HexCell): string {
+    if (hex.gateway === 'up' || hex.gateway === 'down') {
+      const dir = hex.gateway === 'up' ? -1 : 1;
+      const y = hex.cy + dir * 14;
+      return `${hex.cx},${y + dir * 7} ${hex.cx - 8},${y - dir * 6} ${hex.cx + 8},${y - dir * 6}`;
+    }
     const dir = hex.gateway === 'left' ? -1 : 1;
     const x = hex.cx + dir * 17;
     return `${x + dir * 7},${hex.cy} ${x - dir * 7},${hex.cy - 8} ${x - dir * 7},${hex.cy + 8}`;
+  }
+
+  /**
+   * The two ends of each side's wrap, and the way each is marked: out of the
+   * base points up, into the reserve points down.
+   *
+   * Assigned by colour and drawn in board space, so the pair is mirrored for
+   * the other side - and a solo game as black turns the whole board, which
+   * turns these with it. Whoever is sitting there reads their own base tip as
+   * the one pointing up and away, and the opponent's as the reverse.
+   */
+  private wrapMarks(): Map<string, { dir: 'up' | 'down'; color: 'white' | 'black' }> {
+    const marks = new Map<string, { dir: 'up' | 'down'; color: 'white' | 'black' }>();
+    for (const color of ['white', 'black'] as const) {
+      const tips = this.wrapTips(color);
+      marks.set(tips.base, { dir: color === 'white' ? 'up' : 'down', color });
+      marks.set(tips.reserve, { dir: color === 'white' ? 'down' : 'up', color });
+    }
+    return marks;
+  }
+
+  /** Whose an arrow is, from this client's seat. */
+  private arrowSideOf(color: 'white' | 'black'): 'mine' | 'theirs' {
+    return color === (this.myColor || 'white') ? 'mine' : 'theirs';
   }
 
   /**
@@ -2006,7 +2132,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // Shared with hexNumberMap(), so the numbers drawn here are the same ones
     // the game room quotes in move history.
     const coords = gridCoords(r, orientation);
-    const gateways = gatewayHexes(r);
+    // Both kinds of arrow in one map - three onto the battlefield per side,
+    // and the two ends of each side's wrap. They never share a hex.
+    const arrows = new Map<string, {
+      dir: 'left' | 'right' | 'up' | 'down'; color: 'white' | 'black';
+    }>([...gatewayHexes(r), ...this.wrapMarks()]);
 
     // Panels first: the reserves that live in them decide what the cells hold.
     this.panelZones = new Map();
@@ -2050,7 +2180,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         // Four panels around the hexagon, one per corner.
         zoneClass: c.onBattlefield ? '' : `hex-filler panel-${panelOf(c.x, c.y)}`,
         home: c.onBattlefield ? this.homeOf(c.r) : '',
-        gateway: c.onBattlefield ? '' : gateways.get(key) ?? '',
+        gateway: c.onBattlefield ? '' : arrows.get(key)?.dir ?? '',
+        arrowSide: c.onBattlefield || !arrows.has(key)
+          ? '' : this.arrowSideOf(arrows.get(key)!.color),
         num: i + 1,
       };
     });
@@ -2115,10 +2247,27 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /**
+   * Hexes that can only be reached by crossing the wrap, each against what
+   * the crossing costs in points. What the board draws a `-x` on, and what
+   * tells a move it is a crossing and has to be paid for.
+   */
+  wrapTargets = new Map<string, number>();
+
+  /** What a crossing costs: the unit's own worth, from config. */
+  private wrapCost(cell: HexCell): number {
+    return this.config?.units?.[cell.piece?.unit_id ?? '']?.value ?? 0;
+  }
+
+  /**
    * The wrap, and the only way out of a base: a unit that reaches its base's
    * outer tip may step across to the reserve tip for 1, and carry on into the
    * reserve with whatever MOV is left. Reaching the tip is an ordinary walk,
    * so the cost of the crossing is one step on top of getting there.
+   *
+   * It is bought as well as walked: crossing costs the unit's own worth in
+   * points. A side that cannot pay is not offered the crossing at all -
+   * nothing beyond the tip enters the flood, so there is no hex to click and
+   * nothing to explain. What it can afford is marked with the price.
    *
    * Added to the flood rather than replacing it - a base unit can still walk
    * about inside its own panel without going anywhere near the tip.
@@ -2127,10 +2276,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     const tips = this.wrapTips(cell.piece?.color ?? 'white');
     const toTip = key === tips.base ? 0 : this.moveCosts.get(tips.base);
     if (toTip === undefined || this.occupancy[tips.reserve]) return;
+    const price = this.wrapCost(cell);
+    if (price > this.movePoints) return;
     const spent = toTip + 1;
     const left = (budget ?? this.config?.units?.[cell.piece?.unit_id ?? '']?.move ?? 0) - spent;
     if (left < 0) return;
     this.moveCosts.set(tips.reserve, spent);
+    this.wrapTargets.set(tips.reserve, price);
     if (left === 0) return;
 
     // On into the reserve, flooding from the tip with what is left. The unit
@@ -2146,7 +2298,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     );
     for (const [hex, cost] of beyond) {
       const total = spent + cost;
-      if (total < (this.moveCosts.get(hex) ?? Infinity)) this.moveCosts.set(hex, total);
+      if (total >= (this.moveCosts.get(hex) ?? Infinity)) continue;
+      this.moveCosts.set(hex, total);
+      // The price is for the crossing, not for the hex: every one of these
+      // is reached by making it, so they all carry the same number.
+      this.wrapTargets.set(hex, price);
     }
   }
 
@@ -2160,21 +2316,43 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   private panelMoved = new Map<string, number>();
 
   /**
-   * Which *base* units have been walked this turn. Separate from the ledger
-   * above on purpose: the three-mover cap is a base rule, and counting the
-   * reserve's walks against it would spend the base's allowance on units the
-   * cap was never about.
+   * Which units of each panel have been walked this turn. One set each, and
+   * separate from the ledger above on purpose: the three-mover cap is a
+   * per-panel allowance, and counting one panel's walks against the other
+   * would spend an allowance on units it was never about.
    */
   private baseMovers = new Set<string>();
+  private reserveMovers = new Set<string>();
 
   /**
-   * Whether this base unit may still be walked this turn: one already among
-   * the turn's movers may carry on spending what is left of its MOV, but a
-   * fresh one cannot start once the allowance is used up.
+   * Units this side has already moved earlier in the initialization. Unlike
+   * the movers above this does *not* reset on a new turn - through the
+   * opening a unit gets one move for the whole phase, so the ones that have
+   * had theirs stay out for the rest of it. Emptied when the phase ends.
    */
-  private baseCanMove(cell: HexCell): boolean {
-    return this.baseMovers.has(this.uidOf(cell))
-      || this.baseMovers.size < BASE_MOVERS_PER_TURN;
+  private lockedUnits = new Set<string>();
+
+  /** The opening phase, where the rules above apply. */
+  private get initializing(): boolean {
+    return isInitialization(this.turnNumber);
+  }
+
+  /**
+   * Whether this panel unit may still be walked this turn: one already among
+   * the turn's movers may carry on spending what is left of its MOV, but a
+   * fresh one cannot start once the allowance is used up - and through the
+   * initialization one that moved on an earlier turn cannot start at all.
+   *
+   * The base carries the cap all match. The reserve only carries it through
+   * the opening; after that it shuffles freely, as it always has.
+   */
+  private panelCanMove(cell: HexCell): boolean {
+    const uid = this.uidOf(cell);
+    if (this.lockedUnits.has(uid)) return false;
+    const base = BASE_PANELS.has(cell.panel);
+    if (!base && !this.initializing) return true;
+    const movers = base ? this.baseMovers : this.reserveMovers;
+    return movers.has(uid) || movers.size < PANEL_MOVERS_PER_TURN;
   }
 
   /**
@@ -2188,10 +2366,65 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * panels are not the player's to move either way.
    */
   isPanelSpent(hex: HexCell): boolean {
-    if (!hex.piece || !hex.panel) return false;
+    if (!hex.piece) return false;
+    // A battlefield unit greys only through the initialization, where the
+    // side's one move for the phase can already be gone.
+    if (!hex.panel) {
+      return this.initializing && this.boardMoveSpent
+        && hex.piece.color === this.activeColor;
+    }
     if (hex.piece.color !== this.activeColor) return false;
-    if (BASE_PANELS.has(hex.panel) && !this.baseCanMove(hex)) return true;
+    if (!this.panelCanMove(hex)) return true;
     return this.budgetFor(hex) === 0;
+  }
+
+  /**
+   * Panel walks taken this turn, newest last. A panel walk never reaches an
+   * engine - it is the board's own - so the board keeps the stack that Undo
+   * pops rather than putting it on the room's staged one.
+   */
+  private panelHistory: Array<{
+    from: string; to: string; uid: string; cost: number; price: number; at: number;
+  }> = [];
+
+  /** When the last panel walk was taken, or 0 if none this turn. */
+  get lastPanelMove(): number {
+    return this.panelHistory[this.panelHistory.length - 1]?.at ?? 0;
+  }
+
+  /**
+   * Take the last panel walk back: the unit to where it stood, the steps to
+   * its MOV, and - if it had bought a crossing - the price, which is returned
+   * for the room to hand back. A unit left with nothing walked is no longer
+   * one of the turn's movers either, so the allowance comes back with it.
+   */
+  undoPanelMove(): number {
+    const last = this.panelHistory.pop();
+    if (!last) return 0;
+    this.reserves[last.from] = this.reserves[last.to];
+    delete this.reserves[last.to];
+    const walked = (this.panelMoved.get(last.uid) ?? 0) - last.cost;
+    if (walked > 0) {
+      this.panelMoved.set(last.uid, walked);
+    } else {
+      this.panelMoved.delete(last.uid);
+      this.baseMovers.delete(last.uid);
+      this.reserveMovers.delete(last.uid);
+    }
+    this.selectedHex = null;
+    this.clearTargets();
+    this.buildCells();
+    this.hexSelected.emit(null);
+    return last.price;
+  }
+
+  /**
+   * A panel unit that has already walked this turn. It may still have MOV
+   * left, so it is not greyed - but it is not untouched either, and the mark
+   * says so. Undo takes the walk back and the mark with it.
+   */
+  hasWalked(hex: HexCell): boolean {
+    return !!hex.piece && !!hex.panel && (this.panelMoved.get(this.uidOf(hex)) ?? 0) > 0;
   }
 
   /** Walk a reserve to another hex of its own panel - local, and free. */
@@ -2199,10 +2432,16 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // Either panel's walk comes out of that unit's own MOV for the turn, and
     // a base one additionally spends one of the turn's three movers.
     const moving = this.cellsByKey.get(from);
+    // Crossing the wrap is bought: the room takes the points off. Only a hex
+    // on the far side carries a price, so an ordinary shuffle pays nothing.
+    const price = this.wrapTargets.get(to) ?? 0;
+    if (price) this.wrapCrossed.emit(price);
     if (moving?.panel) {
       const uid = this.uidOf(moving);
-      this.panelMoved.set(uid, (this.panelMoved.get(uid) ?? 0) + (this.moveCosts.get(to) ?? 1));
-      if (BASE_PANELS.has(moving.panel)) this.baseMovers.add(uid);
+      const cost = this.moveCosts.get(to) ?? 1;
+      this.panelMoved.set(uid, (this.panelMoved.get(uid) ?? 0) + cost);
+      (BASE_PANELS.has(moving.panel) ? this.baseMovers : this.reserveMovers).add(uid);
+      this.panelHistory.push({ from, to, uid, cost, price, at: Date.now() });
     }
     this.reserves[to] = this.reserves[from];
     delete this.reserves[from];
@@ -2271,7 +2510,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   private clearTargets(): void {
     this.legalTargets.clear();
     this.attackTargets.clear();
+    this.wrapTargets.clear();
     this.moveCosts.clear();
+    this.wrapTargets.clear();
   }
 
   /**
@@ -2293,12 +2534,16 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     const zone = cell.panel ? this.panelZones.get(cell.panel) : undefined;
     if (zone) {
       if (!this.controlAllSides && !this.isMyTurn) return;
-      // Only so many base units move in a turn. A fourth one on a turn that
-      // has already moved three has nothing to show; one that has spent its
-      // MOV falls out below, where a budget of 0 floods nowhere.
-      if (BASE_PANELS.has(cell.panel) && !this.baseCanMove(cell)) return;
+      // Only so many of a panel's units move in a turn. A fourth one on a
+      // turn that has already moved three has nothing to show; one that has
+      // spent its MOV falls out below, where a budget of 0 floods nowhere.
+      if (!this.panelCanMove(cell)) return;
     } else {
       if (!canDrive) return;
+      // One battlefield unit for the whole of the initialization, not one a
+      // turn: once this side has spent it, nothing on the board is offered a
+      // step for the rest of the phase.
+      if (this.initializing && this.boardMoveSpent) return;
       // One unit acts per turn: once something is staged, nothing else may be
       // driven, or the staged origin and the unit on screen part ways.
       if (this.movesLeftFor && key !== this.movesLeftFor) return;
@@ -2312,14 +2557,17 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (BASE_PANELS.has(cell.panel)) this.addWrap(cell, key, budget);
     this.legalTargets = new Set(this.moveCosts.keys());
 
-    // A base unit never attacks - it walks and nothing else - so it is given
-    // no targets to be offered in the first place.
-    if (!BASE_PANELS.has(cell.panel)) {
+    // Nobody off the battlefield attacks - base and reserve alike walk and
+    // nothing else - and through the initialization nobody attacks at all.
+    // Neither is given targets to be offered in the first place. A reserve
+    // unit still strikes back when it is hit; that is the engine's to
+    // resolve, and it has no reserve to resolve it for yet.
+    if (!cell.panel && !this.initializing) {
       const range: number = this.config?.units?.[cell.piece.unit_id]?.attackRange ?? 1;
       for (const other of this.cells) {
         if (!other.piece || other.piece.color === cell.piece.color) continue;
-        // Nothing reaches across the panel wall, in either direction.
-        if (other.panel !== cell.panel) continue;
+        // Nothing reaches into a panel from the battlefield.
+        if (other.panel) continue;
         if (hexDistanceKeys(key, other.key) <= range) this.attackTargets.add(other.key);
       }
     }
@@ -2372,7 +2620,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     this.previewMoves = computeLegalMoves(
       this.occupancy, q, r, this.config, this.radius, budget, zone,
     );
-    // The strike layer sits just outside whatever movement is left.
+    // The strike layer sits just outside whatever movement is left - and is
+    // not drawn at all for a unit that cannot strike: a panel unit, or
+    // anybody at all through the initialization.
+    if (cell.panel || this.initializing) return;
     this.previewAttacks = computeAttackZone(
       key, this.previewMoves, this.config, cell.piece.unit_id, this.radius, zone,
     );
