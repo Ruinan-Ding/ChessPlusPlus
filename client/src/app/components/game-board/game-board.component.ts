@@ -292,6 +292,20 @@ function panelOf(x: number, y: number): string {
   return `${y < 0 ? 't' : 'b'}${x < 0 ? 'l' : 'r'}`;
 }
 
+/**
+ * The base is each player's left plane - the red pair, bottom-left for white
+ * and top-right for black. The green pair opposite is the reserve, and it
+ * still shuffles freely; only the base carries the rules below.
+ */
+const BASE_PANELS = new Set(['bl', 'tr']);
+
+/**
+ * How many base units may be moved in one turn.
+ * ponytail: the owner's placeholder - "3 of these (for now)". A constant
+ * because that is all it is; it moves to config when the real number lands.
+ */
+const BASE_MOVERS_PER_TURN = 3;
+
 /** Every hex in the squared-off block, already in reading order. */
 function gridCoords(radius: number, orientation: BoardOrientation) {
   let limitX = 0, limitY = 0;
@@ -441,7 +455,8 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
                  unit swells all of it. On the group rather than the plate:
                  the plate's own animation belongs to the buff and debuff
                  glows, and a cast that lands a buff would lose the race. -->
-            <g class="unit-pop" [attr.data-pop]="hex.key">
+            <g class="unit-pop" [attr.data-pop]="hex.key"
+               [class.base-spent]="isBaseSpent(hex)">
               <polygon
                 *ngIf="!isMoving(hex.key)"
                 [attr.points]="hex.innerPoints"
@@ -937,6 +952,14 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
 
     /* The plate carries the side's colour; the icon takes the opposite one.
        Outlined in the board's own fill so it reads as a thin ring. */
+    /* A base unit that is done for the turn - its MOV spent, or the turn's
+       three movers used up without it. Dimmed on the group, so the plate and
+       the glyph fade together. Held at 0.45: far enough to read as spent
+       across a whole panel at a glance, not so far that the unit stops being
+       legible as the unit it is, or that white's plates vanish into a pale
+       panel. */
+    .unit-pop.base-spent { opacity: 0.45; }
+
     .unit-plate {
       stroke: #f0d9b5;
       stroke-width: 1;
@@ -1751,6 +1774,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // until another unit is clicked - the Unit panel stays pinned to it.
     if (changes['turnNumber'] && !changes['turnNumber'].firstChange) {
       this.clearTargets();
+      // Each side's base allowance is its own, and turnNumber counts plies -
+      // so a new ply hands whoever is up next three fresh movers and their
+      // full MOV. Only the active colour is ever offered a base move, so
+      // clearing both sides' ledgers at once cannot lend anyone a turn.
+      this.baseMoved.clear();
     }
     // The board just changed underneath the selection: re-read the stats from
     // the new cell so a piece that moved keeps its panel, and drop a selection
@@ -2012,8 +2040,99 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     }
   }
 
+  /**
+   * The two outer tips a wrap joins for one side: its base's tip and the
+   * reserve tip facing it across the board. On the shipped radius-11 board
+   * white's pair is hex 283 `(-12,1)` and hex 306 `(11,1)` - the far left and
+   * far right of the same row - and black's is the point mirror of those,
+   * `(12,-1)` and `(-11,-1)`, which lands in black's own base and reserve.
+   */
+  private wrapTips(color: string): { base: string; reserve: string } {
+    const flip = color === 'black' ? -1 : 1;
+    return {
+      base: `${-flip * (this.radius + 1)},${flip}`,
+      reserve: `${flip * this.radius},${flip}`,
+    };
+  }
+
+  /**
+   * The wrap, and the only way out of a base: a unit that reaches its base's
+   * outer tip may step across to the reserve tip for 1, and carry on into the
+   * reserve with whatever MOV is left. Reaching the tip is an ordinary walk,
+   * so the cost of the crossing is one step on top of getting there.
+   *
+   * Added to the flood rather than replacing it - a base unit can still walk
+   * about inside its own panel without going anywhere near the tip.
+   */
+  private addWrap(cell: HexCell, key: string, budget: number | undefined): void {
+    const tips = this.wrapTips(cell.piece?.color ?? 'white');
+    const toTip = key === tips.base ? 0 : this.moveCosts.get(tips.base);
+    if (toTip === undefined || this.occupancy[tips.reserve]) return;
+    const spent = toTip + 1;
+    const left = (budget ?? this.config?.units?.[cell.piece?.unit_id ?? '']?.move ?? 0) - spent;
+    if (left < 0) return;
+    this.moveCosts.set(tips.reserve, spent);
+    if (left === 0) return;
+
+    // On into the reserve, flooding from the tip with what is left. The unit
+    // is put on the far tip for that pass: computeMoveCosts reads the mover
+    // off the board it is given, and it has not actually crossed yet.
+    const landing = this.cellsByKey.get(tips.reserve);
+    const onward = { ...this.occupancy, [tips.reserve]: cell.piece! };
+    delete onward[key];
+    const [wq, wr] = tips.reserve.split(',').map(Number);
+    const beyond = computeMoveCosts(
+      onward, wq, wr, this.config, this.radius, left,
+      landing?.panel ? this.panelZones.get(landing.panel) : undefined,
+    );
+    for (const [hex, cost] of beyond) {
+      const total = spent + cost;
+      if (total < (this.moveCosts.get(hex) ?? Infinity)) this.moveCosts.set(hex, total);
+    }
+  }
+
+  /**
+   * Which base units have been moved this turn, and what each has spent.
+   * Keyed by uid, so it follows the unit rather than the hex it is standing
+   * on. A base unit is not the turn's one action - it moves alongside it -
+   * so it carries its own budget here instead of the board's move stack.
+   */
+  private baseMoved = new Map<string, number>();
+
+  /**
+   * Whether this base unit may still be walked this turn: one already among
+   * the turn's movers may carry on spending what is left of its MOV, but a
+   * fresh one cannot start once the allowance is used up.
+   */
+  private baseCanMove(cell: HexCell): boolean {
+    return this.baseMoved.has(this.uidOf(cell))
+      || this.baseMoved.size < BASE_MOVERS_PER_TURN;
+  }
+
+  /**
+   * A base unit with nothing left to do this turn: its own MOV spent, or the
+   * turn's three movers used up and this one not among them.
+   *
+   * Deliberately the same two conditions the movement rules read, so the grey
+   * can never promise a move the board would then refuse - or withhold one it
+   * would allow. Only the side whose turn it is greys out; the opponent's base
+   * is not the player's to move either way, and greying it would say nothing.
+   */
+  isBaseSpent(hex: HexCell): boolean {
+    if (!hex.piece || !BASE_PANELS.has(hex.panel)) return false;
+    if (hex.piece.color !== this.activeColor) return false;
+    return !this.baseCanMove(hex) || this.budgetFor(hex) === 0;
+  }
+
   /** Walk a reserve to another hex of its own panel - local, and free. */
   private moveReserve(from: string, to: string): void {
+    // A base unit's walk comes out of its own MOV for the turn, and using it
+    // spends one of the turn's three movers. The reserve pays neither.
+    const moving = this.cellsByKey.get(from);
+    if (moving && BASE_PANELS.has(moving.panel)) {
+      const uid = this.uidOf(moving);
+      this.baseMoved.set(uid, (this.baseMoved.get(uid) ?? 0) + (this.moveCosts.get(to) ?? 1));
+    }
     this.reserves[to] = this.reserves[from];
     delete this.reserves[from];
     this.selectedHex = to;
@@ -2103,6 +2222,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     const zone = cell.panel ? this.panelZones.get(cell.panel) : undefined;
     if (zone) {
       if (!this.controlAllSides && !this.isMyTurn) return;
+      // Only so many base units move in a turn. A fourth one on a turn that
+      // has already moved three has nothing to show; one that has spent its
+      // MOV falls out below, where a budget of 0 floods nowhere.
+      if (BASE_PANELS.has(cell.panel) && !this.baseCanMove(cell)) return;
     } else {
       if (!canDrive) return;
       // One unit acts per turn: once something is staged, nothing else may be
@@ -2115,14 +2238,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     this.moveCosts = computeMoveCosts(
       this.occupancy, sq, sr, this.config, this.radius, budget, zone,
     );
+    if (BASE_PANELS.has(cell.panel)) this.addWrap(cell, key, budget);
     this.legalTargets = new Set(this.moveCosts.keys());
 
-    const range: number = this.config?.units?.[cell.piece.unit_id]?.attackRange ?? 1;
-    for (const other of this.cells) {
-      if (!other.piece || other.piece.color === cell.piece.color) continue;
-      // Nothing reaches across the panel wall, in either direction.
-      if (other.panel !== cell.panel) continue;
-      if (hexDistanceKeys(key, other.key) <= range) this.attackTargets.add(other.key);
+    // A base unit never attacks - it walks and nothing else - so it is given
+    // no targets to be offered in the first place.
+    if (!BASE_PANELS.has(cell.panel)) {
+      const range: number = this.config?.units?.[cell.piece.unit_id]?.attackRange ?? 1;
+      for (const other of this.cells) {
+        if (!other.piece || other.piece.color === cell.piece.color) continue;
+        // Nothing reaches across the panel wall, in either direction.
+        if (other.panel !== cell.panel) continue;
+        if (hexDistanceKeys(key, other.key) <= range) this.attackTargets.add(other.key);
+      }
     }
     this.refreshForecast();
   }
@@ -2134,6 +2262,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   private budgetFor(cell: HexCell): number | undefined {
     if (cell.key === this.movesLeftFor) return this.movesLeft ?? undefined;
     const bonus = this.unitBuffs[this.uidOf(cell)]?.mov ?? 0;
+    // A base unit gets its MOV for the turn and no more, spent a few steps at
+    // a time, so what is left of it is the budget rather than the whole stat.
+    if (BASE_PANELS.has(cell.panel)) {
+      const base = this.config?.units?.[cell.piece?.unit_id ?? '']?.move ?? 0;
+      return Math.max(0, base + bonus - (this.baseMoved.get(this.uidOf(cell)) ?? 0));
+    }
     if (!bonus) return undefined;
     const base = this.config?.units?.[cell.piece?.unit_id ?? '']?.move ?? 0;
     return Math.max(0, base + bonus);

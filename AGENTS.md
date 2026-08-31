@@ -191,9 +191,32 @@ Decided so far:
     radius-N battlefield and `set_cell()` rejects anything outside it - and **confined to their
     own panel**: `computeMoveCosts()` / `computeAttackZone()` take a `zone` set that replaces
     the radius check, and attack targeting requires both hexes to share a panel, so nothing
-    reaches across the wall in either direction. Shuffling one inside its panel is local and
-    free: no server message, no move budget, not on the Undo stack, and a reload re-deals them.
-    How a reserve enters play is still to be designed.
+    reaches across the wall in either direction. Shuffling a *reserve* inside its panel is local
+    and free: no server message, no move budget, not on the Undo stack, and a reload re-deals
+    them. A **base** unit is not free - see the base rules below.
+  - **The red plane is the base, the green one the reserve.** Base units **never attack** - they
+    walk and nothing else. Each spends **its own MOV per turn**, a few steps at a time, and only
+    **three base units may be moved in a turn** (`BASE_PANELS`, `BASE_MOVERS_PER_TURN` and
+    `baseMoved` in `game-board.component.ts`; the allowance resets each ply). Moving one is
+    still not the turn's one board action - it happens alongside it. Three is the owner's
+    placeholder ("for now"). A base unit with nothing left - MOV spent, or the three movers
+    used up without it - is **dimmed to 0.45** (`isBaseSpent()`), which reads the same two
+    conditions the movement rules do, so the grey can never promise a move the board refuses.
+    Only the side whose turn it is greys; the opponent's base is not the player's to move.
+  - **The wrap is the only way out of the base.** A unit that reaches its base's outer tip may
+    step across to the reserve tip facing it, and **the crossing costs 1 MOV**; whatever is left
+    carries on into the reserve. On the shipped board white's pair is hex **283** `(-12,1)` and
+    hex **306** `(11,1)` - far left and far right of the same row - and black's is the point
+    mirror, `(12,-1)` and `(-11,-1)`. `wrapTips()` / `addWrap()` derive both from the radius, so
+    neither number is hardcoded.
+  - **Three reserve hexes are the gateway onto the board** - hexes **490** `(3,9)`, **513**
+    `(2,10)` and **536** `(1,11)` on white's side, mirrored for black: the three board-adjacent
+    reserve hexes nearest that player's own edge. **Specified, not built** - a placeholder
+    reserve is a client-side fiction the server has never heard of, so walking one onto the
+    battlefield would show a unit the next `game_state_update` wipes. Entry needs the server
+    model first. (The owner's message said 516; `(5,10)` touches no battlefield hex, and 513 is
+    the one that completes the run - 490, 513, 536, every 23 in reading order. Confirm before
+    building.)
   - **Deployment is not built.** The panels hold units and take clicks, but there is no way in
     or out of them and no server model: the rules above (left plane untouchable, right plane
     deployable and attackable in specific ways) are the owner's spec, not the code. Do not add

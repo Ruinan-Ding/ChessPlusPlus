@@ -358,6 +358,123 @@ describe('GameBoardComponent reach preview', () => {
     expect(cell('0,0').home).toBe('');
   });
 
+  /**
+   * The base is the red pair - each player's left plane. Its units walk and
+   * nothing else: no attack, their own MOV a turn, and only three of them
+   * moved per turn.
+   */
+  describe('base panel', () => {
+    const anyBoard = () => board as any;
+    /** A base hex with a reserve on it, and the cell for it. */
+    const baseCell = () => board.cells.find(
+      c => c.panel === 'bl' && !!c.piece)!;
+
+    beforeEach(() => {
+      board.interactive = true;
+      board.controlAllSides = true;
+      board.turnColor = 'white';
+    });
+
+    it('offers a base unit no attack, however close the target', () => {
+      const cell = baseCell();
+      // Drop an enemy on the nearest free hex of the same panel, so the only
+      // thing that could be stopping the swing is the base rule.
+      const zone: Set<string> = anyBoard().panelZones.get('bl');
+      const [q, r] = cell.key.split(',').map(Number);
+      const spot = [[1, 0], [-1, 0], [1, -1], [0, -1], [0, 1], [-1, 1]]
+        .map(([dq, dr]) => `${q + dq},${r + dr}`)
+        .find(k => zone.has(k) && !anyBoard().reserves[k]);
+      expect(spot).toBeDefined();
+      anyBoard().reserves[spot!] = {
+        unit_id: 'guard', color: 'black', hp: 9, max_hp: 9, uid: 'intruder',
+      };
+      anyBoard().buildCells();
+
+      board.onHexClick(anyBoard().cellsByKey.get(cell.key));
+      expect(board.attackTargets.size).toBe(0);
+    });
+
+    it('spends a base unit MOV over the turn, and no more', () => {
+      const cell = baseCell();
+      const uid = cell.piece!.uid!;
+      const move = (config.units as any)[cell.piece!.unit_id].move;
+      board.onHexClick(cell);
+
+      const to = [...board.legalTargets][0];
+      const cost: number = anyBoard().moveCosts.get(to);
+      board.onHexClick(anyBoard().cellsByKey.get(to));
+
+      // What it walked is gone from its allowance for the rest of the turn.
+      expect(anyBoard().baseMoved.get(uid)).toBe(cost);
+      expect(anyBoard().budgetFor(anyBoard().cellsByKey.get(to))).toBe(move - cost);
+    });
+
+    it('greys a base unit exactly when it has no move left', () => {
+      const cell = baseCell();
+      expect(board.isBaseSpent(cell)).toBeFalse();
+
+      // Its own MOV gone: spent, and greyed.
+      anyBoard().baseMoved.set(cell.piece!.uid, config.units.scout.move + 99);
+      expect(board.isBaseSpent(cell)).toBeTrue();
+
+      // And a unit that never moved greys too once the turn's three are used.
+      anyBoard().baseMoved.clear();
+      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMoved.set(uid, 1));
+      expect(board.isBaseSpent(cell)).toBeTrue();
+
+      // The opponent's base is not the player's to move, so it says nothing.
+      const theirs = board.cells.find(c => c.panel === 'tr' && !!c.piece)!;
+      expect(board.isBaseSpent(theirs)).toBeFalse();
+    });
+
+    it('wraps from the base tip to the reserve tip for one step', () => {
+      // Radius 4, so the tips are (-5,1) in the base and (4,1) in the reserve
+      // - the same pair hexes 283 and 306 name on the shipped board.
+      const tips = anyBoard().wrapTips('white');
+      expect(tips).toEqual({ base: '-5,1', reserve: '4,1' });
+
+      // Stand a base unit on its tip with a full MOV to spend.
+      anyBoard().reserves = { '-5,1': {
+        unit_id: 'scout', color: 'white', hp: 6, max_hp: 6, uid: 'walker',
+      } };
+      anyBoard().buildCells();
+      board.onHexClick(anyBoard().cellsByKey.get('-5,1'));
+
+      // The crossing itself is one step, and the rest of the MOV carries on
+      // into the reserve on the far side.
+      expect(anyBoard().moveCosts.get('4,1')).toBe(1);
+      expect(board.legalTargets.has('4,1')).toBeTrue();
+      expect([...board.legalTargets].some(k => anyBoard().cellsByKey.get(k).panel === 'br'))
+        .toBeTrue();
+    });
+
+    it('will not wrap on a MOV that cannot pay for the crossing', () => {
+      anyBoard().reserves = { '-5,1': {
+        unit_id: 'scout', color: 'white', hp: 6, max_hp: 6, uid: 'walker',
+      } };
+      anyBoard().buildCells();
+      // Its whole MOV already spent this turn: no step left to cross with.
+      anyBoard().baseMoved.set('walker', config.units.scout.move);
+      board.onHexClick(anyBoard().cellsByKey.get('-5,1'));
+      expect(board.legalTargets.has('4,1')).toBeFalse();
+    });
+
+    it('lets three move a turn, then no more until the next', () => {
+      const cell = baseCell();
+      // Three others have already been walked this turn, and this is a fourth.
+      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMoved.set(uid, 1));
+      board.onHexClick(cell);
+      expect(board.legalTargets.size).toBe(0);
+
+      // A new ply hands the allowance back.
+      board.selectedHex = null;
+      board.turnNumber = 2;
+      board.ngOnChanges({ turnNumber: new SimpleChange(1, 2, false) });
+      board.onHexClick(cell);
+      expect(board.legalTargets.size).toBeGreaterThan(0);
+    });
+  });
+
   it('swaps the two when the seat is the other colour', () => {
     board.myColor = 'black';
     board.ngOnChanges({ myColor: new SimpleChange('', 'black', false) });
