@@ -365,6 +365,9 @@ describe('GameBoardComponent reach preview', () => {
    */
   describe('base panel', () => {
     const anyBoard = () => board as any;
+    const BASE = new Set(['bl', 'tr']);
+    /** X of the arrow's tip - its first point is the head. */
+    const arrowTipX = (hex: any) => Number(board.arrowPoints(hex).split(' ')[0].split(',')[0]);
     /** A base hex with a reserve on it, and the cell for it. */
     const baseCell = () => board.cells.find(
       c => c.panel === 'bl' && !!c.piece)!;
@@ -405,26 +408,83 @@ describe('GameBoardComponent reach preview', () => {
       board.onHexClick(anyBoard().cellsByKey.get(to));
 
       // What it walked is gone from its allowance for the rest of the turn.
-      expect(anyBoard().baseMoved.get(uid)).toBe(cost);
+      expect(anyBoard().panelMoved.get(uid)).toBe(cost);
       expect(anyBoard().budgetFor(anyBoard().cellsByKey.get(to))).toBe(move - cost);
     });
 
     it('greys a base unit exactly when it has no move left', () => {
       const cell = baseCell();
-      expect(board.isBaseSpent(cell)).toBeFalse();
+      expect(board.isPanelSpent(cell)).toBeFalse();
 
       // Its own MOV gone: spent, and greyed.
-      anyBoard().baseMoved.set(cell.piece!.uid, config.units.scout.move + 99);
-      expect(board.isBaseSpent(cell)).toBeTrue();
+      anyBoard().panelMoved.set(cell.piece!.uid, config.units.scout.move + 99);
+      expect(board.isPanelSpent(cell)).toBeTrue();
 
       // And a unit that never moved greys too once the turn's three are used.
-      anyBoard().baseMoved.clear();
-      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMoved.set(uid, 1));
-      expect(board.isBaseSpent(cell)).toBeTrue();
+      anyBoard().panelMoved.clear();
+      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMovers.add(uid));
+      expect(board.isPanelSpent(cell)).toBeTrue();
 
       // The opponent's base is not the player's to move, so it says nothing.
       const theirs = board.cells.find(c => c.panel === 'tr' && !!c.piece)!;
-      expect(board.isBaseSpent(theirs)).toBeFalse();
+      expect(board.isPanelSpent(theirs)).toBeFalse();
+    });
+
+    it('marks the three gateway hexes with an arrow pointing at the board', () => {
+      board.radius = 11;
+      board.ngOnChanges({ radius: new SimpleChange(4, 11, false) });
+
+      // Hexes 490, 513 and 536 on white's side, and the point mirror of those
+      // for black. Numbering is reading order over every hex, panels included.
+      const numbered = (n: number) => board.cells[n - 1];
+      expect(['3,9', '2,10', '1,11']).toEqual([490, 513, 536].map(n => numbered(n).key));
+      [490, 513, 536].forEach(n => {
+        expect(numbered(n).panel).toBe('br');
+        expect(numbered(n).gateway).toBe('left');
+      });
+      ['-3,-9', '-2,-10', '-1,-11'].forEach(key => {
+        const hex = board.cells.find(c => c.key === key)!;
+        expect(hex.panel).toBe('tl');
+        expect(hex.gateway).toBe('right');
+      });
+
+      // Six in all, and never on the battlefield or in either base.
+      const marked = board.cells.filter(c => c.gateway);
+      expect(marked.length).toBe(6);
+      expect(marked.every(c => c.filler && !BASE.has(c.panel))).toBeTrue();
+
+      // The head sits on the side it points at, so it clears a unit's plate.
+      const left = numbered(490);
+      expect(arrowTipX(left)).toBeLessThan(left.cx);
+      const right = board.cells.find(c => c.key === '-3,-9')!;
+      expect(arrowTipX(right)).toBeGreaterThan(right.cx);
+    });
+
+    it('gives a reserve unit its own MOV too, not an endless walk', () => {
+      // Placed rather than taken from the deal: a radius-4 panel is small
+      // enough that which unit lands where is not worth depending on, and the
+      // scout is the one with a MOV of 3 to take steps out of.
+      const spot = [...anyBoard().panelZones.get('br')][0];
+      anyBoard().reserves = { [spot]: {
+        unit_id: 'scout', color: 'white', hp: 6, max_hp: 6, uid: 'walker',
+      } };
+      anyBoard().buildCells();
+      const cell = anyBoard().cellsByKey.get(spot);
+      const move = config.units.scout.move;
+      expect(anyBoard().budgetFor(cell)).toBe(move);
+
+      // Steps taken come off it, and a MOV spent leaves nothing.
+      anyBoard().panelMoved.set('walker', 2);
+      expect(anyBoard().budgetFor(cell)).toBe(move - 2);
+      anyBoard().panelMoved.set('walker', move);
+      expect(anyBoard().budgetFor(cell)).toBe(0);
+      expect(board.isPanelSpent(cell)).toBeTrue();
+
+      // The three-mover cap is the base's alone: a reserve unit is not held
+      // back by base units having used the turn's allowance.
+      anyBoard().panelMoved.clear();
+      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMovers.add(uid));
+      expect(board.isPanelSpent(cell)).toBeFalse();
     });
 
     it('wraps from the base tip to the reserve tip for one step', () => {
@@ -454,7 +514,7 @@ describe('GameBoardComponent reach preview', () => {
       } };
       anyBoard().buildCells();
       // Its whole MOV already spent this turn: no step left to cross with.
-      anyBoard().baseMoved.set('walker', config.units.scout.move);
+      anyBoard().panelMoved.set('walker', config.units.scout.move);
       board.onHexClick(anyBoard().cellsByKey.get('-5,1'));
       expect(board.legalTargets.has('4,1')).toBeFalse();
     });
@@ -462,7 +522,7 @@ describe('GameBoardComponent reach preview', () => {
     it('lets three move a turn, then no more until the next', () => {
       const cell = baseCell();
       // Three others have already been walked this turn, and this is a fourth.
-      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMoved.set(uid, 1));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMovers.add(uid));
       board.onHexClick(cell);
       expect(board.legalTargets.size).toBe(0);
 
