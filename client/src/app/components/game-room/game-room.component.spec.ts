@@ -998,6 +998,57 @@ describe('GameRoomComponent ability panel', () => {
     expect(sent.some(m => m.type === 'pass_turn')).toBeFalse();
   });
 
+  it('lands an ability on a unit standing in a panel, and records what it left', () => {
+    const c = room();
+    const sent: any[] = [];
+    c.wsService = { sendMessage: (m: any) => sent.push(m) };
+    c.persistLocalUiState = () => {};
+    c.playSteps = () => {};
+    c.playEndTurnSound = () => {};
+    c.gameState.snapshot.currentTurn = 'me';
+    c.gameState.snapshot.turnNumber = 20;
+    c.gameState.snapshot.boardState = {};
+    // A wounded unit of white's dealt base squad. It is on no board, so its
+    // HP lives in the record and nowhere else - which is why an ability that
+    // moves it has to go out as its own message.
+    const HEAL = 6;
+    c.myPoints = 50;
+    c.pickAbility('mine', HEAL);
+    c.pendingAbility = { side: 'mine', index: HEAL, cooldowns: c.myCooldowns };
+
+    c.onHexClicked({
+      key: '-12,11', uid: 'rbl0', unitId: 'rook', color: 'white',
+      hp: 12, hpMax: 40, panel: 'bl',
+    });
+
+    // Staged, so the panel draws the new number before the turn commits.
+    expect(c.panelHp['rbl0']).toBe(32);
+
+    c.endTurn();
+    const msg = sent.find(m => m.type === 'panel_effect');
+    expect(msg).toBeDefined();
+    expect(msg.unit.uid).toBe('rbl0');
+    expect(msg.hp).toBe(32);
+    expect(msg.panel).toBe('bl');
+  });
+
+  it('never heals a unit past what it started with', () => {
+    const c = room();
+    c.persistLocalUiState = () => {};
+    c.playSteps = () => {};
+    c.gameState.snapshot.turnNumber = 20;
+    c.gameState.snapshot.boardState = {};
+    const HEAL = 6;
+    c.myPoints = 50;
+    c.pickAbility('mine', HEAL);
+    c.pendingAbility = { side: 'mine', index: HEAL, cooldowns: c.myCooldowns };
+    c.onHexClicked({
+      key: '-12,11', uid: 'rbl0', unitId: 'rook', color: 'white',
+      hp: 38, hpMax: 40, panel: 'bl',
+    });
+    expect(c.panelHp['rbl0']).toBe(40);
+  });
+
   it('mends the squad dealt into a base, not only the units that walked home', () => {
     const c = room();
     // A unit of white's dealt squad in `bl` - white's base. It stands in the

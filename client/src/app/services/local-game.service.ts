@@ -136,6 +136,10 @@ export class LocalGameService {
           msg.moveBonus, msg.counters !== false, msg.bonuses, msg.panel);
         break;
 
+      case 'panel_effect':
+        this.effectInPanel(msg.unit, msg.hp, msg.panel);
+        break;
+
       case 'pass_turn':
         this.pass();
         break;
@@ -383,6 +387,30 @@ export class LocalGameService {
       }
     }
     this.commitPanelBlow(record, board);
+  }
+
+  /**
+   * An ability landing on a unit no board holds.
+   *
+   * The panels are the client's, so nothing is resolved here - the effect has
+   * already been worked out. All this does is write down what the unit has
+   * left, which is the one thing that has to survive a reload, and it uses the
+   * same shape a blow into a panel writes. It is not a turn: an ability does
+   * not hand over, so nothing here touches `turnNumber`.
+   */
+  private effectInPanel(unit: any, hp: number, panel?: string): void {
+    const g = this.game;
+    if (!g || !g.started || g.endReason || !unit?.uid || typeof hp !== 'number') return;
+    const left = Math.max(0, Math.trunc(hp));
+    g.moveHistory = [...g.moveHistory, {
+      from: '', to: '', unit_id: unit.unit_id, color: unit.color, turn: g.turnNumber,
+      captured: null, attacked: false, damage_dealt: 0, moved: false,
+      defender_eliminated: left <= 0,
+      intoPanel: true, panelEffect: true, unit, defenderHp: left,
+      ...(panel ? { panel } : {}),
+    }];
+    this.persist();
+    this.emit({ type: 'game_state_update', ...this.snapshot() });
   }
 
   /** What both panel blows do once the damage is worked out: end the turn. */

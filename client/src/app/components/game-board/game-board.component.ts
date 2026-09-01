@@ -796,6 +796,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
                     [attr.transform]="textTransform(hex.cx, hex.cy)"
                     class="damage-forecast"
                     [class.counter]="takesCounter(hex.key)"
+                    [class.no-damage]="damage === '0'"
               >{{ damage }}</text>
               <!-- Left side: which way this unit has been meddled with. Both
                    arrows show when it is carrying a boost and a drag at once,
@@ -1395,6 +1396,13 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
        everything the other side does. */
     .damage-forecast.counter {
       fill: #8e44ad;
+    }
+
+    /* A blow this unit's armour turns aside entirely. Grey and still, because
+       it is the one forecast that is not a warning. */
+    .damage-forecast.no-damage {
+      fill: #6b7280;
+      animation: none;
     }
 
     /* A number that is off its printed value pulses out of its own ink and
@@ -3682,7 +3690,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     };
   }
 
-  /** "-6" for either unit in the hovered trade, else null. */
+  /** "-6" for either unit in the hovered trade, "0" for a blow that bounces. */
   forecastDamage(key: string): string | null {
     const f = this.forecast;
     if (!f) return null;
@@ -3692,9 +3700,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     const after = key === f.target ? f.targetHp : key === f.attacker ? f.attackerHp : null;
     if (after === null) return null;
     const dealt = hp - twoDigits(after)!;
-    // A strike armour absorbed entirely still shows the unit's real HP: a
-    // pulsing green "-0" reads as a bug, not as "nothing happens".
-    return dealt > 0 ? `-${dealt}` : null;
+    if (dealt > 0) return `-${dealt}`;
+    // Damage is attack minus defence, floored at zero, so whole matchups
+    // bounce: a pawn on 14 attack takes nothing at all off a shieldman on 18
+    // defence. Drawing no number read as the preview being broken - the owner
+    // reported exactly that - so a bounce says 0 and means it. Only over the
+    // target: a blank over your own face already means "nothing comes back".
+    return key === f.target ? '0' : null;
   }
 
   /** True for our own unit in the hovered trade - the one taking the counter. */
@@ -3855,7 +3867,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   isAbilityTarget(hex: HexCell, target: 'friendly' | 'enemy'): boolean {
-    if (!this.abilityMode || !this.abilityCasterColor || !hex.piece || hex.panel) return false;
+    // Panels included: an ability reaches any unit, so the ring that says
+    // "this one" has to be drawable over one standing in a panel. Without
+    // this a base unit was a legal target with nothing on screen saying so.
+    if (!this.abilityMode || !this.abilityCasterColor || !hex.piece) return false;
     const isFriendly = hex.piece.color === this.abilityCasterColor;
     return target === 'friendly' ? this.abilityMode === 'friendly' && isFriendly
       : this.abilityMode === 'enemy' && !isFriendly;

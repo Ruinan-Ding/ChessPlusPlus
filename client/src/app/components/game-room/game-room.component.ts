@@ -1561,9 +1561,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         });
         continue;
       }
-      // A blow that landed in the base. Reserves are not in here - they are
-      // dealt from the roster and read `panelHp` instead.
-      if (!record.panelAttack || !record.intoPanel || !record.unit?.uid) continue;
+      // Something that set a panel unit's HP while it stood in the base - a
+      // blow, or an ability. Reserves are not in here: they are dealt from the
+      // roster and read `panelHp` instead.
+      if (!record.intoPanel || !record.unit?.uid || record.defenderHp === undefined) continue;
       const standing = base.get(record.unit.uid);
       if (standing) {
         standing.hp = record.defenderHp ?? 0;
@@ -1637,7 +1638,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         color: 'white' | 'black'; mends: boolean;
       }>();
       for (const move of (history ?? []) as any[]) {
-        if (!move?.panelAttack || !move.unit?.uid) continue;
+        // A blow or an ability - anything that wrote down what a panel unit
+        // has left. Both are the unit's last word on its own HP.
+        if (!move?.intoPanel || !move.unit?.uid || move.defenderHp === undefined) continue;
         wounds.set(move.unit.uid, {
           left: move.defenderHp ?? 0,
           turn: move.turn,
@@ -1796,7 +1799,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       return;
     }
 
-    if (!unit || unit.panel) {
+    // A panel is a unit like any other to an ability - the owner's rule:
+    // "abilities can apply to anything. though for example ATK ability on
+    // base unit is simply pointless but they can do it."
+    if (!unit) {
       this.clearAbilityFocus();
     } else if (this.abilityTargetMode(this.pendingAbility.index) === 'enemy') {
       if (unit.color !== this.casterColor(this.pendingAbility.side)) {
@@ -1813,18 +1819,66 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /** Local-only damage preview for the click-to-target offensive scaffold. */
+  /**
+   * Move a unit's HP by `delta`, wherever it happens to be standing.
+   *
+   * A unit on the battlefield keeps its HP on the board, so the change goes
+   * onto the staged copy. A unit in a panel is on no board at all - its HP
+   * exists only in the move history - so the change is staged the way a blow
+   * into a panel is, and goes out as its own message when the turn commits.
+   * Callers should not have to know which kind of hex they landed on.
+   */
+  private hpChange(unit: SelectedUnit, delta: number, board: Record<string, any>): {
+    board: Record<string, any>;
+    killed?: string;
+    killedUnit?: { unit_id: string; color: 'white' | 'black' };
+    panelUnit?: Record<string, any>;
+    panelUnitHp?: number;
+    panelName?: string;
+  } {
+    if (unit.panel) {
+      const full = unit.hpMax ?? unit.hp ?? 0;
+      const left = Math.max(0, Math.min(full, (unit.hp ?? 0) + delta));
+      return {
+        board,
+        panelName: unit.panel,
+        panelUnitHp: left,
+        // The whole unit rides along: the record is the only place a panel
+        // unit survives, so a name for it is not enough.
+        panelUnit: {
+          unit_id: unit.unitId, color: unit.color, uid: unit.uid,
+          hp: unit.hp ?? 0, max_hp: full,
+        },
+        ...(left <= 0
+          ? { killed: unit.key, killedUnit: { unit_id: unit.unitId, color: unit.color } }
+          : {}),
+      };
+    }
+    const standing = board[unit.key];
+    if (!standing) return { board };
+    const full = standing.max_hp ?? standing.hp ?? 0;
+    const left = Math.max(0, Math.min(full, (standing.hp ?? 0) + delta));
+    const next = { ...board };
+    if (left <= 0) {
+      delete next[unit.key];
+      return {
+        board: next, killed: unit.key,
+        killedUnit: { unit_id: standing.unit_id, color: standing.color },
+      };
+    }
+    next[unit.key] = { ...standing, hp: left };
+    return { board: next };
+  }
+
   private castOffensiveOn(unit: SelectedUnit): void {
     const armed = this.pendingAbility;
     if (!armed) return;
     const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
     const effect = this.abilityEffects[armed.index];
     const cost = this.abilityCosts[armed.index] ?? 0;
-    const next = { ...board };
-    const target = board[unit.key];
-    if (!target || target.color === this.casterColor(armed.side)) return;
-    const damaged = { ...target, hp: target.hp - (effect.damage ?? 0) };
-    if (damaged.hp <= 0) delete next[unit.key];
-    else next[unit.key] = damaged;
+    if (unit.color === this.casterColor(armed.side)) return;
+    if (!unit.panel && !board[unit.key]) return;
+    const hit = this.hpChange(unit, -(effect.damage ?? 0), board);
     // Onto the staged stack like everything else, so it shows through a
     // staged step and Undo takes it back. A held-aside board was invisible
     // whenever anything else was staged, and Undo never cleared it.
@@ -1832,14 +1886,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index, unit.key);
     this.stagedActions.push({
       at: Date.now(),
-      board: next,
       from: prev?.from ?? '',
       to: prev?.to ?? '',
       used: prev?.used ?? 0,
       attack: null,
-      killed: damaged.hp <= 0 ? unit.key : undefined,
-      killedUnit: damaged.hp <= 0 ? { unit_id: target.unit_id, color: target.color } : undefined,
       spend,
+      ...hit,
     });
     // A sapped stat is a boost with the sign flipped, and the mark rides in
     // the same entry: a separate debuff map expired a ply before the penalty
@@ -1858,7 +1910,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.pendingAbility = null;
     this.clearAbilityFocus();
     this.persistLocalUiState();
-    this.addSystemMessage(`${effect.name} hit ${target.unit_id} for ${effect.damage ?? 0} damage (scaffold).`);
+    this.addSystemMessage(`${effect.name} hit ${unit.unitId} for ${effect.damage ?? 0} damage (scaffold).`);
     this.cdr.markForCheck();
   }
 
@@ -2266,7 +2318,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // displayUnit follows the cursor, so a reserve the pointer crossed on the
     // way to the button must not be what the points are spent on.
     return this.isSinglePlayer && !!focus && !this.isPassive(focus.index) && !!unit &&
-      !unit.panel && this.isPicked('mine', focus.index) &&
+      this.isPicked('mine', focus.index) &&
       unit.color === this.casterColor('mine') &&
       this.vetUnlocked(focus.index) &&
       this.canAfford('mine', focus.index, focus.cooldowns[focus.index] ?? 0);
@@ -2289,7 +2341,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // A unit's own ability shines on the unit and nowhere else.
     this.playSteps([{ kind: 'ability', from: unit.key, to: unit.key }]);
     this.markUsed('mine', focus.index);
-    this.stageSpend(spend);
+    // A heal moves HP rather than a stat, and HP lives somewhere different
+    // for a unit in a panel - see hpChange.
+    if (effect.heal) this.stageHeal(unit, effect.heal, spend);
+    else this.stageSpend(spend);
     this.addSystemMessage(`${effect.name} applied to ${unit.name}.`);
     this.persistLocalUiState();
     this.unitAbilityFocus = null;
@@ -2671,7 +2726,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       };
       this.abilityUsed = { ...this.abilityUsed, [unit.uid]: true };
       this.markUsed(armed.side, armed.index);
-      this.stageSpend(spend);
+      // A heal is HP, not a stat, so it goes wherever this unit keeps its HP -
+      // the staged board, or the panel overlay for a unit standing in one.
+      if (e.heal) this.stageHeal(unit, e.heal, spend);
+      else this.stageSpend(spend);
     }
     this.pendingAbility = null;
     this.clearAbilityFocus();
@@ -3156,7 +3214,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /** What each ability costs in points. Placeholder until abilities exist. */
   // Pool, then each path's passive (free with the path), skill and ultimate.
   // Slot 7 (Rally) is free on purpose - see abilityEffects.
-  abilityCosts = [3, 5, 1, 4, 3, 2, 4, 0, 0, 4, 8, 0, 5, 8, 0, 3, 8];
+  // ponytail: slot 6 is free like slot 7 beside it - the pair is the owner's
+  // testing bench, a heal and a purse, picked together in one go.
+  abilityCosts = [3, 5, 1, 4, 3, 2, 0, 0, 0, 4, 8, 0, 5, 8, 0, 3, 8];
 
   /**
    * What each slot does. Arbitrary numbers - this is the proof of concept
@@ -3173,7 +3233,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     { name: 'Sap', target: 'enemy' as const, mov: -2, atk: -2, def: -2, damage: 6 },
     { name: 'Arc Bolt', target: 'enemy' as const, mov: 0, atk: 0, def: 0, damage: 8 },
     { name: 'Mire', target: 'enemy' as const, mov: -3, atk: 0, def: 0 },
-    { name: 'Temper', target: 'friendly' as const, mov: 0, atk: 1, def: 1 },
+    // ponytail: the owner's other testing lever, and Rally's partner in the
+    // pool - "heal a static 20 for testing purposes". Flat, free, and the only
+    // way to put HP back into a unit by hand.
+    { name: 'Mend', target: 'friendly' as const, mov: 0, atk: 0, def: 0, heal: 20 },
     // ponytail: the owner's testing lever - free, and hands out 300 points,
     // so any priced rule (a wrap crossing, a path, an ultimate) can be tried
     // without playing thirty turns to afford it. Put it back to 2 / 1 point
@@ -3842,6 +3905,24 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * what it spent - otherwise Undo has nothing to pop and the points are
    * gone for good.
    */
+  /**
+   * A cast that moved a unit's HP: the spend rides on the same entry as the
+   * change, so Undo takes both back together.
+   */
+  private stageHeal(unit: SelectedUnit, amount: number, spend: AbilitySpend): void {
+    const prev = this.stagedActions[this.stagedActions.length - 1];
+    const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
+    this.stagedActions.push({
+      at: Date.now(),
+      from: prev?.from ?? '',
+      to: prev?.to ?? '',
+      used: prev?.used ?? 0,
+      attack: null,
+      spend,
+      ...this.hpChange(unit, amount, board),
+    });
+  }
+
   private stageSpend(spend: AbilitySpend): void {
     const prev = this.stagedActions[this.stagedActions.length - 1];
     this.stagedActions.push({
@@ -3960,6 +4041,17 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // message before whatever the turn did on the board.
     for (const entry of this.boardRef?.pendingEntries ?? []) {
       this.wsService.sendMessage({ type: 'enter_board', ...entry });
+    }
+    // And so does an ability that moved a panel unit's HP, for exactly the
+    // same reason: no engine holds a panel, so the record is the only place
+    // that HP survives a reload. The turn's blow is not one of these - it
+    // goes out below as a panel_attack, which resolves as well as records.
+    for (const step of this.stagedActions) {
+      if (!step.panelUnit || step.attack !== null) continue;
+      this.wsService.sendMessage({
+        type: 'panel_effect',
+        unit: step.panelUnit, hp: step.panelUnitHp, panel: step.panelName,
+      });
     }
     const pending = this.pendingMove;
     if (!pending) {
