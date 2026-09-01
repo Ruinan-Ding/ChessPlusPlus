@@ -11,6 +11,18 @@ const MAX_QUEUED = 32;
 const LOCAL_GAME_TYPES = new Set([
   'create_single_player_game', 'join_game_room', 'leave_game_room', 'request_game_state',
   'start_game', 'make_move', 'pass_turn', 'resign', 'offer_draw', 'change_game_mode',
+  // Putting a finished room back to waiting so it can be played again. Only
+  // the browser engine answers it; no server has a restart protocol yet,
+  // which is why the button offers it in solo alone.
+  'reset_game',
+  // Walking a reserve onto the board. The browser engine is the only one that
+  // answers it - no server has a panel to take a unit out of - and the board
+  // only offers the crossing in a solo game (`entryBind`) for that reason.
+  'enter_board',
+  // A reserve swinging at the battlefield from inside its panel. Same reason
+  // as above: the attacker is the client's, so only the browser engine can
+  // resolve it.
+  'panel_attack',
   'game_room_message',
 ]);
 

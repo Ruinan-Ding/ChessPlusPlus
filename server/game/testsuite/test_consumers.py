@@ -166,6 +166,68 @@ def _cancel_pending_turn_timers():
     _consumers._pending_turn_timers.clear()
 
 
+class HostColourChoiceTests(TransactionTestCase):
+    """
+    The host takes a side. Only the host can start a game at all - anyone else
+    is refused before this - so this is the one seat in a two-player room that
+    is chosen rather than tossed for.
+    """
+
+    async def _start_with(self, host_color):
+        game = await GameRoom.objects.acreate(
+            host='alice', opponent='bob', status='waiting',
+            host_token='host-tok', opponent_token='opp-tok',
+        )
+        application = URLRouter(websocket_urlpatterns)
+        host_comm = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+        opp_comm = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+        try:
+            await host_comm.connect()
+            await opp_comm.connect()
+            await host_comm.send_json_to({
+                'type': 'join_game_room', 'username': 'alice',
+                'gameId': game.game_id, 'token': 'host-tok',
+            })
+            await _receive_until(host_comm, 'join_game_room_success')
+            await opp_comm.send_json_to({
+                'type': 'join_game_room', 'username': 'bob',
+                'gameId': game.game_id, 'token': 'opp-tok',
+            })
+            await _receive_until(opp_comm, 'join_game_room_success')
+            await host_comm.send_json_to(
+                {'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id})
+            await opp_comm.send_json_to(
+                {'type': 'player_ready', 'username': 'bob', 'gameId': game.game_id})
+
+            start = {'type': 'start_game', 'gameId': game.game_id}
+            if host_color is not None:
+                start['hostColor'] = host_color
+            await host_comm.send_json_to(start)
+            started = await _receive_until(host_comm, 'game_started')
+            return started
+        finally:
+            _cancel_pending_turn_timers()
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_host_takes_the_side_it_asks_for(self):
+        started = await self._start_with('white')
+        self.assertEqual(started['playerWhite'], 'alice')
+        self.assertEqual(started['playerBlack'], 'bob')
+
+        started = await self._start_with('black')
+        self.assertEqual(started['playerWhite'], 'bob')
+        self.assertEqual(started['playerBlack'], 'alice')
+
+    async def test_anything_else_is_still_a_coin_toss(self):
+        # Including a client that sends nothing at all, which is what every
+        # client did before the choice existed.
+        for value in (None, 'random', 'purple'):
+            started = await self._start_with(value)
+            self.assertEqual(
+                {started['playerWhite'], started['playerBlack']}, {'alice', 'bob'})
+
+
 class TurnTimerLiveIntegrationTests(TransactionTestCase):
     """
     Drives a real game through the full async WebSocket stack with a short

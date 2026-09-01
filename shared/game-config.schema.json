@@ -80,7 +80,7 @@
           "move": {
             "type": "integer",
             "minimum": 0,
-            "description": "Number of adjacent-hex steps this unit can move per turn. Movement floods outward through the six hex neighbours, through empty hexes only - a unit can never move through or onto an occupied hex (ally or enemy)."
+            "description": "Number of adjacent-hex steps this unit can move per turn. Movement floods outward through the six hex neighbours. A unit walks through its own - an ally costs a step to pass but is not somewhere to stop - while an enemy blocks the hex and the way past it alike."
           },
           "value": {
             "type": "integer",

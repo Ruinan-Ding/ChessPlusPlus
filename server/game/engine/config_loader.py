@@ -101,6 +101,34 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "attackRange": 1,
             "defense": 11
         },
+        # Two more of the footsoldier's kind, either side of the pawn: one
+        # that outranges everything but the bishop and folds when reached,
+        # one that reaches nothing and does not fold. Placeholder numbers on
+        # the same scale as the rest - the owner said to make them up.
+        "archer": {
+            "id": "archer",
+            "name": "Archer",
+            "symbol": "A",
+            "display": {"white": "🏹︎", "black": "🏹︎"},
+            "move": 6,
+            "value": 8,
+            "hp": 16,
+            "attack": 15,
+            "attackRange": 3,
+            "defense": 7
+        },
+        "shieldman": {
+            "id": "shieldman",
+            "name": "Shieldman",
+            "symbol": "S",
+            "display": {"white": "🛡︎", "black": "🛡︎"},
+            "move": 5,
+            "value": 9,
+            "hp": 30,
+            "attack": 8,
+            "attackRange": 1,
+            "defense": 18
+        },
         "pawn": {
             "id": "pawn",
             "name": "Pawn",
@@ -119,48 +147,68 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Three rows on each side of the radius-11 board, spaced so nothing
         # sits shoulder to shoulder. White's edge row is r=+11; black is the point
         # mirror (q,r) -> (-q,-r).
-        #   row 1 (r=11): queen and king, five columns apart
-        #   row 2 (r=10): rook knight bishop | bishop knight rook, every other hex
-        #   row 3 (r=9) : eight pawns, every other hex but the middle pair, which
-        #                 straddles the centre line - eight spaced pawns are one
-        #                 hex wider than the row.
+        #   row 1 (r=11): pawn archer shieldman | queen king | shieldman archer pawn
+        #                 - the pair in the middle behind a shield each, an
+        #                 archer outside that, and a pawn on each wing tip
+        #   row 2 (r=10): pawn | rook knight bishop | bishop knight rook | pawn,
+        #                 every other hex with a pawn on each wing tip
+        #   row 3 (r=9) : four pawns, two archers and two shieldmen, every other
+        #                 hex but the middle pair, which straddles the centre
+        #                 line - eight spaced units are one hex wider than the
+        #                 row.
         # Odd separations are what stay centred here: the row holds an even number
         # of hexes, so an even gap would put the pair off the middle.
         "white": {
-            "-8,11":   "queen",
-            "-3,11":   "king",
+            "-11,11":  "pawn",
+            "-10,11":  "archer",
+            "-8,11":   "shieldman",
+            "-6,11":   "queen",
+            "-5,11":   "king",
+            "-3,11":   "shieldman",
+            "-1,11":   "archer",
+            "0,11":    "pawn",
+            "-11,10":  "pawn",
             "-10,10":  "rook",
             "-8,10":   "knight",
             "-6,10":   "bishop",
             "-4,10":   "bishop",
             "-2,10":   "knight",
             "0,10":    "rook",
-            "-11,9":   "pawn",
+            "1,10":    "pawn",
+            "-11,9":   "shieldman",
             "-9,9":    "pawn",
-            "-7,9":    "pawn",
+            "-7,9":    "archer",
             "-5,9":    "pawn",
             "-4,9":    "pawn",
-            "-2,9":    "pawn",
+            "-2,9":    "archer",
             "0,9":     "pawn",
-            "2,9":     "pawn",
+            "2,9":     "shieldman",
         },
         "black": {
-            "8,-11":   "queen",
-            "3,-11":   "king",
+            "11,-11":  "pawn",
+            "10,-11":  "archer",
+            "8,-11":   "shieldman",
+            "6,-11":   "queen",
+            "5,-11":   "king",
+            "3,-11":   "shieldman",
+            "1,-11":   "archer",
+            "0,-11":   "pawn",
+            "11,-10":  "pawn",
             "10,-10":  "rook",
             "8,-10":   "knight",
             "6,-10":   "bishop",
             "4,-10":   "bishop",
             "2,-10":   "knight",
             "0,-10":   "rook",
-            "11,-9":   "pawn",
+            "-1,-10":  "pawn",
+            "11,-9":   "shieldman",
             "9,-9":    "pawn",
-            "7,-9":    "pawn",
+            "7,-9":    "archer",
             "5,-9":    "pawn",
             "4,-9":    "pawn",
-            "2,-9":    "pawn",
+            "2,-9":    "archer",
             "0,-9":    "pawn",
-            "-2,-9":   "pawn",
+            "-2,-9":   "shieldman",
         },
     },
     "rules": {

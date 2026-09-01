@@ -233,15 +233,28 @@ class ConfigLoaderTestCase(TestCase):
     def test_build_initial_board_piece_count(self):
         config = load_config(None)
         board = build_initial_board(config)
-        self.assertEqual(len(board.pieces_by_color('white')), 16)
-        self.assertEqual(len(board.pieces_by_color('black')), 16)
+        self.assertEqual(len(board.pieces_by_color('white')), 24)
+        self.assertEqual(len(board.pieces_by_color('black')), 24)
+
+    @staticmethod
+    def _king_hex(config, color):
+        """Where the setup puts a side's king.
+
+        Looked up rather than written down: the opening line-up is the owner's
+        to rearrange, and it has moved more than once. What matters is that a
+        king is dealt, not which hex it lands on.
+        """
+        placement = config['setup'][color]
+        key = next(k for k, unit in placement.items() if unit == 'king')
+        q, r = (int(part) for part in key.split(','))
+        return q, r
 
     def test_build_initial_board_has_kings(self):
         config = load_config(None)
         board = build_initial_board(config)
         # Check directly that king units exist on the board
-        white_king_cell = board.get(-3, 11)
-        black_king_cell = board.get(3, -11)
+        white_king_cell = board.get(*self._king_hex(config, 'white'))
+        black_king_cell = board.get(*self._king_hex(config, 'black'))
         assert white_king_cell is not None
         assert black_king_cell is not None
         self.assertEqual(white_king_cell['unit_id'], 'king')
@@ -252,7 +265,7 @@ class ConfigLoaderTestCase(TestCase):
     def test_build_initial_board_units_have_hp(self):
         config = load_config(None)
         board = build_initial_board(config)
-        white_king = board.get(-3, 11)
+        white_king = board.get(*self._king_hex(config, 'white'))
         assert white_king is not None
         self.assertIn('hp', white_king)
         self.assertIn('max_hp', white_king)
@@ -416,14 +429,24 @@ class MoveValidatorTestCase(TestCase):
         self.assertIn((2, 0), moves)
         self.assertNotIn((3, 0), moves)
 
-    def test_blocked_by_own_piece(self):
+    def test_walks_through_its_own(self):
+        """An ally costs a step to pass but is not somewhere to stop.
+
+        It used to block both, which meant a side's own line hemmed it in -
+        the owner's rule is that only the hex a unit would END on has to be
+        free.
+        """
         board = self._make_board()
         board.set(0, 0, 'unit', 'white')
-        board.set(1, 0, 'pawn', 'white')  # occupies a neighbour
-        # move=2: not enough budget to detour around the blocker to (2,0).
+        board.set(1, 0, 'pawn', 'white')  # a friend directly in the way
         moves = get_legal_moves(board, (0, 0), self._cfg(move=2), 'white')
-        self.assertNotIn((1, 0), moves)  # can't land on it
-        self.assertNotIn((2, 0), moves)  # can't pass through it either
+        self.assertNotIn((1, 0), moves)  # still no landing on it
+        self.assertIn((2, 0), moves)     # but the way past it is open
+
+        # And passing costs its step like any other: with one to spend, the
+        # hex beyond the friend is out of reach.
+        short = get_legal_moves(board, (0, 0), self._cfg(move=1), 'white')
+        self.assertNotIn((2, 0), short)
 
     def test_blocked_by_enemy_piece(self):
         board = self._make_board()
@@ -475,11 +498,21 @@ class MoveValidatorTestCase(TestCase):
         self.assertTrue(is_legal_move(board, (0, 0), (1, 0), self._cfg(move=1), 'white'))
         self.assertFalse(is_legal_move(board, (0, 0), (3, 0), self._cfg(move=1), 'white'))
 
-    def test_default_config_units_all_move_six(self):
-        """Placeholder rule: every unit in DEFAULT_CONFIG currently gets move=6."""
+    def test_default_config_units_declare_a_move(self):
+        """Every unit in DEFAULT_CONFIG carries its own move budget.
+
+        This used to pin every unit to 6, which was true only while the roster
+        was six identical placeholders. The shieldman is deliberately slower,
+        so what is worth guarding is that movement is a per-unit stat and that
+        none of them is accidentally left without one.
+        """
         config = load_config(None)
         for unit_id, unit_def in config['units'].items():
-            self.assertEqual(unit_def.get('move'), 6, unit_id)
+            move = unit_def.get('move')
+            self.assertIsInstance(move, int, unit_id)
+            self.assertGreater(move, 0, unit_id)
+        self.assertEqual(config['units']['shieldman']['move'], 5)
+        self.assertEqual(config['units']['pawn']['move'], 6)
 
 
 # ---------------------------------------------------------------------------

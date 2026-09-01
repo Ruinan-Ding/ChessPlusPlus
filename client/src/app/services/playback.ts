@@ -7,7 +7,7 @@ export interface PlayableAction {
   attack: string | null;
   killed?: string;
   /** Present when the action was an ability cast rather than a move. */
-  spend?: { index: number };
+  spend?: { index: number; row?: string; hex?: string; side?: 'mine' | 'opponent' };
 }
 
 /**
@@ -19,18 +19,29 @@ export interface PlayableAction {
 export function buildPlayback(actions: PlayableAction[], collapseMoves = false): AnimStep[] {
   const steps: AnimStep[] = [];
   let standing = '';
+  /** Every hex the acting unit stood on, and the one it set off from. */
+  const walked = new Set<string>();
+  let firstHex = '';
   for (const action of actions) {
     const origin = standing || action.from;
+    if (origin) {
+      walked.add(origin);
+      if (!firstHex) firstHex = origin;
+    }
     if (action.spend) {
-      // A cast: the hex it landed on, or the caster when it hit nobody.
-      const target = action.killed || action.to || origin;
-      if (origin && target) {
-        // In the recap every cast gets a beat, so each is kept short.
-        steps.push({
-          kind: 'ability', from: origin, to: target,
-          index: action.spend.index, brief: collapseMoves,
-        });
-      }
+      // The hex the cast landed on, which the spend recorded when it was made.
+      // Reading it back off the action's own from/to gave the *caster's* hex,
+      // so a debuff replayed as a swell on the wrong unit - or, for a
+      // universal ability that names no hex at all, as no beat whatsoever.
+      const target = action.spend.hex || action.killed || '';
+      // A unit's own ability lands on the unit and nowhere else, so it names
+      // no slot: the panel button it came from does not pop with it.
+      const slot = action.spend.row === 'unit'
+        ? {}
+        : { index: action.spend.index, ...(action.spend.side ? { side: action.spend.side } : {}) };
+      // Every cast gets its beat, hex or no hex - a universal one is the
+      // button alone, and the board simply holds for it.
+      steps.push({ kind: 'ability', from: target, to: target, ...slot, brief: collapseMoves });
       continue;
     }
     if (action.attack) {
@@ -43,14 +54,31 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
       continue;
     }
     if (origin && action.to && origin !== action.to) {
-      const last = steps[steps.length - 1];
-      // Replaying a committed turn, the walk is one straight line from where
-      // the unit set off to where it ended up - the detours were the player's
-      // business while they were staging it.
-      if (collapseMoves && last?.kind === 'move') last.to = action.to;
-      else steps.push({ kind: 'move', from: origin, to: action.to });
+      steps.push({ kind: 'move', from: origin, to: action.to });
     }
     standing = action.to || standing;
+    if (standing) walked.add(standing);
   }
-  return steps;
+  if (!collapseMoves) return steps;
+
+  // Replaying a committed turn, the walk is one straight line from where the
+  // unit set off to where it ended up - the detours were the player's business
+  // while they were staging it - and it goes first, because the board is
+  // already showing the finished position. A cast played on a hex the unit has
+  // since left pops an empty hex, and the walk after it reads as the unit
+  // teleporting back to start again.
+  const first = firstHex;
+  const last = standing || first;
+  const recap: AnimStep[] = [];
+  if (first && last && first !== last) recap.push({ kind: 'move', from: first, to: last });
+  for (const step of steps) {
+    if (step.kind === 'move') continue;              // folded into the one above
+    if (step.kind === 'ability' && step.to && walked.has(step.to)) {
+      // It landed on the unit that acted, so it lands where that unit is now.
+      recap.push({ ...step, from: last, to: last });
+      continue;
+    }
+    recap.push(step);
+  }
+  return recap;
 }

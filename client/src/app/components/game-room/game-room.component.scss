@@ -31,6 +31,10 @@
     .turn-indicator {
       flex: 1 1 auto;
       margin: 0 20px;
+      display: flex;
+      align-items: baseline;
+      justify-content: center;
+      gap: 16px;
       text-align: center;
       font-size: clamp(1.1rem, 2.5vw, 2rem);
       font-weight: 800;
@@ -39,6 +43,113 @@
 
       &.your-turn { color: #229954; }
       &.opponent-turn { color: #c0392b; }
+      // A committed turn playing back: the name holds on whoever moved and
+      // goes yellow, so the pause reads as watching that turn rather than as
+      // the next one having started. Last, so it wins on equal specificity.
+      &.committing { color: #f5c542; }
+
+      .turn-text { flex: 0 0 auto; }
+
+      /* Where the match has got to: the stage of the schedule, or the result
+         once the three phases have settled one. Amber rather than the pale
+         gold it carried while it only ever named overtime - this sits on the
+         light header now on every turn of the match, and pale gold on that
+         ground is barely there. */
+      .verdict {
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        color: #b45309;
+      }
+
+      /* The match score, and the glow on whoever is ahead of it. Level
+         pegging lights neither, so a glow always means a lead. */
+      .match-total {
+        font-weight: 700;
+      }
+
+      // An equal share each, so whose turn it is stays on the centre line
+      // however long the two scores run. Their own colour: the indicator
+      // turns green and red by whose turn it is, and a score that changed
+      // colour with the turn would read as if it had changed.
+      .phase-score {
+        flex: 1 1 0;
+        font-size: 0.55em;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .phase-score.theirs { text-align: right; color: #7c8894; }
+      .phase-score.ours { text-align: left; color: #34404a; }
+
+      // Each half in its own colour, mirrored across the two sides: held
+      // hexes are green for you and dark red for them, dead units red for
+      // you and dark green for them. The same fact reads as good or bad news
+      // depending on whose side of the board it is on, so the colour says
+      // which without the player having to work out which score is theirs.
+      // The total keeps the neutral ink - it is the two halves netted, not
+      // news of its own. Emoji ignore `color`, so only the numbers take it.
+      .phase-score.ours .cap { color: #229954; }
+      .phase-score.ours .death { color: #c0392b; }
+      .phase-score.theirs .cap { color: #7b241c; }
+      .phase-score.theirs .death { color: #14532d; }
+
+      // The three totals, each its own colour so the eye can pick out which
+      // number it wants without counting symbols: the phase running now, the
+      // phases already banked, and what the match comes to. Mirrored like the
+      // pair above - yours saturated, theirs muted - so a glance still says
+      // whose row it is. All readable on a light header, which is what ruled
+      // out the pale gold the match total used to carry.
+      .phase-score.ours .phase-total { color: #1b6ca8; }     // this phase, live
+      .phase-score.theirs .phase-total { color: #5c7a8f; }
+      // Each banked phase its own colour, or the parenthetical is a row of
+      // numbers in one tone and there is no telling which phase is which.
+      .phase-score.ours .banked-1 { color: #8a5a10; }        // phase 1, amber
+      .phase-score.ours .banked-2 { color: #0f766e; }        // phase 2, teal
+      .phase-score.ours .banked-3 { color: #9d174d; }        // phase 3, rose
+      .phase-score.theirs .banked-1 { color: #9b8763; }
+      .phase-score.theirs .banked-2 { color: #6f9490; }
+      .phase-score.theirs .banked-3 { color: #a8798b; }
+      .phase-score.ours .match-total { color: #6b21a8; }     // the match itself
+      .phase-score.theirs .match-total { color: #8b6fa8; }
+
+      /* Ahead on the match, whichever side that is - so it has to outrank the
+         two above, which are a class deeper than the plain .leading rule was.
+         Amber rather than the pale gold it used to carry: the header sits on
+         a light ground, where pale gold all but vanished. */
+      .phase-score.ours .match-total.leading,
+      .phase-score.theirs .match-total.leading {
+        color: #b45309;
+        text-shadow: 0 0 6px rgba(245, 158, 11, 0.55);
+      }
+
+      // The phase running now glows, and the match total waves - the two
+      // numbers that are still moving, told apart from the banked ones that
+      // are not. Two different motions rather than two pulses, or the pair
+      // reads as one effect applied twice.
+      //
+      // The halo is `currentColor`, so each takes its own ink and the one
+      // keyframe serves both sides. White would only blur: the header sits
+      // on a light ground.
+      .phase-total { animation: score-glow 2s ease-in-out infinite; }
+      @keyframes score-glow {
+        50% { text-shadow: 0 0 5px currentColor, 0 0 11px currentColor; }
+      }
+
+      // A transform needs a box to act on, and a bare span has none. The bob
+      // is under a fifth of the line, so nothing below it shifts.
+      .match-total {
+        display: inline-block;
+        animation: score-wave 1.6s ease-in-out infinite;
+      }
+      @keyframes score-wave {
+        25% { transform: translateY(-0.18em); }
+        75% { transform: translateY(0.1em); }
+      }
+
+      // Both are decoration on a number that is legible standing still.
+      @media (prefers-reduced-motion: reduce) {
+        .phase-total, .match-total { animation: none; }
+      }
     }
     
     .header-actions {
@@ -120,6 +231,20 @@
       background-color: #3a1b1b;
     }
 
+    // While a committed turn plays back the cue leaves green and red behind
+    // and goes yellow, holding on whoever just moved. Yours glows; theirs is
+    // the same colour banked down, so a glance says whose turn is on screen
+    // without reading the words. After the two above, so it wins.
+    &.committing-mine {
+      background-color: #4a4114;
+      box-shadow: inset 0 0 70px rgba(255, 214, 64, 0.5);
+    }
+
+    &.committing-theirs {
+      background-color: #2e290c;
+      box-shadow: inset 0 0 70px rgba(190, 150, 30, 0.32);
+    }
+
     app-game-board {
       position: absolute;
       inset: 0;
@@ -143,6 +268,42 @@
 
   // Game Mode, centred on the empty board before play starts. Light-on-dark,
   // since it sits on the board panel rather than in a white rail card.
+  .points { font-variant-numeric: tabular-nums; }
+
+  /* The pool is picked in pairs, and a row of the two-column grid is a pair.
+     A bar drawn across the gap says so: the two either side of it come and go
+     together. Scoped to the grid's own children so it never lands on the
+     path rows or the unit slots underneath. */
+  .panel-buttons > .scaffold-btn.pair-left {
+    position: relative;
+
+    &::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      /* The gap plus a bite out of each button, so the bar reads as one
+         piece joining them rather than a speck floating between. */
+      left: calc(100% - 5px);
+      width: 16px;
+      height: 5px;
+      border-radius: 3px;
+      background: #7c8899;
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+  }
+
+  /* A slot that is a readout rather than an offer. It keeps the blank's own
+     greyed ground - the original look - and only the text goes darker, so it
+     reads as information without becoming a second kind of control.
+     Three classes deep to beat the .blank rules above, which paint the text
+     transparent and pad an empty button out with a space. */
+  button.tally.blank:disabled {
+    color: #4b5563;
+
+    &::before { content: none; }
+  }
+
   .result-banner {
     margin: 0 0 4px;
     font-size: 2.6rem;
@@ -152,6 +313,24 @@
 
     &.won { color: #4ade80; }
     &.lost { color: #f87171; }
+
+    // Over the finished board rather than on the mode screen: it has to read
+    // against a busy position, so it carries its own ground and sits clear of
+    // the board's own top edge.
+    &.over-board {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 3;
+      margin: 0;
+      padding: 6px 22px;
+      border-radius: 6px;
+      font-size: 2rem;
+      background: rgba(12, 12, 22, 0.82);
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
+      pointer-events: none;
+    }
   }
 
   .board-game-mode {
@@ -185,6 +364,24 @@
       align-items: center;
       gap: 10px;
       font-size: 1rem;
+    }
+
+    // Laid out like the turn timer under it, so the two read as one column
+    // of settings rather than two ideas.
+    .seat-option {
+      margin-top: 10px;
+    }
+
+    .seat-label {
+      display: block;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .seat-choices {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
     }
 
     .turn-time-option {
@@ -235,6 +432,21 @@
     overflow-y: auto;
   }
 
+  /* Theirs, not yours: the Opponent panel always, and the Unit panel while it
+     is showing one of their units. A darker ground says whose side of the
+     board you are reading before any word on it is. Set on the section so
+     everything inside inherits it - the head, the body and the rows. */
+  .match-panel.opponent-panel,
+  .match-panel.stats-panel.theirs {
+    background-color: #dfe3e8;
+
+    h3 { background-color: #d2d7de; }
+
+    .panel-body,
+    .panel-buttons,
+    .ability-stack { background-color: transparent; }
+  }
+
   .match-panel {
     display: flex;
     flex-direction: column;
@@ -257,7 +469,7 @@
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
-      padding: 10px 12px;
+      padding: 6px 10px;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -332,24 +544,153 @@
     animation: ability-recent 1.1s ease-in-out infinite alternate;
   }
 
+  // Green, not yellow: a slot taken up is filled yellow, and a yellow ring
+  // around a yellow card is no news at all. Used and taken read apart now.
   @keyframes ability-recent {
-    from { box-shadow: 0 0 0 2px rgba(241, 196, 15, 0.55); }
-    to { box-shadow: 0 0 10px 3px rgba(241, 196, 15, 0.95); }
+    from { box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.6); }
+    to { box-shadow: 0 0 10px 3px rgba(34, 197, 94, 0.95); }
   }
 
-  // The slot being cast, shining with the unit it is landing on.
+  // The slot being cast, swelling with the unit it is landing on. Lifted
+  // over its neighbours while it does, or the rail clips the corners off it.
   .scaffold-btn.casting,
   .passive-row.casting {
-    animation: slot-casting 0.7s ease-out;
+    animation: slot-casting 2s ease-in-out;
+    transform-origin: center;
+    position: relative;
+    z-index: 3;
 
-    // The end-of-turn recap runs the same shine short, once per cast.
-    &.brief { animation-duration: 0.28s; }
+    // The end-of-turn recap runs the same pop shorter, once per cast.
+    &.brief { animation-duration: 1.2s; }
   }
 
+  // Mostly upward: the button already fills the panel's width, and .panel-body
+  // scrolls, so a wide swell is clipped and drags a scrollbar in with it. Six
+  // per cent sideways is what the padding has room for; the height carries the
+  // rest, and the neighbours it covers are what makes it read as a pop.
   @keyframes slot-casting {
-    0% { box-shadow: 0 0 0 0 rgba(255, 224, 102, 0); }
-    45% { box-shadow: 0 0 12px 4px rgba(255, 224, 102, 0.95); filter: brightness(1.35); }
-    100% { box-shadow: 0 0 0 0 rgba(255, 224, 102, 0); }
+    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 224, 102, 0); }
+    45% {
+      transform: scale(1.06, 1.28);
+      box-shadow: 0 0 16px 6px rgba(255, 224, 102, 0.95);
+      filter: brightness(1.4);
+    }
+    100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 224, 102, 0); }
+  }
+
+  // Reading a path before taking it: the three things it grants, laid out as
+  // the row they will become, plus Pick and Back. No prose - each button
+  // opens its own description, the same as every other ability.
+  // The same stack .ability-bottom-row draws for a path already taken: both
+  // columns of .panel-buttons, one ability per row.
+  .path-detail {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: minmax(30px, auto);
+    gap: 6px;
+    margin-top: 6px;
+    // The same height as the three buttons it replaces, so opening one does
+    // not move anything under it.
+    min-height: 70px;
+  }
+
+  // The passive and its green button, an even half each.
+  .path-passive-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  // Pick and Back, under whatever the panel is showing. A fixed height: with
+  // no label the buttons collapsed to nothing and the panel changed size the
+  // moment anything was opened.
+  .path-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+
+    // Height comes from the buttons' own line box, blank ones included - and
+    // an explicit line-height, so a space and a word measure the same.
+    > button {
+      min-height: 0;
+      line-height: 1.2;
+    }
+  }
+
+  // A slot with nothing in it yet: it holds its place and says nothing. Named
+  // with the class it sits on rather than alone - .pick-btn and the rest set
+  // their own background further down, and one class each would lose to them.
+  .pick-btn.blank,
+  .ability-back-btn.blank,
+  .passive-row.blank,
+  .scaffold-btn.blank {
+    background: #e8ecf0;
+    border: 1px solid #d8dee4;
+    color: transparent;
+    cursor: default;
+
+    // A blank has no text, so it had no line to be as tall as and collapsed
+    // to its padding. One space gives it the same line box the real button
+    // gets - the same size at any font, with no number to keep in step.
+    &::before { content: '\00a0'; }
+  }
+
+  // A blank takes a washed-out cast of the button it stands in for, so the row
+  // reads as the thing it will hold. Three classes deep on purpose: the plain
+  // .blank rule and each button's own colour are both two, and the later of
+  // the two would otherwise win.
+  // Only Pick takes a cast of its own colour; Back keeps the neutral grey the
+  // unit's passive placeholder uses, so the two read as the same kind of gap.
+  .path-actions .pick-btn.blank {
+    background: #e6f4eb;
+    border-color: #d5e7dc;
+  }
+
+  .unit-ability-row .scaffold-btn.blank {
+    background: #e6eefb;
+    border-color: #d6e2f2;
+  }
+
+  // ponytail: a colour and a place, nothing more - it does nothing until
+  // there is something for it to do.
+  .path-extra-btn {
+    padding: 4px 0;
+    border: none;
+    border-radius: 6px;
+    background: #16a34a;
+    color: #fff;
+    font-size: 0.9rem;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+
+    &:hover { background: #12833c; }
+    &.armed { background: #12833c; box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.9); }
+    &:disabled { background: #b3bfb6; cursor: default; }
+  }
+
+  .coming-soon {
+    margin: 0;
+    padding: 12px 0;
+    text-align: center;
+    color: #7a8794;
+    font-style: italic;
+  }
+
+  // A slot being taken up: a short white flash, distinct from the swell a
+  // slot makes when it is used.
+  .scaffold-btn.picking,
+  .passive-row.picking {
+    animation: slot-picked 0.9s ease-out;
+    position: relative;
+    z-index: 3;
+  }
+
+  @keyframes slot-picked {
+    0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); filter: brightness(1); }
+    30% { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.95); filter: brightness(1.9); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); filter: brightness(1); }
   }
 
   // In the pool but not carried: readable, obviously not in play.
@@ -365,35 +706,65 @@
     grid-column: 1 / -1;
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    align-content: start;
     gap: 6px;
     margin-top: 6px;
-    min-height: 108px;
+    // As tall as the two rows each one opens into - passive, then the pair -
+    // so choosing one changes what is in the panel, never how much room it
+    // takes. Pick and Back live under the panel now, in a row of their own
+    // that is there whether anything is open or not.
+    min-height: 70px;
+  }
+
+  // Ultimate and skill side by side - one line of the panel, not two.
+  .path-pair {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
   }
 
   .path-btn {
-    // One line each: three of these share a 260px column, so the label has
-    // to shrink rather than wrap.
+    // Name over cost, so both can be read at a size worth reading: three of
+    // these share a 260px column and one line could not hold either.
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
     min-width: 0;
-    height: 32px;
+    // Full height of the row it sits in - which is as tall as the rows it
+    // opens into, so choosing one shifts nothing.
+    height: 100%;
     padding: 4px 2px;
     border: 1px dashed #b39ddb;
     border-radius: 6px;
     background: #f6f2fc;
     color: #4a3c68;
-    font-size: 0.62rem;
+    font-size: 0.8rem;
     font-weight: 700;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     cursor: pointer;
 
+    .path-name {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .path-cost {
+      font-size: 0.72rem;
+      font-weight: 600;
+      opacity: 0.75;
+    }
+
     &:hover:not(:disabled) { background: #ede4fa; }
     &:disabled { opacity: 0.5; cursor: not-allowed; }
   }
 
   .pick-btn {
-    padding: 6px 14px;
+    padding: 3px 10px;
+    font-size: 0.78rem;
     border: none;
     border-radius: 6px;
     font-weight: 600;
@@ -401,8 +772,6 @@
     background: #16a34a;
     cursor: pointer;
 
-    // Already carried: it says so, and there is no taking it back.
-    &.carried { background: #7f8c8d; }
     &:disabled { opacity: 0.5; cursor: not-allowed; }
   }
 
@@ -458,18 +827,23 @@
       50% { opacity: 0.35; }
     }
 
-    // The same states the board pulses, on the numbers that name them: each
-    // leaves its own colour for white (lifted), black (dragged down) or dark
-    // green (wounded) and comes back. One stop at 50%, so the colour it
-    // starts from is the stat's own - MOV's included.
+    // The same states the board pulses, on the numbers that name them. Each
+    // waves to a lighter or darker cast of its own colour - red stays red,
+    // blue stays blue - rather than every one of them heading for a white the
+    // #f5f7fa cell behind it swallows. Brightness alone barely moves a
+    // saturated colour, since its strong channel is already at the top, so
+    // the lift drops the saturation first: that is what turns a dark red into
+    // a pale one instead of the same red slightly brighter. One stop at 50%,
+    // so the colour it starts from is the stat's own - MOV's included.
     .wave-up { animation: panel-wave-up 1.1s ease-in-out infinite; }
-    @keyframes panel-wave-up { 50% { color: #ffffff; } }
+    @keyframes panel-wave-up { 50% { filter: saturate(0.5) brightness(2.2); } }
 
-    .wave-down { animation: panel-wave-down 1.1s ease-in-out infinite; }
-    @keyframes panel-wave-down { 50% { color: #000000; } }
-
-    .wave-hurt { animation: panel-wave-hurt 1.4s ease-in-out infinite; }
-    @keyframes panel-wave-hurt { 50% { color: #14532d; } }
+    // Down and wounded are the same darkening at different speeds: a stat
+    // dragged down and a unit carrying a wound are both bad news, and one
+    // keyframe says so once.
+    .wave-down { animation: panel-wave-dim 1.1s ease-in-out infinite; }
+    .wave-hurt { animation: panel-wave-dim 1.4s ease-in-out infinite; }
+    @keyframes panel-wave-dim { 50% { filter: brightness(0.45); } }
     &.atk strong { color: #b91c1c; }
     &.def strong { color: #1d4ed8; }
     &.mov strong { color: #e0a800; }   // MOV is yellow; it waves out of that
@@ -491,7 +865,11 @@
 
   .effects-box {
     display: flex;
-    flex: 1 1 auto;
+    // Basis 0, not auto: with auto the box is sized from its own contents, so
+    // every effect added to a unit grew it, grew the panel, and shoved the
+    // stats and the buttons around it. It takes what the panel has spare and
+    // scrolls the rest - what is inside it never moves anything outside it.
+    flex: 1 1 0;
     min-height: 74px;
     margin: 6px 0 0;
     border: 1px solid #e3e7ec;
@@ -534,8 +912,9 @@
   .opponent-panel,
   .abilities-panel { flex: 0 0 auto; }
   // The unit panel takes whatever height the column has left, and the effects
-  // box is what grows into it.
-  .stats-panel { flex: 1 1 auto; min-height: 0; }
+  // box is what grows into it. Basis 0 for the same reason as the box itself:
+  // sized by the space available, never by what happens to be in it.
+  .stats-panel { flex: 1 1 0; min-height: 0; }
 
   // Solo room: side picker standing in for the Ready button.
   .color-toggle-btn {
@@ -554,9 +933,17 @@
     font-size: 15px;
   }
 
+  /* One row, an equal half each - so neither label's length decides how the
+     pair sits, and the row keeps its shape as `Show` becomes `Hide`. */
+  .view-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
   .hex-numbers-btn {
     flex: 0 0 auto;
-    padding: 9px 12px;
+    padding: 4px 10px;
     border: 1px solid #ddd;
     border-radius: 4px;
     background-color: #fff;
@@ -573,6 +960,21 @@
     }
   }
 
+  // The list and the detail occupy the same box, so the panel is always the
+  // height of the list - opening an ability used to collapse it by a third.
+  .ability-stack {
+    position: relative;
+    flex: 0 0 auto;
+
+    > .ability-detail {
+      position: absolute;
+      inset: 0;
+      background: #fff;
+    }
+
+    > .panel-buttons.behind { visibility: hidden; }
+  }
+
   .panel-buttons {
     display: grid;
     // minmax(0, 1fr): a plain 1fr floors at the content's own width, which is
@@ -586,14 +988,26 @@
   .ability-bottom-row {
     grid-column: 1 / -1;
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
+    // The same box the three choices and the confirm screen occupy, so the
+    // panel is one height for the whole match.
+    margin-top: 6px;
+    min-height: 70px;
+    align-content: start;
+
+    // Only the passive shares its row; the pair spans both columns.
+    .path-pair { grid-column: 1 / -1; }
   }
 
   .unit-ability-row {
     grid-column: 1 / -1;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+
+    // As with the action row: an explicit line-height, so a blank slot and a
+    // named one measure the same.
+    > button { line-height: 1.2; }
     gap: 6px;
   }
 
@@ -654,7 +1068,9 @@
 
   // Ability controls and detail views.
   .scaffold-btn {
-    padding: 8px 6px;
+    // Only as tall as the words in it: the panels have to hold the pool, the
+    // path and a line of text without the column running off the bottom.
+    padding: 4px 6px;
     border: none;
     border-radius: 6px;
     background-color: #2e86de;
@@ -686,6 +1102,37 @@
 
   .scaffold-btn.ability-unavailable { background: #8d98a3; color: #e1e5e8; }
 
+  // Taken up last turn: filled yellow rather than ringed, because a pick and
+  // a cast are different news and should not look like the same thing.
+  // Declared AFTER .ability-unavailable deliberately - both are one class on
+  // .scaffold-btn, so the later one owns `background`, and above it every
+  // pick the player could no longer afford went grey. Which is why a turn
+  // that picked three only ever showed the one still within reach.
+  .scaffold-btn.picked-recent,
+  .passive-row.picked-recent {
+    background: #f6c343;
+    color: #3a2f0b;
+    border-color: #d4a017;
+  }
+
+  // On offer while the + is armed: click it and the slot is yours again.
+  // Declared after .picked-recent and .ability-unavailable for the same
+  // reason they are declared in that order - one class each on .scaffold-btn,
+  // so the last one written owns the background.
+  .scaffold-btn.swappable {
+    background: #f6c343;
+    color: #3a2f0b;
+    border-color: #d4a017;
+    opacity: 1;
+    cursor: pointer;
+    animation: ability-swappable 1s ease-in-out infinite alternate;
+  }
+
+  @keyframes ability-swappable {
+    from { box-shadow: 0 0 0 2px rgba(212, 160, 23, 0.7); }
+    to { box-shadow: 0 0 10px 3px rgba(250, 204, 21, 1); }
+  }
+
   .ability-detail {
     display: flex;
     flex-direction: column;
@@ -716,7 +1163,8 @@
   }
 
   .ability-back-btn {
-    padding: 6px 10px;
+    padding: 3px 8px;
+    font-size: 0.78rem;
     border: 1px solid #9aa5b1;
     border-radius: 5px;
     background: transparent;
@@ -1608,7 +2056,6 @@
   justify-content: space-between;
   gap: 8px;
 
-  .points { font-variant-numeric: tabular-nums; }
 }
 
 // Passive slots are informational controls: they open the description but
@@ -1665,10 +2112,16 @@
 }
 
 .arming-hint {
-  margin: 4px 0 0;
-  font-size: 0.75rem;
+  margin: 2px 0 0;
+  line-height: 1.2;
+  font-size: 0.72rem;
   color: #f6c343;
   text-align: center;
+  // One line, always. Wrapping to two made the panel taller and shoved
+  // everything under it, which is the whole reason this line is never empty.
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 // A stat currently carrying a boost.
