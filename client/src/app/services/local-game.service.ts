@@ -134,7 +134,7 @@ export class LocalGameService {
       case 'panel_attack':
         this.attackIntoPanel(
           msg.from, msg.to ?? msg.from, msg.attack, msg.unit,
-          msg.moveBonus, msg.counters !== false);
+          msg.moveBonus, msg.counters !== false, msg.bonuses);
         break;
 
       case 'pass_turn':
@@ -297,6 +297,11 @@ export class LocalGameService {
   private attackIntoPanel(
     from: string, to: string, attack: string, unit: any, moveBonus?: number,
     counters = true,
+    // What the abilities are worth to this blow. The board path has taken
+    // these since boosts landed; without them here the room previewed a
+    // buffed swing with one number and committed it with another, and the
+    // panel's drawn HP jumped when the record arrived.
+    bonuses?: { atk?: number; def?: number; targetAtk?: number; targetDef?: number },
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
@@ -336,7 +341,9 @@ export class LocalGameService {
       return;
     }
 
-    const dealt = strikeDamage(attacker.unit_id, unit.unit_id, distance, g.config);
+    const dealt = strikeDamage(
+      attacker.unit_id, unit.unit_id, distance, g.config,
+      bonuses?.atk ?? 0, bonuses?.targetDef ?? 0);
     const left = Math.max(0, (unit.hp ?? 0) - dealt);
     const record: any = {
       from, to, unit_id: attacker.unit_id, color: attacker.color, turn: g.turnNumber,
@@ -357,7 +364,9 @@ export class LocalGameService {
       // reserve strikes back; a base never does.
       const theirRange = g.config?.units?.[unit.unit_id]?.attackRange ?? 1;
       if (counters && distance <= theirRange) {
-        const counter = strikeDamage(unit.unit_id, attacker.unit_id, distance, g.config);
+        const counter = strikeDamage(
+          unit.unit_id, attacker.unit_id, distance, g.config,
+          bonuses?.targetAtk ?? 0, bonuses?.def ?? 0);
         record.counter_damage = counter;
         // Onto where it stands now, not where it set off from.
         const mine = { ...attacker, hp: attacker.hp - counter };

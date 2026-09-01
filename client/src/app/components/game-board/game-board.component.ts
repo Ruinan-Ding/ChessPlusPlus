@@ -197,6 +197,8 @@ const PICK_MS = beat(900);
 const BEAT_GAP_MS = beat(180);
 /** The turn's last beat: the base's mending, and overtime's toll with it. */
 const UPKEEP_MS = beat(760);
+/** How long an end-of-turn `+1` / `-1` stays legible after its swell. */
+const MARK_FADE_MS = beat(2200);
 
 /** Padding around the outermost hex centres in the viewBox. Must match buildCells(). */
 const VIEWBOX_PADDING = HEX_SIZE + 4;
@@ -2772,7 +2774,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       this.turnMarks.clear();
       this.markTimer = null;
       this.cdr.markForCheck();
-    }, 2200);
+    }, MARK_FADE_MS);
     this.cdr.markForCheck();
     await this.wait(UPKEEP_MS);
   }
@@ -2791,13 +2793,18 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * Derived from the turn that just ended rather than announced by the room:
    * white plays the odd hand-overs, so which side paid is arithmetic.
    *
-   * ponytail: the king is marked and shaken, not actually hurt. Overtime
-   * takes points, not HP - dealing real damage would kill a king off around
-   * the fortieth turn of it, which is a rule nobody has asked for.
+   * The HP behind it is real - `overtimeToll()` takes it, and a commander on
+   * 1 HP dies of it - so this is the mark over damage that has already
+   * landed, not a shake standing in for it.
+   *
+   * ponytail: **the browser engine's alone**, like the toll it draws. A
+   * networked server takes no HP off anybody, so marking a king there would
+   * be a red -1 over a unit whose HP never moves - the same line `entryBind`
+   * draws for every other client-only rule.
    */
   private markOvertimeToll(previous: number, now: number): void {
     const ended = now - 1;
-    if (now <= previous || ended < OVERTIME_FIRST_PLY) return;
+    if (!this.entryBind || now <= previous || ended < OVERTIME_FIRST_PLY) return;
     // Only the side that just paid wears one: the hand-over before this was
     // the other side's, and that toll has had its turn on screen. Dropped
     // before the king is looked for, so a side without one still clears it.
@@ -3001,14 +3008,17 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // of your own only means you cannot stop there.
     if (toTip === undefined
         || (onFarTip && onFarTip.color !== cell.piece?.color)) return;
+    // Out of MOV before out of money: the struck-through price says "save up
+    // for this", and saying it to someone who could not have crossed with the
+    // money in hand points at the wrong thing.
+    const spent = toTip + 1;
+    const left = (budget ?? this.config?.units?.[cell.piece?.unit_id ?? '']?.move ?? 0) - spent;
+    if (left < 0) return;
     const price = this.wrapCost(cell);
     if (price > this.pointsOf(cell.piece?.color)) {
       this.wrapDenied.set(tips.reserve, price);
       return;
     }
-    const spent = toTip + 1;
-    const left = (budget ?? this.config?.units?.[cell.piece?.unit_id ?? '']?.move ?? 0) - spent;
-    if (left < 0) return;
     if (!onFarTip) {
       this.moveCosts.set(tips.reserve, spent);
       this.wrapTargets.set(tips.reserve, price);
@@ -3019,12 +3029,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // is put on the far tip for that pass: computeMoveCosts reads the mover
     // off the board it is given, and it has not actually crossed yet.
     const landing = this.cellsByKey.get(tips.reserve);
+    // The tips are arithmetic, so the far one need not be a hex this board
+    // draws - another orientation puts it outside the block. No panel to
+    // confine the onward walk means no walk: handing `undefined` to
+    // computeMoveCosts falls back to the battlefield, which would offer a
+    // base unit a paid teleport onto the board. `addBaseEntry` guards the
+    // same case the same way.
+    const zone = landing?.panel ? this.panelZones.get(landing.panel) : undefined;
+    if (!zone) return;
     const onward = { ...this.occupancy, [tips.reserve]: cell.piece! };
     delete onward[key];
     const [wq, wr] = tips.reserve.split(',').map(Number);
     const beyond = computeMoveCosts(
-      onward, wq, wr, this.config, this.radius, left,
-      landing?.panel ? this.panelZones.get(landing.panel) : undefined,
+      onward, wq, wr, this.config, this.radius, left, zone,
     );
     for (const [hex, cost] of beyond) {
       const total = spent + cost;

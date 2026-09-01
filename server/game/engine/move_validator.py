@@ -7,10 +7,11 @@ take per turn. Unit ids ('king', 'knight', ...) are opaque labels; renaming a
 unit or adding a brand-new one requires no engine changes.
 
 Movement is a flood fill (BFS) outward through the six hex neighbours, up to
-``move`` steps, through empty hexes only. A unit can never move through OR
-onto an occupied hex - own and enemy pieces both block equally, so a blocked
-path must be routed around rather than jumped. There is no separate
-capture-by-moving here: attack is a different action from movement.
+``move`` steps. A unit walks THROUGH its own: an ally costs a step to pass but
+is not somewhere to stop, so it never limits the reach beyond it. An enemy
+blocks the hex and the way past it alike, so a path an enemy bars must be
+routed around rather than jumped. There is no separate capture-by-moving
+here: attack is a different action from movement.
 
 Hex geometry reference: https://www.redblobgames.com/grids/hexagons/
 """

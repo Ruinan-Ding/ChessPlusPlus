@@ -55,6 +55,8 @@ describe('GameBoardComponent reach preview', () => {
     // hand-overs. The header counts it; the board shows it as the king of
     // whoever just paid taking one, so there is something to watch.
     (config.units as any).archer.commander = true;
+    // The toll is the browser engine's alone, and so is the mark over it.
+    board.entryBind = true;
     const king = () => cell('0,0');   // the white archer, now a commander
 
     // Nothing to take before overtime starts.
@@ -79,6 +81,14 @@ describe('GameBoardComponent reach preview', () => {
     board.ngOnChanges({ turnNumber: new SimpleChange(68, 69, false) });
     await (board as any).settleUpkeep();
     expect(board.markOf(king())).toBe('');
+
+    // No engine but this browser's takes the toll, so a server game marks
+    // nobody: a red -1 over a king whose HP never moves is a lie.
+    board.entryBind = false;
+    board.turnNumber = 70;
+    board.ngOnChanges({ turnNumber: new SimpleChange(69, 70, false) });
+    await (board as any).settleUpkeep();
+    expect(board.markOf(cell('3,0'))).toBe('');
   });
 
   it('pays the turn’s upkeep as the last beat, after the recap', async () => {
@@ -86,6 +96,7 @@ describe('GameBoardComponent reach preview', () => {
     // thing that happens in a turn. Owed as the ply turns over, and paid only
     // once every beat the turn itself had has played out.
     (config.units as any).archer.commander = true;
+    board.entryBind = true;
     const king = () => cell('0,0');
     board.turnNumber = 68;
     board.ngOnChanges({ turnNumber: new SimpleChange(67, 68, false) });
@@ -111,6 +122,7 @@ describe('GameBoardComponent reach preview', () => {
   it('pays it on its own when the turn had nothing to replay', async () => {
     // A passed turn plays no recap at all, and still mends and still pays.
     (config.units as any).archer.commander = true;
+    board.entryBind = true;
     board.turnNumber = 68;
     board.ngOnChanges({ turnNumber: new SimpleChange(67, 68, false) });
     expect(board.markOf(cell('0,0'))).toBe('');
@@ -1181,6 +1193,7 @@ describe('GameBoardComponent reach preview', () => {
           { at: '-12,10', unit: { unit_id: 'scout', color: 'white', hp: 4, max_hp: 6, uid: 'athome' } },
         ] as any;
         anyBoard().buildCells();
+        board.entryBind = true;
         const king = board.cells.find(c => c.piece?.color === 'black')!;
         anyBoard().oweMark(king.piece!.uid, '-1');
         await anyBoard().settleUpkeep();

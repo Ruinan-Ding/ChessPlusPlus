@@ -688,7 +688,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
               // every ranged trade.
               const struck = move.attackedHex ?? move.to;
               const defenderUnit = this.gameState.snapshot.boardState[struck]?.unit_id ?? 'unit';
-              moveText += ` (${defenderUnit} survives, ${move.defender_hp} HP)`;
+              // A blow into a panel writes `defenderHp`; one on the board writes
+              // `defender_hp`. The panel defender is on no board to look up either,
+              // so without both keys the line read "survives, undefined HP".
+              moveText += ` (${defenderUnit} survives, `
+                + `${(move as any).defenderHp ?? move.defender_hp} HP)`;
             }
           }
           this.addSystemMessage(moveText);
@@ -3892,6 +3896,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         type: 'panel_attack',
         from: swung.from, to: swung.to, attack: swung.attack, unit: swung.panelUnit,
         ...(this.moveBonusFor(swung.to) ? { moveBonus: this.moveBonusFor(swung.to) } : {}),
+        // The same bonuses `make_move` carries, for the same reason: the
+        // engine re-resolves the blow and would otherwise disagree with the
+        // preview the room already drew. `targetDef`/`targetAtk` are the
+        // panel unit's, which stands on `attack`.
+        bonuses: {
+          atk: this.bonusFor(swung.to, 'atk'),
+          def: this.bonusFor(swung.to, 'def'),
+          targetAtk: swung.attack ? this.bonusFor(swung.attack, 'atk') : 0,
+          targetDef: swung.attack ? this.bonusFor(swung.attack, 'def') : 0,
+        },
         // Whether the panel answers is the panel's rule, and the client owns
         // panels - the engine has no idea which one a unit is standing in.
         counters: swung.counters !== false,

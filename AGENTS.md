@@ -787,11 +787,14 @@ Decided so far:
   - **The toll is shown on the board as well as in the header**: the king of whoever just paid
     takes a red **`-1`** over its icon and a hit pop (`markOvertimeToll()` in
     `game-board.component.ts`, derived from the turn that ended - white plays the odd
-    hand-overs, so which side paid is arithmetic and needs no input from the room). *The king
-    is marked and shaken, not actually hurt: overtime takes points, not HP, and real damage
-    would kill a king off around the fortieth turn of it.*
+    hand-overs, so which side paid is arithmetic and needs no input from the room). The HP
+    behind it is real - see the toll above - so this is the mark over damage that has already
+    landed, not a shake standing in for it.
+    - **Solo only**, gated on `entryBind` like the toll it draws. A networked server takes no
+      HP off anybody, and a red `-1` over a king whose HP never moves is a lie.
     - The mark shares one map with the base's mending `+1` (`turnMarks` / `markOf()`): same
-      mark, two colours, one fade timer.
+      mark, four colours, one fade timer (`MARK_FADE_MS`, on `PLAYBACK_SPEED` like every
+      other beat).
   - **The END of turn 50 gives it to black** (`OVERTIME_LAST_TURN`), however level it still
     is - turn 50 is played out first, so the verdict flips at hand-over 101, not 99.
   - *The verdict is read, not enforced.* The engine ends a game on elimination, resignation or

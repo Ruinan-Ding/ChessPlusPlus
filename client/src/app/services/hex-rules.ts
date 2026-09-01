@@ -2,9 +2,10 @@
  * Client-side movement rules.
  *
  * Fully config-driven: unit ids are opaque labels. Movement comes from the
- * unit's single `move` stat - a flood fill through the six hex neighbours,
- * through empty hexes only. A unit can never move through or onto an
- * occupied hex (ally or enemy).
+ * unit's single `move` stat - a flood fill through the six hex neighbours.
+ * A unit walks THROUGH its own: an ally costs a step to pass but is not
+ * somewhere to stop, so it never limits the reach beyond it. An enemy blocks
+ * the hex and the way past it alike.
  *
  * This MIRRORS server/game/engine/move_validator.py. Both the board's
  * legal-move preview and the offline single-player engine read it, so a
