@@ -330,7 +330,9 @@ Decided so far:
 
     **A cast writes what it moved over the unit** - `AnimStep.mark`, set from `hpChange()`
     and carried through `buildPlayback` so the recap replays the same number. It is the HP
-    that actually moved, not the HP the ability offered.
+    that actually moved, not the HP the ability offered. The beat carries `uid` as well:
+    the recap plays against the board the turn ENDED on, so resolving the mark's owner from
+    the hex put a cast's number on whoever had since walked onto it.
 
     **The mark is drawn last of everything on the board, centred on the face.** SVG has no
     z-index. It used to sit above the plate at `cy - 18`, in the per-hex cells group - one
@@ -597,7 +599,16 @@ Decided so far:
     to overtime on the same commit*. `unit_effect` carries the **uid** as well as the hex,
     because the turn's walk goes out after the cast and the hex a cast named is where the
     client has the unit, not where the engine does. A cast that empties a commander ends the
-    match, like a blow.
+    match, like a blow, but **only when the cast actually emptied one** - a side can hold no
+    commander on the board for reasons of its own (one that walked home is off the board and
+    alive), and a heal that ends a match it had no part in is worse than no check at all.
+    This is the same line `pass()` draws.
+
+    **Both message types must be in `LOCAL_GAME_TYPES`** (`websocket.service.ts`) and neither
+    was. A solo game keeps its socket when a server is reachable, and only listed types are
+    answered by the browser engine - so both were posted to a server that has never heard of
+    them and dropped with "Unknown message type". Offline play was the only place either one
+    ever worked.
   - **A refused turn takes its crossings with it** (`discardCrossings()`, called from the room's
     `invalid_move`). They reach the engine *ahead* of the move and it keeps them, so a move it
     then rejects left them committed there and still drawn from the board's own `entered`

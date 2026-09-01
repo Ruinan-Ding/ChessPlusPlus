@@ -442,7 +442,11 @@ export class LocalGameService {
     const key = (uid && Object.keys(g.boardState).find(k => g.boardState[k]?.uid === uid)) || at;
     const standing = g.boardState[key];
     if (!standing) return;
-    const left = Math.max(0, Math.trunc(hp));
+    // Clamped at both ends. The room clamps too, but this is the copy that is
+    // persisted and handed back, and it should not be able to hold an HP its
+    // own config says is impossible whatever it was sent.
+    const left = Math.max(0, Math.min(standing.max_hp ?? Infinity, Math.trunc(hp)));
+    if (left === standing.hp) return;
     const board = { ...g.boardState };
     if (left <= 0) delete board[key];
     else board[key] = { ...standing, hp: left };
@@ -452,8 +456,16 @@ export class LocalGameService {
     // A cast that killed a commander ends the match the same way a blow does.
     // Left out, an ability could take a king off the board and the game would
     // carry on with a side that had already lost.
+    //
+    // Only when this cast actually took something off the board, which is the
+    // same line `pass()` draws and for the same reason: a side can hold no
+    // commander on the BOARD for reasons of its own - one that walked home
+    // into its base is off the board and still alive - and a heal that ends
+    // the match because of a state it did not create is worse than no check.
+    if (left > 0) return;
     const defeated = this.defeatedSides(board);
-    if (defeated.length) {
+    if (defeated.length === 2) this.over('', 'draw_mutual');
+    else if (defeated.length) {
       this.over(this.seat(defeated[0] === 'white' ? 'black' : 'white'), this.endReasonName());
     }
   }

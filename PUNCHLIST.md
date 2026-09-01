@@ -100,6 +100,7 @@ Overtime starts at ply 67. Solo play only - no server takes the toll.
 | 5.2 | **Mend** - slot 6 of the pool, paired with Rally. Friendly target, **flat 20 HP**, free, no cooldown cost. *"heal a static 20 for testing purposes."* | WRITTEN (new) |
 | 5.3 | A heal never takes a unit past `max_hp`. | WRITTEN (new) |
 | 5.4 | An ability that moves a **panel** unit's HP is recorded in the move history, like a blow into a panel is - it is the only place that HP survives a reload. | WRITTEN (new) |
+| 5.7 | **Both effect messages are routed to the browser engine** (`LOCAL_GAME_TYPES`). Neither was. A solo game keeps the socket up when a server is reachable, and only listed types are answered locally - so `panel_effect` and `unit_effect` were posted to a server that has never heard of them and dropped. **5.4 has never worked outside offline mode**, and 5.5's fix would not have either. | WRITTEN (new) |
 | 5.5 | An ability that moves a **board** unit's HP is sent to the engine as `unit_effect`, and the engine writes it onto the board. **Only the panel half was ever sent.** A mend on a unit standing on the battlefield lived on the room's staged board and nowhere else, so the next state update rolled it straight back off - which is why *healing a king off 1 HP still lost it to overtime the same turn*. Sent ahead of the turn's own move or pass, so the toll comes off the healed king. Addressed by uid as well as hex, since the walk goes out after the cast. | WRITTEN (new) |
 | 5.6 | A cast that kills a commander ends the match, the same way a blow does. | WRITTEN (new) |
 
@@ -117,13 +118,16 @@ back with 20 when you are done. Rally hands out 300 points so nothing has to be 
 | 6.2 | **The forecast showed nothing on the base unit.** Same cause as 6.1 - a zero was drawn as blank. Now draws `0` in grey. If you were seeing a blank where the damage was *not* zero, that is a different bug and still unfound. |
 | ~~6.3~~ | **Overtime takes only HP.** Done - `overtimeTicks()` is gone and the standings no longer subtract anything for overtime. |
 | 6.4 | Skull threshold is `<= 1` HP, i.e. exactly the kings the toll kills. Warn a turn earlier at 2? |
+| 6.6 | **A cast that kills shows no number.** `showMark` needs a unit to mark and the victim is already off the board by the time the beat plays. The skull and the ghost cover it, so it is left alone - say if you want the `-14` over the corpse. |
+| 6.7 | **Undo leaves the cast's mark up.** Mend, then Undo inside a second and a half: the HP goes back and the green `+20` stays until its own timer runs out. Cosmetic, and nothing currently takes a mark down early. |
+| 6.8 | **A winning cast loses its commit wash.** `over()` fires synchronously inside `endTurn`, and the `game_over` handler drops `recapRunning` before the board has seen the new recap - so the one turn most worth watching plays without the amber curtain. |
 | 6.5 | Nothing here reaches a networked game. Panels, crossings, the toll and abilities are all gated to solo (`entryBind`) because no server holds a panel. |
 
 ---
 
 ## What is checked, and what that is worth
 
-- **223 client specs**, **89 server tests**, production build clean apart from a standing
+- **227 client specs**, **89 server tests**, production build clean apart from a standing
   SCSS budget warning.
 - Specs cover the logic end to end: the engine resolves a panel blow, the room stages and
   sends it, the derivations read it back, and the marks are owed and paid.

@@ -13,7 +13,10 @@ export interface PlayableAction {
    */
   countered?: boolean;
   /** Present when the action was an ability cast rather than a move. */
-  spend?: { index: number; row?: string; hex?: string; side?: 'mine' | 'opponent' };
+  spend?: {
+    index: number; row?: string; hex?: string; uid?: string;
+    side?: 'mine' | 'opponent';
+  };
   /** What the cast did to the target's HP: `+20`, `-14`. Drawn over it. */
   mark?: string;
 }
@@ -52,6 +55,9 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
       steps.push({
         kind: 'ability', from: target, to: target, ...slot,
         brief: collapseMoves, ...(action.mark ? { mark: action.mark } : {}),
+        // Whose mark it is. The recap plays against the board the turn ended
+        // on, so the hex is not enough to say who the cast landed on.
+        ...(action.spend.uid ? { uid: action.spend.uid } : {}),
       });
       continue;
     }

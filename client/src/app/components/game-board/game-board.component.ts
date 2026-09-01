@@ -88,6 +88,13 @@ export interface AnimStep {
    * just happened to this unit.
    */
   mark?: string;
+  /**
+   * Who that mark belongs to. Not derivable from `to`: the recap plays against
+   * the board the turn ENDED on, so a cast on a hex the caster has since walked
+   * onto - or killed something on - would otherwise mark whoever stands there
+   * now.
+   */
+  uid?: string;
 }
 
 /** A unit that died, and the hex it died on. */
@@ -2083,8 +2090,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // The token is what the chain checks between beats.
     this.playbackToken++;
     // Whatever was running or scheduled is not any more, so it is no longer
-    // the thing that is going to pay the turn's upkeep.
+    // the thing that is going to pay the turn's upkeep. The timer goes with
+    // it: a run is scheduled rather than started, and one left armed through
+    // a teardown fires against a destroyed view - every commit schedules one
+    // now, empty or not.
     this.replaying = false;
+    clearTimeout(this.runTimer);
+    this.runTimer = null;
     for (const cancel of this.playing) cancel();
     this.playing = [];
     if (this.frame) cancelAnimationFrame(this.frame);
@@ -2127,6 +2139,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // Last of all, after every beat the turn itself had.
       await this.settleUpkeep();
       if (token !== this.playbackToken) return;
+      // Re-armed from the END of the run. One timer covers every mark, and it
+      // was started by whichever beat wrote the first one - so on a recap
+      // longer than MARK_FADE_MS a cast's number vanished part way through the
+      // replay it belongs to.
+      if (this.turnMarks.size) this.fadeMarks();
       this.stopPlayback();
       this.cdr.markForCheck();
       this.playbackDone.emit();
@@ -2145,6 +2162,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * ngOnChanges, which would otherwise pay it over the top of the recap.
    */
   private replaying = false;
+
+  /** The pending start of a scheduled run, so a teardown can call it off. */
+  private runTimer: any = null;
 
   private async playStep(step: AnimStep): Promise<void> {
     const token = this.playbackToken;
@@ -2168,7 +2188,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // mark lasts. A mend used to swell the target and leave the HP number to
       // say so on its own - which is exactly the "nothing seems to happen"
       // the marks exist to answer.
-      if (step.mark) this.showMark(step.to, step.mark);
+      if (step.mark) this.showMark(step.uid || this.uidOf(to ?? ({ key: step.to } as HexCell)), step.mark);
       if (!to) return this.wait(ms);
       this.glowHostile = !!step.hostile;
       return this.flash('glowHex', step.to, ms);
@@ -2349,7 +2369,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // change is - that is the initial binding, not a turn.
       if (!changes['playback'].firstChange) {
         this.replaying = true;
-        setTimeout(() => { if (this.playback === steps) this.runPlayback(steps); });
+        this.runTimer = setTimeout(
+          () => { if (this.playback === steps) this.runPlayback(steps); });
       }
     }
     // A turn that had nothing to replay still settles up - a passed turn
@@ -2363,7 +2384,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // beat would, and tells the room when it is over. A recap already running
     // - or already scheduled - pays it itself, at its own end.
     if (this.pendingUpkeep.size && !changes['playback'] && !this.replaying) {
-      setTimeout(() => {
+      this.runTimer = setTimeout(() => {
         if (this.pendingUpkeep.size && !this.replaying) this.runPlayback([]);
       });
     }
@@ -2891,11 +2912,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     await this.wait(UPKEEP_MS);
   }
 
-  /** Write a mark over whatever stands on `key`, and start its fade. */
-  private showMark(key: string, text: string): void {
-    const cell = this.cellsByKey.get(key);
-    if (!cell?.piece) return;
-    this.turnMarks.set(this.uidOf(cell), text);
+  /**
+   * Write a mark against a unit, by uid, and start its fade. By uid rather
+   * than by hex because a mark follows the unit it was written for - which
+   * matters most in the recap, where every beat plays against the board the
+   * turn ended on rather than the board it was staged against.
+   */
+  private showMark(uid: string, text: string): void {
+    if (!uid) return;
+    this.turnMarks.set(uid, text);
     this.fadeMarks();
   }
 
@@ -2941,7 +2966,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // Only the side that just paid wears one: the hand-over before this was
     // the other side's, and that toll has had its turn on screen. Dropped
     // before the king is looked for, so a side without one still clears it.
-    for (const [uid, mark] of this.turnMarks) if (mark === '-1') this.turnMarks.delete(uid);
+    //
+    // Everything, rather than every entry reading `-1`: a cast that dealt
+    // exactly 1 damage writes the same string into the same map, and picking
+    // marks out by their text cannot tell the two apart. A new ply is the end
+    // of the last one's marks whatever they said.
+    this.turnMarks.clear();
     const color = sideOfPly(ended);
     const king = this.cells.find(cell => cell.piece?.color === color
       && this.config?.units?.[cell.piece.unit_id]?.commander);

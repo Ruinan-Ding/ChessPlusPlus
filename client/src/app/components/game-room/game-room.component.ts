@@ -1935,7 +1935,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     };
     this.playSteps([{
       kind: 'ability', from: unit.key, to: unit.key,
-      index: armed.index, side: armed.side, hostile: true,
+      index: armed.index, side: armed.side, hostile: true, uid: unit.uid,
       ...(hit.mark ? { mark: hit.mark } : {}),
     }]);
     this.chargeFor(armed.side, armed.index, cost);
@@ -2379,7 +2379,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (!effect.heal) this.stageSpend(spend);
     // A unit's own ability shines on the unit and nowhere else.
     this.playSteps([{
-      kind: 'ability', from: unit.key, to: unit.key, ...(mark ? { mark } : {}),
+      kind: 'ability', from: unit.key, to: unit.key, uid: unit.uid,
+      ...(mark ? { mark } : {}),
     }]);
     this.markUsed('mine', focus.index);
     this.addSystemMessage(`${effect.name} applied to ${unit.name}.`);
@@ -2766,7 +2767,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (!e.heal) this.stageSpend(spend);
       this.playSteps([{
         kind: 'ability', from: unit.key, to: unit.key,
-        index: armed.index, side: armed.side, ...(mark ? { mark } : {}),
+        index: armed.index, side: armed.side, uid: unit.uid,
+        ...(mark ? { mark } : {}),
       }]);
     }
     this.pendingAbility = null;
@@ -4099,7 +4101,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           type: 'panel_effect',
           unit: step.panelUnit, hp: step.panelUnitHp, panel: step.panelName,
         });
-      } else if (step.hexKey && step.hexHp !== undefined) {
+      } else if (step.hexKey && step.hexHp !== undefined && step.mark) {
         this.wsService.sendMessage({
           // The uid as well as the hex: a unit can be walked after the cast
           // lands on it, and the walk goes out *after* this - so the hex named

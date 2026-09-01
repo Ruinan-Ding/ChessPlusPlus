@@ -80,7 +80,13 @@ describe('GameBoardComponent reach preview', () => {
     // readout, in an earlier group - so every -1 this board has ever owed
     // was painted, correctly, underneath the number. SVG has no z-index:
     // last drawn is on top, and the mark has to be last.
-    const hp = fixture.nativeElement.querySelector('text.stat-hp');
+    //
+    // Against THIS king's own HP readout, found inside the group the mark
+    // sits in. A document-wide query for the first `.stat-hp` picks up the
+    // fallen-unit ghost, which precedes every cell group - so the assertion
+    // would hold however far back the mark slid, which is the whole bug.
+    const group = mark.closest('g');
+    const hp = group.querySelector('text.stat-hp');
     expect(hp).not.toBeNull();
     // DOCUMENT_POSITION_FOLLOWING: the mark comes after the stat.
     expect(hp.compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -167,6 +173,29 @@ describe('GameBoardComponent reach preview', () => {
     expect(board.markOf(king())).toBe('');    // the recap is still running
     await done;
     expect(board.markOf(king())).toBe('-1');
+  });
+
+  it('marks the unit a cast landed on, not whoever stands there by the recap', async () => {
+    // The recap plays against the board the turn ENDED on. Resolving the
+    // mark's owner from the hex meant a cast on a hex the caster has since
+    // walked onto put its number on the walker - a unit that took nothing.
+    const victim = cell('0,0').piece!.uid ?? '0,0';
+    const walker = board.cells.find(c => !!c.piece && c.key !== '0,0')!;
+    (board as any).showMark(victim, '-14');
+    expect(board.markOf(cell('0,0'))).toBe('-14');
+    expect(board.markOf(walker)).toBe('');
+
+    // And the beat names the unit, so buildPlayback's hex is never consulted.
+    const steps = [{
+      kind: 'ability', from: walker.key, to: walker.key,
+      uid: victim, mark: '-14',
+    }] as any;
+    (board as any).turnMarks.clear();
+    board.playback = steps;
+    board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(board.markOf(cell('0,0'))).toBe('-14');
+    expect(board.markOf(walker)).toBe('');
   });
 
   it('swells the unit once per cast, however many land on it', () => {

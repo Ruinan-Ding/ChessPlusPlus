@@ -475,6 +475,37 @@ describe('LocalGameService', () => {
       expect(g.find('game_state_update').boardState['-5,0'].hp).toBe(21);
     });
 
+    it('never ends the match on a cast that killed nothing', async () => {
+      // The same line `pass()` draws: a side can hold no commander on the
+      // BOARD for reasons of its own - one that walked home into its base is
+      // off the board and still alive. Checking who is beaten on every cast
+      // meant a heal on your own pawn could end a match it had no part in.
+      const g = at(20, 12, 40);
+      g.engine.send({ type: 'unit_effect', at: '5,0', hp: 0, uid: 'bk' });
+      await flush();
+      expect(g.find('game_over').endReason).toBe('regicide');
+
+      // Black is now off the board entirely. A fresh engine on that position,
+      // still running, must not read a friendly mend as a second regicide.
+      const h = at(20, 12, 40);
+      h.engine.send({ type: 'unit_effect', at: '5,0', hp: 0, uid: 'bk' });
+      await flush();
+      (h.engine as any).game.endReason = '';
+      (h.engine as any).game.winner = '';
+      h.seen.length = 0;
+      h.engine.send({ type: 'unit_effect', at: '-5,0', hp: 20, uid: 'wk' });
+      await flush();
+      expect(h.find('game_state_update').boardState['-5,0'].hp).toBe(20);
+      expect(h.find('game_over')).toBeUndefined();
+    });
+
+    it('never writes an HP past what the unit can hold', async () => {
+      const g = at(20, 12);
+      g.engine.send({ type: 'unit_effect', at: '-5,0', hp: 900, uid: 'wk' });
+      await flush();
+      expect(g.find('game_state_update').boardState['-5,0'].hp).toBe(45);
+    });
+
     it('ends the match when a cast takes the last king off the board', async () => {
       // A commander killed by an ability is a commander killed. Left out, the
       // game carried on with a side that had already lost.
