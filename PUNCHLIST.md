@@ -42,7 +42,8 @@ Where it lives: `withdrawnUnits` (walked home) and `panelHp` (dealt squad) in
 | 2.4 | Each `+1` **swells like a buff**; each `-1` **shrinks, like being hit**. The swell is tinted to match its own mark. | WRITTEN |
 | 2.5 | Marks clear themselves after about two seconds. | WRITTEN |
 | 2.6 | **The mark is centred on the face** and drawn **last of everything on the board**, the way the skull is. | WRITTEN (new) |
-| 2.7 | **A turn that moved nothing still plays the beat.** Passing on a turn that mends or bleeds runs a replay of no steps and then the settle, so the board holds for it and it is watched rather than quietly applied. | WRITTEN (new) |
+| 2.7 | **Every commit plays, whether or not it moved anything.** The amber commit wash goes up on every End Turn; the board is handed the recap even when it is empty, holds a beat for the curtain, then settles up and hands the board back. It used to light only when there was something to replay. | WRITTEN (new) |
+| 2.8 | **A cast writes what it did to the HP over the unit** - `+20` for a mend, `-14` for a hit - in the same four colours as the turn's-end marks, as the cast's own beat plays. It shows the HP that actually moved: a 20-point mend on a unit three short of full is a `+3`. | WRITTEN (new) |
 
 Where it lives: `pendingUpkeep` / `settleUpkeep()` / `markOf()` in `game-board.component.ts`.
 
@@ -99,6 +100,8 @@ Overtime starts at ply 67. Solo play only - no server takes the toll.
 | 5.2 | **Mend** - slot 6 of the pool, paired with Rally. Friendly target, **flat 20 HP**, free, no cooldown cost. *"heal a static 20 for testing purposes."* | WRITTEN (new) |
 | 5.3 | A heal never takes a unit past `max_hp`. | WRITTEN (new) |
 | 5.4 | An ability that moves a **panel** unit's HP is recorded in the move history, like a blow into a panel is - it is the only place that HP survives a reload. | WRITTEN (new) |
+| 5.5 | An ability that moves a **board** unit's HP is sent to the engine as `unit_effect`, and the engine writes it onto the board. **Only the panel half was ever sent.** A mend on a unit standing on the battlefield lived on the room's staged board and nowhere else, so the next state update rolled it straight back off - which is why *healing a king off 1 HP still lost it to overtime the same turn*. Sent ahead of the turn's own move or pass, so the toll comes off the healed king. Addressed by uid as well as hex, since the walk goes out after the cast. | WRITTEN (new) |
+| 5.6 | A cast that kills a commander ends the match, the same way a blow does. | WRITTEN (new) |
 
 **This is the test rig.** Pick the Mend/Rally pair, hit one of your own base units with a
 damage ability to wound it, then watch it mend 1 a turn and wear its green `+1`. Mend it
@@ -120,7 +123,7 @@ back with 20 when you are done. Rally hands out 300 points so nothing has to be 
 
 ## What is checked, and what that is worth
 
-- **218 client specs**, **89 server tests**, production build clean apart from a standing
+- **223 client specs**, **89 server tests**, production build clean apart from a standing
   SCSS budget warning.
 - Specs cover the logic end to end: the engine resolves a panel blow, the room stages and
   sends it, the derivations read it back, and the marks are owed and paid.

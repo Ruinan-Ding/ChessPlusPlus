@@ -81,6 +81,13 @@ export interface AnimStep {
   hostile?: boolean;
   /** A recap beat: the same animation, run short. */
   brief?: boolean;
+  /**
+   * For an ability beat: what it did to the unit's HP, written over the face
+   * as it lands - `+20` for a mend, `-14` for a hit. The same mark the turn's
+   * end uses, in the same four colours, because it is the same question: what
+   * just happened to this unit.
+   */
+  mark?: string;
 }
 
 /** A unit that died, and the hex it died on. */
@@ -195,6 +202,11 @@ const GLOW_BRIEF_MS = beat(1200);
 const PICK_MS = beat(900);
 /** Blank frame between beats, so each one starts its animation over. */
 const BEAT_GAP_MS = beat(180);
+/**
+ * A commit that moved nothing still plays: long enough for the board's amber
+ * commit wash to be read as a thing that happened, not a dropped frame.
+ */
+const COMMIT_MS = beat(620);
 /** The turn's last beat: the base's mending, and overtime's toll with it. */
 const UPKEEP_MS = beat(760);
 /** How long an end-of-turn `+1` / `-1` stays legible after its swell. */
@@ -2093,6 +2105,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     const token = this.playbackToken;
     this.replaying = true;
     try {
+      // A turn that walked nowhere and cast nothing is still a commit, and the
+      // owner's rule is that a commit is watched. Hold the curtain for a beat
+      // so there is something to see before the upkeep settles behind it.
+      if (!steps.length) {
+        await this.wait(COMMIT_MS);
+        if (token !== this.playbackToken) return;
+      }
       for (const step of steps) {
         if (token !== this.playbackToken) return;   // a newer turn took over
         this.playbackStep.emit(step);
@@ -2145,6 +2164,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // between two beats there is no such frame to rely on - three casts on
       // one unit read as a single long swell. animate() always starts over.
       this.popUnit(step.to, !!step.hostile, ms);
+      // What it did to the unit's HP, over the unit, for as long as any other
+      // mark lasts. A mend used to swell the target and leave the HP number to
+      // say so on its own - which is exactly the "nothing seems to happen"
+      // the marks exist to answer.
+      if (step.mark) this.showMark(step.to, step.mark);
       if (!to) return this.wait(ms);
       this.glowHostile = !!step.hostile;
       return this.flash('glowHex', step.to, ms);
@@ -2320,7 +2344,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // for a sequence that had already been replaced - which the room reads
       // as the recap being over, unlocking the board as the recap begins.
       this.stopPlayback();
-      if (steps.length) {
+      // Empty lists run too: an empty one is a commit that moved nothing, and
+      // it holds a beat of its own rather than being skipped. Only the first
+      // change is - that is the initial binding, not a turn.
+      if (!changes['playback'].firstChange) {
         this.replaying = true;
         setTimeout(() => { if (this.playback === steps) this.runPlayback(steps); });
       }
@@ -2860,6 +2887,20 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         : (mine ? '#22c55e' : '#38bdf8'));
     }
     // One timer for the lot, set after them all rather than per unit.
+    this.fadeMarks();
+    await this.wait(UPKEEP_MS);
+  }
+
+  /** Write a mark over whatever stands on `key`, and start its fade. */
+  private showMark(key: string, text: string): void {
+    const cell = this.cellsByKey.get(key);
+    if (!cell?.piece) return;
+    this.turnMarks.set(this.uidOf(cell), text);
+    this.fadeMarks();
+  }
+
+  /** Every mark on screen clears together, a couple of seconds after the last. */
+  private fadeMarks(): void {
     clearTimeout(this.markTimer);
     this.markTimer = setTimeout(() => {
       this.turnMarks.clear();
@@ -2867,7 +2908,6 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       this.cdr.markForCheck();
     }, MARK_FADE_MS);
     this.cdr.markForCheck();
-    await this.wait(UPKEEP_MS);
   }
 
   /** The mark to draw over this unit, or '' for none. */

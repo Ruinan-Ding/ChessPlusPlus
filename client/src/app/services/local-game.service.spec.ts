@@ -448,6 +448,44 @@ describe('LocalGameService', () => {
       expect(g.find('game_over').winner).toBe(LOCAL_OPPONENT);
     });
 
+    it('saves a king healed off 1 before the turn commits', async () => {
+      // The owner's report: "after healing it from 1hp, it dies next turn
+      // anyways". No engine holds an ability, so a heal on a unit standing on
+      // the BOARD has to be sent as its own message - only the panel half ever
+      // was. The mend lived on the room's staged board, the toll came off the
+      // 1 HP the engine still had, and the king died anyway.
+      const g = at(67, 1);
+      g.engine.send({ type: 'unit_effect', at: '-5,0', hp: 21 });
+      await flush();
+      expect(g.find('game_state_update').boardState['-5,0'].hp).toBe(21);
+
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(20);
+      expect(g.find('game_over')).toBeUndefined();
+    });
+
+    it('finds a unit the client has walked since the cast landed on it', async () => {
+      // The walk goes out after the cast, so the hex a cast names is where the
+      // client has the unit, not where this engine does. Addressed by hex
+      // alone the mend fell on an empty square and was silently dropped.
+      const g = at(67, 1);
+      g.engine.send({ type: 'unit_effect', at: '-4,0', uid: 'wk', hp: 21 });
+      await flush();
+      expect(g.find('game_state_update').boardState['-5,0'].hp).toBe(21);
+    });
+
+    it('ends the match when a cast takes the last king off the board', async () => {
+      // A commander killed by an ability is a commander killed. Left out, the
+      // game carried on with a side that had already lost.
+      const g = at(20, 12);
+      g.engine.send({ type: 'unit_effect', at: '-5,0', hp: 0 });
+      await flush();
+      expect(g.find('game_state_update').boardState['-5,0']).toBeUndefined();
+      expect(g.find('game_over').endReason).toBe('regicide');
+      expect(g.find('game_over').winner).toBe(LOCAL_OPPONENT);
+    });
+
     it('takes its toll after the turn, not before it', async () => {
       // The king walks, and the toll comes off where it ended up - not off
       // the HP it had when the turn started, and not instead of the walk.

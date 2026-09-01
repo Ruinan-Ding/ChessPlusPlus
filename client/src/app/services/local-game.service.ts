@@ -140,6 +140,10 @@ export class LocalGameService {
         this.effectInPanel(msg.unit, msg.hp, msg.panel);
         break;
 
+      case 'unit_effect':
+        this.effectOnBoard(msg.at, msg.hp, msg.uid);
+        break;
+
       case 'pass_turn':
         this.pass();
         break;
@@ -411,6 +415,47 @@ export class LocalGameService {
     }];
     this.persist();
     this.emit({ type: 'game_state_update', ...this.snapshot() });
+  }
+
+  /**
+   * An ability moved the HP of a unit standing on the BOARD. The board is
+   * where that HP lives, so unlike a panel unit's this is written straight
+   * onto it - and it has to be written, or the very next state update hands
+   * back the HP the unit had before the cast. A king healed off 1 HP and then
+   * killed by overtime anyway was exactly that: the client's staged board
+   * knew about the mend and no engine did.
+   *
+   * The turn does not end here. A cast is something a turn does, not the turn
+   * itself, and several may land before the commit that follows them.
+   *
+   * ponytail: solo only, like every other ability. A server holds no
+   * abilities, so it would take the client's word for a unit's HP - which is
+   * a free heal for anyone with a console open.
+   */
+  private effectOnBoard(at: string, hp: number, uid?: string): void {
+    const g = this.game;
+    if (!g || !g.started || g.endReason || !at || typeof hp !== 'number') return;
+    // Where the unit actually stands. The client can walk a unit after a cast
+    // has landed on it, and the walk arrives after this - so the hex the cast
+    // names is where the client has it, not where this engine does. The uid
+    // is what survives that; the hex is the fallback for a board without one.
+    const key = (uid && Object.keys(g.boardState).find(k => g.boardState[k]?.uid === uid)) || at;
+    const standing = g.boardState[key];
+    if (!standing) return;
+    const left = Math.max(0, Math.trunc(hp));
+    const board = { ...g.boardState };
+    if (left <= 0) delete board[key];
+    else board[key] = { ...standing, hp: left };
+    g.boardState = board;
+    this.persist();
+    this.emit({ type: 'game_state_update', ...this.snapshot() });
+    // A cast that killed a commander ends the match the same way a blow does.
+    // Left out, an ability could take a king off the board and the game would
+    // carry on with a side that had already lost.
+    const defeated = this.defeatedSides(board);
+    if (defeated.length) {
+      this.over(this.seat(defeated[0] === 'white' ? 'black' : 'white'), this.endReasonName());
+    }
   }
 
   /** What both panel blows do once the damage is worked out: end the turn. */

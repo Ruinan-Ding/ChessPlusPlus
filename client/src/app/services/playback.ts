@@ -14,6 +14,8 @@ export interface PlayableAction {
   countered?: boolean;
   /** Present when the action was an ability cast rather than a move. */
   spend?: { index: number; row?: string; hex?: string; side?: 'mine' | 'opponent' };
+  /** What the cast did to the target's HP: `+20`, `-14`. Drawn over it. */
+  mark?: string;
 }
 
 /**
@@ -47,7 +49,10 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
         : { index: action.spend.index, ...(action.spend.side ? { side: action.spend.side } : {}) };
       // Every cast gets its beat, hex or no hex - a universal one is the
       // button alone, and the board simply holds for it.
-      steps.push({ kind: 'ability', from: target, to: target, ...slot, brief: collapseMoves });
+      steps.push({
+        kind: 'ability', from: target, to: target, ...slot,
+        brief: collapseMoves, ...(action.mark ? { mark: action.mark } : {}),
+      });
       continue;
     }
     if (action.attack) {

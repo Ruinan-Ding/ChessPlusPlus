@@ -156,11 +156,20 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canEndTurn).toBeTrue();
   });
 
-  it('does not lock a turn that has nothing to play back', () => {
+  it('locks and plays a turn that moved nothing, and hands the board back', () => {
     const c = room();
-    // Nothing staged, nothing picked: there is no replay, so nothing would
-    // ever arrive to hand the board back.
+    // Nothing staged, nothing picked - and it is still a commit. The owner's
+    // rule is that the commit is watched, because a turn that walked nowhere
+    // still mends its base and still bleeds a king in overtime. So the amber
+    // curtain goes up on every commit, and the board is handed an empty list
+    // to play: it holds a beat for it and answers with playbackDone, which is
+    // what brings the curtain back down.
     c.endTurn();
+    expect(c.recapRunning).toBeTrue();
+    expect(c.playback).toEqual([]);
+    expect(c.canUseAbilities('mine')).toBeFalse();
+
+    c.onPlaybackDone();
     expect(c.recapRunning).toBeFalse();
     expect(c.canUseAbilities('mine')).toBeTrue();
   });
@@ -1067,6 +1076,67 @@ describe('GameRoomComponent ability panel', () => {
     expect(msg.unit.uid).toBe('rbl0');
     expect(msg.hp).toBe(32);
     expect(msg.panel).toBe('bl');
+  });
+
+  it('sends a heal landing on the BOARD, so the engine keeps it too', () => {
+    // The owner's report: "after healing it from 1hp, it dies next turn
+    // anyways". A panel unit's HP was sent and a board unit's was not - the
+    // mend lived on the staged board, the engine kept the HP the king had,
+    // and overtime took its toll off that. It goes out ahead of the turn's
+    // own move or pass, so the toll is taken from the healed king.
+    const c = room();
+    const sent: any[] = [];
+    c.wsService = { sendMessage: (m: any) => sent.push(m) };
+    c.persistLocalUiState = () => {};
+    c.playSteps = () => {};
+    c.playEndTurnSound = () => {};
+    c.gameState.snapshot.currentTurn = 'me';
+    c.gameState.snapshot.turnNumber = 68;
+    c.gameState.snapshot.boardState = {
+      '-5,0': { unit_id: 'king', color: 'white', hp: 1, max_hp: 45, uid: 'wk' },
+    };
+    const HEAL = 6;
+    c.myPoints = 50;
+    c.pickAbility('mine', HEAL);
+    c.pendingAbility = { side: 'mine', index: HEAL, cooldowns: c.myCooldowns };
+
+    c.onHexClicked({
+      key: '-5,0', uid: 'wk', unitId: 'king', color: 'white', hp: 1, hpMax: 45,
+    });
+    expect(c.stagedBoard['-5,0'].hp).toBe(21);
+
+    c.endTurn();
+    const order = sent.map(m => m.type);
+    expect(order).toEqual(['unit_effect', 'pass_turn']);
+    expect(sent[0]).toEqual(jasmine.objectContaining({ at: '-5,0', hp: 21 }));
+  });
+
+  it('writes what a cast did to the HP over the unit it landed on', () => {
+    // "mend also doesn't do the +x icon like damage taken." The swell said
+    // something had happened and nothing said what - the beat now carries the
+    // HP it actually moved, which is not always the HP it offered: a 20-point
+    // mend on a unit three short of full is a +3.
+    const c = room();
+    const played: any[] = [];
+    c.persistLocalUiState = () => {};
+    c.playSteps = (steps: any[]) => played.push(...steps);
+    c.gameState.snapshot.turnNumber = 20;
+    c.gameState.snapshot.boardState = {
+      '-5,0': { unit_id: 'king', color: 'white', hp: 42, max_hp: 45, uid: 'wk' },
+    };
+    const HEAL = 6;
+    c.myPoints = 50;
+    c.pickAbility('mine', HEAL);
+    c.pendingAbility = { side: 'mine', index: HEAL, cooldowns: c.myCooldowns };
+    c.onHexClicked({
+      key: '-5,0', uid: 'wk', unitId: 'king', color: 'white', hp: 42, hpMax: 45,
+    });
+
+    expect(c.stagedBoard['-5,0'].hp).toBe(45);
+    const cast = played.find(s => s.kind === 'ability');
+    expect(cast.mark).toBe('+3');
+    // And the recap replays it with the same number on it.
+    expect(c.stagedActions[c.stagedActions.length - 1].mark).toBe('+3');
   });
 
   it('never heals a unit past what it started with', () => {

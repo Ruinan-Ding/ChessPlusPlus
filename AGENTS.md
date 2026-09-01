@@ -319,12 +319,18 @@ Decided so far:
     `runPlayback` awaits it before `playbackDone`. Marking them where they were noticed put
     them on screen underneath the recap, while the turn's blows were still being struck.
 
-    **A turn with nothing to replay still plays this beat.** A pass runs `runPlayback([])`
-    - no steps, then the settle - rather than paying on the spot, so the board holds for the
-    same moment a recap's last beat would and the room hears it end. `replaying` is what
-    keeps the two apart: it goes up where a recap is *scheduled*, not where it starts, and a
-    commit's state can arrive in that gap. Without it the pass path paid the upkeep over the
-    top of a recap that had not begun.
+    **Every commit plays, empty or not.** `recapRunning` goes up on every End Turn - the
+    amber `.committing-mine` / `.committing-theirs` wash - and the board is handed the recap
+    even when it is `[]`. `runPlayback` holds `COMMIT_MS` for an empty list so the curtain
+    is read as a thing that happened, settles the upkeep, then emits `playbackDone`, which
+    is what brings the curtain back down. It used to light only when there was something to
+    replay, so a pass that mended or bled showed nothing at all. `replaying` keeps the
+    scheduled recap and the ngOnChanges fallback apart: it goes up where a recap is
+    *scheduled*, not where it starts, and a commit's state can arrive in that gap.
+
+    **A cast writes what it moved over the unit** - `AnimStep.mark`, set from `hpChange()`
+    and carried through `buildPlayback` so the recap replays the same number. It is the HP
+    that actually moved, not the HP the ability offered.
 
     **The mark is drawn last of everything on the board, centred on the face.** SVG has no
     z-index. It used to sit above the plate at `cy - 18`, in the per-hex cells group - one
@@ -581,6 +587,17 @@ Decided so far:
     clears itself after a couple of seconds. Owed from **two** places, since two derivations
     feed a base: `absorbWithdrawn()` for a unit that walked home, and `woundReserves()` for
     the squad dealt there - where `panelHp` arriving HIGHER than what is drawn IS the mend.
+  - **A unit's HP lives in one of two places, and both have to be SENT.** No engine holds an
+    ability, so a cast that moves HP is only ever the client's word until it goes out as its
+    own message ahead of the turn's move or pass. A panel unit's HP lives in the move history
+    (`panel_effect` -> `effectInPanel`); a board unit's lives on the board (`unit_effect` ->
+    `effectOnBoard`). Only the panel half was ever sent: a mend on a unit standing on the
+    battlefield lived on the room's `stagedBoard` and nowhere else, and the next
+    `game_state_update` rolled it off - which is why *healing a king off 1 HP still lost it
+    to overtime on the same commit*. `unit_effect` carries the **uid** as well as the hex,
+    because the turn's walk goes out after the cast and the hex a cast named is where the
+    client has the unit, not where the engine does. A cast that empties a commander ends the
+    match, like a blow.
   - **A refused turn takes its crossings with it** (`discardCrossings()`, called from the room's
     `invalid_move`). They reach the engine *ahead* of the move and it keeps them, so a move it
     then rejects left them committed there and still drawn from the board's own `entered`

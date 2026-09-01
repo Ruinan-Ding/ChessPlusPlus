@@ -200,6 +200,20 @@ interface StagedAction {
   panelName?: string;
   /** Whether the defender answered. A base never does, nor does anything out of reach. */
   countered?: boolean;
+  /**
+   * Set when an ability moved the HP of a unit standing on the BOARD: the hex
+   * and what it has left. No engine holds an ability, so - exactly like the
+   * panel pair above - the change has to be sent as its own message or the
+   * next state update rolls it straight back. Healing a king off 1 HP and
+   * watching overtime kill it anyway was this: the staged board knew, and
+   * nothing else did.
+   */
+  hexHp?: number;
+  hexKey?: string;
+  /** Who it was, so the engine can find it if the walk has moved it since. */
+  hexUid?: string;
+  /** What to write over the unit as the cast plays: `+20`, `-14`. */
+  mark?: string;
   /** The panel end was the defender, not the attacker. */
   intoPanel?: boolean;
   /** Whether that panel unit strikes back - a reserve does, a base does not. */
@@ -1835,6 +1849,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     panelUnit?: Record<string, any>;
     panelUnitHp?: number;
     panelName?: string;
+    hexHp?: number;
+    hexKey?: string;
+    hexUid?: string;
+    mark?: string;
   } {
     if (unit.panel) {
       const full = unit.hpMax ?? unit.hp ?? 0;
@@ -1843,6 +1861,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         board,
         panelName: unit.panel,
         panelUnitHp: left,
+        ...this.hpMark(left - (unit.hp ?? 0)),
         // The whole unit rides along: the record is the only place a panel
         // unit survives, so a name for it is not enough.
         panelUnit: {
@@ -1862,12 +1881,26 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (left <= 0) {
       delete next[unit.key];
       return {
-        board: next, killed: unit.key,
+        board: next, killed: unit.key, hexKey: unit.key, hexUid: unit.uid, hexHp: 0,
         killedUnit: { unit_id: standing.unit_id, color: standing.color },
+        ...this.hpMark(-(standing.hp ?? 0)),
       };
     }
     next[unit.key] = { ...standing, hp: left };
-    return { board: next };
+    return {
+      board: next, hexKey: unit.key, hexUid: unit.uid, hexHp: left,
+      ...this.hpMark(left - (standing.hp ?? 0)),
+    };
+  }
+
+  /**
+   * What a cast writes over the unit it landed on: the HP it actually moved,
+   * which is not always the HP it offered - a 20-point mend on a unit three
+   * short of full is a `+3`, and saying `+20` there would be a lie the HP bar
+   * immediately contradicts. Nothing moved is no mark.
+   */
+  private hpMark(moved: number): { mark?: string } {
+    return moved === 0 ? {} : { mark: moved > 0 ? `+${moved}` : `${moved}` };
   }
 
   private castOffensiveOn(unit: SelectedUnit): void {
@@ -1903,6 +1936,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.playSteps([{
       kind: 'ability', from: unit.key, to: unit.key,
       index: armed.index, side: armed.side, hostile: true,
+      ...(hit.mark ? { mark: hit.mark } : {}),
     }]);
     this.chargeFor(armed.side, armed.index, cost);
     armed.cooldowns[armed.index] = 3;
@@ -2338,13 +2372,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       [unit.uid]: this.stack(unit.uid, effect, this.casterColor('mine')),
     };
     this.abilityUsed = { ...this.abilityUsed, [unit.uid]: true };
-    // A unit's own ability shines on the unit and nowhere else.
-    this.playSteps([{ kind: 'ability', from: unit.key, to: unit.key }]);
-    this.markUsed('mine', focus.index);
     // A heal moves HP rather than a stat, and HP lives somewhere different
-    // for a unit in a panel - see hpChange.
-    if (effect.heal) this.stageHeal(unit, effect.heal, spend);
-    else this.stageSpend(spend);
+    // for a unit in a panel - see hpChange. Staged before the beat is played,
+    // so the beat can carry the `+20` it wrote.
+    const mark = effect.heal ? this.stageHeal(unit, effect.heal, spend) : undefined;
+    if (!effect.heal) this.stageSpend(spend);
+    // A unit's own ability shines on the unit and nowhere else.
+    this.playSteps([{
+      kind: 'ability', from: unit.key, to: unit.key, ...(mark ? { mark } : {}),
+    }]);
+    this.markUsed('mine', focus.index);
     this.addSystemMessage(`${effect.name} applied to ${unit.name}.`);
     this.persistLocalUiState();
     this.unitAbilityFocus = null;
@@ -2716,10 +2753,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index, unit.key);
       this.chargeFor(armed.side, armed.index, cost);
       armed.cooldowns[armed.index] = 3;
-      this.playSteps([{
-        kind: 'ability', from: unit.key, to: unit.key,
-        index: armed.index, side: armed.side,
-      }]);
       this.buffs = {
         ...this.buffs,
         [unit.uid]: this.stack(unit.uid, e, this.casterColor(armed.side)),
@@ -2728,8 +2761,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       this.markUsed(armed.side, armed.index);
       // A heal is HP, not a stat, so it goes wherever this unit keeps its HP -
       // the staged board, or the panel overlay for a unit standing in one.
-      if (e.heal) this.stageHeal(unit, e.heal, spend);
-      else this.stageSpend(spend);
+      // Staged before the beat, so the beat carries the `+20` it wrote.
+      const mark = e.heal ? this.stageHeal(unit, e.heal, spend) : undefined;
+      if (!e.heal) this.stageSpend(spend);
+      this.playSteps([{
+        kind: 'ability', from: unit.key, to: unit.key,
+        index: armed.index, side: armed.side, ...(mark ? { mark } : {}),
+      }]);
     }
     this.pendingAbility = null;
     this.clearAbilityFocus();
@@ -3783,7 +3821,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   private playSteps(steps: AnimStep[]): void {
-    if (!steps.length) return;
+    // An empty list is allowed, and only the turn commit ever sends one: the
+    // board holds a beat for it so the commit is seen, then answers. Everything
+    // else here stages exactly one beat and is never empty.
     this.playback = steps;
     this.playbackRunning = true;
     this.playbackStarted = Date.now();
@@ -3899,9 +3939,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * A cast that moved a unit's HP: the spend rides on the same entry as the
    * change, so Undo takes both back together.
    */
-  private stageHeal(unit: SelectedUnit, amount: number, spend: AbilitySpend): void {
+  private stageHeal(unit: SelectedUnit, amount: number, spend: AbilitySpend): string | undefined {
     const prev = this.stagedActions[this.stagedActions.length - 1];
     const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
+    const moved = this.hpChange(unit, amount, board);
     this.stagedActions.push({
       at: Date.now(),
       from: prev?.from ?? '',
@@ -3909,8 +3950,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       used: prev?.used ?? 0,
       attack: null,
       spend,
-      ...this.hpChange(unit, amount, board),
+      ...moved,
     });
+    // What to write over the unit as the cast plays. Handed back rather than
+    // read off the stack, because the beat is played by the caller.
+    return moved.mark;
   }
 
   private stageSpend(spend: AbilitySpend): void {
@@ -4013,9 +4057,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         index: step.index!,
         kind: (step.kind === 'pick' ? 'pick' : 'used') as 'pick' | 'used',
       }));
-    // Only lock if there is something to watch: a turn that did nothing plays
-    // nothing, so nothing would ever arrive to unlock it again.
-    this.recapRunning = recap.length > 0;
+    // Every commit is watched, whether or not it moved anything. A turn that
+    // walked nowhere still mends, still bleeds in overtime, and is still the
+    // moment the turn changes hands - the owner's rule is that it plays. The
+    // board runs the recap even when it is empty (holding a beat for the
+    // curtain) and answers with playbackDone, so this always comes back down.
+    this.recapRunning = true;
     this.playSteps(recap);
     this.persistLocalUiState();
     this.playEndTurnSound();
@@ -4032,16 +4079,35 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     for (const entry of this.boardRef?.pendingEntries ?? []) {
       this.wsService.sendMessage({ type: 'enter_board', ...entry });
     }
-    // And so does an ability that moved a panel unit's HP, for exactly the
-    // same reason: no engine holds a panel, so the record is the only place
-    // that HP survives a reload. The turn's blow is not one of these - it
-    // goes out below as a panel_attack, which resolves as well as records.
+    // And so does an ability that moved a unit's HP, for exactly the same
+    // reason: no engine holds an ability, so unless the change is sent the
+    // next state update rolls it straight back off. The turn's blow is not
+    // one of these - it goes out below as a panel_attack, which resolves as
+    // well as records.
+    //
+    // Both halves, because a unit keeps its HP in one of two places. A panel
+    // unit's lives in the move history and nowhere else (`panel_effect`); a
+    // unit on the board keeps its own on the board (`unit_effect`). Only the
+    // panel half was ever sent, so healing a king standing on the battlefield
+    // moved nothing an engine could see - and overtime took its toll off the
+    // HP it still had. These go out BEFORE the turn's own move or pass, so
+    // the toll is taken from the healed king rather than the wounded one.
     for (const step of this.stagedActions) {
-      if (!step.panelUnit || step.attack !== null) continue;
-      this.wsService.sendMessage({
-        type: 'panel_effect',
-        unit: step.panelUnit, hp: step.panelUnitHp, panel: step.panelName,
-      });
+      if (step.attack !== null) continue;
+      if (step.panelUnit) {
+        this.wsService.sendMessage({
+          type: 'panel_effect',
+          unit: step.panelUnit, hp: step.panelUnitHp, panel: step.panelName,
+        });
+      } else if (step.hexKey && step.hexHp !== undefined) {
+        this.wsService.sendMessage({
+          // The uid as well as the hex: a unit can be walked after the cast
+          // lands on it, and the walk goes out *after* this - so the hex named
+          // here is where the client has it, not where the engine does. The
+          // uid is what survives that.
+          type: 'unit_effect', at: step.hexKey, uid: step.hexUid, hp: step.hexHp,
+        });
+      }
     }
     const pending = this.pendingMove;
     if (!pending) {

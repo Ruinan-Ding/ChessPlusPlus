@@ -135,16 +135,16 @@ describe('GameBoardComponent reach preview', () => {
     // same moment a recap's last beat would, and says when it is over.
     (config.units as any).archer.commander = true;
     board.entryBind = true;
-    let played = false;
-    board.playbackDone.subscribe(() => { played = true; });
+    const done = new Promise<void>(resolve => board.playbackDone.subscribe(() => resolve()));
     board.turnNumber = 68;
     board.ngOnChanges({ turnNumber: new SimpleChange(67, 68, false) });
     expect(board.markOf(cell('0,0'))).toBe('');
     await new Promise(resolve => setTimeout(resolve, 0));
+    // The commit takes its own beat first - the amber wash needs long enough
+    // to be read - and only then does the turn settle up behind it.
+    expect(board.markOf(cell('0,0'))).toBe('');
+    await done;
     expect(board.markOf(cell('0,0'))).toBe('-1');
-    expect(played).toBeFalse();               // still holding the beat
-    await new Promise(resolve => setTimeout(resolve, 700));
-    expect(played).toBeTrue();
   });
 
   it('leaves the upkeep to a recap that is scheduled but has not started', async () => {
