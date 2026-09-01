@@ -345,7 +345,14 @@ Decided so far:
     wound (which mends) from a reserve's (which does not).
   - **Overtime's toll is real damage, and a commander on 1 HP dies of it** - `regicide`, the
     game over, the board left on screen. *It used to be a mark and a shake with no HP behind
-    it; the owner asked for the death.* The **points bleed is unchanged and still runs beside
+    it; the owner asked for the death.* A king that the toll will kill **wears a waving skull
+    beside its face** for the whole turn (`doomedKing()`, `OVERTIME_TOLL` in `phases.ts`): the
+    toll is the *last* thing a turn does, so the king lives the turn out on its last HP and a
+    heal - or the match ending first - still saves it. Both kings wear it, not only the side
+    about to hand over. *The owner: "he wont die in this turn unless he takes damage from
+    someone, but at the end of the turn commit he will get hit -1 and the game ends."* It
+    waves rather than pulsing, and sits beside the face rather than over it, because the
+    hovered trade's `.kill-forecast` skull owns the middle and both can be true at once. The **points bleed is unchanged and still runs beside
     it** (`overtimeTicks()`), so a side in overtime is losing a point and an HP a turn.
     - ponytail: **the browser engine's alone** (`overtimeToll()` in `local-game.service.ts`).
       The schedule that says where overtime starts lives in `phases.ts`, and porting it to
@@ -540,6 +547,15 @@ Decided so far:
     and `refreshTargets` refuses a second walk to either - a unit standing in a panel on the
     *staged* board is not in `reserves`, so the click handler would take its next step for a
     board move, free of the wrap's price and of every panel allowance.
+  - **A counter is drawn only when one is actually thrown.** Three things refuse one: the
+    defender died, it is standing in a **base** (which never answers), or the blow came from
+    outside its own `attackRange` - an archer at three hexes takes nothing back from a
+    swordsman. The staged action records `countered`, and all three readers go by it: the
+    hover forecast (`refreshForecast`), the beat played as the blow is staged
+    (`onPlayerAttack`), and the end-of-turn recap (`buildPlayback`). Each used to decide for
+    itself and each got it wrong differently - the forecast drew a purple number over your own
+    face for an answer that was never coming, and both animations swung a base unit back at
+    you for nothing.
   - **A `+1` marks what mended.** Drawn over any unit whose HP went up as the turn ended,
     and only those - **a unit already at full earns none**, which is what a base of unhurt
     units looks like: no mark, no number moving, and nothing to tell the mending apart from

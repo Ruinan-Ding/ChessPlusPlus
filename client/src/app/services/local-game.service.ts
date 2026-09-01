@@ -2,13 +2,12 @@ import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 import { ConfigService } from './config.service';
 import { computeLegalMoves, hexDistanceKeys, isInsideBoard, strikeDamage } from './hex-rules';
-import { OVERTIME_FIRST_PLY } from './phases';
+import { OVERTIME_FIRST_PLY, OVERTIME_TOLL } from './phases';
 
 /**
  * What overtime costs a commander at the end of each of its side's turns.
  * ponytail: the owner's number - one. A constant because that is all it is.
  */
-const OVERTIME_TOLL = 1;
 
 /**
  * Offline single-player engine.

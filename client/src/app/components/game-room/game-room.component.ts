@@ -198,6 +198,8 @@ interface StagedAction {
   panelUnitHp?: number;
   /** Which panel it landed in - a base mends its wounded, a reserve does not. */
   panelName?: string;
+  /** Whether the defender answered. A base never does, nor does anything out of reach. */
+  countered?: boolean;
   /** The panel end was the defender, not the attacker. */
   intoPanel?: boolean;
   /** Whether that panel unit strikes back - a reserve does, a base does not. */
@@ -3493,6 +3495,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // At most one of the two dies: a defender that falls never counters.
     let killed: string | undefined;
     let killedUnit: { unit_id: string; color: 'white' | 'black' } | undefined;
+    // Whether it answered at all, which is three separate refusals: it died,
+    // it is in a base, or we struck it from outside its own reach. Recorded
+    // rather than re-guessed, because every replay of this turn needs it.
+    let answered = false;
 
     if (hurt.hp <= 0) {
       // A panel unit that falls is simply not dealt again - 0 is what says
@@ -3509,6 +3515,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // blow shows a counter it never takes.
       const theirRange = config?.units?.[target.unit_id]?.attackRange ?? 1;
       if ((!intoPanel || event.counters) && distance <= theirRange) {
+        answered = true;
         const counter = strikeDamage(
           target.unit_id, attacker.unit_id, distance, config,
           this.bonusFor(event.attack, 'atk'), this.bonusFor(event.to, 'def'));
@@ -3535,6 +3542,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       attack: event.attack,
       killed,
       killedUnit,
+      countered: answered,
       // Set only for a swing out of a panel - what tells the commit to send
       // it as its own message rather than folding it into the turn's move.
       ...(intoPanel
@@ -3544,13 +3552,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           }
         : {}),
     });
-    // The blow, then the answer - unless that blow was the end of them.
-    this.playSteps(killed === event.attack
-      ? [{ kind: 'attack', from: event.to, to: event.attack }]
-      : [
+    // The blow, and the answer only if there was one. Played unconditionally
+    // before, so a base absorbed a blow and appeared to hit back for nothing,
+    // and so did a unit struck from three hexes away by an archer it could
+    // not have reached.
+    this.playSteps(answered
+      ? [
           { kind: 'attack', from: event.to, to: event.attack },
           { kind: 'counter', from: event.attack, to: event.to },
-        ]);
+        ]
+      : [{ kind: 'attack', from: event.to, to: event.attack }]);
     this.persistLocalUiState();
     this.cdr.markForCheck();
   }

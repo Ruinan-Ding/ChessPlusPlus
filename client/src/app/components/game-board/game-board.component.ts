@@ -17,7 +17,7 @@ import {
   computeMoveCosts, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS, HEX_DIRS,
 } from '../../services/hex-rules';
 import {
-  OVERTIME_FIRST_PLY, isInitialization, isWrapOpen, sideOfPly,
+  OVERTIME_FIRST_PLY, OVERTIME_TOLL, isInitialization, isOvertime, isWrapOpen, sideOfPly,
 } from '../../services/phases';
 
 // ---------------------------------------------------------------------------
@@ -772,6 +772,16 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
                     class="stat stat-range"
                     [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
               >{{ hex.stats?.rangeLow }}</text>
+              <!-- A king overtime's toll will kill at the end of its side's
+                   next turn. It is not dead yet - a heal saves it, and so
+                   does the match ending first - so this waves beside the face
+                   rather than replacing it, and the forecast skull keeps the
+                   middle for the trade that is actually being aimed. -->
+              <g *ngIf="doomedKing(hex)" class="doom-skull">
+                <text [attr.x]="hex.cx + 14" [attr.y]="hex.cy - 13"
+                      [attr.transform]="textTransform(hex.cx, hex.cy)"
+                >&#9760;</text>
+              </g>
               <!-- Whoever the hovered trade would kill wears it on the face,
                    and fades out under it (see .doomed on the plate). -->
               <text *ngIf="wouldDie(hex.key)"
@@ -1435,6 +1445,31 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
     .fallen {
       opacity: 0.4;
       pointer-events: none;
+    }
+
+    /* The end-of-turn toll has this king's last HP. Waved rather than pulsed:
+       a still skull reads as already dead, and it is not - not until the turn
+       commits. The rotation is on the wrapper, so the counter-rotation that
+       keeps text upright on a flipped board stays on the glyph itself. */
+    .doom-skull {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: doom-wave 1.1s ease-in-out infinite;
+      pointer-events: none;
+    }
+    .doom-skull text {
+      font-size: 15px;
+      text-anchor: middle;
+      dominant-baseline: central;
+      user-select: none;
+      paint-order: stroke;
+      stroke: rgba(0, 0, 0, 0.9);
+      stroke-width: 3;
+      fill: #ff5555;
+    }
+    @keyframes doom-wave {
+      0%, 100% { transform: rotate(-14deg) scale(0.94); }
+      50%      { transform: rotate(14deg) scale(1.1); }
     }
 
     /* Over the face, because that is the unit this is about to happen to. */
@@ -3630,10 +3665,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     const dealt = strikeDamage(me.unit_id, them.unit_id, distance, this.config,
                                this.buffOf(from, 'atk'), this.buffOf(to, 'def'));
     const targetHp = Math.max(0, (them.hp ?? 0) - dealt);
-    // A unit at 0 never counters, and a counter only comes back if we are
-    // standing inside its own range - see Combat in AGENTS.md.
+    // A unit at 0 never counters, a counter only comes back if we are standing
+    // inside its own range, and **a base never answers at all** - see Combat
+    // in AGENTS.md. The last of those was missing here, so hovering a base
+    // unit drew a purple number over your own face for a blow that was never
+    // coming, and the trade read as worse than it was.
     const theirRange: number = this.config?.units?.[them.unit_id]?.attackRange ?? 1;
-    const counter = targetHp > 0 && distance <= theirRange
+    const answers = !BASE_PANELS.has(this.cellsByKey.get(to)?.panel ?? '');
+    const counter = answers && targetHp > 0 && distance <= theirRange
       ? strikeDamage(them.unit_id, me.unit_id, distance, this.config,
                      this.buffOf(to, 'atk'), this.buffOf(from, 'def'))
       : 0;
@@ -3663,6 +3702,30 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   /** True for our own unit in the hovered trade - the one taking the counter. */
   takesCounter(key: string): boolean {
     return !!this.forecast && key === this.forecast.attacker;
+  }
+
+  /**
+   * A king the end-of-turn toll is about to kill.
+   *
+   * It does **not** die where it stands: the toll is the last thing a turn
+   * does, so the king lives out the whole turn on its last HP and a heal - or
+   * the match ending first - still saves it. This is the warning that it will
+   * not survive the commit, which is the only moment it could have been acted
+   * on. *The owner asked for it: "he wont die in this turn unless he takes
+   * damage from someone, but at the end of the turn commit he will get hit -1
+   * and the game ends."*
+   *
+   * Drawn on either side's king, not only the one about to hand over: knowing
+   * theirs is one turn from falling is as much of the position as knowing
+   * yours is.
+   *
+   * ponytail: **the browser engine's alone**, like the toll it warns about -
+   * the same line `entryBind` draws for every other client-only rule.
+   */
+  doomedKing(hex: HexCell): boolean {
+    if (!this.entryBind || !isOvertime(this.turnNumber) || !hex.piece) return false;
+    if (!this.config?.units?.[hex.piece.unit_id]?.commander) return false;
+    return (hex.piece.hp ?? 0) <= OVERTIME_TOLL;
   }
 
   /** True while the hovered trade would leave this unit dead. */

@@ -84,6 +84,12 @@ export function isInitialization(ply: number): boolean {
 }
 
 /**
+ * What overtime takes off a commander at the end of each of its side's turns.
+ * Real damage, and a commander on this much HP dies of it.
+ */
+export const OVERTIME_TOLL = 1;
+
+/**
  * Overtime: the schedule is spent and the match is a deathmatch until a king
  * falls or turn 50 runs out. Nothing is scored in it, so the header stops
  * drawing the phase numbers.

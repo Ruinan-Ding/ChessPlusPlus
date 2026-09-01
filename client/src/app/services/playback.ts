@@ -6,6 +6,12 @@ export interface PlayableAction {
   to: string;
   attack: string | null;
   killed?: string;
+  /**
+   * Whether the defender actually answered. Not derivable from the rest: a
+   * base never counters however alive it is, and neither does anything the
+   * attacker stood outside the reach of.
+   */
+  countered?: boolean;
   /** Present when the action was an ability cast rather than a move. */
   spend?: { index: number; row?: string; hex?: string; side?: 'mine' | 'opponent' };
 }
@@ -46,8 +52,12 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
     }
     if (action.attack) {
       steps.push({ kind: 'attack', from: action.to, to: action.attack });
-      // The defender answers unless this blow killed it - see onPlayerAttack.
-      if (action.killed !== action.attack) {
+      // Only if it answered. `killed` alone used to stand in for that, which
+      // played a counter beat for every blow a base absorbed and every one
+      // struck from outside the defender's reach - see onPlayerAttack. The
+      // fallback is for a turn staged before this was recorded and restored
+      // off disk afterwards.
+      if (action.countered ?? (action.killed !== action.attack)) {
         steps.push({ kind: 'counter', from: action.attack, to: action.to });
       }
       standing = action.to;

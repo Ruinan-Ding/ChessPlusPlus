@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { SimpleChange } from '@angular/core';
 import { GameBoardComponent } from './game-board.component';
+import { OVERTIME_FIRST_PLY } from '../../services/phases';
 
 /**
  * The reach preview and the stat glyphs are what the player reads off the
@@ -888,6 +889,81 @@ describe('GameBoardComponent reach preview', () => {
       const mark = [...fixture.nativeElement.querySelectorAll('text.heal-mark')]
         .find((t: Element) => t.textContent === '+1')!;
       expect(mark.getAttribute('class')).not.toContain('mark-theirs');
+    });
+
+    it('promises no counter from a base, which is struck and says nothing', () => {
+      // Hovering a base unit used to draw a purple number over your own face
+      // for an answer that was never coming, so the trade read as worse than
+      // it was. A reserve does answer, and still shows one.
+      const DIRS = [[1, 0], [-1, 0], [1, -1], [0, -1], [0, 1], [-1, 1]];
+      /** Stand a black unit on the battlefield beside a white one in `panel`. */
+      const aimAt = (panel: string) => {
+        let them = '', mine = '';
+        for (const key of anyBoard().panelZones.get(panel) as Set<string>) {
+          const [tq, tr] = key.split(',').map(Number);
+          for (const [dq, dr] of DIRS) {
+            const near = anyBoard().cellsByKey.get(`${tq + dq},${tr + dr}`);
+            if (near && !near.panel && !near.piece) { them = key; mine = near.key; break; }
+          }
+          if (them) break;
+        }
+        expect(them).toBeTruthy();
+        anyBoard().reserves[them] = {
+          unit_id: 'scout', color: 'white', hp: 6, max_hp: 6, uid: `in-${panel}`,
+        };
+        anyBoard().boardState = {
+          [mine]: { unit_id: 'guard', color: 'black', hp: 9, max_hp: 9, uid: 'striker' },
+        };
+        anyBoard().buildCells();
+        const target = anyBoard().cellsByKey.get(them);
+        expect(target.piece?.uid).toBe(`in-${panel}`);
+        anyBoard().selectedHex = mine;
+        board.attackTargets = new Set([them]);
+        anyBoard().hoveredHex = them;
+        anyBoard().refreshForecast();
+        return { mine, them };
+      };
+
+      // `bl` is a base: it takes the blow and throws nothing back.
+      let hexes = aimAt('bl');
+      expect(board.forecastDamage(hexes.them)).toBeTruthy();
+      expect(board.forecastDamage(hexes.mine)).toBeNull();
+
+      // `br` is a reserve: it answers, and the forecast says so.
+      hexes = aimAt('br');
+      expect(board.forecastDamage(hexes.them)).toBeTruthy();
+      expect(board.forecastDamage(hexes.mine)).toBeTruthy();
+    });
+
+    it('waves a skull over a king the end-of-turn toll will kill', () => {
+      (config.units as any).guard.commander = true;
+      const doomed = (hp: number) => {
+        anyBoard().boardState = {
+          '0,0': { unit_id: 'guard', color: 'white', hp, max_hp: 9, uid: 'wking' },
+        };
+        anyBoard().buildCells();
+        return board.doomedKing(anyBoard().cellsByKey.get('0,0'));
+      };
+      fixture.componentRef.setInput('turnNumber', OVERTIME_FIRST_PLY + 1);
+
+      // Two HP is one turn clear of the toll: no warning.
+      expect(doomed(2)).toBeFalse();
+
+      // One is not. The king is still alive and still playable - the toll is
+      // the last thing the turn does - so this is a warning, not a corpse.
+      expect(doomed(1)).toBeTrue();
+      anyBoard().cdr.detectChanges();
+      expect(fixture.nativeElement.querySelector('g.doom-skull')).toBeTruthy();
+
+      // Before overtime nothing is owed, so nothing is warned about.
+      fixture.componentRef.setInput('turnNumber', OVERTIME_FIRST_PLY - 2);
+      expect(doomed(1)).toBeFalse();
+
+      // And no engine but this browser's takes the toll at all.
+      fixture.componentRef.setInput('turnNumber', OVERTIME_FIRST_PLY + 1);
+      board.entryBind = false;
+      expect(doomed(1)).toBeFalse();
+      delete (config.units as any).guard.commander;
     });
 
     it('names the panel a blow landed in, so the mending can tell base from reserve', () => {
