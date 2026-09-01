@@ -134,7 +134,7 @@ export class LocalGameService {
       case 'panel_attack':
         this.attackIntoPanel(
           msg.from, msg.to ?? msg.from, msg.attack, msg.unit,
-          msg.moveBonus, msg.counters !== false, msg.bonuses);
+          msg.moveBonus, msg.counters !== false, msg.bonuses, msg.panel);
         break;
 
       case 'pass_turn':
@@ -302,6 +302,10 @@ export class LocalGameService {
     // buffed swing with one number and committed it with another, and the
     // panel's drawn HP jumped when the record arrived.
     bonuses?: { atk?: number; def?: number; targetAtk?: number; targetDef?: number },
+    // Which panel took it. Carried, not derived: this engine has no panels to
+    // look one up in, and the record is the only place it survives a reload -
+    // where it is what tells the mending a base from a reserve.
+    panel?: string,
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
@@ -353,6 +357,7 @@ export class LocalGameService {
       // The panel end of the blow, and what it has left: the record is the
       // only place a panel unit's HP survives.
       panelAttack: true, intoPanel: true, unit, defenderHp: left,
+      ...(panel ? { panel } : {}),
     };
 
     if (left <= 0) {

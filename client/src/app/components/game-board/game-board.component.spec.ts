@@ -858,11 +858,11 @@ describe('GameBoardComponent reach preview', () => {
       expect(board.cells.find(c => c.piece?.uid === uid)).toBeUndefined();
     });
 
-    it('swells a mending reserve and marks its +1, the way the base does', async () => {
-      // A reserve mends an HP a turn like anything else standing in a panel,
-      // and the number going up is the whole of what says so - `panelHp`
-      // arrives already mended, so a rise here IS the mend.
-      const res = board.cells.find(c => c.panel === 'br' && !!c.piece)!;
+    it('swells a mending base unit and marks its +1, dealt squad included', async () => {
+      // A unit of the squad dealt into a base mends an HP a turn like a unit
+      // that walked home to one, and the number going up is the whole of what
+      // says so - `panelHp` arrives already mended, so a rise here IS a mend.
+      const res = board.cells.find(c => c.panel === 'bl' && !!c.piece)!;
       const uid = res.piece!.uid!;
       const full = res.piece!.hp;
       board.myColor = 'white';
@@ -882,12 +882,28 @@ describe('GameBoardComponent reach preview', () => {
       await anyBoard().settleUpkeep();
       expect(board.markOf(healed)).toBe('+1');
 
-      // `br` is white's own reserve, so with white in the seat the mark is
-      // the plain green one rather than the opponent's blue.
+      // `bl` is white's own base, so with white in the seat the mark is the
+      // plain green one rather than the opponent's blue.
       anyBoard().cdr.detectChanges();
       const mark = [...fixture.nativeElement.querySelectorAll('text.heal-mark')]
         .find((t: Element) => t.textContent === '+1')!;
       expect(mark.getAttribute('class')).not.toContain('mark-theirs');
+    });
+
+    it('names the panel a blow landed in, so the mending can tell base from reserve', () => {
+      // The panel is the client's own and no engine holds one, so the click
+      // is where it is known and the record is where it survives.
+      const swings: any[] = [];
+      board.attackMade.subscribe((e: any) => swings.push(e));
+      const res = board.cells.find(c => c.panel === 'bl' && !!c.piece)!;
+      anyBoard().selectedHex = '0,0';
+      board.attackTargets.add(res.key);
+      board.onHexClick(res);
+
+      expect(swings[0].panel).toBe('bl');
+      expect(swings[0].targetUnit.uid).toBe(res.piece!.uid);
+      // A base never answers; a reserve does.
+      expect(swings[0].counters).toBeFalse();
     });
 
     it('shuts the wrap outside its window, and crosses out the arrow', () => {

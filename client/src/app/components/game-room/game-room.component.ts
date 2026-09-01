@@ -12,7 +12,7 @@ import { GameStateService } from '../../services/game-state.service';
 import { AuthService } from '../../services/auth.service';
 import { AnimStep, FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap } from '../game-board/game-board.component';
 import {
-  captureClaims, captureScore, hexDistanceKeys, isInsideBoard, strikeDamage,
+  captureClaims, captureScore, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
 } from '../../services/hex-rules';
 import { buildPlayback } from '../../services/playback';
 import {
@@ -154,12 +154,15 @@ const OVERTIME_LAST_TURN = 50;
 const CP_PER_PHASE = 100;
 
 /**
- * An HP back per turn for every unit standing in a panel - a reserve waiting
- * its turn as much as a unit that walked home to mend. One rule rather than
- * two: a wound in the reserve that never closed while the identical wound in
- * the base did is the kind of thing a player reads as a bug, because it is.
+ * An HP back per turn for every unit standing in a **base** - the squad dealt
+ * there at the start as much as a unit that walked home to mend. One rule for
+ * both: they stand in the same panel, and a wound closing itself for one of
+ * them while the identical wound stayed open on the unit beside it is the
+ * kind of thing a player reads as a bug, because it is.
+ *
+ * A reserve does not mend. It is a staging area, not a hospital.
  */
-const PANEL_HEAL_PER_TURN = 1;
+const BASE_HEAL_PER_TURN = 1;
 
 /** A unit that walked home, and the hex it stopped on. */
 export interface WithdrawnUnit {
@@ -193,6 +196,8 @@ interface StagedAction {
    */
   panelUnit?: Record<string, any>;
   panelUnitHp?: number;
+  /** Which panel it landed in - a base mends its wounded, a reserve does not. */
+  panelName?: string;
   /** The panel end was the defender, not the attacker. */
   intoPanel?: boolean;
   /** Whether that panel unit strikes back - a reserve does, a base does not. */
@@ -1517,16 +1522,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     { history: unknown; turn: number; units: WithdrawnUnit[] } | null = null;
 
   /**
-   * What a panel unit has mended since the turn its HP was last written down.
+   * What a unit in a base has mended since the turn its HP was last written
+   * down. Shared by the two derivations that feed a base - the units dealt
+   * there and the units that walked home - so they cannot drift apart.
    *
-   * Counted in that side's OWN hand-overs, not in plies: a panel mends at the
+   * Counted in that side's OWN hand-overs, not in plies: a base mends at the
    * end of its owner's turn, so a unit standing through a full turn takes one
    * HP back and not the two a ply count would have given it. `now` is the ply
    * about to be played, so the last one finished is `now - 1`.
    */
   private mendedSince(color: 'white' | 'black', since: number, now: number): number {
     return Math.max(0, handOversBy(color, now - 1) - handOversBy(color, since))
-      * PANEL_HEAL_PER_TURN;
+      * BASE_HEAL_PER_TURN;
   }
 
   get withdrawnUnits(): WithdrawnUnit[] {
@@ -1602,7 +1609,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /**
    * Every panel unit that has been in a fight, against what it has left -
-   * mending included.
+   * a base's mending included.
    *
    * Derived from the record rather than tallied: the panel is re-dealt from
    * the roster on every rebuild, so a wound written only into the deal would
@@ -1610,11 +1617,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * reload. The staged wounds of the turn in progress go on top, so a swing
    * shows its cost before it is committed.
    *
-   * The mending runs from the blow rather than from the deal, on the same
-   * arithmetic `withdrawnUnits` uses for the base - it is one rule now, and
-   * this is the half of it that reaches a reserve. Which is why the cache is
-   * keyed on the ply as well as on the history: nothing is recorded when a
-   * unit mends, so a turn passing is the whole of what changed.
+   * **A base mends and a reserve does not**, so this reads the panel off the
+   * record rather than the unit: a blow in a base closes an HP a turn on the
+   * same arithmetic `withdrawnUnits` uses for a unit that walked home there,
+   * and a blow in a reserve stays open. Which is why the cache is keyed on
+   * the ply as well as on the history: nothing is recorded when a unit mends,
+   * so a turn passing is the whole of what changed.
    */
   get panelHp(): Record<string, number> {
     const history = this.gameState.snapshot.moveHistory;
@@ -1622,9 +1630,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const cached = this.panelHpCache;
     if (!cached || cached.history !== history || cached.turn !== turn) {
       // Each unit's last word on its own HP, and the turn it was said.
-      const wounds = new Map<
-        string,
-        { left: number; turn: number; full: number; color: 'white' | 'black' }>();
+      const wounds = new Map<string, {
+        left: number; turn: number; full: number;
+        color: 'white' | 'black'; mends: boolean;
+      }>();
       for (const move of (history ?? []) as any[]) {
         if (!move?.panelAttack || !move.unit?.uid) continue;
         wounds.set(move.unit.uid, {
@@ -1632,13 +1641,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           turn: move.turn,
           full: move.unit.max_hp ?? move.unit.hp ?? 0,
           color: move.unit.color as 'white' | 'black',
+          mends: BASE_PANELS.has(move.panel),
         });
       }
       const hp: Record<string, number> = {};
       for (const [uid, wound] of wounds) {
         // Nothing mends back from nothing: 0 is what killed in a panel means.
-        hp[uid] = wound.left <= 0 ? 0 : Math.min(
-          wound.full, wound.left + this.mendedSince(wound.color, wound.turn, turn));
+        hp[uid] = wound.left <= 0 ? 0 : Math.min(wound.full, wound.left
+          + (wound.mends ? this.mendedSince(wound.color, wound.turn, turn) : 0));
       }
       this.panelHpCache = { history, turn, hp };
     }
@@ -3457,7 +3467,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   onPlayerAttack(event: {
     from: string; to: string; attack: string;
-    targetUnit?: Record<string, any>; counters?: boolean;
+    targetUnit?: Record<string, any>; panel?: string; counters?: boolean;
   }): void {
     if (!this.canEndTurn || this.hasAttacked) return;
     const config = this.gameState.snapshot.config;
@@ -3528,7 +3538,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // Set only for a swing out of a panel - what tells the commit to send
       // it as its own message rather than folding it into the turn's move.
       ...(intoPanel
-        ? { panelUnit: target, panelUnitHp, intoPanel: true, counters: !!event.counters }
+        ? {
+            panelUnit: target, panelUnitHp, intoPanel: true,
+            panelName: event.panel, counters: !!event.counters,
+          }
         : {}),
     });
     // The blow, then the answer - unless that blow was the end of them.
@@ -3955,6 +3968,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       this.wsService.sendMessage({
         type: 'panel_attack',
         from: swung.from, to: swung.to, attack: swung.attack, unit: swung.panelUnit,
+        // Which panel took the blow. The engine keeps it on the record and
+        // nothing else: it is what tells the mending a base from a reserve
+        // after a reload, when the board that knew is long gone.
+        panel: swung.panelName,
         ...(this.moveBonusFor(swung.to) ? { moveBonus: this.moveBonusFor(swung.to) } : {}),
         // The same bonuses `make_move` carries, for the same reason: the
         // engine re-resolves the blow and would otherwise disagree with the

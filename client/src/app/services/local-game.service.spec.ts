@@ -73,7 +73,7 @@ describe('LocalGameService', () => {
 
     const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
     service.send({
-      type: 'panel_attack', intoPanel: true,
+      type: 'panel_attack', intoPanel: true, panel: 'tr',
       from: attacker, attack: '-5,8', unit: home,
     });
     await flush();
@@ -81,6 +81,10 @@ describe('LocalGameService', () => {
     const hit = msg.move;
     expect(hit.panelAttack).toBeTrue();
     expect(hit.intoPanel).toBeTrue();
+    // The panel is carried, not derived - this engine has none to look one up
+    // in - and kept, because the record is the only place it survives a
+    // reload, where it says whether the wound mends.
+    expect(hit.panel).toBe('tr');
     service.send({ type: 'request_game_state' });
     await flush();
     expect(last('game_state_update').moveHistory.slice(-1)[0]).toEqual(hit);

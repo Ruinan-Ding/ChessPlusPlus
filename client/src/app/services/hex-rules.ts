@@ -20,6 +20,18 @@ export const HEX_DIRS: [number, number][] = [
 ];
 
 /** Rings from the origin to (q, r) - the hex metric, in one place. */
+/**
+ * The two panels that are a **base** - each player's left plane, bottom-left
+ * for white and top-right for black. The other pair is the reserve.
+ *
+ * The two are told apart for what is allowed *out* of them (the wrap leaves a
+ * base, the battlefield is entered from a reserve) and for what happens *in*
+ * them: **a base mends its wounded and a reserve does not.** Which is why
+ * this lives here rather than in the board that draws them - the room derives
+ * the mending and has to answer the same question.
+ */
+export const BASE_PANELS = new Set(['bl', 'tr']);
+
 export function hexDistance(q: number, r: number): number {
   return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
 }

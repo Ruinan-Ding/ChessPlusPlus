@@ -14,7 +14,7 @@ import {
 import { CommonModule } from '@angular/common';
 import {
   attackTiers, captureClaims, captureZoneHexes, computeAttackZone, computeLegalMoves,
-  computeMoveCosts, hexDistanceKeys, isInsideBoard, strikeDamage, HEX_DIRS,
+  computeMoveCosts, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS, HEX_DIRS,
 } from '../../services/hex-rules';
 import {
   OVERTIME_FIRST_PLY, isInitialization, isWrapOpen, sideOfPly,
@@ -327,15 +327,6 @@ function panelOf(x: number, y: number): string {
 }
 
 /**
- * The base is each player's left plane - the red pair, bottom-left for white
- * and top-right for black. The green pair opposite is the reserve. The two
- * are told apart for what is allowed *out* of them - the wrap leaves a base,
- * the battlefield is entered from a reserve - not for the mover cap, which
- * both now carry.
- */
-const BASE_PANELS = new Set(['bl', 'tr']);
-
-/**
  * How many units of one panel may be started in a turn. An allowance each:
  * three out of the base and three out of the reserve, all match. The reserve
  * used to be capped only through the opening and shuffle freely after.
@@ -591,7 +582,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             (click)="onHexClick(hex)"
           >+{{ refundAt(hex) }}</text>
           <!-- What the last turn did to this unit: +1 for a turn of mending
-               in a panel, -1 for overtime's toll on a king. Green for your
+               in a base, -1 for overtime's toll on a king. Green for your
                mending and blue for theirs; red for your king and purple for
                theirs. -->
           <text
@@ -1722,6 +1713,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     from: string; to: string; attack: string;
     /** Set when the blow lands in a panel - the unit no engine holds. */
     targetUnit?: PieceData;
+    panel?: string;
     /** Whether that unit strikes back: a reserve does, a base does not. */
     counters?: boolean;
   }>();
@@ -2306,8 +2298,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // base does not.
       this.attackMade.emit({
         from: this.selectedHex, to: this.selectedHex, attack: hex.key,
+        // The panel travels with the blow for the same reason the unit does:
+        // no engine holds one, and the record is the only place either
+        // survives. What a base does with a wound is not what a reserve does.
         ...(hex.panel && hex.piece
-          ? { targetUnit: hex.piece, counters: !BASE_PANELS.has(hex.panel) }
+          ? { targetUnit: hex.piece, panel: hex.panel, counters: !BASE_PANELS.has(hex.panel) }
           : {}),
       });
       this.clearTargets();
@@ -2668,8 +2663,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * `absorbWithdrawn()`, which is the authority on those.
    *
    * Mending arrives the same way and is drawn the same way: `panelHp` closes
-   * a panel wound an HP a turn, so a number going UP here is a unit mending,
-   * and it is owed the `+1` a base unit has always shown.
+   * a **base's** wounds an HP a turn - a reserve keeps what it was given - so
+   * a number going UP here is a unit in a base mending, and it is owed the
+   * same `+1` a unit that walked home has always shown.
    */
   private woundReserves(): void {
     for (const [at, piece] of Object.entries(this.reserves)) {
@@ -2724,7 +2720,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   /**
    * What the last turn did to a unit, against the unit it did it to: `+1` for
-   * an HP mended in a panel, `-1` for overtime's toll on a king. One map
+   * an HP mended in a base, `-1` for overtime's toll on a king. One map
    * rather than one per kind - they are the same mark in two colours, and
    * they fade on the same timer.
    *
@@ -2735,8 +2731,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   /**
    * What the end of the turn owes each unit, by uid, held until the turn's
-   * animation has finished: `+1` for an HP mended in a panel - reserve or
-   * base alike - and `-1` for overtime's toll on a king.
+   * animation has finished: `+1` for an HP mended in a base - the squad dealt
+   * there as much as a unit that walked home - and `-1` for overtime's toll
+   * on a king.
    *
    * The owner's rule is that these are **the last thing that happens in a
    * turn**, so they are queued where they are noticed - the base's mending
@@ -2752,8 +2749,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /**
-   * The turn's last beat: every panel unit that mended swells and shows its
-   * `+1`, and the king that paid overtime's toll is struck and shows its
+   * The turn's last beat: every unit in a base that mended swells and shows
+   * its `+1`, and the king that paid overtime's toll is struck and shows its
    * `-1`. All at once - they are one moment, the turn settling up - and
    * after everything else the turn did.
    *
