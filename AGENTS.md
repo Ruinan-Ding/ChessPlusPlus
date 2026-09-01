@@ -303,7 +303,8 @@ Decided so far:
   - **The turn settles up as its last beat** (`pendingUpkeep` / `settleUpkeep()` on the
     board). Two things happen at the very end of a turn, together and after every other beat
     the turn had:
-    - **Everything in a base mends 1 HP** (`BASE_HEAL_PER_TURN`), never past its `max_hp`.
+    - **Everything standing in a panel mends 1 HP** (`PANEL_HEAL_PER_TURN`), never past its
+      `max_hp` - a reserve waiting its turn as much as a unit that walked home to mend.
     - **In overtime, the commander of the side that just played loses 1 HP**
       (`OVERTIME_TOLL` in `local-game.service.ts`).
 
@@ -321,11 +322,19 @@ Decided so far:
     swell `popUnit()` runs is tinted to match, a shade brighter so it carries as a glow.
     The CSS is ordered plain / theirs / toll / toll+theirs so the more particular selector
     is always the later one.
-  - **Mending counts a side's OWN turns, not hand-overs** (`handOversBy()` in `phases.ts`).
-    A base mends at the end of its owner's turn, so a unit standing through a full turn takes
-    one HP back, not the two a ply count gave it before. **A unit killed in the base is never
-    mended back** - the derivation drops it at 0 HP before any mending is added, so one hit on
-    a unit with 1 HP left ends it and no later turn brings it back.
+  - **Mending counts a side's OWN turns, not hand-overs** (`handOversBy()` in `phases.ts`,
+    through the one `mendedSince()` both derivations call). A panel mends at the end of its
+    owner's turn, so a unit standing through a full turn takes one HP back, not the two a ply
+    count gave it before. **A unit killed in a panel is never mended back** - both derivations
+    drop it at 0 HP before any mending is added, so one hit on a unit with 1 HP left ends it
+    and no later turn brings it back.
+  - **One mending rule, two derivations.** `withdrawnUnits` mends the base and `panelHp` mends
+    everything else in a panel, and they share `mendedSince()` so they cannot drift. Before
+    that only the base mended: an identical wound closed itself in the base and stayed open in
+    the reserve for the rest of the match, which reads as a bug because it is one. It also
+    means **`panelHp` is keyed on the ply as well as the history** - nothing is recorded when a
+    unit mends, so a turn passing is the whole of what changed, and a history-only cache would
+    hold yesterday's number forever.
   - **Overtime's toll is real damage, and a commander on 1 HP dies of it** - `regicide`, the
     game over, the board left on screen. *It used to be a mark and a shake with no HP behind
     it; the owner asked for the death.* The **points bleed is unchanged and still runs beside
@@ -503,11 +512,12 @@ Decided so far:
   - **The way home is gated with the way out** (`entryBind`): a server game draws the marks
     and walks nobody through them, because `_handle_make_move` re-derives the walk and would
     reject a landing off the board.
-  - **A unit in the base mends an HP a turn** (`BASE_HEAL_PER_TURN`, the owner's placeholder -
-    "1hp (for now at least)"). **Derived, not tallied**: `withdrawnUnits` reads the HP the unit
-    came home with off its own history record and adds a point for every turn since, clamped
-    to what it started with - so the record is never rewritten and a reload arrives at the
-    same number. Every turn counts, not only that side's.
+  - **A unit in a panel mends an HP a turn** (`PANEL_HEAL_PER_TURN`, the owner's placeholder -
+    "1hp (for now at least)"). **Derived, not tallied**: each derivation reads the HP the unit
+    was last left with off its own history record - the walk home for a base unit, the blow
+    that hit it for anything else - and adds a point for every one of that side's own turns
+    since, clamped to what it started with. The record is never rewritten, so a reload arrives
+    at the same number.
   - **A unit that left its panel never comes back to it by accident.** A panel keeps its dealt
     squad for the whole game, so "is it drawn?" cannot be answered from the live board - a
     reserve that crossed and was then killed would reappear in its old hex, whole, ready to
@@ -523,10 +533,12 @@ Decided so far:
     *staged* board is not in `reserves`, so the click handler would take its next step for a
     board move, free of the wrap's price and of every panel allowance.
   - **A `+1` marks what mended.** Drawn over any unit whose HP went up as the turn ended,
-    and only those - **a unit already at full earns none**, which is what a base of unhurt
+    and only those - **a unit already at full earns none**, which is what a panel of unhurt
     units looks like: no mark, no number moving, and nothing to tell the mending apart from
     a mending that is broken. Held by uid, so it follows a unit shuffled afterwards, and it
-    clears itself after a couple of seconds.
+    clears itself after a couple of seconds. Owed from **two** places, since two derivations
+    feed the panels: `absorbWithdrawn()` for a unit that walked home, and `woundReserves()`
+    for everything else - where `panelHp` arriving HIGHER than what is drawn IS the mend.
   - **A refused turn takes its crossings with it** (`discardCrossings()`, called from the room's
     `invalid_move`). They reach the engine *ahead* of the move and it keeps them, so a move it
     then rejects left them committed there and still drawn from the board's own `entered`

@@ -858,6 +858,38 @@ describe('GameBoardComponent reach preview', () => {
       expect(board.cells.find(c => c.piece?.uid === uid)).toBeUndefined();
     });
 
+    it('swells a mending reserve and marks its +1, the way the base does', async () => {
+      // A reserve mends an HP a turn like anything else standing in a panel,
+      // and the number going up is the whole of what says so - `panelHp`
+      // arrives already mended, so a rise here IS the mend.
+      const res = board.cells.find(c => c.panel === 'br' && !!c.piece)!;
+      const uid = res.piece!.uid!;
+      const full = res.piece!.hp;
+      board.myColor = 'white';
+
+      board.panelHp = { [uid]: full - 3 };
+      board.ngOnChanges({ panelHp: new SimpleChange({}, board.panelHp, false) });
+      // A wound owes nothing: the mark is for what a turn gave back.
+      await anyBoard().settleUpkeep();
+      expect(board.markOf(board.cells.find(c => c.piece?.uid === uid)!)).toBe('');
+
+      board.panelHp = { [uid]: full - 2 };
+      board.ngOnChanges({ panelHp: new SimpleChange({}, board.panelHp, false) });
+      const healed = board.cells.find(c => c.piece?.uid === uid)!;
+      expect(healed.piece!.hp).toBe(full - 2);
+      // Owed while the turn is still playing out, paid at the end of it.
+      expect(board.markOf(healed)).toBe('');
+      await anyBoard().settleUpkeep();
+      expect(board.markOf(healed)).toBe('+1');
+
+      // `br` is white's own reserve, so with white in the seat the mark is
+      // the plain green one rather than the opponent's blue.
+      anyBoard().cdr.detectChanges();
+      const mark = [...fixture.nativeElement.querySelectorAll('text.heal-mark')]
+        .find((t: Element) => t.textContent === '+1')!;
+      expect(mark.getAttribute('class')).not.toContain('mark-theirs');
+    });
+
     it('shuts the wrap outside its window, and crosses out the arrow', () => {
       anyBoard().reserves = { '-5,1': {
         unit_id: 'scout', color: 'white', hp: 6, max_hp: 6, uid: 'walker',

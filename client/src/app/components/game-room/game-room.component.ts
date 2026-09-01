@@ -153,7 +153,13 @@ const OVERTIME_LAST_TURN = 50;
  */
 const CP_PER_PHASE = 100;
 
-const BASE_HEAL_PER_TURN = 1;
+/**
+ * An HP back per turn for every unit standing in a panel - a reserve waiting
+ * its turn as much as a unit that walked home to mend. One rule rather than
+ * two: a wound in the reserve that never closed while the identical wound in
+ * the base did is the kind of thing a player reads as a bug, because it is.
+ */
+const PANEL_HEAL_PER_TURN = 1;
 
 /** A unit that walked home, and the hex it stopped on. */
 export interface WithdrawnUnit {
@@ -1510,13 +1516,25 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   private withdrawnCache:
     { history: unknown; turn: number; units: WithdrawnUnit[] } | null = null;
 
+  /**
+   * What a panel unit has mended since the turn its HP was last written down.
+   *
+   * Counted in that side's OWN hand-overs, not in plies: a panel mends at the
+   * end of its owner's turn, so a unit standing through a full turn takes one
+   * HP back and not the two a ply count would have given it. `now` is the ply
+   * about to be played, so the last one finished is `now - 1`.
+   */
+  private mendedSince(color: 'white' | 'black', since: number, now: number): number {
+    return Math.max(0, handOversBy(color, now - 1) - handOversBy(color, since))
+      * PANEL_HEAL_PER_TURN;
+  }
+
   get withdrawnUnits(): WithdrawnUnit[] {
     const snapshot = this.gameState.snapshot;
     const history = snapshot.moveHistory;
     const turn = snapshot.turnNumber;
-    if (this.withdrawnCache?.history === history && this.withdrawnCache.turn === turn) {
-      return this.withdrawnCache.units;
-    }
+    const cached = this.withdrawnCache;
+    if (cached && cached.history === history && cached.turn === turn) return cached.units;
     // Keyed by uid, not by the hex it landed on: a unit shuffled off its
     // landing hex frees it for the next one home, and keying by hex would
     // then have the second record quietly erase the first.
@@ -1550,16 +1568,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // A unit sitting in the base mends: an HP for every turn since its last
       // word, never past what it started with. Derived rather than tallied,
       // so it reads the same after a reload as it did before one.
-      //
-      // Counted in that side's OWN hand-overs, not in plies: a base mends at
-      // the end of its owner's turn, so a unit standing through a full turn
-      // takes one HP back and not the two a ply count would have given it.
-      // `turn` is the ply about to be played, so the last one finished is
-      // `turn - 1`.
       const full = stood.unit.max_hp ?? stood.unit.hp ?? 0;
-      const turns = handOversBy(stood.unit.color, turn - 1)
-        - handOversBy(stood.unit.color, stood.turn);
-      const mended = stood.hp + Math.max(0, turns) * BASE_HEAL_PER_TURN;
+      const mended = stood.hp + this.mendedSince(stood.unit.color, stood.turn, turn);
       units.push({ at: stood.at, unit: { ...stood.unit, hp: Math.min(full, mended) } });
     }
     this.withdrawnCache = { history, turn, units };
@@ -1576,7 +1586,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   get departedUids(): string[] {
     const history = this.gameState.snapshot.moveHistory;
-    if (this.departedCache?.history === history) return this.departedCache.uids;
+    const cached = this.departedCache;
+    if (cached && cached.history === history) return cached.uids;
     const uids: string[] = [];
     for (const move of history ?? []) {
       const record = move as any;
@@ -1586,30 +1597,55 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return uids;
   }
 
-  private panelHpCache: { history: unknown; hp: Record<string, number> } | null = null;
+  private panelHpCache:
+    { history: unknown; turn: number; hp: Record<string, number> } | null = null;
 
   /**
-   * Every reserve unit that has been in a fight, against what it has left.
+   * Every panel unit that has been in a fight, against what it has left -
+   * mending included.
    *
    * Derived from the record rather than tallied: the panel is re-dealt from
    * the roster on every rebuild, so a wound written only into the deal would
    * heal itself on the next one - and this way it reads the same after a
    * reload. The staged wounds of the turn in progress go on top, so a swing
    * shows its cost before it is committed.
+   *
+   * The mending runs from the blow rather than from the deal, on the same
+   * arithmetic `withdrawnUnits` uses for the base - it is one rule now, and
+   * this is the half of it that reaches a reserve. Which is why the cache is
+   * keyed on the ply as well as on the history: nothing is recorded when a
+   * unit mends, so a turn passing is the whole of what changed.
    */
   get panelHp(): Record<string, number> {
     const history = this.gameState.snapshot.moveHistory;
-    if (this.panelHpCache?.history !== history) {
-      const hp: Record<string, number> = {};
+    const turn = this.gameState.snapshot.turnNumber;
+    const cached = this.panelHpCache;
+    if (!cached || cached.history !== history || cached.turn !== turn) {
+      // Each unit's last word on its own HP, and the turn it was said.
+      const wounds = new Map<
+        string,
+        { left: number; turn: number; full: number; color: 'white' | 'black' }>();
       for (const move of (history ?? []) as any[]) {
         if (!move?.panelAttack || !move.unit?.uid) continue;
-        hp[move.unit.uid] = move.defenderHp ?? 0;
+        wounds.set(move.unit.uid, {
+          left: move.defenderHp ?? 0,
+          turn: move.turn,
+          full: move.unit.max_hp ?? move.unit.hp ?? 0,
+          color: move.unit.color as 'white' | 'black',
+        });
       }
-      this.panelHpCache = { history, hp };
+      const hp: Record<string, number> = {};
+      for (const [uid, wound] of wounds) {
+        // Nothing mends back from nothing: 0 is what killed in a panel means.
+        hp[uid] = wound.left <= 0 ? 0 : Math.min(
+          wound.full, wound.left + this.mendedSince(wound.color, wound.turn, turn));
+      }
+      this.panelHpCache = { history, turn, hp };
     }
+    const settled = this.panelHpCache!.hp;
     const staged = this.stagedActions.filter(a => a.panelUnit);
-    if (!staged.length) return this.panelHpCache.hp;
-    const hp = { ...this.panelHpCache.hp };
+    if (!staged.length) return settled;
+    const hp = { ...settled };
     for (const action of staged) hp[action.panelUnit!['uid']] = action.panelUnitHp!;
     return hp;
   }

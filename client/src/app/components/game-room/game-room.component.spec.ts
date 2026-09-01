@@ -923,6 +923,122 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.withdrawnUnits.map((w: any) => w.unit.uid)).toEqual(['first', 'second']);
   });
 
+  /**
+   * The blow into a panel, from the click to the message that carries it.
+   *
+   * Both halves of this have their own checks - the engine resolves a
+   * `panel_attack` (see local-game.service.spec) and the derivation reads the
+   * record back - but nothing covered the join, and the join is where a
+   * blow that vanishes without wounding anybody would have to go missing.
+   */
+  const swinging = (c: any) => {
+    const sent: any[] = [];
+    c.wsService = { sendMessage: (m: any) => sent.push(m) };
+    c.persistLocalUiState = () => {};
+    c.playSteps = () => {};
+    c.playEndTurnSound = () => {};
+    c.gameState.snapshot.currentTurn = 'me';
+    c.gameState.snapshot.turnNumber = 20;
+    c.gameState.snapshot.config = {
+      units: { pawn: { hp: 20, attack: 14, defense: 10, attackRange: 1, move: 6 } },
+    };
+    c.gameState.snapshot.boardState = {
+      '-5,9': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'mine' },
+    };
+    return sent;
+  };
+
+  /** A reserve unit: on no board, so it travels with the message. */
+  const inPanel = () =>
+    ({ unit_id: 'pawn', color: 'black', hp: 20, max_hp: 20, uid: 'rtl0' });
+
+  it('sends a blow into a panel as its own message, walk or no walk', () => {
+    const c = room();
+    const sent = swinging(c);
+    const target = inPanel();
+
+    // Struck from where it stands, without walking first - the commonest way
+    // to swing at a panel, and the one with no move behind it to fold into.
+    c.onPlayerAttack({ from: '-5,9', to: '-5,9', attack: '-5,8', targetUnit: target, counters: true });
+    expect(c.panelHp['rtl0']).toBeLessThan(20);
+
+    c.endTurn();
+    const msg = sent.find(m => m.type === 'panel_attack');
+    expect(msg).toBeDefined();
+    // Not folded into a make_move, and not swallowed by a pass: either would
+    // leave the panel unit standing there untouched.
+    expect(sent.some(m => m.type === 'pass_turn' || m.type === 'make_move')).toBeFalse();
+    expect(msg.unit.uid).toBe('rtl0');
+    expect(msg.attack).toBe('-5,8');
+    expect(msg.from).toBe('-5,9');
+    expect(msg.to).toBe('-5,9');
+    // A reserve answers; whether it does is the panel's rule and rides along.
+    expect(msg.counters).toBeTrue();
+  });
+
+  it('still sends the panel blow when an ability is cast after it', () => {
+    const c = room();
+    const sent = swinging(c);
+    c.onPlayerAttack({
+      from: '-5,9', to: '-5,9', attack: '-5,8', targetUnit: inPanel(), counters: false });
+    // A cast goes on the same stack and becomes the last thing staged. The
+    // commit looks across the whole stack for the swing, not just at the top
+    // of it, or the blow would go out as a plain pass.
+    c.stageSpend({ uid: 'mine', side: 'mine', index: 1, cost: 1 });
+
+    c.endTurn();
+    expect(sent.find(m => m.type === 'panel_attack')?.unit.uid).toBe('rtl0');
+    expect(sent.some(m => m.type === 'pass_turn')).toBeFalse();
+  });
+
+  it('mends a wounded reserve the way it mends the base', () => {
+    const c = room();
+    // A reserve that has been hit. It stands in a panel like a unit that
+    // walked home, and it closes its wound at the same rate: leaving one of
+    // them bleeding for the whole match while the other healed was the one
+    // rule players read as two.
+    const unit = { unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'rbr0' };
+    c.gameState.snapshot.moveHistory = [
+      { color: 'black', turn: 8, panelAttack: true, intoPanel: true, unit, defenderHp: 30 },
+    ];
+
+    // The turn the blow landed, it is as it was left.
+    c.gameState.snapshot.turnNumber = 8;
+    expect(c.panelHp['rbr0']).toBe(30);
+
+    // Then an HP for each of WHITE's own hand-overs, not for each ply: plies
+    // 9 and 11 are white's, ply 10 is black's and worth nothing.
+    c.gameState.snapshot.turnNumber = 10;
+    expect(c.panelHp['rbr0']).toBe(31);
+    c.gameState.snapshot.turnNumber = 11;
+    expect(c.panelHp['rbr0']).toBe(31);
+    c.gameState.snapshot.turnNumber = 12;
+    expect(c.panelHp['rbr0']).toBe(32);
+
+    // Never past what it started with.
+    c.gameState.snapshot.turnNumber = 200;
+    expect(c.panelHp['rbr0']).toBe(40);
+
+    // And nothing mends back from nothing: killed in a panel is killed.
+    const dead = { unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'rbr1' };
+    c.gameState.snapshot.moveHistory = [
+      ...c.gameState.snapshot.moveHistory,
+      { color: 'black', turn: 8, panelAttack: true, intoPanel: true, unit: dead, defenderHp: 0 },
+    ];
+    expect(c.panelHp['rbr1']).toBe(0);
+  });
+
+  it('shows the turn in progress un-mended, so a swing reads as its own cost', () => {
+    const c = room();
+    const unit = { unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'rbr0' };
+    c.gameState.snapshot.moveHistory = [];
+    c.gameState.snapshot.turnNumber = 30;
+    c.stagedActions = [{ panelUnit: unit, panelUnitHp: 22 }];
+    // The staged wound is what the blow just did, not what it will look like
+    // after a turn of mending.
+    expect(c.panelHp['rbr0']).toBe(22);
+  });
+
   it('names the reserves that have left their panel', () => {
     const c = room();
     const runner = { unit_id: 'pawn', color: 'white', hp: 10, max_hp: 10, uid: 'rbr0' };

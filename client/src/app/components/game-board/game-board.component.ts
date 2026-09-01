@@ -591,7 +591,9 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             (click)="onHexClick(hex)"
           >+{{ refundAt(hex) }}</text>
           <!-- What the last turn did to this unit: +1 for a turn of mending
-               in the base, -1 for overtime's toll on a king. -->
+               in a panel, -1 for overtime's toll on a king. Green for your
+               mending and blue for theirs; red for your king and purple for
+               theirs. -->
           <text
             *ngIf="markOf(hex) as mark"
             [attr.x]="hex.cx"
@@ -2662,16 +2664,22 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * the panel again and the wound appeared out of nowhere.
    *
    * So it is applied here as well, on every rebuild, where the skip cannot
-   * reach it. Base units are dealt with after this by `absorbWithdrawn()`,
-   * which is the authority on them: their HP has mending on top of the wound.
+   * reach it. Units that walked home are dealt with after this by
+   * `absorbWithdrawn()`, which is the authority on those.
+   *
+   * Mending arrives the same way and is drawn the same way: `panelHp` closes
+   * a panel wound an HP a turn, so a number going UP here is a unit mending,
+   * and it is owed the `+1` a base unit has always shown.
    */
   private woundReserves(): void {
     for (const [at, piece] of Object.entries(this.reserves)) {
       const left = piece.uid ? this.panelHp[piece.uid] : undefined;
       if (left === undefined || left === piece.hp) continue;
       // Nothing on 0 is left standing: killed in a panel is killed.
-      if (left <= 0) delete this.reserves[at];
-      else this.reserves[at] = { ...piece, hp: left };
+      if (left <= 0) { delete this.reserves[at]; continue; }
+      // Paid at the end of the turn's animation, not here.
+      if (left > piece.hp) this.oweMark(piece.uid!, '+1');
+      this.reserves[at] = { ...piece, hp: left };
     }
   }
 
@@ -2716,7 +2724,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   /**
    * What the last turn did to a unit, against the unit it did it to: `+1` for
-   * an HP mended in the base, `-1` for overtime's toll on a king. One map
+   * an HP mended in a panel, `-1` for overtime's toll on a king. One map
    * rather than one per kind - they are the same mark in two colours, and
    * they fade on the same timer.
    *
@@ -2727,8 +2735,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   /**
    * What the end of the turn owes each unit, by uid, held until the turn's
-   * animation has finished: `+1` for an HP mended in the base, `-1` for
-   * overtime's toll on a king.
+   * animation has finished: `+1` for an HP mended in a panel - reserve or
+   * base alike - and `-1` for overtime's toll on a king.
    *
    * The owner's rule is that these are **the last thing that happens in a
    * turn**, so they are queued where they are noticed - the base's mending
@@ -2744,7 +2752,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /**
-   * The turn's last beat: every base unit that mended swells and shows its
+   * The turn's last beat: every panel unit that mended swells and shows its
    * `+1`, and the king that paid overtime's toll is struck and shows its
    * `-1`. All at once - they are one moment, the turn settling up - and
    * after everything else the turn did.
@@ -2789,6 +2797,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /** The mark to draw over this unit, or '' for none. */
+  // (green for your mending, blue for theirs; red for your king paying
+  //  overtime's toll and purple for theirs - see the stylesheet.)
   markOf(hex: HexCell): string {
     return hex.piece ? this.turnMarks.get(this.uidOf(hex)) ?? '' : '';
   }
