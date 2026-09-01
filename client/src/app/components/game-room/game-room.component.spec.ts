@@ -809,6 +809,34 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.showScore).toBeFalse();
   });
 
+  it('stops counting a unit the moment it is staged to walk home', () => {
+    const c = room();
+    // The staged board keeps a withdrawing unit under its BASE's panel key -
+    // off the battlefield, but still a key in the same record. Counting the
+    // record wholesale left it standing until the engine's move_made landed.
+    c.gameState.snapshot.config = { board: { radius: 11 }, units: {} } as any;
+    c.gameState.snapshot.boardState = {
+      '0,0': { unit_id: 'pawn', color: 'white', hp: 5, uid: 'a' },
+      '1,0': { unit_id: 'pawn', color: 'white', hp: 5, uid: 'b' },
+      '2,0': { unit_id: 'pawn', color: 'black', hp: 5, uid: 'c' },
+    } as any;
+    const mine = c.gameState.myColor(c.username) || 'white';
+    expect(c.liveUnits).toBe(mine === 'white' ? 2 : 1);
+    expect(c.opponentUnits).toBe(mine === 'white' ? 1 : 2);
+
+    // One of white's is now standing on a base hex - `-12,11` is outside the
+    // radius-11 battlefield, which is exactly the shape `onPlayerMove` leaves
+    // in the staged board while a withdrawal waits to be committed.
+    c.gameState.snapshot.boardState = {
+      '0,0': { unit_id: 'pawn', color: 'white', hp: 5, uid: 'a' },
+      '-12,11': { unit_id: 'pawn', color: 'white', hp: 5, uid: 'b' },
+      '2,0': { unit_id: 'pawn', color: 'black', hp: 5, uid: 'c' },
+    } as any;
+    expect(c.liveUnits).toBe(1);
+    // And the other side is read off the same position, the same way.
+    expect(c.opponentUnits).toBe(1);
+  });
+
   it('mends a unit an HP for every turn it sits in the base', () => {
     const c = room();
     const unit = { unit_id: 'pawn', color: 'white', hp: 3, max_hp: 10, uid: 'hurt' };

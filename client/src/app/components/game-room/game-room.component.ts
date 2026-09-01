@@ -735,7 +735,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       case 'game_state_update':
         // Full state refresh (e.g., on reconnect)
         this.gameState.applyFullState(actualMessage);
-        if (this.gameId === 'local') this.restoreLocalUiState();
+        // No restoreLocalUiState() here. It reads points, CP, cooldowns,
+        // loadouts and the staged turn back off disk, which is right exactly
+        // once - at ngOnInit, where it already runs - and wrong every other
+        // time, because this component outlives a reconnect and its own
+        // fields are then newer than the last persist. `enter()` emits one of
+        // these per crossing, so it was running in the middle of committing a
+        // turn and rolling back whatever had changed since.
         // A refresh or reconnect lands here, not on game_started: without
         // this the countdown, the warning beeps and the auto-pass all stay
         // asleep until the next move.
@@ -768,6 +774,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.submittedTurn = -1;
         this.recapRunning = false;
         this.glowReveal = [];
+        // Crossings go to the engine ahead of the move and it keeps them, so
+        // the board's staged copies have to go or End Turn sends them again.
+        this.boardRef?.discardCrossings();
         this.addSystemMessage(`Invalid move: ${actualMessage.message}`);
         this.cdr.markForCheck();
         break;
@@ -2769,16 +2778,31 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * `boardState`, so a reserve waiting its turn is not part of this.
    */
   get liveUnits(): number {
-    const mine = this.gameState.myColor(this.username) || 'white';
-    const board = this.stagedBoard ?? this.gameState.snapshot.boardState ?? {};
-    return Object.values(board).filter((piece: any) => piece?.color === mine).length;
+    return this.headCount(piece => piece.color === this.myFieldColor);
   }
 
   /** The same head count for the other side, to read yours against. */
   get opponentUnits(): number {
-    const mine = this.gameState.myColor(this.username) || 'white';
+    return this.headCount(piece => piece.color !== this.myFieldColor);
+  }
+
+  private get myFieldColor(): string {
+    return this.gameState.myColor(this.username) || 'white';
+  }
+
+  /**
+   * Units standing on the battlefield, off the position being drawn.
+   *
+   * `offBoard` rather than a bare colour count: a unit walking home is staged
+   * under its *base's* panel key, so it sat in `stagedBoard` looking alive and
+   * the count only dropped when the engine's `move_made` landed - the opposite
+   * of reading as gone the moment it goes.
+   */
+  private headCount(match: (piece: any) => boolean): number {
     const board = this.stagedBoard ?? this.gameState.snapshot.boardState ?? {};
-    return Object.values(board).filter((piece: any) => piece && piece.color !== mine).length;
+    return Object.entries(board)
+      .filter(([key, piece]: [string, any]) => !!piece && match(piece) && !this.offBoard(key))
+      .length;
   }
 
   private deathsOf(color: 'white' | 'black', phase?: number): number {

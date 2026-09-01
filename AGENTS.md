@@ -527,6 +527,12 @@ Decided so far:
     units looks like: no mark, no number moving, and nothing to tell the mending apart from
     a mending that is broken. Held by uid, so it follows a unit shuffled afterwards, and it
     clears itself after a couple of seconds.
+  - **A refused turn takes its crossings with it** (`discardCrossings()`, called from the room's
+    `invalid_move`). They reach the engine *ahead* of the move and it keeps them, so a move it
+    then rejects left them committed there and still drawn from the board's own `entered`
+    overlay - and the next End Turn sent every one again, onto a hex that now held the unit
+    that entered it. The engine answered "Nothing may enter there" and cleared the freshly
+    staged turn a second time. What they spent is not handed back: the walk happened.
   - *Known ceiling:* crossings are sent before the turn's move, so a crossing that lands on the
     **path** the staged move takes (only its landing hex is checked against `committedBoard`)
     makes that move illegal on arrival. The engine rejects it, which clears the staged turn -

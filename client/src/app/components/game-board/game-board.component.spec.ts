@@ -1139,6 +1139,30 @@ describe('GameBoardComponent reach preview', () => {
         expect(board.isPanelSpent(anyBoard().cellsByKey.get('-12,11'))).toBeTrue();
       });
 
+      it('drops the turn’s crossings when the engine refuses the move', () => {
+        setUp();
+        // Cross a reserve onto the board, the way End Turn would find it.
+        const gate = anyBoard().cells.find((c: any) => c.gateway === 'right'
+          && c.piece?.color === 'white');
+        const from = gate ? gate.key : null;
+        anyBoard().entered['0,1'] = { unit_id: 'scout', color: 'white', hp: 6, uid: 'crossed' };
+        anyBoard().panelHistory.push({
+          from: from ?? '-12,4', to: '0,1', uid: 'crossed', cost: 1, price: 0,
+          at: Date.now(), entry: true,
+        });
+        anyBoard().panelMoved.set('crossed', 1);
+        anyBoard().buildCells();
+        expect(board.pendingEntries.length).toBe(1);
+
+        // The engine took the crossing and then refused the move behind it.
+        // The crossing stands where it landed, so it must not be sent twice -
+        // the second time the hex is occupied and the engine refuses that too.
+        board.discardCrossings();
+        expect(board.pendingEntries.length).toBe(0);
+        // What it spent is not handed back: the walk happened.
+        expect(anyBoard().panelMoved.get('crossed')).toBe(1);
+      });
+
       it('offers no way home in a server game', () => {
         setUp();
         board.entryBind = false;

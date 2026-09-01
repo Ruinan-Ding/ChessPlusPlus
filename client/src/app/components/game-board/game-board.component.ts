@@ -2601,6 +2601,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       .filter(([, d]: [string, any]) => !d?.commander)
       .slice(0, 5);
     const stamp = `${this.radius}|${this.orientation}|${roster.map(([id]) => id).join(',')}`;
+    // Dealt once. `woundReserves()` and `absorbWithdrawn()` write to
+    // `this.reserves` on every rebuild, so this skip is also what carries a
+    // panel's dead and its units come home from one rebuild to the next.
+    //
+    // What keeps that honest across a restart is the room's `*ngIf` on
+    // `gameStarted`: `game_reset` puts the setup screen back and takes this
+    // whole component with it, so the next match opens on a new instance
+    // with an empty stamp. Deal a new match without unmounting the board and
+    // the panels come back holding the last one's casualties.
     if (stamp === this.reservesKey) return;
     this.reservesKey = stamp;
     this.reserves = {};
@@ -3153,6 +3162,33 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     return this.panelHistory
       .filter(step => step.entry && !!this.entered[step.to])
       .map(step => ({ from: step.from, to: step.to, unit: this.entered[step.to] }));
+  }
+
+  /**
+   * Drop the crossings this turn staged, without handing back what they
+   * spent.
+   *
+   * They reach the engine *before* the turn's move does, and it keeps them.
+   * A move it then rejects used to leave them committed there and still
+   * drawn from here, so the next End Turn sent every one of them a second
+   * time - and the engine answered "Nothing may enter there", because the
+   * hex it was asked to enter already held the unit that entered it. A
+   * rejection for a crossing that had worked, clearing the freshly staged
+   * turn all over again.
+   *
+   * Right whichever way the rejection fell: if the crossing landed, the unit
+   * is drawn off the engine's board instead and `departedUids` keeps its
+   * panel hex empty; if the crossing was itself what was refused, the unit
+   * goes back to the panel, which is where it still is.
+   *
+   * The MOV and the movers are not given back. The walk happened.
+   */
+  discardCrossings(): void {
+    if (!Object.keys(this.entered).length) return;
+    this.entered = {};
+    this.panelHistory = this.panelHistory.filter(step => !step.entry);
+    this.buildCells();
+    this.cdr.markForCheck();
   }
 
   /**
