@@ -41,11 +41,25 @@ Where it lives: `withdrawnUnits` (walked home) and `panelHp` (dealt squad) in
 | 2.3 | Every mark fires **at once, as the very last beat of the turn commit** - after the walk, the blow, the counter and every ability the turn cast. | WRITTEN |
 | 2.4 | Each `+1` **swells like a buff**; each `-1` **shrinks, like being hit**. The swell is tinted to match its own mark. | WRITTEN |
 | 2.5 | Marks clear themselves after about two seconds. | WRITTEN |
+| 2.6 | **The mark is centred on the face** and drawn **last of everything on the board**, the way the skull is. | WRITTEN (new) |
+| 2.7 | **A turn that moved nothing still plays the beat.** Passing on a turn that mends or bleeds runs a replay of no steps and then the settle, so the board holds for it and it is watched rather than quietly applied. | WRITTEN (new) |
 
 Where it lives: `pendingUpkeep` / `settleUpkeep()` / `markOf()` in `game-board.component.ts`.
 
-**Why none of these have been seen:** a `+1` only appears on a unit whose HP went **up**.
-Until this round there was no way to wound a unit in your own base - see section 5.
+**Why none of these had been seen - found, and it was not the logic.** The mark was drawn
+at `cy - 18` in the per-hex cells group. The HP readout is drawn at `cy - 19` in the *later*
+"labels last" group, same anchor, one pixel apart, with a white halo of its own. SVG has no
+z-index: last drawn wins. **Every `-1` and `+1` this board has ever owed was rendered
+correctly and painted underneath the HP number.** The specs found it in the DOM and passed;
+nobody could see it. Now centred on the face at the end of that group, 22px, and a spec
+pins the DOM order against `.stat-hp` so it cannot slide back under.
+
+The second half of the same complaint - *"when nothing is moved it takes damage without
+playing the animation"* - was the pass path settling on a bare `setTimeout` instead of
+through the replay: no beat, no hold, and nothing to tell the room it had happened. A pass
+now runs `runPlayback([])`, which walks no steps and then settles, and a new `replaying`
+flag stops it paying the upkeep over the top of a recap that is scheduled but has not
+started yet.
 
 ---
 
@@ -61,6 +75,7 @@ Overtime starts at ply 67. Solo play only - no server takes the toll.
 | 3.4 | He **does not die where he stands** - the toll is the last thing the turn does, so he plays the whole turn out on his last HP. Anything that heals him first saves him. He falls when the turn commits, unless somebody kills him sooner. | WRITTEN |
 | 3.5 | A healing ability can pull him back off the skull. | WRITTEN (new) |
 | 3.6 | **The clock does not end a solo turn.** It used to: `updateTurnClock` committed for you the moment the 60s ran out, and since the toll lands at the *end* of a turn, a doomed king died while you were still deciding how to save him. That is what "the king died before I got its turn" was. In solo the clock now paces and beeps and nothing else. | WRITTEN (new) |
+| 3.7 | The `-1` is on the **king's own icon**, over the waving skull when it wears one. See 2.6 - it was there all along, under the HP number. | WRITTEN (new) |
 
 ---
 
@@ -105,7 +120,7 @@ back with 20 when you are done. Rally hands out 300 points so nothing has to be 
 
 ## What is checked, and what that is worth
 
-- **217 client specs**, **89 server tests**, production build clean apart from a standing
+- **218 client specs**, **89 server tests**, production build clean apart from a standing
   SCSS budget warning.
 - Specs cover the logic end to end: the engine resolves a panel blow, the room stages and
   sends it, the derivations read it back, and the marks are owed and paid.

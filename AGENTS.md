@@ -316,9 +316,22 @@ Decided so far:
     Each swells - or shrinks, for the toll - and carries its `+1` / `-1`. They are **owed**
     where they are noticed (the mending as the new board is absorbed, the toll as the ply
     turns over) and **paid** in one beat of their own once the recap has played out;
-    `runPlayback` awaits it before `playbackDone`, and a turn with nothing to replay - a pass
-    - settles on its own timer. Marking them where they were noticed put them on screen
-    underneath the recap, while the turn's blows were still being struck.
+    `runPlayback` awaits it before `playbackDone`. Marking them where they were noticed put
+    them on screen underneath the recap, while the turn's blows were still being struck.
+
+    **A turn with nothing to replay still plays this beat.** A pass runs `runPlayback([])`
+    - no steps, then the settle - rather than paying on the spot, so the board holds for the
+    same moment a recap's last beat would and the room hears it end. `replaying` is what
+    keeps the two apart: it goes up where a recap is *scheduled*, not where it starts, and a
+    commit's state can arrive in that gap. Without it the pass path paid the upkeep over the
+    top of a recap that had not begun.
+
+    **The mark is drawn last of everything on the board, centred on the face.** SVG has no
+    z-index. It used to sit above the plate at `cy - 18`, in the per-hex cells group - one
+    pixel off the HP readout in the later "labels last" group, which is painted after it with
+    a white halo of its own. Every `-1` the board ever owed was drawn correctly and buried
+    under the number, which is why the owner never saw one. A spec pins the DOM order
+    (`compareDocumentPosition` against `.stat-hp`); keep the mark at the end of that group.
 
     **Four colours, not two** - which side wears a mark matters as much as what it says, and
     a green `+1` over a unit that is not yours reads as your own until you have found the

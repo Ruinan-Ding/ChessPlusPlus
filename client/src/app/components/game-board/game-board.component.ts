@@ -581,19 +581,6 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [attr.transform]="textTransform(hex.cx, hex.cy)"
             (click)="onHexClick(hex)"
           >+{{ refundAt(hex) }}</text>
-          <!-- What the last turn did to this unit: +1 for a turn of mending
-               in a base, -1 for overtime's toll on a king. Green for your
-               mending and blue for theirs; red for your king and purple for
-               theirs. -->
-          <text
-            *ngIf="markOf(hex) as mark"
-            [attr.x]="hex.cx"
-            [attr.y]="hex.cy - 18"
-            class="heal-mark"
-            [class.toll-mark]="mark.charAt(0) === '-'"
-            [class.mark-theirs]="hex.piece?.color !== (myColor || 'white')"
-            [attr.transform]="textTransform(hex.cx, hex.cy)"
-          >{{ mark }}</text>
           <!-- Already walked this turn, and maybe with MOV still to spend:
                not greyed, but not untouched either. -->
           <circle
@@ -826,6 +813,24 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [class.on-panel]="hex.filler"
             [class.on-plate]="!!hex.piece"
           >{{ hex.num }}</text>
+          <!-- What the turn's end did to this unit: +1 for an HP mended in a
+               base, -1 for overtime's toll on a king. Green for your mending
+               and blue for theirs; red for your king and purple for theirs.
+
+               Centred on the face, and drawn last of everything on the board.
+               It used to sit above the plate at cy - 18, one pixel off the HP
+               readout in this very group - which is painted after it, with a
+               white halo of its own. The mark was there the whole time, under
+               the number. -->
+          <text
+            *ngIf="markOf(hex) as mark"
+            [attr.x]="hex.cx"
+            [attr.y]="hex.cy + 1"
+            class="heal-mark"
+            [class.toll-mark]="mark.charAt(0) === '-'"
+            [class.mark-theirs]="hex.piece?.color !== (myColor || 'white')"
+            [attr.transform]="textTransform(hex.cx, hex.cy)"
+          >{{ mark }}</text>
         </g>
       </svg>
 
@@ -1058,14 +1063,17 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
        as your own until you have found the plate under it. Ordered
        mine-mended, theirs-mended, mine-struck, theirs-struck, so the more
        particular selector is always the later one. */
+    /* Sized and centred like the doom skull it sometimes lands on top of:
+       the one end-of-turn mark the owner has ever been able to see. */
     .heal-mark {
       fill: #15803d;
-      font-size: 13px;
+      font-size: 22px;
       font-weight: 800;
       text-anchor: middle;
+      dominant-baseline: central;
       paint-order: stroke;
-      stroke: rgba(255, 255, 255, 0.9);
-      stroke-width: 3;
+      stroke: rgba(255, 255, 255, 0.95);
+      stroke-width: 4;
       stroke-linejoin: round;
       pointer-events: none;
     }
@@ -2062,6 +2070,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // attack would go on to lunge again over the top of whatever replaced it.
     // The token is what the chain checks between beats.
     this.playbackToken++;
+    // Whatever was running or scheduled is not any more, so it is no longer
+    // the thing that is going to pay the turn's upkeep.
+    this.replaying = false;
     for (const cancel of this.playing) cancel();
     this.playing = [];
     if (this.frame) cancelAnimationFrame(this.frame);
@@ -2080,27 +2091,41 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   private async runPlayback(steps: AnimStep[]): Promise<void> {
     this.stopPlayback();
     const token = this.playbackToken;
-    for (const step of steps) {
-      if (token !== this.playbackToken) return;   // a newer turn took over
-      this.playbackStep.emit(step);
-      await this.playStep(step);
-      // A beat ends by clearing the class its animation hangs on, and the next
-      // sets it again in the same task - so the browser never saw it off and
-      // never restarted the animation. Three casts on one unit read as a
-      // single long swell. This gap is the frame in between.
+    this.replaying = true;
+    try {
+      for (const step of steps) {
+        if (token !== this.playbackToken) return;   // a newer turn took over
+        this.playbackStep.emit(step);
+        await this.playStep(step);
+        // A beat ends by clearing the class its animation hangs on, and the
+        // next sets it again in the same task - so the browser never saw it
+        // off and never restarted the animation. Three casts on one unit read
+        // as a single long swell. This gap is the frame in between.
+        if (token !== this.playbackToken) return;
+        await this.wait(BEAT_GAP_MS);
+      }
       if (token !== this.playbackToken) return;
-      await this.wait(BEAT_GAP_MS);
+      // Last of all, after every beat the turn itself had.
+      await this.settleUpkeep();
+      if (token !== this.playbackToken) return;
+      this.stopPlayback();
+      this.cdr.markForCheck();
+      this.playbackDone.emit();
+    } finally {
+      if (token === this.playbackToken) this.replaying = false;
     }
-    if (token !== this.playbackToken) return;
-    // Last of all, after every beat the turn itself had.
-    await this.settleUpkeep();
-    if (token !== this.playbackToken) return;
-    this.stopPlayback();
-    this.cdr.markForCheck();
-    this.playbackDone.emit();
   }
 
   private playbackToken = 0;
+
+  /**
+   * A recap is running, or is about to be: its own tail pays the turn's
+   * upkeep, at the end, where the owner's rule puts it. Raised where the run
+   * is *scheduled* rather than where it starts, because it starts on a timer
+   * and the state that owes the upkeep can arrive in the gap - see
+   * ngOnChanges, which would otherwise pay it over the top of the recap.
+   */
+  private replaying = false;
 
   private async playStep(step: AnimStep): Promise<void> {
     const token = this.playbackToken;
@@ -2295,14 +2320,25 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // for a sequence that had already been replaced - which the room reads
       // as the recap being over, unlocking the board as the recap begins.
       this.stopPlayback();
-      if (steps.length) setTimeout(() => { if (this.playback === steps) this.runPlayback(steps); });
+      if (steps.length) {
+        this.replaying = true;
+        setTimeout(() => { if (this.playback === steps) this.runPlayback(steps); });
+      }
     }
     // A turn that had nothing to replay still settles up - a passed turn
     // mends the base, and overtime takes its toll either way. `playback` is
     // only ever set to a non-empty list, so no new recap arriving is exactly
     // the case where nothing else is going to pay this.
-    if (this.pendingUpkeep.size && !changes['playback']) {
-      setTimeout(() => this.settleUpkeep());
+    //
+    // Run as a playback of no beats rather than paid where it stands: the
+    // owner's rule is that the turn's end is *watched*, so passing on a turn
+    // that mends or bleeds holds the board for the same moment a recap's last
+    // beat would, and tells the room when it is over. A recap already running
+    // - or already scheduled - pays it itself, at its own end.
+    if (this.pendingUpkeep.size && !changes['playback'] && !this.replaying) {
+      setTimeout(() => {
+        if (this.pendingUpkeep.size && !this.replaying) this.runPlayback([]);
+      });
     }
   }
 

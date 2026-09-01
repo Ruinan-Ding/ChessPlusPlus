@@ -76,6 +76,14 @@ describe('GameBoardComponent reach preview', () => {
     (board as any).cdr.detectChanges();
     const mark = fixture.nativeElement.querySelector('text.toll-mark');
     expect(mark.textContent).toBe('-1');
+    // And nothing is drawn over it. It used to sit a pixel off the HP
+    // readout, in an earlier group - so every -1 this board has ever owed
+    // was painted, correctly, underneath the number. SVG has no z-index:
+    // last drawn is on top, and the mark has to be last.
+    const hp = fixture.nativeElement.querySelector('text.stat-hp');
+    expect(hp).not.toBeNull();
+    // DOCUMENT_POSITION_FOLLOWING: the mark comes after the stat.
+    expect(hp.compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     // Black's hand-over is black's to pay, and white's king is left alone.
     board.turnNumber = 69;
@@ -120,15 +128,45 @@ describe('GameBoardComponent reach preview', () => {
     expect(markWhenDone).toBe('-1');
   });
 
-  it('pays it on its own when the turn had nothing to replay', async () => {
-    // A passed turn plays no recap at all, and still mends and still pays.
+  it('plays it as a beat of its own when the turn had nothing to replay', async () => {
+    // A passed turn plays no recap at all, and still mends and still pays -
+    // and the owner's rule is that the turn's end is watched, not quietly
+    // applied. So it runs as a playback of no beats: the board holds for the
+    // same moment a recap's last beat would, and says when it is over.
     (config.units as any).archer.commander = true;
     board.entryBind = true;
+    let played = false;
+    board.playbackDone.subscribe(() => { played = true; });
     board.turnNumber = 68;
     board.ngOnChanges({ turnNumber: new SimpleChange(67, 68, false) });
     expect(board.markOf(cell('0,0'))).toBe('');
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(board.markOf(cell('0,0'))).toBe('-1');
+    expect(played).toBeFalse();               // still holding the beat
+    await new Promise(resolve => setTimeout(resolve, 700));
+    expect(played).toBeTrue();
+  });
+
+  it('leaves the upkeep to a recap that is scheduled but has not started', async () => {
+    // The recap starts on a timer, and the state that owes the upkeep can
+    // arrive in the gap. Paying it there put the marks on screen as the
+    // turn's blows were still being struck - the one thing the owner's rule
+    // forbids. The scheduled run owns it, and pays it at its own end.
+    (config.units as any).archer.commander = true;
+    board.entryBind = true;
+    const king = () => cell('0,0');
+    const steps = [{ kind: 'pick', from: '', to: '', index: 0 }] as any;
+    board.playback = steps;
+    board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
+    // Now the commit's own state lands, in its own pass, owing the toll.
+    board.turnNumber = 68;
+    board.ngOnChanges({ turnNumber: new SimpleChange(67, 68, false) });
+
+    const done = new Promise<void>(resolve => board.playbackDone.subscribe(() => resolve()));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(board.markOf(king())).toBe('');    // the recap is still running
+    await done;
+    expect(board.markOf(king())).toBe('-1');
   });
 
   it('swells the unit once per cast, however many land on it', () => {
