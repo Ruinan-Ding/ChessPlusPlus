@@ -953,7 +953,7 @@ describe('GameBoardComponent reach preview', () => {
       // the last thing the turn does - so this is a warning, not a corpse.
       expect(doomed(1)).toBeTrue();
       anyBoard().cdr.detectChanges();
-      expect(fixture.nativeElement.querySelector('g.doom-skull')).toBeTruthy();
+      expect(fixture.nativeElement.querySelector('text.doom-skull')).toBeTruthy();
 
       // Before overtime nothing is owed, so nothing is warned about.
       fixture.componentRef.setInput('turnNumber', OVERTIME_FIRST_PLY - 2);

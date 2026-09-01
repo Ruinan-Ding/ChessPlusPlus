@@ -774,14 +774,14 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
               >{{ hex.stats?.rangeLow }}</text>
               <!-- A king overtime's toll will kill at the end of its side's
                    next turn. It is not dead yet - a heal saves it, and so
-                   does the match ending first - so this waves beside the face
-                   rather than replacing it, and the forecast skull keeps the
-                   middle for the trade that is actually being aimed. -->
-              <g *ngIf="doomedKing(hex)" class="doom-skull">
-                <text [attr.x]="hex.cx + 14" [attr.y]="hex.cy - 13"
-                      [attr.transform]="textTransform(hex.cx, hex.cy)"
-                >&#9760;</text>
-              </g>
+                   does the match ending first - so it fades in and out over
+                   the face rather than sitting there as a headstone. Drawn
+                   before the forecast skull, which takes the same spot and
+                   belongs to the trade actually being aimed. -->
+              <text *ngIf="doomedKing(hex)"
+                    [attr.x]="hex.cx" [attr.y]="hex.cy + 1"
+                    [attr.transform]="textTransform(hex.cx, hex.cy)"
+                    class="doom-skull">&#9760;</text>
               <!-- Whoever the hovered trade would kill wears it on the face,
                    and fades out under it (see .doomed on the plate). -->
               <text *ngIf="wouldDie(hex.key)"
@@ -1447,29 +1447,27 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       pointer-events: none;
     }
 
-    /* The end-of-turn toll has this king's last HP. Waved rather than pulsed:
-       a still skull reads as already dead, and it is not - not until the turn
-       commits. The rotation is on the wrapper, so the counter-rotation that
-       keeps text upright on a flipped board stays on the glyph itself. */
+    /* The end-of-turn toll has this king's last HP. Over the face, like every
+       other thing that is about to happen to a unit, and waving from nothing
+       to solid rather than simply sitting there: a still skull reads as
+       already dead, and it is not - not until the turn commits. Only opacity
+       moves, so the transform attribute that keeps text upright on a flipped
+       board is left alone - a backtick in here would end the styles literal. */
     .doom-skull {
-      transform-box: fill-box;
-      transform-origin: center;
-      animation: doom-wave 1.1s ease-in-out infinite;
-      pointer-events: none;
-    }
-    .doom-skull text {
-      font-size: 15px;
+      font-size: 26px;
       text-anchor: middle;
       dominant-baseline: central;
+      pointer-events: none;
       user-select: none;
       paint-order: stroke;
       stroke: rgba(0, 0, 0, 0.9);
-      stroke-width: 3;
+      stroke-width: 3.5;
       fill: #ff5555;
+      animation: doom-wave 1.6s ease-in-out infinite;
     }
     @keyframes doom-wave {
-      0%, 100% { transform: rotate(-14deg) scale(0.94); }
-      50%      { transform: rotate(14deg) scale(1.1); }
+      0%, 100% { opacity: 0; }
+      50%      { opacity: 1; }
     }
 
     /* Over the face, because that is the unit this is about to happen to. */
