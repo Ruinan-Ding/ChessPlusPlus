@@ -16,7 +16,7 @@ import {
 } from '../../services/hex-rules';
 import { buildPlayback } from '../../services/playback';
 import {
-  OVERTIME_FIRST_PLY, SCORING_PHASES, handOversBy, isInitialization, isOvertime,
+  SCORING_PHASES, handOversBy, isInitialization, isOvertime,
   phaseIndexAt, stageAt, turnHeading, turnOf,
 } from '../../services/phases';
 import { AudioService } from '../../services/audio.service';
@@ -2988,24 +2988,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * What overtime has bled off a side: a point for each turn it ends, charged
-   * **white first** and alternating from there.
-   *
-   * Deliberately not whose turn it was. On the shipped schedule overtime
-   * opens on turn 34, which is black's - white plays the odd numbers - so
-   * following the board would charge black first. The owner's rule is that
-   * white is charged first, which is the same way round as every other tie
-   * here: white moves first, so white pays for it.
-   *
-   * Counted rather than tallied, so it reads the same after a reload.
-   */
-  private overtimeTicks(color: 'white' | 'black'): number {
-    const played = this.gameState.snapshot.turnNumber - OVERTIME_FIRST_PLY;
-    if (played <= 0) return 0;
-    return color === 'white' ? Math.ceil(played / 2) : Math.floor(played / 2);
-  }
-
-  /**
    * What the match comes to once the third phase is in: white's score against
    * black's, and what that settles.
    *
@@ -3087,11 +3069,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         .filter(index => this.phaseBank[index])
         .map(index => this.phaseBank[index][color]);
       // The three phases are what the match is summed from. The opening banks
-      // nothing, and overtime is not a phase but a decider: it takes points
-      // away rather than adding a score of its own.
+      // nothing, and overtime scores nothing at all: it is a decider, and what
+      // it costs is a king's HP rather than a side's points. *The owner:
+      // "loses just HP, if i said points i misspoke."*
       const running = SCORING_PHASES.includes(phase) ? total : 0;
-      const match = banked.reduce((sum, value) => sum + value, 0)
-        + running - this.overtimeTicks(color);
+      const match = banked.reduce((sum, value) => sum + value, 0) + running;
       return { cap, death, total, banked, match, leading: false };
     };
     const white = build('white');
@@ -3723,7 +3705,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // turn needs nothing from us. Staged work is worth one attempt at
       // committing before that lands - the two are checked against the same
       // turn number, so the loser is rejected rather than applied twice.
-      if (this.canEndTurn && (this.isSinglePlayer || this.pendingMove)) this.endTurn();
+      //
+      // **Solo never commits on the clock.** There is no server to race and
+      // nobody waiting, and the turn's end is where overtime takes its toll -
+      // so a clock that ended the turn for you killed a king on its last HP
+      // while you were still deciding how to save it. The owner's rule is
+      // that he plays that turn out: "he wont die in this turn unless he
+      // takes damage from someone." Here the clock paces and beeps; ending
+      // the turn stays a click.
+      if (!this.isSinglePlayer && this.canEndTurn && this.pendingMove) this.endTurn();
     }
     this.cdr.markForCheck();
   }

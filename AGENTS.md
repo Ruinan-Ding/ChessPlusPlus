@@ -176,6 +176,10 @@ Decided so far:
 - **Running out of time passes the turn**, it does not lose the game (superseded: the turn
   timer used to end the match against whoever was on the clock). The server owns that clock and
   passes for you; the client renders it and, if you had a turn staged, tries to commit it first.
+  **Solo never commits on the clock** (`updateTurnClock`): there is no server to race and nobody
+  waiting, and the turn's *end* is where overtime takes its toll - so a clock that ended the
+  turn for you killed a king on its last HP while the player was still deciding how to save it.
+  In solo the clock paces and beeps; ending the turn stays a click.
   Timer choices are `{0, 15, 30, 60, 120, 180, 240, 300}` seconds, 0 meaning unlimited, and the
   allow-list lives in `validators.validate_game_options`.
 - **One unit acts per turn**, alternating plies (confirmed — the existing chess-like turn
@@ -352,8 +356,9 @@ Decided so far:
     about to hand over. *The owner: "he wont die in this turn unless he takes damage from
     someone, but at the end of the turn commit he will get hit -1 and the game ends."* It
     waves rather than pulsing, and sits beside the face rather than over it, because the
-    hovered trade's `.kill-forecast` skull owns the middle and both can be true at once. The **points bleed is unchanged and still runs beside
-    it** (`overtimeTicks()`), so a side in overtime is losing a point and an HP a turn.
+    hovered trade's `.kill-forecast` skull owns the middle and both can be true at once.
+    **Overtime costs HP and nothing else** - the points bleed that used to run beside it is
+    gone. *The owner: "loses just HP, if i said points i misspoke."*
     - ponytail: **the browser engine's alone** (`overtimeToll()` in `local-game.service.ts`).
       The schedule that says where overtime starts lives in `phases.ts`, and porting it to
       Python would be a fourth thing to keep in step. A networked game takes no toll.
@@ -823,9 +828,9 @@ Decided so far:
   White must finish **more than 5** clear to take it outright; black only **more than 3**
   (`OVERTIME_MARGIN`) - black is allowed the wider gap because white moves first. Anything
   closer than that is overtime.
-  - **Overtime bleeds a point off each side per full turn**, charged **white first** - a
-    point at the end of each hand-over, white's then black's (`overtimeTicks`, counted off
-    `OVERTIME_FIRST_PLY` rather than tallied, so it reads the same after a reload).
+  - **Overtime scores nothing and costs no points.** It is a decider, and what it takes is a
+    king's HP - see the toll. A per-turn points bleed (`overtimeTicks`) used to run beside it
+    and was removed at the owner's word: *"loses just HP, if i said points i misspoke."*
   - **The toll is shown on the board as well as in the header**: the king of whoever just paid
     takes a red **`-1`** over its icon and a hit pop (`markOvertimeToll()` in
     `game-board.component.ts`, derived from the turn that ended - white plays the odd

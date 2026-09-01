@@ -55,11 +55,12 @@ Overtime starts at ply 67. Solo play only - no server takes the toll.
 
 | # | Rule | Status |
 |---|---|---|
-| 3.1 | The king loses **1 HP at the end of its own side's turn**. Same clock as the mending. Real HP, not a number in the header. | WRITTEN |
+| 3.1 | The king loses **1 HP at the end of its own side's turn** - never at the start. Verified: `overtimeToll()` runs before the ply counter is bumped at all three commit paths, and a spec pins it (ply 67, pass, white's king 20 -> 19, black's untouched). | WRITTEN |
 | 3.2 | A king on 1 HP **dies of it** and the match ends - regicide, banner, finished position left on screen. | WRITTEN |
 | 3.3 | A doomed king wears a **waving skull, centred on the icon, fading transparent to solid** and back. | **SEEN** |
 | 3.4 | He **does not die where he stands** - the toll is the last thing the turn does, so he plays the whole turn out on his last HP. Anything that heals him first saves him. He falls when the turn commits, unless somebody kills him sooner. | WRITTEN |
 | 3.5 | A healing ability can pull him back off the skull. | WRITTEN (new) |
+| 3.6 | **The clock does not end a solo turn.** It used to: `updateTurnClock` committed for you the moment the 60s ran out, and since the toll lands at the *end* of a turn, a doomed king died while you were still deciding how to save him. That is what "the king died before I got its turn" was. In solo the clock now paces and beeps and nothing else. | WRITTEN (new) |
 
 ---
 
@@ -96,7 +97,7 @@ back with 20 when you are done. Rally hands out 300 points so nothing has to be 
 |---|---|
 | 6.1 | **"Some shit simply doesn't seem to take any hit."** Partly explained: `strikeDamage` is `attack - defence` floored at 0, so a pawn (14 atk) takes **nothing** off a shieldman (18 def) or a king (15 def). That is the formula working as written, not a delivery bug - but it may not be the formula you want. A floor of 1, or a percentage, would remove the dead matchups. **Your call.** |
 | 6.2 | **The forecast showed nothing on the base unit.** Same cause as 6.1 - a zero was drawn as blank. Now draws `0` in grey. If you were seeing a blank where the damage was *not* zero, that is a different bug and still unfound. |
-| 6.3 | **Overtime takes only HP.** Confirmed - the points reading was a misspeak. The points bleed beside it (`overtimeTicks()`) has **not** been removed yet; say the word. |
+| ~~6.3~~ | **Overtime takes only HP.** Done - `overtimeTicks()` is gone and the standings no longer subtract anything for overtime. |
 | 6.4 | Skull threshold is `<= 1` HP, i.e. exactly the kings the toll kills. Warn a turn earlier at 2? |
 | 6.5 | Nothing here reaches a networked game. Panels, crossings, the toll and abilities are all gated to solo (`entryBind`) because no server holds a panel. |
 
@@ -104,7 +105,7 @@ back with 20 when you are done. Rally hands out 300 points so nothing has to be 
 
 ## What is checked, and what that is worth
 
-- **216 client specs**, **89 server tests**, production build clean apart from a standing
+- **217 client specs**, **89 server tests**, production build clean apart from a standing
   SCSS budget warning.
 - Specs cover the logic end to end: the engine resolves a panel blow, the room stages and
   sends it, the derivations read it back, and the marks are owed and paid.

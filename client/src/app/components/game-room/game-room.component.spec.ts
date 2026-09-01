@@ -76,6 +76,41 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.focusedAbilityBlocker).toContain('2 more turns');
   });
 
+  it('never lets the clock end a solo turn, so a doomed king plays it out', () => {
+    const c = room();
+    const sent: any[] = [];
+    c.wsService = { sendMessage: (m: any) => sent.push(m) };
+    c.persistLocalUiState = () => {};
+    c.playSteps = () => {};
+    c.playEndTurnSound = () => {};
+    c.playTone = () => {};
+    c.gameStarted = true;
+    c.gameState.snapshot.currentTurn = 'me';
+    c.gameState.snapshot.turnNumber = 67;
+    c.gameState.snapshot.turnTimeLimit = 60;
+    // A turn that ran out a minute ago.
+    c.gameState.snapshot.turnStartedAt = new Date(Date.now() - 120_000).toISOString();
+    c.lastTimerBeep = 5;
+
+    // Solo: the clock counts to nothing and stops there. Ending the turn is
+    // where overtime takes its toll, so a clock that ended it for you killed
+    // a king on its last HP while you were still deciding how to save it.
+    c.isSinglePlayer = true;
+    (c as any).updateTurnClock();
+    expect(c.turnSecondsRemaining).toBe(0);
+    expect(sent.length).toBe(0);
+
+    // A networked game is unchanged: the server passes for us, and staged
+    // work gets one attempt at committing before that lands.
+    c.isSinglePlayer = false;
+    c.lastTimerBeep = 5;
+    c.gameState.snapshot.currentTurn = 'me';
+    c.username = 'me';
+    c.stagedActions = [{ at: 1, board: {}, from: '0,0', to: '0,1', used: 1, attack: null }];
+    (c as any).updateTurnClock();
+    expect(sent.length).toBe(1);
+  });
+
   it('lets nobody act while a committed turn plays itself back', () => {
     const c = room();
     c.pickAbility('mine', TARGETED);
@@ -593,7 +628,7 @@ describe('GameRoomComponent ability panel', () => {
     expect(settle(0, 0)).toBe('overtime');
   });
 
-  it('bleeds a point a turn through overtime, and gives black the last word', () => {
+  it('scores overtime at nothing, and gives black the last word', () => {
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: {} };
     c.gameState.snapshot.boardState = {};
@@ -606,15 +641,17 @@ describe('GameRoomComponent ability panel', () => {
       return { match: mine.match, verdict: c.matchVerdict };
     };
 
-    // Overtime opens at hand-over 67 - turn 34 - with nothing taken off.
+    // Overtime costs a king an HP a turn and a side nothing at all - the
+    // owner's rule, "loses just HP". The score it opens on is the score it
+    // keeps, however long it runs.
     expect(at(67).match).toBe(4);
-    // White's half played, so white has paid for it.
-    expect(at(68).match).toBe(3);
-    expect(at(69).match).toBe(3);   // that one was black's
-    expect(at(70).match).toBe(2);
+    expect(at(68).match).toBe(4);
+    expect(at(69).match).toBe(4);
+    expect(at(70).match).toBe(4);
+    expect(at(99).match).toBe(4);
 
-    // The three phases are what the match is summed from - overtime takes
-    // away rather than adding a score of its own.
+    // The three phases are what the match is summed from; overtime adds no
+    // score of its own either.
     expect(c.phaseScore('mine').banked).toEqual([4, 0, 0]);
 
     // However level it stays, black takes an overtime that runs out - at the
