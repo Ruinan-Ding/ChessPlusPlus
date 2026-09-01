@@ -34,6 +34,19 @@ export interface MoveRecord {
   defender_hp?: number;
   /** Only present on a move that attacked - see move_record in consumers.py. */
   attacker_eliminated?: boolean;
+  /**
+   * A unit walking in from a panel rather than moving on the board. Client
+   * only for now: the browser engine writes it and no server does, because
+   * no server has a reserve to walk anything out of.
+   */
+  entered?: boolean;
+  /**
+   * A unit walking off the battlefield into its base, and the unit itself -
+   * the record is the only place it survives, so it is what the base is
+   * rebuilt from. Client only, for the same reason `entered` is.
+   */
+  withdrawn?: boolean;
+  unit?: Record<string, any>;
 }
 
 /** Full snapshot of the client-side game state. */
@@ -152,11 +165,17 @@ export class GameStateService {
     });
   }
 
-  /** Apply a `turn_passed` message - the turn moves on, the board doesn't. */
+  /**
+   * Apply a `turn_passed` message - the turn moves on, and usually the board
+   * does not. Usually: overtime's toll is taken at the end of a turn whether
+   * or not anybody moved, so the browser engine sends the board it left
+   * behind. The networked server sends none and the board stands.
+   */
   applyTurnPassed(msg: any): void {
     const prev = this.snapshot;
     this.stateSubject.next({
       ...prev,
+      boardState: msg.boardState ?? prev.boardState,
       currentTurn: msg.currentTurn ?? prev.currentTurn,
       turnNumber: msg.turnNumber ?? prev.turnNumber,
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),

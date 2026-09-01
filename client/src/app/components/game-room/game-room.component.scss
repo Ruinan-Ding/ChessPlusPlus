@@ -43,8 +43,29 @@
 
       &.your-turn { color: #229954; }
       &.opponent-turn { color: #c0392b; }
+      // A committed turn playing back: the name holds on whoever moved and
+      // goes yellow, so the pause reads as watching that turn rather than as
+      // the next one having started. Last, so it wins on equal specificity.
+      &.committing { color: #f5c542; }
 
       .turn-text { flex: 0 0 auto; }
+
+      /* Where the match has got to: the stage of the schedule, or the result
+         once the three phases have settled one. Amber rather than the pale
+         gold it carried while it only ever named overtime - this sits on the
+         light header now on every turn of the match, and pale gold on that
+         ground is barely there. */
+      .verdict {
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        color: #b45309;
+      }
+
+      /* The match score, and the glow on whoever is ahead of it. Level
+         pegging lights neither, so a glow always means a lead. */
+      .match-total {
+        font-weight: 700;
+      }
 
       // An equal share each, so whose turn it is stays on the centre line
       // however long the two scores run. Their own colour: the indicator
@@ -71,6 +92,64 @@
       .phase-score.ours .death { color: #c0392b; }
       .phase-score.theirs .cap { color: #7b241c; }
       .phase-score.theirs .death { color: #14532d; }
+
+      // The three totals, each its own colour so the eye can pick out which
+      // number it wants without counting symbols: the phase running now, the
+      // phases already banked, and what the match comes to. Mirrored like the
+      // pair above - yours saturated, theirs muted - so a glance still says
+      // whose row it is. All readable on a light header, which is what ruled
+      // out the pale gold the match total used to carry.
+      .phase-score.ours .phase-total { color: #1b6ca8; }     // this phase, live
+      .phase-score.theirs .phase-total { color: #5c7a8f; }
+      // Each banked phase its own colour, or the parenthetical is a row of
+      // numbers in one tone and there is no telling which phase is which.
+      .phase-score.ours .banked-1 { color: #8a5a10; }        // phase 1, amber
+      .phase-score.ours .banked-2 { color: #0f766e; }        // phase 2, teal
+      .phase-score.ours .banked-3 { color: #9d174d; }        // phase 3, rose
+      .phase-score.theirs .banked-1 { color: #9b8763; }
+      .phase-score.theirs .banked-2 { color: #6f9490; }
+      .phase-score.theirs .banked-3 { color: #a8798b; }
+      .phase-score.ours .match-total { color: #6b21a8; }     // the match itself
+      .phase-score.theirs .match-total { color: #8b6fa8; }
+
+      /* Ahead on the match, whichever side that is - so it has to outrank the
+         two above, which are a class deeper than the plain .leading rule was.
+         Amber rather than the pale gold it used to carry: the header sits on
+         a light ground, where pale gold all but vanished. */
+      .phase-score.ours .match-total.leading,
+      .phase-score.theirs .match-total.leading {
+        color: #b45309;
+        text-shadow: 0 0 6px rgba(245, 158, 11, 0.55);
+      }
+
+      // The phase running now glows, and the match total waves - the two
+      // numbers that are still moving, told apart from the banked ones that
+      // are not. Two different motions rather than two pulses, or the pair
+      // reads as one effect applied twice.
+      //
+      // The halo is `currentColor`, so each takes its own ink and the one
+      // keyframe serves both sides. White would only blur: the header sits
+      // on a light ground.
+      .phase-total { animation: score-glow 2s ease-in-out infinite; }
+      @keyframes score-glow {
+        50% { text-shadow: 0 0 5px currentColor, 0 0 11px currentColor; }
+      }
+
+      // A transform needs a box to act on, and a bare span has none. The bob
+      // is under a fifth of the line, so nothing below it shifts.
+      .match-total {
+        display: inline-block;
+        animation: score-wave 1.6s ease-in-out infinite;
+      }
+      @keyframes score-wave {
+        25% { transform: translateY(-0.18em); }
+        75% { transform: translateY(0.1em); }
+      }
+
+      // Both are decoration on a number that is legible standing still.
+      @media (prefers-reduced-motion: reduce) {
+        .phase-total, .match-total { animation: none; }
+      }
     }
     
     .header-actions {
@@ -152,6 +231,20 @@
       background-color: #3a1b1b;
     }
 
+    // While a committed turn plays back the cue leaves green and red behind
+    // and goes yellow, holding on whoever just moved. Yours glows; theirs is
+    // the same colour banked down, so a glance says whose turn is on screen
+    // without reading the words. After the two above, so it wins.
+    &.committing-mine {
+      background-color: #4a4114;
+      box-shadow: inset 0 0 70px rgba(255, 214, 64, 0.5);
+    }
+
+    &.committing-theirs {
+      background-color: #2e290c;
+      box-shadow: inset 0 0 70px rgba(190, 150, 30, 0.32);
+    }
+
     app-game-board {
       position: absolute;
       inset: 0;
@@ -175,6 +268,42 @@
 
   // Game Mode, centred on the empty board before play starts. Light-on-dark,
   // since it sits on the board panel rather than in a white rail card.
+  .points { font-variant-numeric: tabular-nums; }
+
+  /* The pool is picked in pairs, and a row of the two-column grid is a pair.
+     A bar drawn across the gap says so: the two either side of it come and go
+     together. Scoped to the grid's own children so it never lands on the
+     path rows or the unit slots underneath. */
+  .panel-buttons > .scaffold-btn.pair-left {
+    position: relative;
+
+    &::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      /* The gap plus a bite out of each button, so the bar reads as one
+         piece joining them rather than a speck floating between. */
+      left: calc(100% - 5px);
+      width: 16px;
+      height: 5px;
+      border-radius: 3px;
+      background: #7c8899;
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+  }
+
+  /* A slot that is a readout rather than an offer. It keeps the blank's own
+     greyed ground - the original look - and only the text goes darker, so it
+     reads as information without becoming a second kind of control.
+     Three classes deep to beat the .blank rules above, which paint the text
+     transparent and pad an empty button out with a space. */
+  button.tally.blank:disabled {
+    color: #4b5563;
+
+    &::before { content: none; }
+  }
+
   .result-banner {
     margin: 0 0 4px;
     font-size: 2.6rem;
@@ -184,6 +313,24 @@
 
     &.won { color: #4ade80; }
     &.lost { color: #f87171; }
+
+    // Over the finished board rather than on the mode screen: it has to read
+    // against a busy position, so it carries its own ground and sits clear of
+    // the board's own top edge.
+    &.over-board {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 3;
+      margin: 0;
+      padding: 6px 22px;
+      border-radius: 6px;
+      font-size: 2rem;
+      background: rgba(12, 12, 22, 0.82);
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
+      pointer-events: none;
+    }
   }
 
   .board-game-mode {
@@ -283,6 +430,21 @@
     flex: 0 0 260px;
     min-height: 0;
     overflow-y: auto;
+  }
+
+  /* Theirs, not yours: the Opponent panel always, and the Unit panel while it
+     is showing one of their units. A darker ground says whose side of the
+     board you are reading before any word on it is. Set on the section so
+     everything inside inherits it - the head, the body and the rows. */
+  .match-panel.opponent-panel,
+  .match-panel.stats-panel.theirs {
+    background-color: #dfe3e8;
+
+    h3 { background-color: #d2d7de; }
+
+    .panel-body,
+    .panel-buttons,
+    .ability-stack { background-color: transparent; }
   }
 
   .match-panel {
@@ -771,9 +933,17 @@
     font-size: 15px;
   }
 
+  /* One row, an equal half each - so neither label's length decides how the
+     pair sits, and the row keeps its shape as `Show` becomes `Hide`. */
+  .view-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
   .hex-numbers-btn {
     flex: 0 0 auto;
-    padding: 9px 12px;
+    padding: 4px 10px;
     border: 1px solid #ddd;
     border-radius: 4px;
     background-color: #fff;
@@ -1886,7 +2056,6 @@
   justify-content: space-between;
   gap: 8px;
 
-  .points { font-variant-numeric: tabular-nums; }
 }
 
 // Passive slots are informational controls: they open the description but

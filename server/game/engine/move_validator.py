@@ -62,9 +62,14 @@ def get_legal_moves(
                 if (nq, nr) in visited:
                     continue
                 visited.add((nq, nr))
-                if board.get(nq, nr) is not None:
-                    continue  # occupied - blocks entry and further passage
-                moves.append((nq, nr))
+                # A unit walks THROUGH its own: an ally costs a step to
+                # pass but is not somewhere to stop, so it never limits the
+                # reach beyond it. An enemy blocks the hex and the way past.
+                blocker = board.get(nq, nr)
+                if blocker is not None and blocker['color'] != piece['color']:
+                    continue
+                if blocker is None:
+                    moves.append((nq, nr))
                 next_frontier.append((nq, nr))
         if not next_frontier:
             break

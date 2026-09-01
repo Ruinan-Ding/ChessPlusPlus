@@ -14,7 +14,7 @@
 
 export type BoardLike = Record<string, { unit_id: string; color: string } | undefined>;
 
-const HEX_DIRS: [number, number][] = [
+export const HEX_DIRS: [number, number][] = [
   [+1, 0], [-1, 0], [+1, -1], [0, -1], [0, 1], [-1, 1],
 ];
 
@@ -44,6 +44,10 @@ export function computeMoveCosts(
   /** Hexes the unit may use, when it is confined to something other than the
    *  battlefield - a reserve panel. Omitted means the radius-N board. */
   zone?: Set<string>,
+  /** Filled, if given, with the hexes the walk passes THROUGH but cannot stop
+   *  on - a unit's own. The crossings need these: a friend standing on a
+   *  gateway or a wrap tip is walked past, not walked into. */
+  passable?: Map<string, number>,
 ): Map<string, number> {
   const costs = new Map<string, number>();
   const piece = boardState[`${sq},${sr}`];
@@ -64,8 +68,13 @@ export function computeMoveCosts(
         const allowed = zone ? zone.has(key) : isInsideBoard(nq, nr, radius);
         if (visited.has(key) || !allowed) continue;
         visited.add(key);
-        if (boardState[key]) continue; // occupied - blocks entry and passage
-        costs.set(key, step);
+        // A unit walks THROUGH its own: an ally costs a step to pass but is
+        // not somewhere to stop, so it never limits the reach beyond it. An
+        // enemy still blocks both the hex and the way past it.
+        const blocker = boardState[key];
+        if (blocker && blocker.color !== piece.color) continue;
+        if (blocker) passable?.set(key, step);
+        else costs.set(key, step);
         nextFrontier.push([nq, nr]);
       }
     }
