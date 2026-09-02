@@ -734,9 +734,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // only when the host resets the room. `gameOver` is what the rest of
         // the component asks now that started no longer means playable.
         // Whatever the board was replaying is over, and nothing else will
-        // announce that it finished, so the curtain comes down here.
-        this.recapRunning = false;
-        this.glowReveal = [];
+        // announce that it finished, so the curtain comes down here - unless
+        // the recap has not played yet. A blow or a cast that WINS resolves
+        // synchronously inside endTurn, before the board has even been handed
+        // the turn to replay, so dropping the curtain here played the one turn
+        // most worth watching without it. The board answers playbackDone at
+        // the end of that run and it comes down there instead.
+        if (!this.playbackRunning) {
+          this.recapRunning = false;
+          this.glowReveal = [];
+        }
         this.gameState.applyGameOver(actualMessage);
         if (actualMessage.winner) {
           this.addSystemMessage(`Game over - ${actualMessage.winner} wins by ${actualMessage.endReason}!`);
@@ -1438,10 +1445,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /** "+2 ATK, -1 MOV" for one effect, or '' when it moves no stat. */
   private effectSummary(effect: { mov: number; atk: number; def: number }): string {
     const parts: string[] = [];
-    const sign = (n: number) => `${n > 0 ? '+' : ''}${n}`;
-    if (effect.mov) parts.push(`${sign(effect.mov)} MOV`);
-    if (effect.atk) parts.push(`${sign(effect.atk)} ATK`);
-    if (effect.def) parts.push(`${sign(effect.def)} DEF`);
+    if (effect.mov) parts.push(`${this.signed(effect.mov)} MOV`);
+    if (effect.atk) parts.push(`${this.signed(effect.atk)} ATK`);
+    if (effect.def) parts.push(`${this.signed(effect.def)} DEF`);
     return parts.join(', ');
   }
 
@@ -1900,7 +1906,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * immediately contradicts. Nothing moved is no mark.
    */
   private hpMark(moved: number): { mark?: string } {
-    return moved === 0 ? {} : { mark: moved > 0 ? `+${moved}` : `${moved}` };
+    return moved === 0 ? {} : { mark: this.signed(moved) };
+  }
+
+  /** A number that says which way it went: `+3`, `-14`. */
+  private signed(n: number): string {
+    return `${n > 0 ? '+' : ''}${n}`;
   }
 
   private castOffensiveOn(unit: SelectedUnit): void {
@@ -2287,12 +2298,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const e = this.abilityEffects[index];
     if (!e) return '';
     const parts: string[] = [];
-    if (e.mov) parts.push(`${e.mov > 0 ? '+' : ''}${e.mov} MOV`);
-    if (e.atk) parts.push(`${e.atk > 0 ? '+' : ''}${e.atk} ATK`);
-    if (e.def) parts.push(`${e.def > 0 ? '+' : ''}${e.def} DEF`);
+    if (e.mov) parts.push(`${this.signed(e.mov)} MOV`);
+    if (e.atk) parts.push(`${this.signed(e.atk)} ATK`);
+    if (e.def) parts.push(`${this.signed(e.def)} DEF`);
     if (e.damage) parts.push(`${e.damage} damage`);
     if (e.points) {
-      parts.push(`${e.points > 0 ? '+' : ''}${e.points} point${Math.abs(e.points) === 1 ? '' : 's'}`);
+      parts.push(`${this.signed(e.points)} point${Math.abs(e.points) === 1 ? '' : 's'}`);
     }
     const effect = parts.join(', ') || 'no effect yet';
     const need = this.vetNeeded(index);
@@ -3863,7 +3874,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.castingBrief = !!step.brief;
     if (step.kind === 'move') this.playMoveSound();
     else if (step.kind === 'ability') this.playAbilitySound();
-    else this.playAttackSound();
+    // The commit's own beat is silent - playEndTurnSound has already sounded
+    // for it, and anything else here would read as a blow that never landed.
+    else if (step.kind !== 'commit') this.playAttackSound();
     this.cdr.markForCheck();
   }
 
@@ -3928,6 +3941,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // board back without those left the ability half-spent for the rest of
     // the game.
     if (undone?.spend) this.refund(undone.spend);
+    // Including the number it wrote over the target. Nothing else takes a
+    // mark down early, so without this the HP goes back and a green `+20`
+    // hangs over it for the rest of its fade.
+    this.boardRef?.clearMarks();
     this.persistLocalUiState();
     this.cdr.markForCheck();
   }

@@ -321,18 +321,32 @@ Decided so far:
 
     **Every commit plays, empty or not.** `recapRunning` goes up on every End Turn - the
     amber `.committing-mine` / `.committing-theirs` wash - and the board is handed the recap
-    even when it is `[]`. `runPlayback` holds `COMMIT_MS` for an empty list so the curtain
-    is read as a thing that happened, settles the upkeep, then emits `playbackDone`, which
-    is what brings the curtain back down. It used to light only when there was something to
-    replay, so a pass that mended or bled showed nothing at all. `replaying` keeps the
-    scheduled recap and the ngOnChanges fallback apart: it goes up where a recap is
+    even when it is `[]`. An empty list plays as `COMMIT_STEP` - a `kind: 'commit'` beat
+    that holds `COMMIT_MS` and touches nothing - so a run has one path and not two; the room
+    keeps that beat silent (`playEndTurnSound` has already sounded for it). Then the upkeep
+    settles and `playbackDone` brings the curtain back down. It used to light only when there
+    was something to replay, so a pass that mended or bled showed nothing at all. `replaying`
+    keeps the scheduled recap and the ngOnChanges fallback apart: it goes up where a recap is
     *scheduled*, not where it starts, and a commit's state can arrive in that gap.
+
+    **`game_over` does not lift the curtain over a recap that has not played.** A blow or a
+    cast that WINS resolves synchronously inside `endTurn`, before the board has been handed
+    the turn, so the handler dropping `recapRunning` played the match's last turn bare. It
+    only lifts when `playbackRunning` is false - a resignation, a disconnect, an interrupted
+    replay - and `playbackDone` covers the rest.
 
     **A cast writes what it moved over the unit** - `AnimStep.mark`, set from `hpChange()`
     and carried through `buildPlayback` so the recap replays the same number. It is the HP
     that actually moved, not the HP the ability offered. The beat carries `uid` as well:
     the recap plays against the board the turn ENDED on, so resolving the mark's owner from
-    the hex put a cast's number on whoever had since walked onto it.
+    the hex put a cast's number on whoever had since walked onto it. `markKey()` falls back
+    to the **hex** when nobody with that uid is standing: a cast that killed has no unit left
+    to mark, and its number belongs over the ghost. Compare identity through `uidOf()` on
+    both sides - a board dealt without uids identifies units by hex, and reading `piece.uid`
+    raw there matches nothing, which sends every mark down the fallback.
+
+    **A mark can be taken down early, and Undo is the only thing that does it.** `clearMarks()`
+    on the board, from `undoMove()`: the HP goes back, so the `+20` over it has to go too.
 
     **The mark is drawn last of everything on the board, centred on the face.** SVG has no
     z-index. It used to sit above the plate at `cy - 18`, in the per-hex cells group - one

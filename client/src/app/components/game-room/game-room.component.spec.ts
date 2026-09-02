@@ -174,6 +174,32 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canUseAbilities('mine')).toBeTrue();
   });
 
+  it('keeps the curtain up for the turn that won the match', () => {
+    const c = room();
+    c.gameState.applyGameOver = () => {};
+    c.endTurn();
+    expect(c.recapRunning).toBeTrue();
+    // A blow or a cast that WINS resolves synchronously inside endTurn, before
+    // the board has even been handed the turn to replay - so dropping the
+    // curtain here played the one turn most worth watching without it.
+    c.handleWebSocketMessage({ type: 'game_over', winner: 'me', endReason: 'regicide' });
+    expect(c.recapRunning).toBeTrue();
+
+    // And the board still brings it down at the end of its run.
+    c.onPlaybackDone();
+    expect(c.recapRunning).toBeFalse();
+  });
+
+  it('drops the curtain on a game that ends with nothing playing', () => {
+    const c = room();
+    c.gameState.applyGameOver = () => {};
+    c.recapRunning = true;
+    // A resignation, a disconnect, an opponent's winning turn: nothing of ours
+    // is replaying, so there is no playbackDone coming to unlock the board.
+    c.handleWebSocketMessage({ type: 'game_over', winner: 'them', endReason: 'resign' });
+    expect(c.recapRunning).toBeFalse();
+  });
+
   it('refuses a pick outside your own turn', () => {
     const c = room();
     // A pick is for the match and the other player is told about it, so it

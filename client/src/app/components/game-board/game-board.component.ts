@@ -68,7 +68,7 @@ interface StrikeMarks {
  * list from what it staged; the board is what knows where a hex is.
  */
 export interface AnimStep {
-  kind: 'move' | 'attack' | 'counter' | 'ability' | 'pick';
+  kind: 'move' | 'attack' | 'counter' | 'ability' | 'pick' | 'commit';
   /** Where the actor stands (attack, ability) or starts from (move). */
   from: string;
   /** Where it lands (move) or what it hits (attack, counter, ability). */
@@ -214,6 +214,14 @@ const BEAT_GAP_MS = beat(180);
  * commit wash to be read as a thing that happened, not a dropped frame.
  */
 const COMMIT_MS = beat(620);
+
+/**
+ * The beat a turn that did nothing plays. Every commit is watched - a turn
+ * that walked nowhere still mends, still bleeds in overtime, and is still the
+ * moment the turn changes hands - so an empty recap is played as this one
+ * step rather than skipped, and the curtain is up for it like any other.
+ */
+const COMMIT_STEP: AnimStep = { kind: 'commit', from: '', to: '' };
 /** The turn's last beat: the base's mending, and overtime's toll with it. */
 const UPKEEP_MS = beat(760);
 /** How long an end-of-turn `+1` / `-1` stays legible after its swell. */
@@ -2117,14 +2125,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     const token = this.playbackToken;
     this.replaying = true;
     try {
-      // A turn that walked nowhere and cast nothing is still a commit, and the
-      // owner's rule is that a commit is watched. Hold the curtain for a beat
-      // so there is something to see before the upkeep settles behind it.
-      if (!steps.length) {
-        await this.wait(COMMIT_MS);
-        if (token !== this.playbackToken) return;
-      }
-      for (const step of steps) {
+      // A turn that walked nowhere and cast nothing still plays - see
+      // COMMIT_STEP. It is a beat like any other rather than a branch of its
+      // own, so there is one path through a run and not two.
+      for (const step of steps.length ? steps : [COMMIT_STEP]) {
         if (token !== this.playbackToken) return;   // a newer turn took over
         this.playbackStep.emit(step);
         await this.playStep(step);
@@ -2177,6 +2181,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // Taking an ability up is its own moment: nothing on the board, a flash
     // on the slot it landed in.
     if (step.kind === 'pick') return this.wait(PICK_MS);
+    // The commit itself: a held beat under the amber wash, no unit involved.
+    if (step.kind === 'commit') return this.wait(COMMIT_MS);
     if (step.kind === 'ability') {
       const ms = step.brief ? GLOW_BRIEF_MS : GLOW_MS;
       // Driven on the element rather than through a CSS class: a class only
@@ -2188,7 +2194,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // mark lasts. A mend used to swell the target and leave the HP number to
       // say so on its own - which is exactly the "nothing seems to happen"
       // the marks exist to answer.
-      if (step.mark) this.showMark(step.uid || this.uidOf(to ?? ({ key: step.to } as HexCell)), step.mark);
+      if (step.mark) this.showMark(this.markKey(step), step.mark);
       if (!to) return this.wait(ms);
       this.glowHostile = !!step.hostile;
       return this.flash('glowHex', step.to, ms);
@@ -2924,6 +2930,18 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     this.fadeMarks();
   }
 
+  /**
+   * Drop every mark now rather than at the end of its fade. Undo is the one
+   * thing that needs this: the HP goes back where it was and a green `+20`
+   * left hanging over it says the cast still happened.
+   */
+  clearMarks(): void {
+    clearTimeout(this.markTimer);
+    this.markTimer = null;
+    this.turnMarks.clear();
+    this.cdr.markForCheck();
+  }
+
   /** Every mark on screen clears together, a couple of seconds after the last. */
   private fadeMarks(): void {
     clearTimeout(this.markTimer);
@@ -2939,7 +2957,24 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   // (green for your mending, blue for theirs; red for your king paying
   //  overtime's toll and purple for theirs - see the stylesheet.)
   markOf(hex: HexCell): string {
-    return hex.piece ? this.turnMarks.get(this.uidOf(hex)) ?? '' : '';
+    // The hex as well as the unit, for a cast that killed: there is no unit
+    // left to hang the number on, so it goes over the ghost. `uidOf` already
+    // falls back to the key, so an empty hex asks the map twice for the same
+    // thing - which is cheaper than the branch that used to skip it.
+    return this.turnMarks.get(this.uidOf(hex)) ?? this.turnMarks.get(hex.key) ?? '';
+  }
+
+  /**
+   * Who a cast's number belongs to. The unit it landed on, by uid - except
+   * when the cast killed it, in which case there is nobody standing to mark
+   * and the number goes on the hex it died on instead, over its ghost.
+   */
+  private markKey(step: AnimStep): string {
+    const uid = step.uid || this.uidOf(this.cellsByKey.get(step.to) ?? ({ key: step.to } as HexCell));
+    // Through uidOf both sides, not `piece.uid` directly: a board dealt
+    // without uids identifies every unit by its hex, and comparing the raw
+    // field there matches nothing - so every mark fell through to the hex.
+    return this.cells.some(cell => cell.piece && this.uidOf(cell) === uid) ? uid : step.to;
   }
 
   /**

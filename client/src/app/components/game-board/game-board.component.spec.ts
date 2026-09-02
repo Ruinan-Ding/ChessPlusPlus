@@ -198,6 +198,31 @@ describe('GameBoardComponent reach preview', () => {
     expect(board.markOf(walker)).toBe('');
   });
 
+  it('writes a killing cast’s number over the hex it emptied', async () => {
+    // A cast that killed has nobody left to mark: the recap plays against the
+    // board the turn ENDED on, and the victim is already off it by the time
+    // the beat runs. The number goes on the hex instead, over the ghost the
+    // kill left there - it used to be dropped on the floor.
+    expect(cell('1,0').piece).toBeFalsy();
+    const steps = [{
+      kind: 'ability', from: '1,0', to: '1,0', uid: 'nobody-left', mark: '-14',
+    }] as any;
+    board.playback = steps;
+    board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(board.markOf(cell('1,0'))).toBe('-14');
+  });
+
+  it('takes every mark down the moment the cast behind it is undone', () => {
+    // Undo puts the HP back where it was; the `+20` written over it has to go
+    // with it, or the board goes on saying the cast happened for the rest of
+    // the fade. Nothing else takes a mark down early.
+    (board as any).showMark('0,0', '+20');
+    expect(board.markOf(cell('0,0'))).toBe('+20');
+    board.clearMarks();
+    expect(board.markOf(cell('0,0'))).toBe('');
+  });
+
   it('swells the unit once per cast, however many land on it', () => {
     // A CSS class only restarts an animation if a frame is rendered with it
     // off, and between two beats there is no such frame to rely on - three

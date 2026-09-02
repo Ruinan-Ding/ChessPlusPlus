@@ -43,6 +43,9 @@ Where it lives: `withdrawnUnits` (walked home) and `panelHp` (dealt squad) in
 | 2.5 | Marks clear themselves after about two seconds. | WRITTEN |
 | 2.6 | **The mark is centred on the face** and drawn **last of everything on the board**, the way the skull is. | WRITTEN (new) |
 | 2.7 | **Every commit plays, whether or not it moved anything.** The amber commit wash goes up on every End Turn; the board is handed the recap even when it is empty, holds a beat for the curtain, then settles up and hands the board back. It used to light only when there was something to replay. | WRITTEN (new) |
+| 2.9 | **A cast that kills still writes its number**, over the ghost it left. There is no unit to hang it on - the recap plays against the board the turn ended on, and the victim is off it - so the mark goes on the hex instead. | WRITTEN (new) |
+| 2.10 | **Undo takes the mark down with the HP.** Mend then Undo used to put the HP back and leave the green `+20` hanging for the rest of its fade. | WRITTEN (new) |
+| 2.11 | **The turn that wins the match keeps its commit wash.** A blow or a cast that ends the game resolves synchronously inside `endTurn`, before the board has been handed the turn to replay, and the `game_over` handler dropped the curtain before the recap ever started - so the one turn most worth watching played bare. It comes down at `playbackDone` now, and `game_over` only lifts it when nothing is playing. | WRITTEN (new) |
 | 2.8 | **A cast writes what it did to the HP over the unit** - `+20` for a mend, `-14` for a hit - in the same four colours as the turn's-end marks, as the cast's own beat plays. It shows the HP that actually moved: a 20-point mend on a unit three short of full is a `+3`. | WRITTEN (new) |
 
 Where it lives: `pendingUpkeep` / `settleUpkeep()` / `markOf()` in `game-board.component.ts`.
@@ -118,16 +121,16 @@ back with 20 when you are done. Rally hands out 300 points so nothing has to be 
 | 6.2 | **The forecast showed nothing on the base unit.** Same cause as 6.1 - a zero was drawn as blank. Now draws `0` in grey. If you were seeing a blank where the damage was *not* zero, that is a different bug and still unfound. |
 | ~~6.3~~ | **Overtime takes only HP.** Done - `overtimeTicks()` is gone and the standings no longer subtract anything for overtime. |
 | 6.4 | Skull threshold is `<= 1` HP, i.e. exactly the kings the toll kills. Warn a turn earlier at 2? |
-| 6.6 | **A cast that kills shows no number.** `showMark` needs a unit to mark and the victim is already off the board by the time the beat plays. The skull and the ghost cover it, so it is left alone - say if you want the `-14` over the corpse. |
-| 6.7 | **Undo leaves the cast's mark up.** Mend, then Undo inside a second and a half: the HP goes back and the green `+20` stays until its own timer runs out. Cosmetic, and nothing currently takes a mark down early. |
-| 6.8 | **A winning cast loses its commit wash.** `over()` fires synchronously inside `endTurn`, and the `game_over` handler drops `recapRunning` before the board has seen the new recap - so the one turn most worth watching plays without the amber curtain. |
+| ~~6.6~~ | **A cast that kills shows no number.** Done - see 2.9. The mark is keyed to the hex when nobody is left standing to wear it. |
+| ~~6.7~~ | **Undo leaves the cast's mark up.** Done - see 2.10. `clearMarks()` on the board, called from `undoMove`. |
+| ~~6.8~~ | **A winning cast loses its commit wash.** Done - see 2.11. |
 | 6.5 | Nothing here reaches a networked game. Panels, crossings, the toll and abilities are all gated to solo (`entryBind`) because no server holds a panel. |
 
 ---
 
 ## What is checked, and what that is worth
 
-- **227 client specs**, **89 server tests**, production build clean apart from a standing
+- **231 client specs**, **89 server tests**, production build clean apart from a standing
   SCSS budget warning.
 - Specs cover the logic end to end: the engine resolves a panel blow, the room stages and
   sends it, the derivations read it back, and the marks are owed and paid.
