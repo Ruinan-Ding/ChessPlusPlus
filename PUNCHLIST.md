@@ -100,7 +100,7 @@ Overtime starts at ply 67. Solo play only - no server takes the toll.
 | # | Rule | Status |
 |---|---|---|
 | 5.1 | **An ability applies to anything**, panels included. *"though for example ATK ability on base unit is simply pointless but they can do it."* Every ability used to refuse a unit standing in a panel outright. | WRITTEN (new) |
-| 5.2 | **Mend** - slot 6 of the pool, paired with Rally. Friendly target, **flat 20 HP**, free, no cooldown cost. *"heal a static 20 for testing purposes."* | WRITTEN (new) |
+| 5.2 | **Mend** - slot 6 of the pool, paired with Rally. Friendly target, **flat 20 HP**, free, no cooldown cost. *"heal a static 20 for testing purposes."* Its tooltip now says `+20 HP`: `abilityHint` read every field but `heal`, so the one ability added for testing described itself as *"no effect yet"*. | WRITTEN (new) |
 | 5.3 | A heal never takes a unit past `max_hp`. | WRITTEN (new) |
 | 5.4 | An ability that moves a **panel** unit's HP is recorded in the move history, like a blow into a panel is - it is the only place that HP survives a reload. | WRITTEN (new) |
 | 5.7 | **Both effect messages are routed to the browser engine** (`LOCAL_GAME_TYPES`). Neither was. A solo game keeps the socket up when a server is reachable, and only listed types are answered locally - so `panel_effect` and `unit_effect` were posted to a server that has never heard of them and dropped. **5.4 has never worked outside offline mode**, and 5.5's fix would not have either. | WRITTEN (new) |
@@ -124,13 +124,39 @@ back with 20 when you are done. Rally hands out 300 points so nothing has to be 
 | ~~6.6~~ | **A cast that kills shows no number.** Done - see 2.9. The mark is keyed to the hex when nobody is left standing to wear it. |
 | ~~6.7~~ | **Undo leaves the cast's mark up.** Done - see 2.10. `clearMarks()` on the board, called from `undoMove`. |
 | ~~6.8~~ | **A winning cast loses its commit wash.** Done - see 2.11. |
+| 6.9 | **The test rig below cannot be followed as written.** A side carries **four** pool abilities and no more (`myLoadout` filled, `Pick 0`). Taking Mend brings Rally with it, so two of the four are gone and a damage ability has to be one of the other two - pick anything else first and there is no room. Reselect is the only way back. Either the rig's instructions or the cap wants changing. |
+| 6.10 | **The marks are drawn right and rendered tiny.** The board sits in its own column between the two panels - about 300px wide in a 940px window - and the whole SVG scales to fit, ~0.25x. A 22px mark lands on screen at ~6px. Nothing is wrong with the mark; the board simply has no room. Worth knowing before reading a `-1` as missing again. |
+| 6.11 | **A king that dies of the toll wears no `-1`.** `markOvertimeToll` looks for the king to mark and it is already off the board - the same shape as the old 6.6. The banner says what happened, so it is left alone; say if you want the last `-1` over the corpse. |
 | 6.5 | Nothing here reaches a networked game. Panels, crossings, the toll and abilities are all gated to solo (`entryBind`) because no server holds a panel. |
 
 ---
 
+## What has actually been watched
+
+Driven through a running solo game on **2 Sep 2026** - daphne up, so `offline` was false and
+every message took the socket path, which is the one that mattered for 5.7. **This is not
+SEEN**: the owner has still not watched any of it, and the column above is unchanged.
+
+| Rule | What was watched |
+|---|---|
+| 2.1 / 2.2 | All four colours on screen: green `heal-mark` for my mend, red `toll-mark` for my king, purple `toll-mark mark-theirs` for theirs. Computed fill `rgb(185,28,28)`. |
+| 2.3 | One commit's timeline: cast's `+20` at 1.6s, overtime's `-1` at 2.6s. The toll last, after everything the turn did. |
+| 2.5 | Up at 3.0s, gone by 5.0s. |
+| 2.6 / 3.7 | The mark is SVG element **2382 of 2392** and **nothing painted after it overlaps it**. On screen: a red `-1` centred on the king's face, over the crown, white halo, on top. |
+| 2.7 | End Turn with nothing staged: the amber wash up 2.4s -> 3.4s, then the toll paid. A turn that moved nothing played. |
+| 2.8 | A big green `+20` on the king's face as Mend landed, HP 1 -> 21. |
+| 2.11 | At 5.9s into the winning commit: `gameOver` true, `recapRunning` **still true**, wash still up. It came down at 6.5s on `playbackDone`. |
+| 3.1 | Four commits, alternating: white 45->44, black 45->44, white ->43, ->42. Never on the side that was not playing. |
+| 3.2 | Regicide, **YOU WIN** banner, finished position left on screen, Restart offered. |
+| 3.4 / 3.5 / 5.5 / 5.7 | **The headline.** King on 1 HP, Mend, End Turn: 1 + 20 = 21, toll takes 1, **20 left and the match went on**. *"after healing it form 1hp, it dies next turn anyways"* - not any more. |
+
+Not watched, and still only specs: **all of §1** (no wounded unit in a base to watch mend, and
+see 6.9), **all of §4**, and **2.9 / 2.10 / 5.4** - each needs a damaging ability the loadout
+had no room for.
+
 ## What is checked, and what that is worth
 
-- **231 client specs**, **89 server tests**, production build clean apart from a standing
+- **232 client specs**, **89 server tests**, production build clean apart from a standing
   SCSS budget warning.
 - Specs cover the logic end to end: the engine resolves a panel blow, the room stages and
   sends it, the derivations read it back, and the marks are owed and paid.

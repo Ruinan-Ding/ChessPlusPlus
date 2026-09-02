@@ -2302,6 +2302,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (e.atk) parts.push(`${this.signed(e.atk)} ATK`);
     if (e.def) parts.push(`${this.signed(e.def)} DEF`);
     if (e.damage) parts.push(`${e.damage} damage`);
+    // HP given back, which nothing here used to read: Mend moves no stat and
+    // deals no damage, so the one ability the owner added for testing
+    // described itself as "no effect yet".
+    if (e.heal) parts.push(`${this.signed(e.heal)} HP`);
     if (e.points) {
       parts.push(`${this.signed(e.points)} point${Math.abs(e.points) === 1 ? '' : 's'}`);
     }

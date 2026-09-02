@@ -174,6 +174,16 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canUseAbilities('mine')).toBeTrue();
   });
 
+  it('says what Mend does, rather than “no effect yet”', () => {
+    const c = room();
+    // Mend moves no stat and deals no damage, so the hint - which read every
+    // other field - had nothing to say about the one ability the owner added
+    // for testing, and told the player it did nothing.
+    const hint = c.abilityHint(6);
+    expect(hint).toContain('+20 HP');
+    expect(hint).not.toContain('no effect yet');
+  });
+
   it('keeps the curtain up for the turn that won the match', () => {
     const c = room();
     c.gameState.applyGameOver = () => {};
