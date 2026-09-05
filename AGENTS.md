@@ -1100,6 +1100,14 @@ armed and the cancel at the top of `_handle_join_game_room` cancels nothing. The
 version narrows to `status='in-game'`, because turning up in the lobby is not a reason to
 spare your opponent the forfeit.
 
+  Reproducing it needs a genuinely half-open socket, which neither the test suite (clean
+  disconnects) nor a page reload (clean close) produces. Put a TCP relay in front: run
+  daphne on 8001, relay 8000 -> 8001, and for one connection close the *browser* side while
+  holding the daphne side open. The browser reconnects and rejoins; daphne still believes
+  the old socket is live. Closing the held side then delivers the late disconnect, which
+  daphne logs as `code: 1006` followed by `Ignoring stale disconnect`. Watched working on
+  5 Sep 2026 - Bob saw nothing at all and no forfeit fired.
+
 **An unanswered invite used to wedge a pair forever.** `expires_at` was written at creation
 and read by nothing the server runs - only by `cleanup_game_state`, a management command
 nobody schedules. So a responder who closed their tab left the row `pending`, and
