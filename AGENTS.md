@@ -76,6 +76,10 @@ direction/range/canJump DSL, and no white/black mirroring: flood fill is inheren
 `_handle_reveal_response` treat the config as an opaque blob so that new config sections need
 no transport-layer changes. Keep it that way.
 
+**5. A handler handed a `gameId` off the wire calls `_require_seat` first.** Checking
+`self.username == data['username']` proves who you are, not that the room you named is one of
+yours. See *Room access and identity*.
+
 ## Hex geometry
 
 Axial coordinates `(q, r)`, flat-top, radius-N board holds every hex where
@@ -1038,6 +1042,57 @@ The lobby and the room both **rejoin on every socket connection**, not just the 
 so a socket that dropped and reconnected left the player in a room the server no longer had them
 in — the page just sat there.
 
+## Room access and identity
+
+**A room's access token is refreshed on every join** - `_refresh_game_token`, called from
+`_handle_join_game_room` once the token checks out. `GAME_TOKEN_LIFETIME` is how long an
+*unused invite* stays good, not a ceiling on how long a game may run. It was a ceiling: the
+lobby and the room rejoin on every socket reopen (above), so a token frozen at room creation
+meant any blip past ten minutes answered `TOKEN_EXPIRED`, bounced the player to the lobby, and
+let the 30-second disconnect grace timer forfeit a match still being played. Eleven minutes in
+the setup screen did it too, without any network trouble at all.
+
+**The token does not live in the URL.** It arrives on the query string once, is copied into
+`sessionStorage` under `cpp.roomToken.<gameId>`, and the query string is rewritten away with
+`history.replaceState`. A bearer token in a URL is kept in browser history and leaves in the
+`Referer` of any outbound link; session storage is per-tab, dies with the tab, and is what
+carries the token across a reload now that the address bar cannot.
+
+**"All ready" means both seats.** `_all_players_ready` compares `{host, opponent}` against the
+usernames holding a ready row - not `all()` over whatever rows exist. A disconnect *deletes*
+the leaver's row, so `all()` over the one surviving row (the host's own) said yes with nobody
+left to play against, and the client's `canStartGame()` was a stricter check than the server's.
+
+**Every handler handed a `gameId` calls `_require_seat`.** `player_ready`, `player_unready` and
+`reveal_response` all take a room id off the wire; `change_game_mode`, `set_custom_config` and
+`start_game` check `game.host` directly, which is stronger. Chat is the same rule wearing
+another hat: `group_send` never asked whether the sender is in the group it sends to, so
+`_handle_game_room_message` requires `self.game_id` - only set after the token check - and
+`_handle_chat_message` requires `self.username`, or a socket that never joined talks to the
+whole lobby as `null`.
+
+**A username is taken in one statement.** `_claim_player_connection` is the only way to claim
+one: `get_or_create`, returning whether it is ours now, with `takeover=True` for the rejoin
+path that has already matched the stored secret. The read-then-`update_or_create` it replaced
+left a window - two clients that both saw a name free both wrote it, and the second walked off
+with the first's row, channel name and identity secret. `change_username` claims the new name
+*before* releasing the old, so a rename that loses leaves the player exactly where they were.
+
+**Tokens and secrets compare through `_same_secret`** - `secrets.compare_digest` over encoded
+bytes, because `compare_digest` rejects non-ASCII `str` and both of these arrive off the wire.
+
+**Reading storage goes through `storage.ts`.** `localStorage` and `sessionStorage` *throw* in
+Safari private browsing and with site data blocked - not on a missing key, on the access - and
+these reads sit in constructors and `ngOnInit`, where that takes the screen down rather than
+losing one remembered value. `AudioService` and `LocalGameService` carry their own try/catch;
+everything else calls `readStore`/`writeStore`/`removeStore`.
+
+**Readying is not ordered against starting, in tests.** The two readies travel on two
+connections and `start_game` on a third, so nothing sequences them. `_both_ready_then_start`
+in `test_consumers.py` waits for both `player_ready` broadcasts to come back on the host
+first - each is sent only after its row is written. Six sites raced this and got away with it
+while `all()` over a single row was enough.
+
 ## Staged moves (Undo / End Turn)
 
 **End Turn with nothing staged passes** - a unit turn is optional. That is a `pass_turn`
@@ -1218,6 +1273,16 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
   component entering a room re-handles whatever arrived before it existed.
 - **Reconnecting does not end a solo game.** `reconnectToServer()` only clears the deliberate
   silence; the game carries on and the socket goes back to the lobby.
+- **The socket dials the origin that served the page** - except under `ng serve`
+  (`WEBSOCKET_CONFIG.DEV_SERVER_PORT`), which proxies nothing and has to be pointed at daphne
+  by hand. Pinning `BACKEND_PORT` unconditionally sent a deployment behind TLS on 443 to
+  `:8000`, where nothing is listening.
+- **The reconnect wait is jittered upward** - `interval * (1 + 0.5 * random)`, so the clients a
+  restart knocked off do not all come back in the same three-second lockstep. The configured
+  interval is the floor; specs pin `Math.random()` to 0 so the tick arithmetic stays honest.
+- **`WEBSOCKET_CONFIG` is read, not decorative.** `RECONNECT_INTERVAL_MS` and
+  `MAX_RECONNECT_ATTEMPTS` were duplicated as literals in the service and the config was dead;
+  they are now the only copy. `DEFAULT_ROOM` was read by nobody and is gone.
 
 ## Known quirks
 

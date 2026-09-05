@@ -6,7 +6,11 @@ from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
 
-from game.models import GameRoom, GameState
+from datetime import timedelta
+
+from django.utils import timezone
+
+from game.models import GameRoom, GameState, PlayerConnection
 from game.engine.config_loader import DEFAULT_CONFIG
 from game.routing import websocket_urlpatterns
 
@@ -23,6 +27,24 @@ async def _receive_until(comm, msg_type, timeout=8):
         msg = await comm.receive_json_from(timeout=remaining)
         if msg.get('type') == msg_type:
             return msg
+
+
+async def _both_ready_then_start(host_comm, opp_comm, game_id, **start):
+    """Ready both seats, wait until the server has both, then start.
+
+    The two readies travel on two separate connections, so nothing orders
+    them against the start on a third. Each is broadcast to the room only
+    after its row is written, so seeing both arrive on the host is what says
+    the server has them - `all()` over whatever rows existed used to let a
+    start that beat one of them through anyway.
+    """
+    await host_comm.send_json_to(
+        {'type': 'player_ready', 'username': 'alice', 'gameId': game_id})
+    await opp_comm.send_json_to(
+        {'type': 'player_ready', 'username': 'bob', 'gameId': game_id})
+    for _ in range(2):
+        await _receive_until(host_comm, 'player_ready')
+    await host_comm.send_json_to({'type': 'start_game', 'gameId': game_id, **start})
 
 
 class ConsumerSmokeTests(SimpleTestCase):
@@ -194,15 +216,8 @@ class HostColourChoiceTests(TransactionTestCase):
                 'gameId': game.game_id, 'token': 'opp-tok',
             })
             await _receive_until(opp_comm, 'join_game_room_success')
-            await host_comm.send_json_to(
-                {'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id})
-            await opp_comm.send_json_to(
-                {'type': 'player_ready', 'username': 'bob', 'gameId': game.game_id})
-
-            start = {'type': 'start_game', 'gameId': game.game_id}
-            if host_color is not None:
-                start['hostColor'] = host_color
-            await host_comm.send_json_to(start)
+            seat = {} if host_color is None else {'hostColor': host_color}
+            await _both_ready_then_start(host_comm, opp_comm, game.game_id, **seat)
             started = await _receive_until(host_comm, 'game_started')
             return started
         finally:
@@ -266,9 +281,7 @@ class TurnTimerLiveIntegrationTests(TransactionTestCase):
             })
             await _receive_until(opp_comm, 'join_game_room_success')
 
-            await host_comm.send_json_to({'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id})
-            await opp_comm.send_json_to({'type': 'player_ready', 'username': 'bob', 'gameId': game.game_id})
-            await host_comm.send_json_to({'type': 'start_game', 'gameId': game.game_id})
+            await _both_ready_then_start(host_comm, opp_comm, game.game_id)
 
             started_host = await _receive_until(host_comm, 'game_started')
             started_opp = await _receive_until(opp_comm, 'game_started')
@@ -327,9 +340,7 @@ class DisconnectGraceLiveIntegrationTests(TransactionTestCase):
         })
         await _receive_until(opp_comm, 'join_game_room_success')
 
-        await host_comm.send_json_to({'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id})
-        await opp_comm.send_json_to({'type': 'player_ready', 'username': 'bob', 'gameId': game.game_id})
-        await host_comm.send_json_to({'type': 'start_game', 'gameId': game.game_id})
+        await _both_ready_then_start(host_comm, opp_comm, game.game_id)
         await _receive_until(host_comm, 'game_started')
         await _receive_until(opp_comm, 'game_started')
 
@@ -495,9 +506,7 @@ class CustomConfigLiveIntegrationTests(TransactionTestCase):
             room = await GameRoom.objects.aget(game_id=game.game_id)
             self.assertEqual(room.custom_config['board']['radius'], 30)
 
-            await host_comm.send_json_to({'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id})
-            await opp_comm.send_json_to({'type': 'player_ready', 'username': 'bob', 'gameId': game.game_id})
-            await host_comm.send_json_to({'type': 'start_game', 'gameId': game.game_id})
+            await _both_ready_then_start(host_comm, opp_comm, game.game_id)
 
             started = await _receive_until(host_comm, 'game_started')
             self.assertEqual(started['config']['board']['radius'], 30)
@@ -629,9 +638,7 @@ class GameLifecycleGuardTests(TransactionTestCase):
         })
         await _receive_until(opp_comm, 'join_game_room_success')
 
-        await host_comm.send_json_to({'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id})
-        await opp_comm.send_json_to({'type': 'player_ready', 'username': 'bob', 'gameId': game.game_id})
-        await host_comm.send_json_to({'type': 'start_game', 'gameId': game.game_id})
+        await _both_ready_then_start(host_comm, opp_comm, game.game_id)
         started = await _receive_until(host_comm, 'game_started')
         await _receive_until(opp_comm, 'game_started')
         return game, host_comm, opp_comm, started
@@ -666,9 +673,7 @@ class GameLifecycleGuardTests(TransactionTestCase):
             await _receive_until(opp_comm, 'game_over')
 
             # Both re-ready and the host starts again - must succeed (rematch).
-            await host_comm.send_json_to({'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id})
-            await opp_comm.send_json_to({'type': 'player_ready', 'username': 'bob', 'gameId': game.game_id})
-            await host_comm.send_json_to({'type': 'start_game', 'gameId': game.game_id})
+            await _both_ready_then_start(host_comm, opp_comm, game.game_id)
             restarted = await _receive_until(host_comm, 'game_started')
             self.assertEqual(restarted['turnNumber'], 1)
 
@@ -903,3 +908,234 @@ class LobbyIdentityHijackTests(TransactionTestCase):
         finally:
             await owner.disconnect()
             await attacker.disconnect()
+
+
+class RoomAccessGuardTests(TransactionTestCase):
+    """
+    The checks around getting into a room and readying up in one, as opposed
+    to playing in it: an access token stays good for as long as its holder
+    keeps turning up, "all ready" means both seats rather than however many
+    rows happen to exist, and a handler handed a room id off the wire only
+    acts on rooms the sender actually sits in.
+    """
+
+    async def _room(self, **kwargs):
+        return await GameRoom.objects.acreate(
+            host='alice', opponent='bob', status='waiting',
+            host_token='host-tok', opponent_token='opp-tok', **kwargs,
+        )
+
+    async def _join(self, game_id, username, token):
+        comm = WebsocketCommunicator(URLRouter(websocket_urlpatterns), f"/ws/game/{game_id}/")
+        await comm.connect()
+        await comm.send_json_to({
+            'type': 'join_game_room', 'username': username, 'gameId': game_id, 'token': token,
+        })
+        return comm
+
+    async def _joined(self, game_id, username, token):
+        comm = await self._join(game_id, username, token)
+        await _receive_until(comm, 'join_game_room_success')
+        return comm
+
+    async def test_joining_pushes_the_token_expiry_out(self):
+        # The client rejoins on every socket reopen, so an expiry frozen at
+        # room creation turned any blip past the ten-minute mark into
+        # TOKEN_EXPIRED, a bounce to the lobby, and a disconnect forfeit of a
+        # match still being played.
+        game = await self._room(token_expires_at=timezone.now() + timedelta(seconds=5))
+        comm = await self._joined(game.game_id, 'alice', 'host-tok')
+        try:
+            refreshed = await GameRoom.objects.aget(game_id=game.game_id)
+            self.assertGreater(refreshed.token_expires_at, timezone.now() + timedelta(minutes=5))
+        finally:
+            await comm.disconnect()
+
+    async def test_an_expired_token_is_still_refused(self):
+        game = await self._room(token_expires_at=timezone.now() - timedelta(seconds=1))
+        comm = await self._join(game.game_id, 'alice', 'host-tok')
+        try:
+            err = await _receive_until(comm, 'error')
+            self.assertEqual(err['code'], 'TOKEN_EXPIRED')
+        finally:
+            await comm.disconnect()
+
+    async def test_start_needs_both_seats_ready_not_just_a_row(self):
+        game = await self._room()
+        host = await self._joined(game.game_id, 'alice', 'host-tok')
+        opp = await self._joined(game.game_id, 'bob', 'opp-tok')
+        try:
+            await host.send_json_to({
+                'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id})
+            await _receive_until(host, 'player_ready')
+
+            # One seat has readied. `all()` over the rows that exist says yes
+            # to that - and a disconnect deletes the leaver's row, so that was
+            # reachable without anybody crafting a thing.
+            await host.send_json_to({'type': 'start_game', 'gameId': game.game_id})
+            err = await _receive_until(host, 'error')
+            self.assertEqual(err['code'], 'NOT_ALL_READY')
+            self.assertFalse(await GameState.objects.filter(game_id=game.game_id).aexists())
+        finally:
+            await host.disconnect()
+            await opp.disconnect()
+
+    async def test_both_seats_ready_still_starts(self):
+        game = await self._room()
+        host = await self._joined(game.game_id, 'alice', 'host-tok')
+        opp = await self._joined(game.game_id, 'bob', 'opp-tok')
+        try:
+            for comm, name in ((host, 'alice'), (opp, 'bob')):
+                await comm.send_json_to({
+                    'type': 'player_ready', 'username': name, 'gameId': game.game_id})
+            # Both readies reach the room only once their rows are written, so
+            # seeing both here is what says the server has them.
+            readied = [(await _receive_until(host, 'player_ready'))['username']
+                       for _ in range(2)]
+            self.assertCountEqual(readied, ['alice', 'bob'])
+
+            await host.send_json_to({'type': 'start_game', 'gameId': game.game_id})
+            started = await _receive_until(host, 'game_started')
+            self.assertEqual(started['gameId'], game.game_id)
+        finally:
+            await host.disconnect()
+            await opp.disconnect()
+
+    async def test_an_outsider_cannot_touch_a_rooms_ready_state(self):
+        game = await self._room()
+        host = await self._joined(game.game_id, 'alice', 'host-tok')
+        opp = await self._joined(game.game_id, 'bob', 'opp-tok')
+        outsider = WebsocketCommunicator(URLRouter(websocket_urlpatterns), "/ws/game/lobby/")
+        try:
+            await outsider.connect()
+            await _receive_until(outsider, 'connection_established')
+            await outsider.send_json_to({
+                'type': 'join_lobby', 'username': 'mallory', 'secret': 'm-secret'})
+            await _receive_until(outsider, 'user_list')
+
+            # Knowing the room id used to be enough to write a ready row into
+            # somebody else's room - and an unready one wedged it shut.
+            await outsider.send_json_to({
+                'type': 'player_unready', 'username': 'mallory', 'gameId': game.game_id})
+            err = await _receive_until(outsider, 'error')
+            self.assertEqual(err['code'], 'NOT_IN_GAME')
+        finally:
+            await host.disconnect()
+            await opp.disconnect()
+            await outsider.disconnect()
+
+    async def test_chat_needs_a_name_and_a_room(self):
+        game = await self._room()
+        # Connected to the room's own URL, having shown no token: connect()
+        # only joins the channel group for the lobby, but group_send never
+        # asked whether the sender was in the group it was sending to.
+        stranger = WebsocketCommunicator(
+            URLRouter(websocket_urlpatterns), f"/ws/game/{game.game_id}/")
+        try:
+            await stranger.connect()
+            await _receive_until(stranger, 'connection_established')
+
+            await stranger.send_json_to({'type': 'game_room_message', 'content': 'hello'})
+            err = await _receive_until(stranger, 'error')
+            self.assertEqual(err['code'], 'NOT_IN_GAME_ROOM')
+
+            await stranger.send_json_to({'type': 'chat_message', 'content': 'hello'})
+            err = await _receive_until(stranger, 'error')
+            self.assertEqual(err['code'], 'NOT_IN_LOBBY')
+        finally:
+            await stranger.disconnect()
+
+
+class UsernameClaimTests(TestCase):
+    """
+    Taking a username is one statement (_claim_player_connection), so a
+    second client cannot land between a "is it free?" read and the write and
+    walk off with the first one's row, channel name and identity secret.
+    """
+
+    def setUp(self):
+        from game.consumers import GameConsumer
+        self.consumer = GameConsumer()
+
+    async def test_a_taken_name_is_refused_without_touching_the_row(self):
+        await PlayerConnection.objects.acreate(
+            username='frank', channel_name='chan-a', secret='a-secret')
+
+        took = await self.consumer._claim_player_connection('frank', 'chan-b', 'b-secret')
+
+        self.assertFalse(took)
+        row = await PlayerConnection.objects.aget(username='frank')
+        self.assertEqual(row.channel_name, 'chan-a')
+        self.assertEqual(row.secret, 'a-secret')
+
+    async def test_a_free_name_is_taken(self):
+        self.assertTrue(
+            await self.consumer._claim_player_connection('grace', 'chan-a', 'g-secret'))
+        row = await PlayerConnection.objects.aget(username='grace')
+        self.assertEqual(row.channel_name, 'chan-a')
+
+    async def test_the_same_socket_can_say_hello_twice(self):
+        await PlayerConnection.objects.acreate(
+            username='heidi', channel_name='chan-a', secret='h-secret')
+
+        # Already ours - a repeated join_lobby on one socket is not a clash.
+        self.assertTrue(
+            await self.consumer._claim_player_connection('heidi', 'chan-a', 'h-secret'))
+
+    async def test_a_proven_rejoin_takes_the_row_over(self):
+        await PlayerConnection.objects.acreate(
+            username='ivan', channel_name='old-chan', secret='i-secret')
+
+        # takeover: the caller has already matched the stored secret.
+        self.assertTrue(await self.consumer._claim_player_connection(
+            'ivan', 'new-chan', 'i-secret', takeover=True))
+        row = await PlayerConnection.objects.aget(username='ivan')
+        self.assertEqual(row.channel_name, 'new-chan')
+
+
+class RenameSafetyTests(TransactionTestCase):
+    """
+    A rename claims the new name before releasing the old one: losing the
+    race used to leave the player with no connection row at all, because the
+    old one was deleted up front.
+    """
+
+    async def _join(self, username, secret):
+        comm = WebsocketCommunicator(URLRouter(websocket_urlpatterns), "/ws/game/lobby/")
+        await comm.connect()
+        await _receive_until(comm, 'connection_established')
+        await comm.send_json_to({
+            'type': 'join_lobby', 'username': username, 'secret': secret})
+        await _receive_until(comm, 'user_list')
+        return comm
+
+    async def test_a_rename_that_loses_keeps_the_name_you_had(self):
+        dave = await self._join('dave', 'dave-secret')
+        erin = await self._join('erin', 'erin-secret')
+        try:
+            await dave.send_json_to({
+                'type': 'change_username', 'oldUsername': 'dave',
+                'newUsername': 'erin', 'secret': 'dave-secret'})
+            err = await _receive_until(dave, 'error')
+            self.assertEqual(err['code'], 'USERNAME_TAKEN')
+
+            self.assertTrue(await PlayerConnection.objects.filter(username='dave').aexists())
+            row = await PlayerConnection.objects.aget(username='erin')
+            self.assertEqual(row.secret, 'erin-secret')
+        finally:
+            await dave.disconnect()
+            await erin.disconnect()
+
+    async def test_renaming_to_the_name_already_held_still_confirms(self):
+        # The client keeps the rename box open until the server answers, so a
+        # no-op that returned silently left it open forever.
+        frank = await self._join('frank', 'frank-secret')
+        try:
+            await frank.send_json_to({
+                'type': 'change_username', 'oldUsername': 'frank',
+                'newUsername': 'frank', 'secret': 'frank-secret'})
+            changed = await _receive_until(frank, 'username_changed')
+            self.assertEqual(changed['newUsername'], 'frank')
+            self.assertTrue(await PlayerConnection.objects.filter(username='frank').aexists())
+        finally:
+            await frank.disconnect()

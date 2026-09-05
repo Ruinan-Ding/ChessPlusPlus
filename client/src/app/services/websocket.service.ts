@@ -60,8 +60,8 @@ export class WebsocketService {
   // typing a username never drags the connection dialog back up.
   private offline = false;
   
-  private maxReconnectAttempts = 5;
-  private reconnectInterval = 3000; // 3 seconds
+  private maxReconnectAttempts = WEBSOCKET_CONFIG.MAX_RECONNECT_ATTEMPTS;
+  private reconnectInterval = WEBSOCKET_CONFIG.RECONNECT_INTERVAL_MS;
   private reconnectTimeout: any = null;
   /**
    * Give up on a handshake that never resolves. Chrome throttles repeated
@@ -205,10 +205,16 @@ export class WebsocketService {
     this.socket = null;
 
     try {
-      const { protocol, hostname } = window.location;
+      const { protocol, hostname, port, host } = window.location;
       const wsProtocol = protocol === 'https:' ? 'wss' : 'ws';
-      const backendPort = WEBSOCKET_CONFIG.BACKEND_PORT;
-      const wsUrl = `${wsProtocol}://${hostname}:${backendPort}/ws/game/${roomName}/`;
+      // The server that served the page is the server that answers the
+      // socket - except under `ng serve`, which proxies nothing and has to be
+      // pointed at daphne by hand. Pinning the backend port unconditionally
+      // dialled :8000 on a deployment sitting behind TLS on 443.
+      const wsHost = port === WEBSOCKET_CONFIG.DEV_SERVER_PORT
+        ? `${hostname}:${WEBSOCKET_CONFIG.BACKEND_PORT}`
+        : host;
+      const wsUrl = `${wsProtocol}://${wsHost}/ws/game/${roomName}/`;
       console.log(`[WebSocket] Attempting to connect to: ${wsUrl}`);
       this.socket = new WebSocket(wsUrl);
 
@@ -351,9 +357,13 @@ export class WebsocketService {
       
       console.log(`Attempting to reconnect (${currentAttempts + 1}/${this.maxReconnectAttempts})...`);
       
+      // Jittered upward: without it every client a server restart knocked off
+      // comes back in the same three-second lockstep and lands together. The
+      // interval is the floor, so the wait is never shorter than configured.
+      const delay = Math.round(this.reconnectInterval * (1 + 0.5 * Math.random()));
       this.reconnectTimeout = setTimeout(() => {
         this.createSocket(this.currentRoomName);
-      }, this.reconnectInterval);
+      }, delay);
     } else {
       console.log('Max reconnect attempts reached. Connection failed.');
       this.reconnectingSubject.next(false);

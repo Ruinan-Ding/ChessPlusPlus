@@ -403,8 +403,19 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (this.gameId === 'local') this.restoreLocalUiState();
       
       this.route.queryParams.pipe(take(1)).subscribe(queryParams => {
-        this.accessToken = queryParams['token'] || '';
-        
+        // The token arrives on the URL once and then lives in session
+        // storage. A bearer token in a query string is kept in browser
+        // history and leaves in the Referer of any outbound link; session
+        // storage is per-tab, dies with the tab, and is what carries the
+        // token across a reload now that the address bar no longer can.
+        const tokenKey = `cpp.roomToken.${this.gameId}`;
+        const tokenFromUrl = queryParams['token'] || '';
+        this.accessToken = tokenFromUrl || readStore('session', tokenKey) || '';
+        if (tokenFromUrl) {
+          writeStore('session', tokenKey, tokenFromUrl);
+          history.replaceState(history.state, '', window.location.pathname);
+        }
+
         if (!this.accessToken) {
           console.error('[GameRoom] No access token provided - unauthorized access attempt');
           this.router.navigate(['/lobby']);

@@ -82,9 +82,28 @@ RATE_LIMIT_WINDOW_SECONDS = 10
 RATE_LIMIT_MAX_MESSAGES = 30  # ~3/sec sustained, generous burst allowance
 
 
+# How long a room's access token stays good. Refreshed on every successful
+# join (see _handle_join_game_room), so this is how long an *unused* invite
+# lasts - not a ceiling on how long a game may run.
+GAME_TOKEN_LIFETIME = timedelta(minutes=10)
+
+
 def _extract_secret(data: Dict[str, Any]) -> str:
     """Pull the client-asserted identity secret out of an incoming message."""
     return str(data.get('secret') or '').strip()[:64]
+
+
+def _guest_name() -> str:
+    """A free-for-the-taking name, for somebody whose own was not."""
+    return f"Guest{''.join(random.choices(string.digits, k=6))}"
+
+
+def _same_secret(stored: str, offered: str) -> bool:
+    """Constant-time compare for the two strings that gate access here: a
+    room's access token and a browser's identity secret. Encoded rather than
+    compared as str because compare_digest rejects non-ASCII text, and both
+    of these arrive off the wire."""
+    return secrets.compare_digest(str(stored).encode(), str(offered).encode())
 
 
 class GameConsumer(AsyncWebsocketConsumer):
@@ -313,6 +332,22 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.error(f"Error processing message: {e}", exc_info=True)
             await send_error(self, 'INTERNAL_ERROR', 'An error occurred processing your message')
     
+    async def _require_seat(self, game_id: str):
+        """The room this player actually holds a seat in, or None.
+
+        Every handler that takes a `gameId` off the wire needs this: proving
+        "I am who I say I am" says nothing about whether the room named is
+        one of mine. Sends the error itself, so callers just return on None.
+        """
+        game = await self._get_game_by_id(game_id)
+        if not game:
+            await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
+            return None
+        if self.username not in (game.host, game.opponent):
+            await send_error(self, 'NOT_IN_GAME', 'You are not in this game')
+            return None
+        return game
+
     # ==================== Message Handlers ====================
     
     async def _handle_join_lobby(self, data):
@@ -326,23 +361,33 @@ class GameConsumer(AsyncWebsocketConsumer):
             validate_username(username)
 
             existing_connection = await self._get_player_connection(username)
+            takeover = False
             if existing_connection and existing_connection.channel_name != self.channel_name:
                 # ponytail: single seam for identity verification - replace this
                 # comparison with real credential checking if accounts are added later.
-                secret_ok = bool(existing_connection.secret) and existing_connection.secret == client_secret
+                secret_ok = bool(existing_connection.secret) and _same_secret(existing_connection.secret, client_secret)
                 if data.get('rejoining', False) and secret_ok:
                     logger.info(f"User {username} rejoining lobby with new channel")
+                    takeover = True
                 else:
                     if data.get('rejoining', False):
                         logger.warning(f"Rejected rejoin claim for '{username}': secret mismatch")
                     # Generate a random username instead of rejecting
-                    random_suffix = ''.join(random.choices(string.digits, k=6))
-                    username = f"Guest{random_suffix}"
+                    username = _guest_name()
                     username_was_taken = True
                     logger.info(f"Username '{original_username}' was taken, assigned '{username}' instead")
 
+            # The claim decides it, not the read above. Between the two, a
+            # second client that also saw the name free could write it - and
+            # update_or_create on the primary key handed it the first client's
+            # row, channel name and identity secret with it.
+            if not await self._claim_player_connection(username, self.channel_name, client_secret, takeover=takeover):
+                username = _guest_name()
+                username_was_taken = True
+                logger.info(f"Username '{original_username}' was claimed mid-join, assigned '{username}' instead")
+                await self._claim_player_connection(username, self.channel_name, client_secret)
+
             self.username = username
-            await self._create_or_update_player_connection(username, self.channel_name, 'online', secret=client_secret)
             
             if username_was_taken:
                 await send_json_response(self, {
@@ -394,6 +439,12 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def _handle_chat_message(self, data):
         """Handle chat message in lobby (or from game room to lobby)"""
         try:
+            if not self.username:
+                # Otherwise a socket that connected and never joined talks to
+                # the whole lobby as `null`.
+                await send_error(self, 'NOT_IN_LOBBY', 'Join the lobby before chatting')
+                return
+
             validate_required_fields(data, ['content'])
             validate_chat_message(data['content'])
             
@@ -421,16 +472,19 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Cannot change username for another user')
                 return
 
-            existing = await self._get_player_connection(new_username)
-            if existing:
-                await send_error(self, 'USERNAME_TAKEN', f'Username "{new_username}" is already taken')
-                return
+            # Claim first, release second. The read-then-write this replaces
+            # could be raced into a takeover, and deleting the old row up front
+            # meant a rename that lost that race left the player with no row at
+            # all. A claim that fails now costs them nothing. A rename to the
+            # name already held touches neither: releasing it would drop the
+            # row that was just claimed, and the client is still waiting to be
+            # told the change went through.
+            if new_username != old_username:
+                if not await self._claim_player_connection(new_username, self.channel_name, client_secret):
+                    await send_error(self, 'USERNAME_TAKEN', f'Username "{new_username}" is already taken')
+                    return
+                await self._delete_player_connection(old_username, channel_name=self.channel_name)
 
-            # Update in database - first delete old, then create new to avoid duplicates
-            # This is more reliable than updating in place
-            await self._delete_player_connection(old_username, channel_name=self.channel_name)
-            await self._create_or_update_player_connection(new_username, self.channel_name, 'online', secret=client_secret)
-            
             self.username = new_username
             
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
@@ -697,14 +751,21 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return
             
             expected_token = game.host_token if username == game.host else game.opponent_token
-            if not expected_token or token != expected_token:
+            if not expected_token or not _same_secret(expected_token, token):
                 await send_error(self, 'INVALID_TOKEN', 'Invalid or missing access token')
                 return
-            
+
             if game.token_expires_at and timezone.now() > game.token_expires_at:
                 await send_error(self, 'TOKEN_EXPIRED', 'Access token has expired')
                 return
-            
+
+            # Getting this far proves the seat is theirs, so the clock starts
+            # over. The client rejoins on every socket reopen, so a token
+            # frozen at room creation meant any blip past the ten-minute mark
+            # answered TOKEN_EXPIRED, bounced the player to the lobby, and let
+            # the disconnect grace timer forfeit a match still being played.
+            await self._refresh_game_token(game_id)
+
             self.game_id = game_id
 
             # Cancel any pending disconnect-forfeit grace timer
@@ -823,12 +884,20 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def _handle_game_room_message(self, data):
         """Handle game room chat message"""
         try:
+            if not self.username or not self.game_id:
+                # group_send never asked whether the sender is in the group, so
+                # without this a socket opened on a known room id could talk
+                # into that room having shown no token at all. game_id is only
+                # set by _handle_join_game_room, after the token check.
+                await send_error(self, 'NOT_IN_GAME_ROOM', 'You are not in a game room')
+                return
+
             validate_required_fields(data, ['content'])
             validate_chat_message(data['content'])
-            
+
             # Send directly to game room group (not wrapped in broadcast_message)
             await self.channel_layer.group_send(
-                self.room_group_name,
+                f'game_{self.game_id}',
                 {
                     'type': 'game_room_message',
                     'username': self.username,
@@ -851,14 +920,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Can only ready yourself')
                 return
             
-            game = await self._get_game_by_id(game_id)
-            if not game:
-                await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
+            if not await self._require_seat(game_id):
                 return
-            
+
             await self._set_ready_status(game_id, username, True)
-            
-            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+
+            await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
                 'type': 'player_ready',
                 'username': username
             })
@@ -879,15 +946,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Can only unready yourself')
                 return
             
-            game = await self._get_game_by_id(game_id)
-            if not game:
-                await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
+            if not await self._require_seat(game_id):
                 return
-            
+
             await self._set_ready_status(game_id, username, False)
 
             silent = data.get('silent', False)
-            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+            await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
                 'type': 'player_unready',
                 'username': username,
                 'silent': silent
@@ -1065,7 +1130,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             
             game_id = data.get('gameId', '').strip()
             accepted = data.get('accepted', False)
-            
+
+            if not await self._require_seat(game_id):
+                return
+
             if game_id not in _pending_reveal_requests:
                 await send_error(self, 'NO_PENDING_REQUEST', 'No pending reveal mode request')
                 return
@@ -1884,6 +1952,36 @@ class GameConsumer(AsyncWebsocketConsumer):
         return connection
     
     @database_sync_to_async
+    def _claim_player_connection(self, username, channel_name, secret, takeover=False):
+        """Take `username` for this channel. True if it is ours afterwards.
+
+        One statement, so there is no window to race: the check-then-write
+        this replaces let two clients that both saw the name free both write
+        it, and `update_or_create` on the primary key then handed the second
+        the first's row - channel name and identity secret with it.
+
+        `takeover` is the rejoin path, where the caller has already matched
+        the stored secret and replacing the row is the whole point.
+        """
+        fields = {
+            'channel_name': channel_name,
+            'status': 'online',
+            'secret': secret,
+            'last_activity': timezone.now(),
+        }
+        if takeover:
+            PlayerConnection.objects.update_or_create(  # type: ignore
+                username=username, defaults=fields)
+            return True
+        connection, created = PlayerConnection.objects.get_or_create(  # type: ignore
+            username=username, defaults=fields)
+        if not created and connection.channel_name == channel_name:
+            # The same socket saying hello twice. Already ours; refresh it.
+            PlayerConnection.objects.filter(username=username).update(**fields)  # type: ignore
+            return True
+        return created
+
+    @database_sync_to_async
     def _update_player_status(self, username, status):
         """Update a player's status"""
         rows_updated = PlayerConnection.objects.filter(username=username).update(  # type: ignore
@@ -1965,7 +2063,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         """Create a new game room with access tokens"""
         host_token = secrets.token_hex(32)
         opponent_token = secrets.token_hex(32)
-        token_expires = timezone.now() + timedelta(minutes=10)
+        token_expires = timezone.now() + GAME_TOKEN_LIFETIME
         
         game = GameRoom.objects.create(  # type: ignore
             game_id=game_id,
@@ -1986,6 +2084,17 @@ class GameConsumer(AsyncWebsocketConsumer):
         except GameRoom.DoesNotExist:  # type: ignore
             return None
     
+    @database_sync_to_async
+    def _refresh_game_token(self, game_id):
+        """Restart the access token's clock, from now.
+
+        The expiry is there so an invite nobody used goes stale, not so a
+        player is locked out of the room they are sitting in - see the call
+        site in _handle_join_game_room for what that cost.
+        """
+        GameRoom.objects.filter(game_id=game_id).update(  # type: ignore
+            token_expires_at=timezone.now() + GAME_TOKEN_LIFETIME)
+
     @database_sync_to_async
     def _update_game_status(self, game_id, status):
         """Update game status"""
@@ -2058,9 +2167,21 @@ class GameConsumer(AsyncWebsocketConsumer):
     
     @database_sync_to_async
     def _all_players_ready(self, game_id):
-        """Check if all players in a game are ready"""
-        statuses = PlayerReadyStatus.objects.filter(game_id=game_id)  # type: ignore
-        return statuses.exists() and all(s.is_ready for s in statuses)
+        """True only when BOTH seats have readied.
+
+        `all()` over whatever rows exist answers a different question: a
+        disconnect deletes the leaver's row (see _cleanup_game_room_connection),
+        so the last row standing was the host's own and the check passed with
+        nobody left to play against.
+        """
+        try:
+            game = GameRoom.objects.get(game_id=game_id)  # type: ignore
+        except GameRoom.DoesNotExist:  # type: ignore
+            return False
+        seats = {name for name in (game.host, game.opponent) if name}
+        ready = set(PlayerReadyStatus.objects.filter(  # type: ignore
+            game_id=game_id, is_ready=True).values_list('username', flat=True))
+        return bool(seats) and seats <= ready
     
     @database_sync_to_async
     def _get_ready_statuses(self, game_id):
