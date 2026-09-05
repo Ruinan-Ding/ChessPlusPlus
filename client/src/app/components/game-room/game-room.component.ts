@@ -5,6 +5,7 @@ import { WebsocketService } from '../../services/websocket.service';
 import { Subject } from 'rxjs';
 import { takeUntil, take, filter } from 'rxjs/operators';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
+import { VolumeControlComponent } from '../volume-control/volume-control.component';
 import { ActivatedRoute, Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
@@ -254,7 +255,8 @@ function fallen(
 @Component({
   selector: 'app-game-room',
   standalone: true,
-  imports: [CommonModule, FormsModule, ConnectionStatusComponent, GameBoardComponent],
+  imports: [CommonModule, FormsModule, ConnectionStatusComponent, GameBoardComponent,
+    VolumeControlComponent],
   templateUrl: './game-room.component.html',
   styleUrls: ['./game-room.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush

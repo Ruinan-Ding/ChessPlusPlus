@@ -1,6 +1,13 @@
 <div class="game-room-container" *ngIf="gameState.state$ | async as state">
   <header>
-    <h1>Game Room</h1>
+    <!-- Grouped, so the speaker keeps the same place whether or not the turn
+         indicator is there to take the middle. Every move, blow, cast, commit
+         and timer beep on this screen makes a sound; this is where turning
+         them down belongs. -->
+    <div class="title-group">
+      <h1>Game Room</h1>
+      <app-volume-control></app-volume-control>
+    </div>
     <div class="turn-indicator" *ngIf="gameStarted && !state.endReason"
          [class.your-turn]="indicatorMine"
          [class.opponent-turn]="!indicatorMine"

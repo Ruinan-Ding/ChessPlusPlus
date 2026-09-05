@@ -5,18 +5,19 @@ import { WebsocketService } from '../../services/websocket.service';
 import { Subject } from 'rxjs';
 import { takeUntil, filter, take } from 'rxjs/operators';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
+import { VolumeControlComponent } from '../volume-control/volume-control.component';
 import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
 import { ActivatedRoute, Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { AuthService } from '../../services/auth.service';
-import { AudioService } from '../../services/audio.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 
 @Component({
   selector: 'app-lobby',
   standalone: true,
-  imports: [CommonModule, FormsModule, ConnectionStatusComponent, ConnectionDialogComponent],
+  imports: [CommonModule, FormsModule, ConnectionStatusComponent, ConnectionDialogComponent,
+    VolumeControlComponent],
   templateUrl: './lobby.component.html',
   styleUrls: ['./lobby.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -35,7 +36,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
 
   /** False whenever the socket is down, offline mode included. */
   serverOnline = false;
-  volumeOpen = false;
   messages: ChatMessage[] = [];
   messageContent: string = '';
   newUsername: string = '';
@@ -60,7 +60,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
 
   constructor(
     private wsService: WebsocketService,
-    public audio: AudioService,
     private router: Router,
     private route: ActivatedRoute,
     private sharedDataService: SharedDataService,
