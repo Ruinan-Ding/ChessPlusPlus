@@ -104,7 +104,15 @@ async def broadcast_to_group(channel_layer, group_name: str, message: dict) -> N
 
 
 def get_challenge_expiration_time():
-    """Get the expiration time for a new challenge (30 seconds from now)"""
+    """When a new challenge stops counting (30 seconds from now).
+
+    Longer than the 5-second countdown the lobby shows the responder, on
+    purpose: that countdown is the deadline for somebody who is there to see
+    it, and auto-declines. This is the backstop for a responder who is not -
+    a closed tab never declines, and the invite would otherwise sit 'pending'
+    forever with both players stuck 'invited'. Swept by
+    _expire_stale_challenges on the next invite anybody sends.
+    """
     return timezone.now() + timedelta(seconds=30)
 
 

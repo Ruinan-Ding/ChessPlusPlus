@@ -10,7 +10,7 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from game.models import GameRoom, GameState, PlayerConnection
+from game.models import GameChallenge, GameRoom, GameState, PlayerConnection
 from game.engine.config_loader import DEFAULT_CONFIG
 from game.routing import websocket_urlpatterns
 
@@ -27,6 +27,27 @@ async def _receive_until(comm, msg_type, timeout=8):
         msg = await comm.receive_json_from(timeout=remaining)
         if msg.get('type') == msg_type:
             return msg
+
+
+async def _drain(comm, seconds):
+    """Every message type that turns up in the next `seconds`.
+
+    For asserting that something does *not* arrive - there is no other way to
+    tell "nothing came" from "it has not come yet".
+
+    Polls with receive_nothing rather than waiting on a receive: asgiref's
+    receive_output *cancels the application it is driving* when it times out
+    (testing.py), so waiting for quiet the obvious way kills the consumer
+    under test and the failure surfaces as a CancelledError in teardown.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + seconds
+    types = []
+    while loop.time() < deadline:
+        if await comm.receive_nothing(timeout=0.1, interval=0.01):
+            continue
+        types.append((await comm.receive_json_from()).get('type'))
+    return types
 
 
 async def _both_ready_then_start(host_comm, opp_comm, game_id, **start):
@@ -1139,3 +1160,127 @@ class RenameSafetyTests(TransactionTestCase):
             self.assertTrue(await PlayerConnection.objects.filter(username='frank').aexists())
         finally:
             await frank.disconnect()
+
+
+class StaleSocketTests(TransactionTestCase):
+    """
+    A socket the player has already replaced closing late must not be read as
+    them leaving. A half-open connection is torn down whenever the OS or a
+    proxy gives up on it, which can be long after the client noticed, gave up
+    and reconnected - and that close used to clear a live player's ready tick,
+    tell the room they had dropped, and arm a forfeit against them.
+    """
+
+    async def _joined(self, game_id, username, token):
+        comm = WebsocketCommunicator(URLRouter(websocket_urlpatterns), f"/ws/game/{game_id}/")
+        await comm.connect()
+        await comm.send_json_to({
+            'type': 'join_game_room', 'username': username, 'gameId': game_id, 'token': token,
+        })
+        await _receive_until(comm, 'join_game_room_success')
+        return comm
+
+    async def test_a_replaced_socket_closing_does_not_forfeit_the_player(self):
+        with patch('game.consumers.DISCONNECT_GRACE_SECONDS', 1):
+            game = await GameRoom.objects.acreate(
+                host='alice', opponent='bob', status='waiting',
+                host_token='host-tok', opponent_token='opp-tok',
+            )
+            old = await self._joined(game.game_id, 'alice', 'host-tok')
+            opp = await self._joined(game.game_id, 'bob', 'opp-tok')
+            await _both_ready_then_start(old, opp, game.game_id)
+            await _receive_until(old, 'game_started')
+            await _receive_until(opp, 'game_started')
+
+            # Alice's client gave up on a socket that had stopped answering
+            # and opened another. The seat is the new one's.
+            new = await self._joined(game.game_id, 'alice', 'host-tok')
+            try:
+                # Only now does the old one's close finally land.
+                await old.disconnect()
+
+                seen = await _drain(opp, 2.5)
+                self.assertNotIn('opponent_disconnected', seen)
+                self.assertNotIn('game_over', seen)
+
+                state = await GameState.objects.aget(game_id=game.game_id)
+                self.assertEqual(state.end_reason, '')
+            finally:
+                await new.disconnect()
+                await opp.disconnect()
+
+
+class SeatOwnershipTests(TestCase):
+    """_reclaimed_by_newer_socket, the question both stale-socket guards ask."""
+
+    def setUp(self):
+        from game.consumers import GameConsumer
+        self.consumer = GameConsumer()
+
+    async def test_another_channel_holds_the_row(self):
+        await PlayerConnection.objects.acreate(
+            username='alice', channel_name='new-chan', status='in-game')
+        self.assertTrue(
+            await self.consumer._reclaimed_by_newer_socket('alice', 'old-chan'))
+
+    async def test_our_own_channel_is_not_a_replacement(self):
+        await PlayerConnection.objects.acreate(
+            username='alice', channel_name='old-chan', status='in-game')
+        self.assertFalse(
+            await self.consumer._reclaimed_by_newer_socket('alice', 'old-chan'))
+
+    async def test_nobody_there_is_not_a_replacement(self):
+        self.assertFalse(
+            await self.consumer._reclaimed_by_newer_socket('alice', 'old-chan'))
+
+    async def test_turning_up_in_the_lobby_does_not_save_the_match(self):
+        # Back at a board is back. Back in the lobby is not - their opponent
+        # is still sitting in a room waiting for somebody who left it.
+        await PlayerConnection.objects.acreate(
+            username='alice', channel_name='new-chan', status='online')
+        self.assertFalse(await self.consumer._reclaimed_by_newer_socket(
+            'alice', 'old-chan', status='in-game'))
+
+
+class StaleChallengeTests(TransactionTestCase):
+    """
+    An invite nobody answered used to wedge the pair permanently: the row
+    stayed 'pending' so CHALLENGE_EXISTS refused every future invite between
+    them, and both players stayed 'invited', which is refused as busy for
+    everyone. expires_at was written at creation and read by nothing running.
+    """
+
+    async def _join(self, username):
+        comm = WebsocketCommunicator(URLRouter(websocket_urlpatterns), "/ws/game/lobby/")
+        await comm.connect()
+        await _receive_until(comm, 'connection_established')
+        await comm.send_json_to({
+            'type': 'join_lobby', 'username': username, 'secret': f'{username}-secret'})
+        await _receive_until(comm, 'user_list')
+        return comm
+
+    async def test_an_unanswered_invite_stops_blocking_once_it_expires(self):
+        alice = await self._join('alice')
+        bob = await self._join('bob')
+        try:
+            await alice.send_json_to({
+                'type': 'game_challenge', 'challenger': 'alice', 'opponent': 'bob'})
+            await _receive_until(bob, 'game_challenge')
+
+            # Bob's tab closes without answering - nothing ever declines it.
+            await GameChallenge.objects.filter(challenger='alice', responder='bob').aupdate(
+                expires_at=timezone.now() - timedelta(seconds=1))
+
+            await alice.send_json_to({
+                'type': 'game_challenge', 'challenger': 'alice', 'opponent': 'bob'})
+            # Not CHALLENGER_BUSY (alice was left 'invited'), and not
+            # CHALLENGE_EXISTS (the dead row was still 'pending').
+            await _receive_until(bob, 'game_challenge')
+
+            alice_row = await PlayerConnection.objects.aget(username='alice')
+            self.assertEqual(alice_row.status, 'invited')  # by the *new* invite
+            self.assertEqual(
+                await GameChallenge.objects.filter(challenger='alice').acount(), 1)
+        finally:
+            await alice.disconnect()
+            await bob.disconnect()

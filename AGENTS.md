@@ -1087,11 +1087,47 @@ these reads sit in constructors and `ngOnInit`, where that takes the screen down
 losing one remembered value. `AudioService` and `LocalGameService` carry their own try/catch;
 everything else calls `readStore`/`writeStore`/`removeStore`.
 
+**A socket the player replaced is not the player leaving.** A half-open
+connection is only torn down when the OS or a proxy gives up on it, which can be long after
+the client noticed, gave up and reconnected. `_delete_player_connection` always knew this -
+it takes a `channel_name` and only deletes a row that still belongs to that channel - but
+nothing above it did, so a late close cleared a live player's ready tick, told the room they
+had dropped, and armed a 30-second forfeit against somebody sitting at the board.
+`_reclaimed_by_newer_socket` is that question asked once: the PlayerConnection row *is* the
+seat, since both join handlers write their own channel name into it. Both cleanup paths bail
+on it, and the grace timer re-asks on the way out - a join that lands between the timer being
+armed and the cancel at the top of `_handle_join_game_room` cancels nothing. The timer's
+version narrows to `status='in-game'`, because turning up in the lobby is not a reason to
+spare your opponent the forfeit.
+
+**An unanswered invite used to wedge a pair forever.** `expires_at` was written at creation
+and read by nothing the server runs - only by `cleanup_game_state`, a management command
+nobody schedules. So a responder who closed their tab left the row `pending`, and
+`CHALLENGE_EXISTS` refused every future invite between that pair while both players stayed
+`invited`, which is refused as busy for everyone else. `_expire_stale_challenges` runs at the
+top of `_handle_game_challenge` and clears both. The two deadlines are deliberate and
+different: the lobby gives the responder **5 seconds** and auto-declines, which is the real
+one; the server's **30** is the backstop for a responder who is not there to run it.
+
+**The client's retry budget is coupled to `DISCONNECT_GRACE_SECONDS`.** Five attempts at a 3s
+handshake plus a 3s wait jittered to 1.5x spans ~30-37s, against a server that forfeits at 30.
+Lower `MAX_RECONNECT_ATTEMPTS` or `RECONNECT_INTERVAL_MS` and players start losing games they
+were still trying to reconnect to. The comment in `websocket.config.ts` says so; this is the
+other half of it.
+
 **Readying is not ordered against starting, in tests.** The two readies travel on two
 connections and `start_game` on a third, so nothing sequences them. `_both_ready_then_start`
 in `test_consumers.py` waits for both `player_ready` broadcasts to come back on the host
 first - each is sent only after its row is written. Six sites raced this and got away with it
 while `all()` over a single row was enough.
+
+**A receive that times out kills the consumer under test.** asgiref's
+`ApplicationCommunicator.receive_output` cancels the application future when it times out
+(`venv/.../asgiref/testing.py`) - so `_receive_until` running out, or any wait-for-quiet built
+on `receive_json_from`, destroys the thing being tested and the real failure resurfaces as a
+`CancelledError` in `disconnect()` during teardown. If a test fails with a teardown
+`CancelledError`, look for what timed out above it. To assert something does *not* arrive, use
+`_drain`, which polls `receive_nothing` instead.
 
 ## Staged moves (Undo / End Turn)
 

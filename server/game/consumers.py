@@ -188,8 +188,13 @@ class GameConsumer(AsyncWebsocketConsumer):
             # Check if the player is in-game - if so, don't delete their connection
             # They're just transitioning from lobby to game room
             player_conn = await self._get_player_connection(self.username)
-            if player_conn and player_conn.status == 'in-game':
-                logger.info(f"User {self.username} is in-game, not deleting PlayerConnection")
+            # In-game: they are mid-transition to a room, not leaving. Or the
+            # row has moved on to another channel, which makes this the close
+            # of a socket the player has already replaced - see
+            # _cleanup_game_room_connection for what that costs.
+            if player_conn and (player_conn.status == 'in-game'
+                                or player_conn.channel_name != self.channel_name):
+                logger.info(f"User {self.username} is elsewhere, not deleting PlayerConnection")
                 return
             
             await self._delete_player_connection(self.username, channel_name=self.channel_name)
@@ -208,6 +213,20 @@ class GameConsumer(AsyncWebsocketConsumer):
         try:
             game = await self._get_game_by_id(self.game_id)
             if not game:
+                return
+
+            # A socket this player has already replaced. Its close can land
+            # long after the fact - a half-open connection is only torn down
+            # when the OS or a proxy finally gives up on it - and by then the
+            # row, the ready flag and the seat all belong to the newer
+            # session. _delete_player_connection below has always known this
+            # (hence its channel_name guard); nothing above it did, so a late
+            # close cleared a live player's ready tick, told the room they had
+            # dropped, and armed a forfeit against somebody sitting right
+            # there.
+            if await self._reclaimed_by_newer_socket(self.username, self.channel_name):
+                logger.info(
+                    f"Ignoring stale disconnect for {self.username} in game {self.game_id}")
                 return
 
             # Dropping out always clears your ready flag - the room must not be
@@ -542,6 +561,14 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_OPPONENT', 'Cannot challenge yourself')
                 return
             
+            # Before deciding who is busy: an invite whose responder simply
+            # closed their tab used to stay 'pending' for the life of the
+            # database, leaving both of them 'invited' - refused as busy for
+            # every future invite - and CHALLENGE_EXISTS refusing this pair
+            # specifically, forever. expires_at was written at creation and
+            # read by nothing the server runs.
+            await self._expire_stale_challenges()
+
             # Validate both users exist and are online (batch query for efficiency)
             connections = await self._get_player_connections_batch([challenger, opponent])
             challenger_conn = connections.get(challenger)
@@ -1417,10 +1444,21 @@ class GameConsumer(AsyncWebsocketConsumer):
         Cancelled by _handle_join_game_room if the player rejoins in time.
         """
         self._cancel_disconnect_timer(game_id, username)
+        dropped_channel = self.channel_name
 
         async def _grace_task():
             try:
                 await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
+                # Cancelling is the usual way this timer stops, but it only
+                # covers a rejoin that lands after the timer exists. A join
+                # racing the arming above cancels nothing, and forfeits a
+                # player who is back at the board. The row is the seat: back
+                # in a room on a different socket is back.
+                if await self._reclaimed_by_newer_socket(
+                        username, dropped_channel, status='in-game'):
+                    logger.info(
+                        f"Grace timer for {username} in {game_id} stood down - reconnected")
+                    return
                 game = await self._get_game_by_id(game_id)
                 if not game or game.status == 'closed':
                     return
@@ -2003,6 +2041,25 @@ class GameConsumer(AsyncWebsocketConsumer):
         qs.delete()
     
     @database_sync_to_async
+    def _reclaimed_by_newer_socket(self, username, channel_name, status=None):
+        """True when this username's row belongs to some *other* channel now.
+
+        The row is the seat - _handle_join_lobby and _handle_join_game_room
+        both write their own channel name into it - so a disconnect whose
+        channel no longer matches is a socket the player has already
+        replaced, arriving late.
+
+        `status` narrows which kind of replacement counts. 'in-game' asks
+        specifically whether they are back at a board, because turning up in
+        the lobby instead is not a reason to spare their opponent a forfeit.
+        """
+        rows = PlayerConnection.objects.filter(  # type: ignore
+            username=username).exclude(channel_name=channel_name)
+        if status is not None:
+            rows = rows.filter(status=status)
+        return rows.exists()
+
+    @database_sync_to_async
     def _any_player_connected(self, usernames):
         """True while at least one of *usernames* is still heartbeating.
 
@@ -2037,6 +2094,27 @@ class GameConsumer(AsyncWebsocketConsumer):
         except GameChallenge.DoesNotExist:  # type: ignore
             return None
     
+    @database_sync_to_async
+    def _expire_stale_challenges(self):
+        """Drop invites nobody answered, and let their players go.
+
+        The 30 seconds in get_challenge_expiration_time is the backstop for a
+        responder who is no longer there to run the client's own countdown -
+        the only deadline that existed before this was a management command
+        nobody runs.
+        """
+        stale = GameChallenge.objects.filter(  # type: ignore
+            status='pending', expires_at__lt=timezone.now())
+        names = set()
+        for challenge in stale:
+            names.update((challenge.challenger, challenge.responder))
+        if not names:
+            return
+        stale.delete()
+        # 'invited' outlives the invite it described, and is refused as busy.
+        PlayerConnection.objects.filter(  # type: ignore
+            username__in=names, status='invited').update(status='online')
+
     @database_sync_to_async
     def _create_challenge(self, challenger, responder):
         """Create a new game challenge"""
