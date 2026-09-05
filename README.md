@@ -129,4 +129,12 @@ cd server
 python manage.py cleanup_game_state
 ```
 
-This removes player connections that haven't sent a heartbeat in 10+ minutes.
+This removes player connections that haven't sent a heartbeat in 10+ minutes, clears
+invites nobody ever answered (releasing both players from "invited", which otherwise
+refuses every future invite as busy), and deletes game rooms closed more than 7 days ago.
+
+Nothing schedules this - the server sweeps stale connections on its own every time it
+sends a user list, and clears dead invites on every new invite, so running it is a manual
+tidy-up rather than a requirement. `--closed-days` and `--stale-minutes` set the two
+thresholds; `--closed-days` **deletes** rooms and their game states, so check before
+running it against a database you care about.

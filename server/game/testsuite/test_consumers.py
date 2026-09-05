@@ -1,6 +1,9 @@
 import asyncio
 import copy
+from io import StringIO
 from unittest.mock import patch
+
+from django.core.management import call_command
 
 from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
@@ -1284,3 +1287,44 @@ class StaleChallengeTests(TransactionTestCase):
         finally:
             await alice.disconnect()
             await bob.disconnect()
+
+
+class CleanupCommandTests(TestCase):
+    """
+    The manual escape hatch the README points at. It shares its invite sweep
+    with the consumer (utils.expire_stale_challenges) so the two cannot drift:
+    it used to mark the rows 'expired' and leave both players sitting at
+    'invited', which every invite check refuses as busy - so running the
+    documented fix did not actually end the jam it was documented for.
+    """
+
+    def test_it_releases_players_stuck_on_an_invite_nobody_answered(self):
+        GameChallenge.objects.create(
+            challenger='alice', responder='bob', status='pending',
+            expires_at=timezone.now() - timedelta(seconds=1))
+        PlayerConnection.objects.create(username='alice', channel_name='a', status='invited')
+        PlayerConnection.objects.create(username='bob', channel_name='b', status='invited')
+
+        call_command('cleanup_game_state', stdout=StringIO())
+
+        self.assertFalse(GameChallenge.objects.filter(challenger='alice').exists())
+        self.assertEqual(PlayerConnection.objects.get(username='alice').status, 'online')
+        self.assertEqual(PlayerConnection.objects.get(username='bob').status, 'online')
+
+    def test_it_leaves_a_live_invite_and_its_players_alone(self):
+        GameChallenge.objects.create(
+            challenger='alice', responder='bob', status='pending',
+            expires_at=timezone.now() + timedelta(seconds=30))
+        PlayerConnection.objects.create(username='alice', channel_name='a', status='invited')
+
+        call_command('cleanup_game_state', stdout=StringIO())
+
+        self.assertTrue(GameChallenge.objects.filter(status='pending').exists())
+        self.assertEqual(PlayerConnection.objects.get(username='alice').status, 'invited')
+
+    def test_it_runs_at_all(self):
+        # It had no test and is never exercised in normal play, so a crash in
+        # it would only ever be found by the person reaching for it in a jam.
+        out = StringIO()
+        call_command('cleanup_game_state', stdout=out)
+        self.assertIn('Cleanup complete.', out.getvalue())

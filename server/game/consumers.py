@@ -32,7 +32,7 @@ from .validators import (
     validate_chat_message
 )
 from .utils import (
-    send_json_response, send_error, broadcast_to_group,
+    send_json_response, send_error, broadcast_to_group, expire_stale_challenges,
     get_challenge_expiration_time, structured_log, get_idempotency, set_idempotency
 )
 from .engine import load_config, build_initial_board, DEFAULT_CONFIG
@@ -2096,24 +2096,12 @@ class GameConsumer(AsyncWebsocketConsumer):
     
     @database_sync_to_async
     def _expire_stale_challenges(self):
-        """Drop invites nobody answered, and let their players go.
+        """Async wrapper for the shared sweep - see utils.expire_stale_challenges.
 
         The 30 seconds in get_challenge_expiration_time is the backstop for a
-        responder who is no longer there to run the client's own countdown -
-        the only deadline that existed before this was a management command
-        nobody runs.
+        responder who is no longer there to run the client's own countdown.
         """
-        stale = GameChallenge.objects.filter(  # type: ignore
-            status='pending', expires_at__lt=timezone.now())
-        names = set()
-        for challenge in stale:
-            names.update((challenge.challenger, challenge.responder))
-        if not names:
-            return
-        stale.delete()
-        # 'invited' outlives the invite it described, and is refused as busy.
-        PlayerConnection.objects.filter(  # type: ignore
-            username__in=names, status='invited').update(status='online')
+        return expire_stale_challenges()
 
     @database_sync_to_async
     def _create_challenge(self, challenger, responder):

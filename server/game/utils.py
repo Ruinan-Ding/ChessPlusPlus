@@ -7,6 +7,8 @@ from datetime import timedelta
 from django.utils import timezone
 from django.core.cache import cache
 
+from .models import GameChallenge, PlayerConnection
+
 logger = logging.getLogger('game')
 
 
@@ -101,6 +103,30 @@ async def broadcast_to_group(channel_layer, group_name: str, message: dict) -> N
         })
     except Exception as e:
         logger.error(f"Error broadcasting to {group_name}: {e}")
+
+
+def expire_stale_challenges() -> int:
+    """Drop invites nobody answered, and let the players they pinned go.
+
+    Shared, so the two callers cannot drift apart: the consumer runs it before
+    deciding who is busy, and the cleanup_game_state management command runs it
+    as the manual escape hatch. The command used to only mark the rows
+    'expired' and leave both players sitting at status 'invited' - which every
+    invite check refuses as busy - so the documented way out of the jam did not
+    actually end it.
+
+    Returns how many challenges were cleared.
+    """
+    stale = list(GameChallenge.objects.filter(  # type: ignore
+        status='pending', expires_at__lt=timezone.now()))
+    if not stale:
+        return 0
+    names = {name for c in stale for name in (c.challenger, c.responder)}
+    GameChallenge.objects.filter(pk__in=[c.pk for c in stale]).delete()  # type: ignore
+    # 'invited' outlives the invite it described, and is refused as busy.
+    PlayerConnection.objects.filter(  # type: ignore
+        username__in=names, status='invited').update(status='online')
+    return len(stale)
 
 
 def get_challenge_expiration_time():

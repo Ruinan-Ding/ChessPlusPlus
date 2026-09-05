@@ -6,6 +6,8 @@ import logging
 from django.apps import apps
 from typing import Any
 
+from game.utils import expire_stale_challenges
+
 logger = logging.getLogger('game')
 
 
@@ -28,15 +30,16 @@ class Command(BaseCommand):
             closed_delta = timedelta(days=closed_days)
 
             # Resolve models from app registry; annotate as Any to satisfy static type checkers
-            GameChallenge: Any = apps.get_model('game', 'GameChallenge')
             PlayerConnection: Any = apps.get_model('game', 'PlayerConnection')
             GameRoom: Any = apps.get_model('game', 'GameRoom')
 
-            # Expire pending challenges
-            expired_qs = GameChallenge.objects.filter(status='pending', expires_at__lt=now)
-            expired_count = expired_qs.update(status='expired')
-            self.stdout.write(f'Expired {expired_count} pending challenges')
-            logger.info(f'Expired {expired_count} pending challenges')
+            # The same sweep the consumer runs, so the two cannot disagree
+            # about what a dead invite is - and so this actually releases the
+            # players it pinned at 'invited', which marking the row 'expired'
+            # on its own never did.
+            expired_count = expire_stale_challenges()
+            self.stdout.write(f'Cleared {expired_count} dead invites and released their players')
+            logger.info(f'Cleared {expired_count} dead invites')
 
             # Remove stale player connections
             stale_threshold = now - stale_delta

@@ -1105,7 +1105,11 @@ and read by nothing the server runs - only by `cleanup_game_state`, a management
 nobody schedules. So a responder who closed their tab left the row `pending`, and
 `CHALLENGE_EXISTS` refused every future invite between that pair while both players stayed
 `invited`, which is refused as busy for everyone else. `_expire_stale_challenges` runs at the
-top of `_handle_game_challenge` and clears both. The two deadlines are deliberate and
+top of `_handle_game_challenge` and clears both. It is a thin wrapper over
+`utils.expire_stale_challenges`, which the `cleanup_game_state` command calls too - the
+command used to mark the rows `expired` and leave the players at `invited`, so the
+documented escape hatch did not end the jam it is documented for. One implementation,
+because two disagreed. The two deadlines are deliberate and
 different: the lobby gives the responder **5 seconds** and auto-declines, which is the real
 one; the server's **30** is the backstop for a responder who is not there to run it.
 
