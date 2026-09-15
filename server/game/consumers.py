@@ -811,8 +811,15 @@ class GameConsumer(AsyncWebsocketConsumer):
             had_pending_grace = (game_id, username) in _pending_disconnect_timers
             self._cancel_disconnect_timer(game_id, username)
 
-            # The game room may arrive on a fresh WebSocket, so refresh the stored channel
-            await self._create_or_update_player_connection(username, self.channel_name, 'in-game')
+            # The game room may arrive on a fresh WebSocket, so refresh the stored
+            # channel - and the identity secret with it. Leaving the room deletes
+            # this row, so a rejoin is what recreates it, and recreated without a
+            # secret the player came back to the lobby unable to prove their own
+            # name and was handed a guest's. The token above has just proved the
+            # seat, so the secret offered alongside it is theirs. A client that
+            # sends none keeps whatever the row already holds.
+            await self._create_or_update_player_connection(
+                username, self.channel_name, 'in-game', secret=_extract_secret(data) or None)
             
             # Add to the game room group, but keep lobby group membership for lobby chat
             self.room_name = game_id

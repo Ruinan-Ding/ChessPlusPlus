@@ -991,6 +991,35 @@ class RoomAccessGuardTests(TransactionTestCase):
         finally:
             await comm.disconnect()
 
+    async def test_a_player_who_rejoined_the_room_keeps_their_name(self):
+        # Leaving a room deletes the player's row and rejoining recreates it.
+        # Recreated without the identity secret, the player's return to the
+        # lobby failed its own rejoin check and was renamed to a guest.
+        game = await self._room()
+        await PlayerConnection.objects.acreate(
+            username='bob', channel_name='old-lobby', secret='bob-secret', status='in-game')
+        await PlayerConnection.objects.filter(username='bob').adelete()  # the room socket closed
+
+        room = WebsocketCommunicator(URLRouter(websocket_urlpatterns), f"/ws/game/{game.game_id}/")
+        await room.connect()
+        await room.send_json_to({
+            'type': 'join_game_room', 'username': 'bob', 'gameId': game.game_id,
+            'token': 'opp-tok', 'secret': 'bob-secret',
+        })
+        await _receive_until(room, 'join_game_room_success')
+        lobby = WebsocketCommunicator(URLRouter(websocket_urlpatterns), "/ws/game/lobby/")
+        await lobby.connect()
+        try:
+            await lobby.send_json_to({
+                'type': 'join_lobby', 'username': 'bob', 'secret': 'bob-secret', 'rejoining': True})
+            seen = []
+            while not seen or seen[-1] != 'user_list':
+                seen.append((await lobby.receive_json_from(timeout=5))['type'])
+            self.assertNotIn('username_assigned', seen)
+        finally:
+            await lobby.disconnect()
+            await room.disconnect()
+
     async def test_an_expired_token_is_still_refused(self):
         game = await self._room(token_expires_at=timezone.now() - timedelta(seconds=1))
         comm = await self._join(game.game_id, 'alice', 'host-tok')

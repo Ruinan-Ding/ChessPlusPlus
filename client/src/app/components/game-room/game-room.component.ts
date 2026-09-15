@@ -439,7 +439,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
             type: 'join_game_room',
             username: this.username,
             gameId: this.gameId,
-            token: this.accessToken
+            token: this.accessToken,
+            // The rejoin recreates the server's record of this player, and a
+            // record without the secret cannot vouch for the name back in the
+            // lobby - a reload mid-game used to cost the player their name.
+            secret: this.authService.getIdentitySecret(),
           });
           this.lobbyMessages = this.sharedDataService.getLobbyMessages();
         };
