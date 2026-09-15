@@ -16,6 +16,7 @@ from datetime import timedelta
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.db import transaction
 from django.utils import timezone
 
 from typing import Optional, Any, Dict, cast, Union
@@ -610,16 +611,27 @@ class GameConsumer(AsyncWebsocketConsumer):
                     structured_log('info', 'challenge_idempotent_hit', key=idem_key, challenger=challenger, opponent=opponent)
                     return
 
-            challenge = await self._create_challenge(challenger, opponent)
+            # Both players marked invited in one statement, and only if neither
+            # already is. The checks above read the statuses and this used to
+            # write them after the invite was made, so two players inviting each
+            # other at once both read "online" in between and both invites went
+            # out. The read stays for its clearer refusals; this is the guard.
+            if not await self._claim_invite_pair(challenger, opponent):
+                await send_error(self, 'OPPONENT_BUSY', f'{opponent} is currently handling an invite')
+                return
+
+            try:
+                challenge = await self._create_challenge(challenger, opponent)
+            except Exception:
+                # No invite to expire means nothing would ever release them.
+                await self._update_player_status(challenger, 'online')
+                await self._update_player_status(opponent, 'online')
+                raise
             if idem_key:
                 try:
                     set_idempotency(idem_key, {'invite_id': challenge.challenge_id}, timeout=60)
                 except Exception:
                     structured_log('warning', 'idempotency_set_failed', key=idem_key)
-            
-            # Set both players' status to 'invited' so third parties can't invite them
-            await self._update_player_status(challenger, 'invited')
-            await self._update_player_status(opponent, 'invited')
             
             await self._send_user_list()
             
@@ -1945,6 +1957,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self._update_player_activity(self.username)
                 structured_log('debug', 'heartbeat_received', username=self.username)
 
+            # A socket sitting in a room is a seat in use. The token was only
+            # refreshed on join, so a match played for ten minutes without a
+            # reload answered TOKEN_EXPIRED to the first rejoin after a dropped
+            # connection - and the grace timer forfeited it.
+            if self.game_id:
+                await self._keep_game_token_alive(self.game_id)
+
             await send_json_response(self, {
                 'type': 'heartbeat_ack',
                 'timestamp': timezone.now().isoformat()
@@ -2160,6 +2179,35 @@ class GameConsumer(AsyncWebsocketConsumer):
         """
         GameRoom.objects.filter(game_id=game_id).update(  # type: ignore
             token_expires_at=timezone.now() + GAME_TOKEN_LIFETIME)
+
+    @database_sync_to_async
+    def _keep_game_token_alive(self, game_id):
+        """Restart the token's clock from a heartbeat, once half of it has run.
+
+        Heartbeats arrive every fifteen seconds, and the clock only needs
+        moving every few minutes. The condition is in the query, so this is one
+        statement whether it writes or not.
+        """
+        now = timezone.now()
+        GameRoom.objects.filter(  # type: ignore
+            game_id=game_id, token_expires_at__lt=now + GAME_TOKEN_LIFETIME / 2,
+        ).update(token_expires_at=now + GAME_TOKEN_LIFETIME)
+
+    @database_sync_to_async
+    def _claim_invite_pair(self, challenger, opponent):
+        """Mark both players invited, in one statement, if neither is busy.
+
+        All or nothing: a pair where one of them is already taken is rolled
+        back rather than left half-claimed.
+        """
+        with transaction.atomic():
+            claimed = PlayerConnection.objects.filter(  # type: ignore
+                username__in=[challenger, opponent],
+            ).exclude(status__in=['in-game', 'invited']).update(
+                status='invited', last_activity=timezone.now())
+            if claimed != 2:
+                transaction.set_rollback(True)
+        return claimed == 2
 
     @database_sync_to_async
     def _update_game_status(self, game_id, status):

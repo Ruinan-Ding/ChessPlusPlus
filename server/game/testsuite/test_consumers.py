@@ -975,6 +975,22 @@ class RoomAccessGuardTests(TransactionTestCase):
         finally:
             await comm.disconnect()
 
+    async def test_a_seated_heartbeat_keeps_the_token_alive(self):
+        # Refreshed only on join, a match played for ten minutes without a
+        # reload answered TOKEN_EXPIRED to the first rejoin after a dropped
+        # connection, and the grace timer forfeited it.
+        game = await self._room()
+        comm = await self._joined(game.game_id, 'alice', 'host-tok')
+        try:
+            await GameRoom.objects.filter(game_id=game.game_id).aupdate(
+                token_expires_at=timezone.now() + timedelta(minutes=1))
+            await comm.send_json_to({'type': 'heartbeat'})
+            await _receive_until(comm, 'heartbeat_ack')
+            refreshed = await GameRoom.objects.aget(game_id=game.game_id)
+            self.assertGreater(refreshed.token_expires_at, timezone.now() + timedelta(minutes=9))
+        finally:
+            await comm.disconnect()
+
     async def test_an_expired_token_is_still_refused(self):
         game = await self._room(token_expires_at=timezone.now() - timedelta(seconds=1))
         comm = await self._join(game.game_id, 'alice', 'host-tok')
@@ -1115,6 +1131,38 @@ class UsernameClaimTests(TestCase):
             'ivan', 'new-chan', 'i-secret', takeover=True))
         row = await PlayerConnection.objects.aget(username='ivan')
         self.assertEqual(row.channel_name, 'new-chan')
+
+
+class InvitePairClaimTests(TestCase):
+    """
+    Marking a pair invited is one statement (_claim_invite_pair). The busy
+    check read both statuses and the write came after the invite was made, so
+    two players inviting each other at once both got through.
+    """
+
+    def setUp(self):
+        from game.consumers import GameConsumer
+        self.consumer = GameConsumer()
+
+    async def _online(self, *names):
+        for name in names:
+            await PlayerConnection.objects.acreate(
+                username=name, channel_name=f'chan-{name}', secret=f'{name}-secret', status='online')
+
+    async def test_the_second_of_two_crossed_invites_is_refused(self):
+        await self._online('carol', 'dave')
+        # Both requests have already read "online" - this is what they do next.
+        self.assertTrue(await self.consumer._claim_invite_pair('carol', 'dave'))
+        self.assertFalse(await self.consumer._claim_invite_pair('dave', 'carol'))
+        self.assertEqual(
+            await PlayerConnection.objects.filter(status='invited').acount(), 2)
+
+    async def test_a_half_free_pair_is_left_untouched(self):
+        await self._online('erin', 'frank', 'gina')
+        await self.consumer._claim_invite_pair('erin', 'frank')
+        # frank is taken; gina must not be left marked invited for nothing.
+        self.assertFalse(await self.consumer._claim_invite_pair('gina', 'frank'))
+        self.assertEqual((await PlayerConnection.objects.aget(username='gina')).status, 'online')
 
 
 class RenameSafetyTests(TransactionTestCase):
