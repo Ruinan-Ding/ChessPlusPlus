@@ -124,7 +124,8 @@ export class LocalGameService {
 
       case 'make_move':
         this.move(
-          msg.from, msg.to, msg.attack, msg.moveBonus, msg.bonuses, msg.withdraw, msg.effects);
+          msg.from, msg.to, msg.attack, msg.moveBonus, msg.bonuses, msg.withdraw,
+          msg.effects, msg.effectsBefore);
         break;
 
       case 'enter_board':
@@ -134,19 +135,12 @@ export class LocalGameService {
       case 'panel_attack':
         this.attackIntoPanel(
           msg.from, msg.to ?? msg.from, msg.attack, msg.unit,
-          msg.moveBonus, msg.counters !== false, msg.bonuses, msg.panel, msg.effects);
-        break;
-
-      case 'panel_effect':
-        this.effectInPanel(msg.unit, msg.hp, msg.panel);
-        break;
-
-      case 'unit_effect':
-        this.effectOnBoard(msg.at, msg.hp, msg.uid);
+          msg.moveBonus, msg.counters !== false, msg.bonuses, msg.panel,
+          msg.effects, msg.effectsBefore);
         break;
 
       case 'pass_turn':
-        this.pass();
+        this.pass(msg.effectsBefore);
         break;
 
       case 'resign':
@@ -314,12 +308,15 @@ export class LocalGameService {
     // look one up in, and the record is the only place it survives a reload -
     // where it is what tells the mending a base from a reserve.
     panel?: string,
-    /** Casts the turn made after its blow - see `landAfter`. */
+    /** The turn's casts after its blow, and before it - see `landEffects`. */
     effects?: any[],
+    effectsBefore?: any[],
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
-    const attacker = g.boardState[from];
+    const start = { ...g.boardState };
+    const before = this.landEffects(start, effectsBefore);
+    const attacker = start[from];
     const movingColor = this.colorOf(g.currentTurn);
     if (!attacker || attacker.color !== movingColor || !unit || unit.color === movingColor) {
       this.emit({ type: 'invalid_move', message: 'Nothing to attack there' });
@@ -337,12 +334,12 @@ export class LocalGameService {
       : undefined;
     const walked = to !== from;
     if (walked
-        && !computeLegalMoves(g.boardState, q, r, g.config, radius, budget).has(to)) {
+        && !computeLegalMoves(start, q, r, g.config, radius, budget).has(to)) {
       this.emit({ type: 'invalid_move', message: 'Illegal move' });
       return;
     }
 
-    const board = { ...g.boardState };
+    const board = { ...start };
     if (walked) {
       board[to] = attacker;
       delete board[from];
@@ -393,27 +390,14 @@ export class LocalGameService {
         }
       }
     }
-    this.commitPanelBlow(record, board, this.landAfter(board, effects));
+    this.commitPanelBlow(record, board, before.records, this.landEffects(board, effects).records);
   }
 
   /**
-   * An ability landing on a unit no board holds.
-   *
-   * The panels are the client's, so nothing is resolved here - the effect has
-   * already been worked out. All this does is write down what the unit has
-   * left, which is the one thing that has to survive a reload, and it uses the
-   * same shape a blow into a panel writes. It is not a turn: an ability does
-   * not hand over, so nothing here touches `turnNumber`.
+   * What a cast leaves a panel unit with, in the shape a blow into a panel
+   * writes. The panels are the client's, so nothing is resolved here: the
+   * record is the one place that HP survives a reload.
    */
-  private effectInPanel(unit: any, hp: number, panel?: string): void {
-    const g = this.game;
-    if (!g || !g.started || g.endReason || !unit?.uid || typeof hp !== 'number') return;
-    g.moveHistory = [...g.moveHistory, this.panelEffectRecord(unit, hp, panel)];
-    this.persist();
-    this.emit({ type: 'game_state_update', ...this.snapshot() });
-  }
-
-  /** What a cast leaves a panel unit with, in the shape a blow into a panel writes. */
   private panelEffectRecord(unit: any, hp: number, panel?: string): any {
     const left = Math.max(0, Math.trunc(hp));
     return {
@@ -426,26 +410,35 @@ export class LocalGameService {
   }
 
   /**
-   * A cast the turn made AFTER its board action, landed after that resolves.
+   * Land a list of the turn's casts on `board`, in order.
    *
-   * A cast carries the HP the client worked out for the whole turn so far -
-   * the blow included. Sent ahead of the move like the others, the engine
-   * wrote it and then resolved the blow over the top: a unit mended after
-   * taking a counter lost the mend, and a panel unit hit and then finished
-   * with a spell came back from the dead on a reload, because the blow's
-   * record was the last word on its HP. So these ride in the move itself and
-   * land here - after the blow, before the toll, inside the one turn.
+   * Every cast rides inside the one message that ends the turn - the move, the
+   * swing out of a panel, or the pass - in two lists: those made before the
+   * turn's board action and those made after it.
    *
-   * Returns the panel records, which go on the history after the move's own.
+   * Before, they went out as messages of their own ahead of the move. Two
+   * things broke. A cast carries the HP worked out for the turn so far, blow
+   * included, so one made after the blow was struck over again when the move
+   * resolved - a mend after a counter was lost. And a move this engine
+   * refused came back half-played: the casts had already been kept. Landed
+   * here instead, the earlier ones go on a copy the move is measured against,
+   * the later ones after it, the toll after both - and a refusal keeps none.
+   *
+   * ponytail: solo only, like every other ability. A server holds no
+   * abilities, so it would take the client's word for a unit's HP - which is
+   * a free heal for anyone with a console open.
+   *
+   * Returns the panel records, and whether a cast took a unit off the board.
    */
-  private landAfter(board: Record<string, any>, effects?: any[]): any[] {
+  private landEffects(board: Record<string, any>, effects?: any[]): { records: any[]; killed: boolean } {
     const records: any[] = [];
+    let killed = false;
     for (const e of Array.isArray(effects) ? effects : []) {
       if (typeof e?.hp !== 'number') continue;
       if (e.unit?.uid) records.push(this.panelEffectRecord(e.unit, e.hp, e.panel));
-      else if (e.at) this.landOnBoard(board, e.at, e.hp, e.uid);
+      else if (e.at && this.landOnBoard(board, e.at, e.hp, e.uid) && Math.trunc(e.hp) <= 0) killed = true;
     }
-    return records;
+    return { records, killed };
   }
 
   /** Write a cast's HP onto a board unit, wherever it now stands. False if nothing changed. */
@@ -467,52 +460,12 @@ export class LocalGameService {
     return true;
   }
 
-  /**
-   * An ability moved the HP of a unit standing on the BOARD. The board is
-   * where that HP lives, so unlike a panel unit's this is written straight
-   * onto it - and it has to be written, or the very next state update hands
-   * back the HP the unit had before the cast. A king healed off 1 HP and then
-   * killed by overtime anyway was exactly that: the client's staged board
-   * knew about the mend and no engine did.
-   *
-   * The turn does not end here. A cast is something a turn does, not the turn
-   * itself, and several may land before the commit that follows them.
-   *
-   * ponytail: solo only, like every other ability. A server holds no
-   * abilities, so it would take the client's word for a unit's HP - which is
-   * a free heal for anyone with a console open.
-   */
-  private effectOnBoard(at: string, hp: number, uid?: string): void {
-    const g = this.game;
-    if (!g || !g.started || g.endReason || !at || typeof hp !== 'number') return;
-    const board = { ...g.boardState };
-    if (!this.landOnBoard(board, at, hp, uid)) return;
-    g.boardState = board;
-    this.persist();
-    this.emit({ type: 'game_state_update', ...this.snapshot() });
-    // A cast that killed a commander ends the match the same way a blow does.
-    // Left out, an ability could take a king off the board and the game would
-    // carry on with a side that had already lost.
-    //
-    // Only when this cast actually took something off the board, which is the
-    // same line `pass()` draws and for the same reason: a side can hold no
-    // commander on the BOARD for reasons of its own - one that walked home
-    // into its base is off the board and still alive - and a heal that ends
-    // the match because of a state it did not create is worse than no check.
-    if (Math.trunc(hp) > 0) return;
-    const defeated = this.defeatedSides(board);
-    if (defeated.length === 2) this.over('', 'draw_mutual');
-    else if (defeated.length) {
-      this.over(this.seat(defeated[0] === 'white' ? 'black' : 'white'), this.endReasonName());
-    }
-  }
-
   /** What both panel blows do once the damage is worked out: end the turn. */
-  private commitPanelBlow(record: any, board: any, after: any[] = []): void {
+  private commitPanelBlow(record: any, board: any, before: any[] = [], after: any[] = []): void {
     const g = this.game!;
     this.overtimeToll(board);
     g.boardState = board;
-    g.moveHistory = [...g.moveHistory, record, ...after];
+    g.moveHistory = [...g.moveHistory, ...before, record, ...after];
     const defeated = this.defeatedSides(board);
     const maxTurns: number = g.config?.rules?.maxTurns ?? 0;
     const outOfTurns = maxTurns > 0 && g.turnNumber >= maxTurns;
@@ -527,6 +480,7 @@ export class LocalGameService {
       // complete and arrived as an `undefined` pushed onto the history.
       type: 'move_made',
       move: record,
+      ...(before.length ? { effectsBefore: before } : {}),
       ...(after.length ? { effects: after } : {}),
       boardState: board,
       currentTurn: ending ? '' : g.currentTurn,
@@ -544,13 +498,16 @@ export class LocalGameService {
     from: string, to: string, attack?: string, moveBonus?: number,
     bonuses?: { atk?: number; def?: number; targetAtk?: number; targetDef?: number },
     withdraw?: boolean,
-    /** Casts the turn made after its board action - see `landAfter`. */
+    /** The turn's casts after its board action, and before it - see `landEffects`. */
     effects?: any[],
+    effectsBefore?: any[],
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
 
-    const piece = g.boardState[from];
+    const start = { ...g.boardState };
+    const before = this.landEffects(start, effectsBefore);
+    const piece = start[from];
     const radius: number = g.config?.board?.radius ?? 11;
     const [q, r] = String(from).split(',').map(Number);
     const movingColor = this.colorOf(g.currentTurn);
@@ -578,18 +535,18 @@ export class LocalGameService {
     const ownSide = movingColor === 'white' ? tq < 0 : tq > 0;
     const leaving = !!withdraw && relocating && !attack
       && Number.isInteger(tq) && Number.isInteger(tr)
-      && !isInsideBoard(tq, tr, radius) && !g.boardState[to] && ownSide;
+      && !isInsideBoard(tq, tr, radius) && !start[to] && ownSide;
     if (!piece || piece.color !== movingColor || !Number.isInteger(q) || !Number.isInteger(r)
         || (withdraw
             ? !leaving
             : (relocating
-               && !computeLegalMoves(g.boardState, q, r, g.config, radius, budget).has(to)))
+               && !computeLegalMoves(start, q, r, g.config, radius, budget).has(to)))
         || (!relocating && !attack)) {
       this.emit({ type: 'invalid_move', message: 'Illegal move' });
       return;
     }
 
-    const board = { ...g.boardState };
+    const board = { ...start };
     if (relocating) {
       // A unit walking home leaves the board rather than landing on it: the
       // base it stops in is a panel, which no engine holds.
@@ -647,10 +604,10 @@ export class LocalGameService {
       }
     }
 
-    const after = this.landAfter(board, effects);
+    const after = this.landEffects(board, effects).records;
     this.overtimeToll(board);
     g.boardState = board;
-    g.moveHistory = [...g.moveHistory, record, ...after];
+    g.moveHistory = [...g.moveHistory, ...before.records, record, ...after];
     const defeated = this.defeatedSides(board);
     // The server checks the turn limit against the turn just played, before
     // it counts the next one - mirror that or the two disagree by a ply.
@@ -667,7 +624,8 @@ export class LocalGameService {
     this.emit({
       type: 'move_made',
       move: record,
-      // The casts that landed after the board action, recorded after it.
+      // The turn's casts on either side of the board action, recorded there.
+      ...(before.records.length ? { effectsBefore: before.records } : {}),
       ...(after.length ? { effects: after } : {}),
       boardState: g.boardState,
       currentTurn: ending ? '' : g.currentTurn,
@@ -756,7 +714,7 @@ export class LocalGameService {
   }
 
   /** End the turn having done nothing - a unit turn is optional. */
-  private pass(): void {
+  private pass(effectsBefore?: any[]): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
     const passedBy = g.currentTurn;
@@ -765,26 +723,35 @@ export class LocalGameService {
     // board can change even though nobody moved. Hence the copy, and the
     // board on the message - `applyTurnPassed` takes one when there is one.
     const board = { ...g.boardState };
-    // Only a king the toll itself felled ends the game here. A pass has never
-    // looked at who is beaten, and must not start: the board it was handed
-    // may already have been in that state for reasons of its own.
+    // The turn's casts land first, so a king healed off 1 pays the toll from
+    // the healed HP.
+    const cast = this.landEffects(board, effectsBefore);
+    // Only a king the toll felled, or a cast that took a unit off, ends the
+    // game here. A pass has never looked at who is beaten otherwise, and must
+    // not start: a side can hold no commander on the BOARD for reasons of its
+    // own - one that walked home into its base is off the board and alive.
     const felled = this.overtimeToll(board);
+    const beaten = cast.killed ? this.defeatedSides(board) : felled ? [felled] : [];
     g.boardState = board;
+    if (cast.records.length) g.moveHistory = [...g.moveHistory, ...cast.records];
     const maxTurns: number = g.config?.rules?.maxTurns ?? 0;
     const outOfTurns = maxTurns > 0 && g.turnNumber >= maxTurns;
     g.turnNumber += 1;
     g.currentTurn = this.other(passedBy);
     g.turnStartedAt = new Date().toISOString();
     this.persist();
-    const ending = !!felled || outOfTurns;
+    const ending = beaten.length > 0 || outOfTurns;
     this.emit({
       type: 'turn_passed', passedBy, color, boardState: board,
+      ...(cast.records.length ? { effectsBefore: cast.records } : {}),
       // As above: a pass that runs the turn limit out hands over to nobody.
       currentTurn: ending ? '' : g.currentTurn,
       turnNumber: g.turnNumber, turnStartedAt: g.turnStartedAt,
     });
-    if (felled) {
-      this.over(this.seat(felled === 'white' ? 'black' : 'white'), this.endReasonName());
+    if (beaten.length === 2) {
+      this.over('', 'draw_mutual');
+    } else if (beaten.length) {
+      this.over(this.seat(beaten[0] === 'white' ? 'black' : 'white'), this.endReasonName());
     } else if (outOfTurns) {
       this.over('', 'draw_max_turns');
     }

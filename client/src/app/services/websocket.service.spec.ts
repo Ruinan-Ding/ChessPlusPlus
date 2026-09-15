@@ -116,11 +116,8 @@ describe('WebsocketService reconnect escalation', () => {
   it('answers every solo-only message locally, with the server up', () => {
     // A solo game keeps the socket. Only the types in LOCAL_GAME_TYPES are
     // answered by the browser engine; anything else is posted to a server
-    // that has never heard of it and logs "Unknown message type". Abilities
-    // are entirely the client's, so both halves of a cast that moves HP
-    // belong in that set - `panel_effect` for a unit whose HP lives in the
-    // move history, `unit_effect` for one whose HP lives on the board. Absent,
-    // a mend on a king vanished into the socket and overtime killed it anyway.
+    // that has never heard of it and logs "Unknown message type". A cast
+    // rides inside the message that ends its turn, so those carry it here.
     const engine: any[] = [];
     (service as any).localGame = true;
     (service as any).local = { send: (m: any) => engine.push(m) };
@@ -129,7 +126,6 @@ describe('WebsocketService reconnect escalation', () => {
 
     const solo = [
       'make_move', 'pass_turn', 'enter_board', 'panel_attack',
-      'panel_effect', 'unit_effect',
     ];
     for (const type of solo) service.sendMessage({ type });
     expect(engine.map(m => m.type)).toEqual(solo);

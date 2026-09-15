@@ -23,15 +23,7 @@ const LOCAL_GAME_TYPES = new Set([
   // as above: the attacker is the client's, so only the browser engine can
   // resolve it.
   'panel_attack',
-  // An ability that moved a unit's HP - `panel_effect` for a unit whose HP
-  // lives in the move history, `unit_effect` for one whose HP lives on the
-  // board. Abilities are the client's and no server has ever heard of either,
-  // so without these a solo game *with the server up* posts them down the
-  // socket, gets "Unknown message type", and the cast is silently lost. That
-  // is not the offline path: `offline` is false whenever daphne is running,
-  // which is the normal way this game is played.
-  'panel_effect',
-  'unit_effect',
+
   'game_room_message',
 ]);
 

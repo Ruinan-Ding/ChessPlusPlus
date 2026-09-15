@@ -159,9 +159,9 @@ export class GameStateService {
       boardState: msg.boardState ?? prev.boardState,
       currentTurn: msg.currentTurn ?? prev.currentTurn,
       turnNumber: msg.turnNumber ?? prev.turnNumber,
-      // And whatever the turn cast after its board action, recorded after it.
-      // The browser engine's alone; a server sends none.
-      moveHistory: [...prev.moveHistory, move, ...(msg.effects ?? [])],
+      // And the turn's casts on either side of it, where they happened. The
+      // browser engine's alone; a server sends none.
+      moveHistory: [...prev.moveHistory, ...(msg.effectsBefore ?? []), move, ...(msg.effects ?? [])],
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
     });
@@ -180,6 +180,8 @@ export class GameStateService {
       boardState: msg.boardState ?? prev.boardState,
       currentTurn: msg.currentTurn ?? prev.currentTurn,
       turnNumber: msg.turnNumber ?? prev.turnNumber,
+      // What a passed turn cast into the panels. Browser engine only.
+      moveHistory: msg.effectsBefore ? [...prev.moveHistory, ...msg.effectsBefore] : prev.moveHistory,
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
     });

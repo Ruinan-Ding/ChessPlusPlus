@@ -3802,7 +3802,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   get canUndo(): boolean {
     // Anything staged, not just a move: a cast on its own carries no move to
     // commit, and the button used to grey out over it while R still worked.
-    return this.stagedActions.length > 0 || !!this.boardRef?.lastPanelMove;
+    // Nothing once the turn has gone, though - see undoMove.
+    return !this.turnSubmitted
+      && (this.stagedActions.length > 0 || !!this.boardRef?.lastPanelMove);
+  }
+
+  /** End Turn has sent this turn and the engine has not answered yet. */
+  private get turnSubmitted(): boolean {
+    return this.submittedTurn === this.gameState.snapshot.turnNumber;
   }
 
   /** The board, for the walks it keeps its own stack of. */
@@ -3942,6 +3949,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /** Take back the last staged action - a step, the attack, or a cast. */
   undoMove(): void {
+    // The turn is already with the engine. Its answer clears the staged stack
+    // either way - so taking something off it now changes nothing the engine
+    // sees, and shows a board that is not the one being played.
+    if (this.turnSubmitted) return;
     // Two stacks: board actions staged here, panel walks kept by the board.
     // Undo takes back whichever happened last, so it always takes back the
     // thing just done rather than reaching past it.
@@ -4080,7 +4091,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // A double-click, or the clock firing into a click, sends a second
     // make_move for the same turn. The server rejects the late one as
     // GAME_OVER, and that error clears a turn already staged behind it.
-    if (this.submittedTurn === this.gameState.snapshot.turnNumber) return;
+    if (this.turnSubmitted) return;
     // Cleared again if the engine rejects what this sends, so a refusal costs
     // the staged turn but not the chance to play another one.
     this.submittedTurn = this.gameState.snapshot.turnNumber;
@@ -4132,30 +4143,22 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     for (const entry of this.boardRef?.pendingEntries ?? []) {
       this.wsService.sendMessage({ type: 'enter_board', ...entry });
     }
-    // And so does an ability that moved a unit's HP, for exactly the same
-    // reason: no engine holds an ability, so unless the change is sent the
-    // next state update rolls it straight back off. The turn's blow is not
-    // one of these - it goes out below as a panel_attack, which resolves as
-    // well as records.
+    // An ability that moved a unit's HP has to reach the engine too: no engine
+    // holds an ability, so unless the change is sent the next state update
+    // rolls it straight back off - a king healed off 1 HP died of overtime
+    // anyway. Both kinds, because a unit keeps its HP in one of two places: a
+    // panel unit's lives in the move history (`unit` + `panel`), a board
+    // unit's on the board (`at` + `uid`).
     //
-    // Both halves, because a unit keeps its HP in one of two places. A panel
-    // unit's lives in the move history and nowhere else (`panel_effect`); a
-    // unit on the board keeps its own on the board (`unit_effect`). Only the
-    // panel half was ever sent, so healing a king standing on the battlefield
-    // moved nothing an engine could see - and overtime took its toll off the
-    // HP it still had. These go out BEFORE the turn's own move or pass, so
-    // the toll is taken from the healed king rather than the wounded one.
-    //
-    // All but the casts staged AFTER the turn's board action. Each carries the
-    // HP worked out for the turn so far, blow included, so sent ahead the
-    // engine wrote it and then struck the blow again over the top: a mend
-    // after a counter was lost, and a panel unit struck and then finished by
-    // a spell rose again on a reload. Those ride inside the move instead, and
-    // the engine lands them after it - still before the toll.
+    // Inside the one message that ends the turn, split around its board
+    // action - see landEffects in the browser engine. Sent as messages of
+    // their own, a cast after the blow was struck over again, and a move the
+    // engine refused came back half-played with the casts already kept.
     const pending = this.pendingMove;
     const boardAction = pending
       ? this.stagedActions.reduce((last, step, i) => (step.spend ? last : i), -1)
       : Infinity;
+    const before: any[] = [];
     const after: any[] = [];
     this.stagedActions.forEach((step, i) => {
       if (step.attack !== null) return;
@@ -4168,12 +4171,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           ? { at: step.hexKey, uid: step.hexUid, hp: step.hexHp }
           : null;
       if (!effect) return;
-      if (i > boardAction) after.push(effect);
-      else this.wsService.sendMessage({ type: step.panelUnit ? 'panel_effect' : 'unit_effect', ...effect });
+      (i > boardAction ? after : before).push(effect);
     });
+    const casts = {
+      ...(before.length ? { effectsBefore: before } : {}),
+      ...(after.length ? { effects: after } : {}),
+    };
     if (!pending) {
       // Doing nothing is a legal turn.
-      this.wsService.sendMessage({ type: 'pass_turn' });
+      this.wsService.sendMessage({ type: 'pass_turn', ...casts });
       return;
     }
     const attack = this.stagedActions.find(a => a.attack !== null)?.attack;
@@ -4206,7 +4212,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // Whether the panel answers is the panel's rule, and the client owns
         // panels - the engine has no idea which one a unit is standing in.
         counters: swung.counters !== false,
-        ...(after.length ? { effects: after } : {}),
+        ...casts,
       });
       this.persistLocalUiState();
       return;
@@ -4237,7 +4243,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // keeps the record. Only the browser engine answers it, which is why
       // the board only offers it there (`entryBind`).
       ...(this.offBoard(pending.to) ? { withdraw: true } : {}),
-      ...(after.length ? { effects: after } : {}),
+      ...casts,
     });
     this.persistLocalUiState();
     // The staged board stays up until move_made confirms it - see the handler.

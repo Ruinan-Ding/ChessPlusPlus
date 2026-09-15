@@ -1107,7 +1107,7 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.panelHp['rbl0']).toBe(32);
 
     c.endTurn();
-    const msg = sent.find(m => m.type === 'panel_effect');
+    const msg = sent.find(m => m.type === 'pass_turn')?.effectsBefore?.[0];
     expect(msg).toBeDefined();
     expect(msg.unit.uid).toBe('rbl0');
     expect(msg.hp).toBe(32);
@@ -1143,8 +1143,8 @@ describe('GameRoomComponent ability panel', () => {
 
     c.endTurn();
     const order = sent.map(m => m.type);
-    expect(order).toEqual(['unit_effect', 'pass_turn']);
-    expect(sent[0]).toEqual(jasmine.objectContaining({ at: '-5,0', hp: 21 }));
+    expect(order).toEqual(['pass_turn']);
+    expect(sent[0].effectsBefore).toEqual([jasmine.objectContaining({ at: '-5,0', hp: 21 })]);
   });
 
   it('sends a cast staged after the blow inside the move, not ahead of it', () => {
@@ -1172,9 +1172,15 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canUndo).toBeTrue();
 
     c.endTurn();
-    expect(sent.map(m => m.type)).toEqual(['unit_effect', 'make_move']);
-    expect(sent[0]).toEqual(jasmine.objectContaining({ uid: 'wq', hp: 30 }));
-    expect(sent[1].effects).toEqual([{ at: '-4,0', uid: 'wp', hp: 20 }]);
+    // One message: a move the engine refuses must take its casts with it.
+    expect(sent.map(m => m.type)).toEqual(['make_move']);
+    expect(sent[0].effectsBefore).toEqual([{ at: '-9,0', uid: 'wq', hp: 30 }]);
+    expect(sent[0].effects).toEqual([{ at: '-4,0', uid: 'wp', hp: 20 }]);
+
+    // And the turn is with the engine now: nothing on it is taken back.
+    expect(c.canUndo).toBeFalse();
+    c.undoMove();
+    expect(c.stagedActions.length).toBe(4);
   });
 
   it('writes what a cast did to the HP over the unit it landed on', () => {

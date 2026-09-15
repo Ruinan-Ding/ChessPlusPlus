@@ -474,24 +474,35 @@ describe('LocalGameService', () => {
       // was. The mend lived on the room's staged board, the toll came off the
       // 1 HP the engine still had, and the king died anyway.
       const g = at(67, 1);
-      g.engine.send({ type: 'unit_effect', at: '-5,0', hp: 21 });
+      g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-5,0', hp: 21 }] });
       await flush();
-      expect(g.find('game_state_update').boardState['-5,0'].hp).toBe(21);
-
-      g.engine.send({ type: 'pass_turn' });
-      await flush();
+      // Healed to 21, then the toll: 20.
       expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(20);
       expect(g.find('game_over')).toBeUndefined();
     });
 
-    it('finds a unit the client has walked since the cast landed on it', async () => {
-      // The walk goes out after the cast, so the hex a cast names is where the
-      // client has the unit, not where this engine does. Addressed by hex
-      // alone the mend fell on an empty square and was silently dropped.
+    it('finds a cast\'s unit by uid when the hex it names is stale', async () => {
+      // Addressed by hex alone, a mend on a unit the client had walked fell on
+      // an empty square and was silently dropped.
       const g = at(67, 1);
-      g.engine.send({ type: 'unit_effect', at: '-4,0', uid: 'wk', hp: 21 });
+      g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-4,0', uid: 'wk', hp: 21 }] });
       await flush();
-      expect(g.find('game_state_update').boardState['-5,0'].hp).toBe(21);
+      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(20);
+    });
+
+    it('keeps none of a turn\'s casts when it refuses the turn', async () => {
+      // Sent as messages of their own, the casts were kept before the move was
+      // looked at, so a refused move came back half-played.
+      const g = at(21, 12);
+      g.engine.send({
+        type: 'make_move', from: '-5,0', to: '9,9',
+        effectsBefore: [{ at: '-5,0', uid: 'wk', hp: 40 }],
+      });
+      await flush();
+      expect(g.find('invalid_move')).toBeDefined();
+      const game = (g.engine as any).game;
+      expect(game.boardState['-5,0'].hp).toBe(12);
+      expect(game.moveHistory.length).toBe(0);
     });
 
     it('never ends the match on a cast that killed nothing', async () => {
@@ -499,23 +510,14 @@ describe('LocalGameService', () => {
       // BOARD for reasons of its own - one that walked home into its base is
       // off the board and still alive. Checking who is beaten on every cast
       // meant a heal on your own pawn could end a match it had no part in.
+      // Black already holds no commander on the board - walked home, say. A
+      // mend on white's own king must not read that as a regicide.
       const g = at(20, 12, 40);
-      g.engine.send({ type: 'unit_effect', at: '5,0', hp: 0, uid: 'bk' });
+      delete (g.engine as any).game.boardState['5,0'];
+      g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-5,0', hp: 20, uid: 'wk' }] });
       await flush();
-      expect(g.find('game_over').endReason).toBe('regicide');
-
-      // Black is now off the board entirely. A fresh engine on that position,
-      // still running, must not read a friendly mend as a second regicide.
-      const h = at(20, 12, 40);
-      h.engine.send({ type: 'unit_effect', at: '5,0', hp: 0, uid: 'bk' });
-      await flush();
-      (h.engine as any).game.endReason = '';
-      (h.engine as any).game.winner = '';
-      h.seen.length = 0;
-      h.engine.send({ type: 'unit_effect', at: '-5,0', hp: 20, uid: 'wk' });
-      await flush();
-      expect(h.find('game_state_update').boardState['-5,0'].hp).toBe(20);
-      expect(h.find('game_over')).toBeUndefined();
+      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(20);
+      expect(g.find('game_over')).toBeUndefined();
     });
 
     it('lands a cast made after the blow after the blow', async () => {
@@ -538,18 +540,18 @@ describe('LocalGameService', () => {
 
     it('never writes an HP past what the unit can hold', async () => {
       const g = at(20, 12);
-      g.engine.send({ type: 'unit_effect', at: '-5,0', hp: 900, uid: 'wk' });
+      g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-5,0', hp: 900, uid: 'wk' }] });
       await flush();
-      expect(g.find('game_state_update').boardState['-5,0'].hp).toBe(45);
+      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(45);
     });
 
     it('ends the match when a cast takes the last king off the board', async () => {
       // A commander killed by an ability is a commander killed. Left out, the
       // game carried on with a side that had already lost.
       const g = at(20, 12);
-      g.engine.send({ type: 'unit_effect', at: '-5,0', hp: 0 });
+      g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-5,0', hp: 0 }] });
       await flush();
-      expect(g.find('game_state_update').boardState['-5,0']).toBeUndefined();
+      expect(g.find('turn_passed').boardState['-5,0']).toBeUndefined();
       expect(g.find('game_over').endReason).toBe('regicide');
       expect(g.find('game_over').winner).toBe(LOCAL_OPPONENT);
     });
