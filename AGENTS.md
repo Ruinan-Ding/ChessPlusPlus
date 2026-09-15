@@ -31,8 +31,12 @@ combat deals damage rather than capturing outright.
 ```bash
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
-DJANGO_DEBUG=true python manage.py test               # 89 tests
-DJANGO_DEBUG=true python manage.py test game.testsuite  # 85 tests, engine + consumers + models
+DJANGO_DEBUG=true python manage.py test               # everything
+DJANGO_DEBUG=true python manage.py test game.testsuite  # 114 tests, engine + consumers + models
+
+# Live network checks - real sockets against the server above, in a second shell
+python scripts/e2e/match.py    # one full match: lobby, invite, room, moves, rejoin, resign
+python scripts/e2e/edges.py    # races, second tab, token lifetime, disconnect after the result (~90s)
 
 # Client (from client/)
 ng serve                                              # serve on :4200
