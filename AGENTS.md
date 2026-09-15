@@ -612,19 +612,30 @@ Decided so far:
     feed a base: `absorbWithdrawn()` for a unit that walked home, and `woundReserves()` for
     the squad dealt there - where `panelHp` arriving HIGHER than what is drawn IS the mend.
   - **A unit's HP lives in one of two places, and both have to be SENT.** No engine holds an
-    ability, so a cast that moves HP is only ever the client's word until it goes out as its
-    own message ahead of the turn's move or pass. A panel unit's HP lives in the move history
-    (`panel_effect` -> `effectInPanel`); a board unit's lives on the board (`unit_effect` ->
-    `effectOnBoard`). Only the panel half was ever sent: a mend on a unit standing on the
-    battlefield lived on the room's `stagedBoard` and nowhere else, and the next
-    `game_state_update` rolled it off - which is why *healing a king off 1 HP still lost it
-    to overtime on the same commit*. `unit_effect` carries the **uid** as well as the hex,
-    because the turn's walk goes out after the cast and the hex a cast named is where the
-    client has the unit, not where the engine does. A cast that empties a commander ends the
-    match, like a blow, but **only when the cast actually emptied one** - a side can hold no
+    ability, so a cast that moves HP is only the client's word until the engine is told. A
+    panel unit's HP lives in the move history (`{unit, hp, panel}`, written as a
+    `panelEffect` record); a board unit's lives on the board (`{at, uid, hp}`). Only the
+    panel half was ever sent at first: a mend on a battlefield unit lived on the room's
+    `stagedBoard` alone and the next state update rolled it off - which is why *healing a
+    king off 1 HP still lost it to overtime on the same commit*.
+  - **A turn's casts ride inside the one message that ends it** - `pass_turn`, `make_move`
+    or `panel_attack` - split around the turn's board action: `effectsBefore` for casts
+    staged before it, `effects` for casts staged after (`endTurn` splits at the last staged
+    entry that is not a cast). The browser engine's `landEffects` lands the first list on a
+    *copy* of the board, measures the move against that copy, lands the second list after
+    the move resolves, then takes the overtime toll - and emits the panel records on either
+    side of the move's own (`applyMoveMade` / `applyTurnPassed` splice them in). They used
+    to be separate `panel_effect` / `unit_effect` messages sent ahead, which broke twice:
+    a cast carries the HP worked out for the turn *so far, blow included*, so one made
+    after the blow was struck over again (a mend after a counter vanished; a panel unit
+    struck and then finished by a spell rose again on reload, because the blow's record was
+    the last word); and **a move the engine refused came back half-played**, the casts
+    already kept. Now a refusal keeps none of it. Board casts carry the **uid** as well as
+    the hex, so a stale hex still finds its unit. A cast that empties a commander ends the
+    match, like a blow, but **only when a cast actually emptied one** - a side can hold no
     commander on the board for reasons of its own (one that walked home is off the board and
-    alive), and a heal that ends a match it had no part in is worse than no check at all.
-    This is the same line `pass()` draws.
+    alive), and a heal that ends a match it had no part in is worse than no check. This is
+    the same line `pass()` draws for the toll.
 
     **Both message types must be in `LOCAL_GAME_TYPES`** (`websocket.service.ts`) and neither
     was. A solo game keeps its socket when a server is reachable, and only listed types are
@@ -1048,13 +1059,19 @@ in — the page just sat there.
 
 ## Room access and identity
 
-**A room's access token is refreshed on every join** - `_refresh_game_token`, called from
+**A room's access token is refreshed on every join, and kept alive by heartbeats while the
+seat is in use.** On join: `_refresh_game_token`, called from
 `_handle_join_game_room` once the token checks out. `GAME_TOKEN_LIFETIME` is how long an
 *unused invite* stays good, not a ceiling on how long a game may run. It was a ceiling: the
 lobby and the room rejoin on every socket reopen (above), so a token frozen at room creation
 meant any blip past ten minutes answered `TOKEN_EXPIRED`, bounced the player to the lobby, and
 let the 30-second disconnect grace timer forfeit a match still being played. Eleven minutes in
-the setup screen did it too, without any network trouble at all.
+the setup screen did it too, without any network trouble at all. Refreshing on join alone still
+left a match played for ten minutes *without* a reload one dropped connection from
+`TOKEN_EXPIRED`, so a heartbeat from a socket seated in a room (`self.game_id` set) calls
+`_keep_game_token_alive`, which rewrites the expiry only once half the lifetime has run - the
+condition is in the query, one statement either way. A socket that sends no heartbeats lets its
+seat go stale, which is the point of the expiry.
 
 **The token does not live in the URL.** It arrives on the query string once, is copied into
 `sessionStorage` under `cpp.roomToken.<gameId>`, and the query string is rewritten away with
@@ -1081,6 +1098,22 @@ path that has already matched the stored secret. The read-then-`update_or_create
 left a window - two clients that both saw a name free both wrote it, and the second walked off
 with the first's row, channel name and identity secret. `change_username` claims the new name
 *before* releasing the old, so a rename that loses leaves the player exactly where they were.
+
+**An invited pair is claimed in one statement too.** `_claim_invite_pair` marks both players
+`invited` in a single conditional update that skips anyone already `in-game` or `invited`, and
+rolls back unless exactly both rows changed. The busy checks above it still read the statuses -
+they give the clearer refusal - but the write used to come after the invite was created, so two
+players inviting each other at the same moment both read "online" in between and both invites
+went out. If creating the invite then fails, both are put back to `online`, or nothing would
+ever release them.
+
+**A room join carries the identity secret.** Leaving a room deletes the player's connection
+row (`_cleanup_game_room_connection`), and rejoining recreates it through
+`_create_or_update_player_connection`. Recreated without a secret, the player's return to the
+lobby failed its own rejoin check - `bool(existing.secret)` - and was handed a guest's name:
+anyone who reloaded mid-game came back a stranger. The client sends `secret` with
+`join_game_room`; the server stores it once the token has proved the seat, and a join without
+one leaves the stored secret alone.
 
 **Tokens and secrets compare through `_same_secret`** - `secrets.compare_digest` over encoded
 bytes, because `compare_digest` rejects non-ASCII `str` and both of these arrive off the wire.
@@ -1179,7 +1212,13 @@ under-charges a unit that had to go round something, and the server would then r
 recomputes legal targets from what is left after every hop, and the Unit panel's MOV shows what
 remains. Attacking is staged too - previewed with the same damage sums the server uses - and
 ends the unit's movement for the turn (`canMove` goes false). End Turn sends the whole turn as
-one `make_move {from, to, attack?}`.
+one `make_move {from, to, attack?}` - its casts included (see *a turn's casts ride inside the one
+message that ends it*), so the engine takes the turn whole or refuses it whole.
+
+**Undo stops once End Turn has sent the turn.** `turnSubmitted` (the `submittedTurn` guard
+End Turn already used) disables the button and makes `undoMove` a no-op until the engine
+answers. The staged stack stays up in that gap so the position does not flicker, and popping it
+then changed nothing the engine saw while showing a board that was not being played.
 
 End Turn deliberately leaves `stagedBoard` in place; the `move_made` handler clears it once the
 confirmed board arrives. Clearing it at send time flashed the pre-move position for a frame,

@@ -103,13 +103,18 @@ Overtime starts at ply 67. Solo play only - no server takes the toll.
 | 5.2 | **Mend** - slot 6 of the pool, paired with Rally. Friendly target, **flat 20 HP**, free, no cooldown cost. *"heal a static 20 for testing purposes."* Its tooltip now says `+20 HP`: `abilityHint` read every field but `heal`, so the one ability added for testing described itself as *"no effect yet"*. | WRITTEN (new) |
 | 5.3 | A heal never takes a unit past `max_hp`. | WRITTEN (new) |
 | 5.4 | An ability that moves a **panel** unit's HP is recorded in the move history, like a blow into a panel is - it is the only place that HP survives a reload. | WRITTEN (new) |
-| 5.7 | **Both effect messages are routed to the browser engine** (`LOCAL_GAME_TYPES`). Neither was. A solo game keeps the socket up when a server is reachable, and only listed types are answered locally - so `panel_effect` and `unit_effect` were posted to a server that has never heard of them and dropped. **5.4 has never worked outside offline mode**, and 5.5's fix would not have either. | WRITTEN (new) |
-| 5.5 | An ability that moves a **board** unit's HP is sent to the engine as `unit_effect`, and the engine writes it onto the board. **Only the panel half was ever sent.** A mend on a unit standing on the battlefield lived on the room's staged board and nowhere else, so the next state update rolled it straight back off - which is why *healing a king off 1 HP still lost it to overtime the same turn*. Sent ahead of the turn's own move or pass, so the toll comes off the healed king. Addressed by uid as well as hex, since the walk goes out after the cast. | WRITTEN (new) |
+| 5.7 | **Every cast reaches the browser engine, with the server up or not.** It first went out as messages of its own that only offline mode answered, so with daphne running 5.4 and 5.5 never worked. A turn's casts now ride inside the message that ends the turn - the move, the swing out of a panel, or the pass - which the browser engine always answers. | WRITTEN (new) |
+| 5.5 | An ability that moves a **board** unit's HP reaches the engine, which writes it onto the board. **Only the panel half was ever sent.** A mend on a unit standing on the battlefield lived on the room's staged board and nowhere else, so the next state update rolled it straight back off - which is why *healing a king off 1 HP still lost it to overtime the same turn*. The casts land before the toll, so it comes off the healed king. | WRITTEN (new) |
+| 5.8 | **A cast lands where it happened in the turn.** One made after the turn's blow used to be struck over again when the blow resolved: a mend after a counter vanished (pawn 4 -> 20 staged, 4 committed), and a panel unit hit then finished by a spell came back from the dead on reload. | WRITTEN (new) |
+| 5.9 | **A turn the engine refuses keeps none of its casts.** They used to be kept before the move was looked at, so a refused turn came back half-played. | WRITTEN (new) |
+| 5.10 | **Undo takes a cast back on its own** (the button used to grey out over it while R still worked), **puts a panel unit's HP back** (the wound stayed drawn, and the next cast struck from it), **stands an undone kill back up**, and **stops once End Turn has sent the turn**. | WRITTEN (new) |
 | 5.6 | A cast that kills a commander ends the match, the same way a blow does. | WRITTEN (new) |
 
-**This is the test rig.** Pick the Mend/Rally pair, hit one of your own base units with a
-damage ability to wound it, then watch it mend 1 a turn and wear its green `+1`. Mend it
-back with 20 when you are done. Rally hands out 300 points so nothing has to be afforded.
+**This is the test rig.** Pick the Mend/Rally pair **first**, then a pair with a damage
+ability in it. Damage abilities only target enemies, so wound your own base unit from the
+**other side's** panel on its turn (solo play drives both). Then watch it mend 1 a turn and
+wear its green `+1`, and Mend it back with 20 when you are done. Rally hands out 300 points
+so nothing has to be afforded.
 
 ---
 
@@ -124,8 +129,9 @@ back with 20 when you are done. Rally hands out 300 points so nothing has to be 
 | ~~6.6~~ | **A cast that kills shows no number.** Done - see 2.9. The mark is keyed to the hex when nobody is left standing to wear it. |
 | ~~6.7~~ | **Undo leaves the cast's mark up.** Done - see 2.10. `clearMarks()` on the board, called from `undoMove`. |
 | ~~6.8~~ | **A winning cast loses its commit wash.** Done - see 2.11. |
-| 6.9 | **The test rig below cannot be followed as written.** A side carries **four** pool abilities and no more (`myLoadout` filled, `Pick 0`). Taking Mend brings Rally with it, so two of the four are gone and a damage ability has to be one of the other two - pick anything else first and there is no room. Reselect is the only way back. Either the rig's instructions or the cap wants changing. |
-| 6.10 | **The marks are drawn right and rendered tiny.** The board sits in its own column between the two panels - about 300px wide in a 940px window - and the whole SVG scales to fit, ~0.25x. A 22px mark lands on screen at ~6px. Nothing is wrong with the mark; the board simply has no room. Worth knowing before reading a `-1` as missing again. |
+| 6.9 | **The four-ability cap makes the test rig order-sensitive.** A side carries **four** pool abilities (`Pick 0` when full). Mend brings Rally, so a damage pair only fits if it is the *second* pick; pick anything else first and Reselect is the only way back. The rig above now says so. Whether the cap itself should change is **your call**. |
+| 6.10 | **The marks are drawn right and rendered tiny in a narrow window.** The board sits in its own column between the two panels - about 300px wide in a 940px window - and the whole SVG scales to fit, ~0.25x, so a 22px mark lands on screen at ~6px. At ~1480px wide the board is ~815px and the marks read clearly. |
+| 6.12 | **A cast on a unit that walked home is not drawn until the turn commits.** A unit at 9/16 in your base, Mend staged: still drawn at 9. `absorbWithdrawn` writes the committed HP over the staged one on every redraw. The committed result is right, but a second cast on that unit in the same turn works from the stale number and wipes out the first. Found 15 Sep, **not fixed yet**. |
 | 6.11 | **A king that dies of the toll wears no `-1`.** `markOvertimeToll` looks for the king to mark and it is already off the board - the same shape as the old 6.6. The banner says what happened, so it is left alone; say if you want the last `-1` over the corpse. |
 | 6.5 | Nothing here reaches a networked game. Panels, crossings, the toll and abilities are all gated to solo (`entryBind`) because no server holds a panel. |
 
@@ -150,14 +156,48 @@ SEEN**: the owner has still not watched any of it, and the column above is uncha
 | 3.2 | Regicide, **YOU WIN** banner, finished position left on screen, Restart offered. |
 | 3.4 / 3.5 / 5.5 / 5.7 | **The headline.** King on 1 HP, Mend, End Turn: 1 + 20 = 21, toll takes 1, **20 left and the match went on**. *"after healing it form 1hp, it dies next turn anyways"* - not any more. |
 
-Not watched, and still only specs: **all of §1** (no wounded unit in a base to watch mend, and
-see 6.9), **all of §4**, and **2.9 / 2.10 / 5.4** - each needs a damaging ability the loadout
-had no room for.
+Not watched on 2 Sep, and still only specs then: **all of §1**, **all of §4**, and
+**2.9 / 2.10 / 5.4** - each needed a damaging ability the loadout had no room for. All of them
+have been watched since; see below.
+
+### Watched again, 14-15 Sep 2026
+
+Driven through running games - solo, and two players on two browser identities - with daphne
+up. **Still not SEEN**: the owner has not watched these either. Clicks were real on the board;
+some panel buttons were pressed through page scripts, which fire the same handlers.
+
+| Rule | What was watched |
+|---|---|
+| 1.1 / 1.2 | Black's dealt base knight, wounded 28 -> 20: **+1 at the end of each black turn** (20 -> 21 -> ... -> 27) and nothing on white's. Two base units mended in the same beat. |
+| 1.2 | The walked-home half: a white archer withdrew at 9 HP and was on **10** at the end of its side's next turn, green `+1`. |
+| 1.3 | Black's reserve queen, struck to 28, **stayed 28** across five black turns while the base beside it mended. |
+| 1.4 | A rook at 40/40 got no `+1`. A base archer killed by a spell **stayed dead**, after a reload too (it did not before 5.8). |
+| 2.4 | Each `+1` on the opponent's units swelled in `#38bdf8`. |
+| 2.6 | Checked again: no drawn element after a mark overlaps it. |
+| 2.9 | `-4` written on the hex a killing Sap emptied - **red** for your own unit since the colour fix (it was purple). |
+| 2.10 | The cast's mark gone within 0.2s of Undo. |
+| 3.6 | 15s clock: 30s into white's first turn, still turn 1. |
+| 4.1 | A pawn struck white's base rook: 1 damage, **counter 0**, and a queen's blow into black's base the same. A pawn struck black's **reserve** queen and took **16** back. |
+| 4.2 | An archer struck a pawn (range 1) from three hexes: **counter 0**. |
+| 4.3 | The hover preview showed no counter for the base and the out-of-reach pawn, and `-16` on the attacker for the reserve. |
+| 4.4 | Replays played move + attack only for those two, and move + attack + counter for the reserve. |
+| 4.5 | Pawn onto shieldman: the preview drew `0` in grey (`rgb(107,114,128)`). |
+| 5.1 / 5.3 | Arc Bolt on black's base knight; Mend on white's base rook at 35/40 wrote `+5`. |
+| 5.4 | The panel cast's record in the history, `defenderHp` intact after reload. |
+| 5.6 | Black's Sap killed white's king - **its HP set to 5 by hand first**, the only rigged step - and the match ended by regicide, YOU LOST, Restart offered. |
+
+Found by watching, and fixed: 5.8, 5.9, 5.10, the kill mark's colour (2.9), Mend's tooltip
+claiming "for one turn", a room token that expired mid-game, crossed invites both going
+through, and a player renamed to a guest after rejoining a room.
+
+Not re-watched since 2 Sep: **§3.1-3.5 and 3.7** (nothing there has changed since).
 
 ## What is checked, and what that is worth
 
-- **232 client specs**, **89 server tests**, production build clean apart from a standing
+- **242 client specs**, **114 server tests**, production build clean apart from a standing
   SCSS budget warning.
+- **Live network checks** in `server/scripts/e2e/`: a full match between two real sockets
+  (`match.py`) and its edge cases (`edges.py`), run against a running server.
 - Specs cover the logic end to end: the engine resolves a panel blow, the room stages and
   sends it, the derivations read it back, and the marks are owed and paid.
 - **They do not cover a person clicking through a real match.** That is the gap this
