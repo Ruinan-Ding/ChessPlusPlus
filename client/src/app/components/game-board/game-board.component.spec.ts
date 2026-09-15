@@ -211,6 +211,15 @@ describe('GameBoardComponent reach preview', () => {
     board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
     await new Promise(resolve => setTimeout(resolve, 50));
     expect(board.markOf(cell('1,0'))).toBe('-14');
+    // In the dead unit's colours, which the empty hex cannot give: read off
+    // the hex, every kill was drawn as the opponent's.
+    board.myColor = 'black';
+    expect(board.markTheirs(cell('1,0'))).toBeTrue();
+    const mine = [{ ...steps[0], color: 'black' }] as any;
+    board.playback = mine;
+    board.ngOnChanges({ playback: new SimpleChange(steps, mine, false) });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(board.markTheirs(cell('1,0'))).toBeFalse();
   });
 
   it('takes every mark down the moment the cast behind it is undone', () => {
@@ -951,6 +960,33 @@ describe('GameBoardComponent reach preview', () => {
       expect(board.cells.find(c => c.piece?.uid === uid)).toBeUndefined();
     });
 
+    it('puts a panel wound back when the cast behind it is undone', async () => {
+      // Undo takes the staged wound off the record, and the record going
+      // quiet used to leave the wound drawn - the next cast on the unit then
+      // struck from the number on screen, and one Arc Bolt recorded twice.
+      const res = board.cells.find(c => c.panel === 'br' && !!c.piece)!;
+      const uid = res.piece!.uid!;
+      const full = res.piece!.hp;
+      const hp = (next: Record<string, number>) => {
+        board.panelHp = next;
+        board.ngOnChanges({ panelHp: new SimpleChange({}, next, false) });
+        return board.cells.find(c => c.piece?.uid === uid);
+      };
+
+      expect(hp({ [uid]: full - 2 })!.piece!.hp).toBe(full - 2);
+      const undone = hp({})!;
+      expect(undone.piece!.hp).toBe(full);
+      // HP coming back inside a turn is an Undo, not a mend: no `+1`.
+      await anyBoard().settleUpkeep();
+      expect(board.markOf(undone)).toBe('');
+
+      // And a kill taken back stands the unit up again where it fell.
+      expect(hp({ [uid]: 0 })).toBeUndefined();
+      const risen = hp({})!;
+      expect(risen.key).toBe(res.key);
+      expect(risen.piece!.hp).toBe(full);
+    });
+
     it('swells a mending base unit and marks its +1, dealt squad included', async () => {
       // A unit of the squad dealt into a base mends an HP a turn like a unit
       // that walked home to one, and the number going up is the whole of what
@@ -966,6 +1002,8 @@ describe('GameBoardComponent reach preview', () => {
       await anyBoard().settleUpkeep();
       expect(board.markOf(board.cells.find(c => c.piece?.uid === uid)!)).toBe('');
 
+      // A mend arrives with the turn that paid it.
+      board.turnNumber += 1;
       board.panelHp = { [uid]: full - 2 };
       board.ngOnChanges({ panelHp: new SimpleChange({}, board.panelHp, false) });
       const healed = board.cells.find(c => c.piece?.uid === uid)!;

@@ -159,7 +159,9 @@ export class GameStateService {
       boardState: msg.boardState ?? prev.boardState,
       currentTurn: msg.currentTurn ?? prev.currentTurn,
       turnNumber: msg.turnNumber ?? prev.turnNumber,
-      moveHistory: [...prev.moveHistory, move],
+      // And whatever the turn cast after its board action, recorded after it.
+      // The browser engine's alone; a server sends none.
+      moveHistory: [...prev.moveHistory, move, ...(msg.effects ?? [])],
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
     });

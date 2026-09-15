@@ -95,6 +95,11 @@ export interface AnimStep {
    * now.
    */
   uid?: string;
+  /**
+   * The colour of the unit a killing cast took off, which is the colour its
+   * number is drawn in. Nothing is left standing to read it off.
+   */
+  color?: 'white' | 'black';
 }
 
 /** A unit that died, and the hex it died on. */
@@ -855,7 +860,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [attr.y]="hex.cy + 1"
             class="heal-mark"
             [class.toll-mark]="mark.charAt(0) === '-'"
-            [class.mark-theirs]="hex.piece?.color !== (myColor || 'white')"
+            [class.mark-theirs]="markTheirs(hex)"
             [attr.transform]="textTransform(hex.cx, hex.cy)"
           >{{ mark }}</text>
         </g>
@@ -2194,7 +2199,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // mark lasts. A mend used to swell the target and leave the HP number to
       // say so on its own - which is exactly the "nothing seems to happen"
       // the marks exist to answer.
-      if (step.mark) this.showMark(this.markKey(step), step.mark);
+      if (step.mark) this.showMark(this.markKey(step), step.mark, step.color);
       if (!to) return this.wait(ms);
       this.glowHostile = !!step.hostile;
       return this.flash('glowHex', step.to, ms);
@@ -2741,6 +2746,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (stamp === this.reservesKey) return;
     this.reservesKey = stamp;
     this.reserves = {};
+    // A new deal has no dead to take back - and its uids repeat the last one's.
+    this.fallen.clear();
     if (!roster.length) return;
 
     for (const [panel, hexes] of this.panelZones) {
@@ -2799,16 +2806,43 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * same `+1` a unit that walked home has always shown.
    */
   private woundReserves(): void {
+    // A kill taken back: the record no longer says 0, so the unit stands again
+    // where it fell - or beside it, if something has been shuffled on since.
+    for (const [uid, { at, piece }] of this.fallen) {
+      if ((this.panelHp[uid] ?? piece.max_hp ?? 1) <= 0) continue;
+      this.fallen.delete(uid);
+      const spot = this.reserves[at] ? this.freePanelHex(at) : at;
+      if (spot) this.reserves[spot] = piece;
+    }
+    // Units that walked home are `absorbWithdrawn`'s: this knows no HP of theirs to go back to.
+    const home = new Set(this.withdrawn.map(w => w.unit['uid']));
+    const newTurn = this.turnNumber !== this.woundTurn;
+    this.woundTurn = this.turnNumber;
     for (const [at, piece] of Object.entries(this.reserves)) {
-      const left = piece.uid ? this.panelHp[piece.uid] : undefined;
+      if (!piece.uid) continue;
+      // No record is no wound. An Undo that took the only one back left the
+      // wound drawn, and the next cast on that unit struck from the number
+      // on screen - so the same Arc Bolt, cast twice, recorded twice.
+      const left = this.panelHp[piece.uid] ?? (home.has(piece.uid) ? undefined : piece.max_hp);
       if (left === undefined || left === piece.hp) continue;
-      // Nothing on 0 is left standing: killed in a panel is killed.
-      if (left <= 0) { delete this.reserves[at]; continue; }
-      // Paid at the end of the turn's animation, not here.
-      if (left > piece.hp) this.oweMark(piece.uid!, '+1');
+      // Nothing on 0 is left standing: killed in a panel is killed. Kept
+      // aside rather than forgotten, for the Undo above.
+      if (left <= 0) {
+        if (!home.has(piece.uid)) this.fallen.set(piece.uid, { at, piece });
+        delete this.reserves[at];
+        continue;
+      }
+      // Paid at the end of the turn's animation, not here. Only a turn passing
+      // mends; HP coming back inside one is an Undo, which is owed no `+1`.
+      if (left > piece.hp && newTurn) this.oweMark(piece.uid, '+1');
       this.reserves[at] = { ...piece, hp: left };
     }
   }
+
+  /** Panel units a staged kill took off, by uid, and where they fell. */
+  private fallen = new Map<string, { at: string; piece: PieceData }>();
+  /** The ply `woundReserves` last looked at, to tell a mend from an Undo. */
+  private woundTurn = -1;
 
   /**
    * Units that have come home join the base as ordinary panel units - they
@@ -2924,10 +2958,27 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * matters most in the recap, where every beat plays against the board the
    * turn ended on rather than the board it was staged against.
    */
-  private showMark(uid: string, text: string): void {
+  private showMark(uid: string, text: string, color?: string): void {
     if (!uid) return;
     this.turnMarks.set(uid, text);
+    if (color) this.markColors.set(uid, color);
     this.fadeMarks();
+  }
+
+  /** Whose a kill's mark is, by the hex it is keyed to - see `markTheirs`. */
+  private markColors = new Map<string, string>();
+
+  /**
+   * Whether a mark is drawn in the opponent's colours. A unit's own mark reads
+   * the unit; a kill's has nobody left on the hex, and reading the empty hex
+   * drew every kill in the opponent's colours - your own pawn killed by their
+   * spell wrote a purple number where a red one belonged.
+   */
+  markTheirs(hex: HexCell): boolean {
+    const color = hex.piece && this.turnMarks.has(this.uidOf(hex))
+      ? hex.piece.color
+      : this.markColors.get(hex.key) ?? hex.piece?.color;
+    return color !== (this.myColor || 'white');
   }
 
   /**
@@ -2939,6 +2990,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     clearTimeout(this.markTimer);
     this.markTimer = null;
     this.turnMarks.clear();
+    this.markColors.clear();
     this.cdr.markForCheck();
   }
 
@@ -2947,6 +2999,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     clearTimeout(this.markTimer);
     this.markTimer = setTimeout(() => {
       this.turnMarks.clear();
+      this.markColors.clear();
       this.markTimer = null;
       this.cdr.markForCheck();
     }, MARK_FADE_MS);

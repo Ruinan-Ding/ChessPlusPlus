@@ -63,6 +63,25 @@ describe('LocalGameService', () => {
     expect(Object.keys(last('game_started').boardState).length).toBe(48);
   });
 
+  it('records a cast made after a blow into a panel after the blow', async () => {
+    // The blow's record used to be the last word on the unit's HP: the cast
+    // went ahead of it, so a panel unit struck and then finished by a spell
+    // came back from the dead on a reload.
+    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+    service.send({
+      type: 'panel_attack', intoPanel: true, panel: 'tr',
+      from: '-5,9', attack: '-5,8', unit: home,
+      effects: [{ unit: home, hp: 0, panel: 'tr' }],
+    });
+    await flush();
+    expect(last('move_made').effects[0].defenderHp).toBe(0);
+    service.send({ type: 'request_game_state' });
+    await flush();
+    const history = last('game_state_update').moveHistory;
+    expect(history.slice(-2)[0].panelAttack).toBeTrue();
+    expect(history.slice(-1)[0]).toEqual(jasmine.objectContaining({ panelEffect: true, defenderHp: 0 }));
+  });
+
   it('lands a blow in a panel, and the panel answers', async () => {
     // The defender is not on this board - panels are the client's - so it
     // rides in with the message and its remaining HP comes back on the
@@ -497,6 +516,24 @@ describe('LocalGameService', () => {
       await flush();
       expect(h.find('game_state_update').boardState['-5,0'].hp).toBe(20);
       expect(h.find('game_over')).toBeUndefined();
+    });
+
+    it('lands a cast made after the blow after the blow', async () => {
+      // A cast carries the HP the client worked out for the turn, blow
+      // included. Sent ahead of the move, the engine wrote it and then
+      // resolved the blow over the top: a king mended after taking a counter
+      // lost the mend.
+      const g = at(21, 40);
+      const game = (g.engine as any).game;
+      game.boardState = { '-5,0': game.boardState['-5,0'], '-4,0': game.boardState['5,0'] };
+      g.engine.send({
+        type: 'make_move', from: '-5,0', to: '-5,0', attack: '-4,0',
+        effects: [{ at: '-5,0', uid: 'wk', hp: 45 }],
+      });
+      await flush();
+      const made = g.find('move_made');
+      expect(made.move.counter_damage).toBeGreaterThan(0);
+      expect(made.boardState['-5,0'].hp).toBe(45);
     });
 
     it('never writes an HP past what the unit can hold', async () => {

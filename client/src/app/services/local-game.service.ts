@@ -123,7 +123,8 @@ export class LocalGameService {
       }
 
       case 'make_move':
-        this.move(msg.from, msg.to, msg.attack, msg.moveBonus, msg.bonuses, msg.withdraw);
+        this.move(
+          msg.from, msg.to, msg.attack, msg.moveBonus, msg.bonuses, msg.withdraw, msg.effects);
         break;
 
       case 'enter_board':
@@ -133,7 +134,7 @@ export class LocalGameService {
       case 'panel_attack':
         this.attackIntoPanel(
           msg.from, msg.to ?? msg.from, msg.attack, msg.unit,
-          msg.moveBonus, msg.counters !== false, msg.bonuses, msg.panel);
+          msg.moveBonus, msg.counters !== false, msg.bonuses, msg.panel, msg.effects);
         break;
 
       case 'panel_effect':
@@ -313,6 +314,8 @@ export class LocalGameService {
     // look one up in, and the record is the only place it survives a reload -
     // where it is what tells the mending a base from a reserve.
     panel?: string,
+    /** Casts the turn made after its blow - see `landAfter`. */
+    effects?: any[],
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
@@ -390,7 +393,7 @@ export class LocalGameService {
         }
       }
     }
-    this.commitPanelBlow(record, board);
+    this.commitPanelBlow(record, board, this.landAfter(board, effects));
   }
 
   /**
@@ -405,16 +408,63 @@ export class LocalGameService {
   private effectInPanel(unit: any, hp: number, panel?: string): void {
     const g = this.game;
     if (!g || !g.started || g.endReason || !unit?.uid || typeof hp !== 'number') return;
+    g.moveHistory = [...g.moveHistory, this.panelEffectRecord(unit, hp, panel)];
+    this.persist();
+    this.emit({ type: 'game_state_update', ...this.snapshot() });
+  }
+
+  /** What a cast leaves a panel unit with, in the shape a blow into a panel writes. */
+  private panelEffectRecord(unit: any, hp: number, panel?: string): any {
     const left = Math.max(0, Math.trunc(hp));
-    g.moveHistory = [...g.moveHistory, {
-      from: '', to: '', unit_id: unit.unit_id, color: unit.color, turn: g.turnNumber,
+    return {
+      from: '', to: '', unit_id: unit.unit_id, color: unit.color, turn: this.game!.turnNumber,
       captured: null, attacked: false, damage_dealt: 0, moved: false,
       defender_eliminated: left <= 0,
       intoPanel: true, panelEffect: true, unit, defenderHp: left,
       ...(panel ? { panel } : {}),
-    }];
-    this.persist();
-    this.emit({ type: 'game_state_update', ...this.snapshot() });
+    };
+  }
+
+  /**
+   * A cast the turn made AFTER its board action, landed after that resolves.
+   *
+   * A cast carries the HP the client worked out for the whole turn so far -
+   * the blow included. Sent ahead of the move like the others, the engine
+   * wrote it and then resolved the blow over the top: a unit mended after
+   * taking a counter lost the mend, and a panel unit hit and then finished
+   * with a spell came back from the dead on a reload, because the blow's
+   * record was the last word on its HP. So these ride in the move itself and
+   * land here - after the blow, before the toll, inside the one turn.
+   *
+   * Returns the panel records, which go on the history after the move's own.
+   */
+  private landAfter(board: Record<string, any>, effects?: any[]): any[] {
+    const records: any[] = [];
+    for (const e of Array.isArray(effects) ? effects : []) {
+      if (typeof e?.hp !== 'number') continue;
+      if (e.unit?.uid) records.push(this.panelEffectRecord(e.unit, e.hp, e.panel));
+      else if (e.at) this.landOnBoard(board, e.at, e.hp, e.uid);
+    }
+    return records;
+  }
+
+  /** Write a cast's HP onto a board unit, wherever it now stands. False if nothing changed. */
+  private landOnBoard(board: Record<string, any>, at: string, hp: number, uid?: string): boolean {
+    // Where the unit actually stands. The client can walk a unit after a cast
+    // has landed on it, and the walk arrives after this - so the hex the cast
+    // names is where the client has it, not where this engine does. The uid
+    // is what survives that; the hex is the fallback for a board without one.
+    const key = (uid && Object.keys(board).find(k => board[k]?.uid === uid)) || at;
+    const standing = board[key];
+    if (!standing) return false;
+    // Clamped at both ends. The room clamps too, but this is the copy that is
+    // persisted and handed back, and it should not be able to hold an HP its
+    // own config says is impossible whatever it was sent.
+    const left = Math.max(0, Math.min(standing.max_hp ?? Infinity, Math.trunc(hp)));
+    if (left === standing.hp) return false;
+    if (left <= 0) delete board[key];
+    else board[key] = { ...standing, hp: left };
+    return true;
   }
 
   /**
@@ -435,21 +485,8 @@ export class LocalGameService {
   private effectOnBoard(at: string, hp: number, uid?: string): void {
     const g = this.game;
     if (!g || !g.started || g.endReason || !at || typeof hp !== 'number') return;
-    // Where the unit actually stands. The client can walk a unit after a cast
-    // has landed on it, and the walk arrives after this - so the hex the cast
-    // names is where the client has it, not where this engine does. The uid
-    // is what survives that; the hex is the fallback for a board without one.
-    const key = (uid && Object.keys(g.boardState).find(k => g.boardState[k]?.uid === uid)) || at;
-    const standing = g.boardState[key];
-    if (!standing) return;
-    // Clamped at both ends. The room clamps too, but this is the copy that is
-    // persisted and handed back, and it should not be able to hold an HP its
-    // own config says is impossible whatever it was sent.
-    const left = Math.max(0, Math.min(standing.max_hp ?? Infinity, Math.trunc(hp)));
-    if (left === standing.hp) return;
     const board = { ...g.boardState };
-    if (left <= 0) delete board[key];
-    else board[key] = { ...standing, hp: left };
+    if (!this.landOnBoard(board, at, hp, uid)) return;
     g.boardState = board;
     this.persist();
     this.emit({ type: 'game_state_update', ...this.snapshot() });
@@ -462,7 +499,7 @@ export class LocalGameService {
     // commander on the BOARD for reasons of its own - one that walked home
     // into its base is off the board and still alive - and a heal that ends
     // the match because of a state it did not create is worse than no check.
-    if (left > 0) return;
+    if (Math.trunc(hp) > 0) return;
     const defeated = this.defeatedSides(board);
     if (defeated.length === 2) this.over('', 'draw_mutual');
     else if (defeated.length) {
@@ -471,11 +508,11 @@ export class LocalGameService {
   }
 
   /** What both panel blows do once the damage is worked out: end the turn. */
-  private commitPanelBlow(record: any, board: any): void {
+  private commitPanelBlow(record: any, board: any, after: any[] = []): void {
     const g = this.game!;
     this.overtimeToll(board);
     g.boardState = board;
-    g.moveHistory = [...g.moveHistory, record];
+    g.moveHistory = [...g.moveHistory, record, ...after];
     const defeated = this.defeatedSides(board);
     const maxTurns: number = g.config?.rules?.maxTurns ?? 0;
     const outOfTurns = maxTurns > 0 && g.turnNumber >= maxTurns;
@@ -490,6 +527,7 @@ export class LocalGameService {
       // complete and arrived as an `undefined` pushed onto the history.
       type: 'move_made',
       move: record,
+      ...(after.length ? { effects: after } : {}),
       boardState: board,
       currentTurn: ending ? '' : g.currentTurn,
       turnNumber: g.turnNumber,
@@ -506,6 +544,8 @@ export class LocalGameService {
     from: string, to: string, attack?: string, moveBonus?: number,
     bonuses?: { atk?: number; def?: number; targetAtk?: number; targetDef?: number },
     withdraw?: boolean,
+    /** Casts the turn made after its board action - see `landAfter`. */
+    effects?: any[],
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
@@ -607,9 +647,10 @@ export class LocalGameService {
       }
     }
 
+    const after = this.landAfter(board, effects);
     this.overtimeToll(board);
     g.boardState = board;
-    g.moveHistory = [...g.moveHistory, record];
+    g.moveHistory = [...g.moveHistory, record, ...after];
     const defeated = this.defeatedSides(board);
     // The server checks the turn limit against the turn just played, before
     // it counts the next one - mirror that or the two disagree by a ply.
@@ -626,6 +667,8 @@ export class LocalGameService {
     this.emit({
       type: 'move_made',
       move: record,
+      // The casts that landed after the board action, recorded after it.
+      ...(after.length ? { effects: after } : {}),
       boardState: g.boardState,
       currentTurn: ending ? '' : g.currentTurn,
       turnNumber: g.turnNumber,

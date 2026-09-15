@@ -1147,6 +1147,36 @@ describe('GameRoomComponent ability panel', () => {
     expect(sent[0]).toEqual(jasmine.objectContaining({ at: '-5,0', hp: 21 }));
   });
 
+  it('sends a cast staged after the blow inside the move, not ahead of it', () => {
+    // A cast carries the HP worked out for the turn so far, blow included.
+    // Sent ahead, the engine struck the blow again over the top - a mend
+    // after a counter was lost. One staged before the move still goes ahead.
+    const c = room();
+    const sent: any[] = [];
+    c.wsService = { sendMessage: (m: any) => sent.push(m) };
+    c.persistLocalUiState = () => {};
+    c.playSteps = () => {};
+    c.playEndTurnSound = () => {};
+    c.gameState.snapshot.currentTurn = 'me';
+    c.gameState.snapshot.turnNumber = 20;
+    const spend = { cost: 0, index: 6, side: 'mine', row: 'mine', uid: 'wp', hex: '-4,0' };
+    c.stagedActions = [
+      { at: 1, from: '', to: '', used: 0, attack: null, spend,
+        hexKey: '-9,0', hexUid: 'wq', hexHp: 30, mark: '+5' },
+      { at: 2, from: '-5,0', to: '-4,0', used: 1, attack: null },
+      { at: 3, from: '-5,0', to: '-4,0', used: 1, attack: '-3,0' },
+      { at: 4, from: '-5,0', to: '-4,0', used: 1, attack: null, spend,
+        hexKey: '-4,0', hexUid: 'wp', hexHp: 20, mark: '+16' },
+    ];
+    // A cast is something to take back even with nothing else staged.
+    expect(c.canUndo).toBeTrue();
+
+    c.endTurn();
+    expect(sent.map(m => m.type)).toEqual(['unit_effect', 'make_move']);
+    expect(sent[0]).toEqual(jasmine.objectContaining({ uid: 'wq', hp: 30 }));
+    expect(sent[1].effects).toEqual([{ at: '-4,0', uid: 'wp', hp: 20 }]);
+  });
+
   it('writes what a cast did to the HP over the unit it landed on', () => {
     // "mend also doesn't do the +x icon like damage taken." The swell said
     // something had happened and nothing said what - the beat now carries the

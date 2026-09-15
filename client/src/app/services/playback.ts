@@ -6,6 +6,8 @@ export interface PlayableAction {
   to: string;
   attack: string | null;
   killed?: string;
+  /** Who was killed there, when something was. */
+  killedUnit?: { color: 'white' | 'black' };
   /**
    * Whether the defender actually answered. Not derivable from the rest: a
    * base never counters however alive it is, and neither does anything the
@@ -58,6 +60,8 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
         // Whose mark it is. The recap plays against the board the turn ended
         // on, so the hex is not enough to say who the cast landed on.
         ...(action.spend.uid ? { uid: action.spend.uid } : {}),
+        // And, for a kill, whose it was: nobody is left to read it off.
+        ...(action.killedUnit ? { color: action.killedUnit.color } : {}),
       });
       continue;
     }

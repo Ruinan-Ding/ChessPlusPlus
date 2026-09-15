@@ -2334,12 +2334,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (e.target === 'universal') {
       return `${effect} - used from here, it needs no target`;
     }
-    const lasts = e.target === 'enemy' ? '' : ' for one turn';
+    // A heal is HP, which stays; only a stat boost wears off.
+    const boost = e.target !== 'enemy' && !!(e.mov || e.atk || e.def);
+    const lasts = boost ? ' for one turn' : '';
     const how = forOwnUnit
       ? 'applies to this unit'
       : e.target === 'enemy'
         ? 'click the ability, then click an enemy'
-        : 'click, then click the unit to boost';
+        : `click, then click the unit to ${!boost && e.heal ? 'heal' : 'boost'}`;
     return `${effect}${lasts} - ${how}${need ? ` (needs ${star})` : ''}`;
   }
 
@@ -3794,7 +3796,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   playback: AnimStep[] = [];
   /** Something to take back: a staged board action, or a panel walk. */
   get canUndo(): boolean {
-    return !!this.pendingMove || !!this.boardRef?.lastPanelMove;
+    // Anything staged, not just a move: a cast on its own carries no move to
+    // commit, and the button used to grey out over it while R still worked.
+    return this.stagedActions.length > 0 || !!this.boardRef?.lastPanelMove;
   }
 
   /** The board, for the walks it keeps its own stack of. */
@@ -3958,6 +3962,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // board back without those left the ability half-spent for the rest of
     // the game.
     if (undone?.spend) this.refund(undone.spend);
+    // The detail may still be open on what that gave back. Opened while it was
+    // cooling down, nothing was armed - and the note, which reads the cooldown
+    // live, said "Ready" over a click that did nothing. Arm it the way opening
+    // it would have.
+    const focus = this.abilityFocus;
+    if (focus && !this.pendingAbility && this.abilityTargetMode(focus.index) !== 'universal'
+        && this.abilityCanActivate(focus.side, focus.index, focus.cooldowns[focus.index] ?? 0)) {
+      this.pendingAbility = focus;
+    }
     // Including the number it wrote over the target. Nothing else takes a
     // mark down early, so without this the HP goes back and a green `+20`
     // hangs over it for the rest of its fade.
@@ -4128,24 +4141,32 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // moved nothing an engine could see - and overtime took its toll off the
     // HP it still had. These go out BEFORE the turn's own move or pass, so
     // the toll is taken from the healed king rather than the wounded one.
-    for (const step of this.stagedActions) {
-      if (step.attack !== null) continue;
-      if (step.panelUnit) {
-        this.wsService.sendMessage({
-          type: 'panel_effect',
-          unit: step.panelUnit, hp: step.panelUnitHp, panel: step.panelName,
-        });
-      } else if (step.hexKey && step.hexHp !== undefined && step.mark) {
-        this.wsService.sendMessage({
-          // The uid as well as the hex: a unit can be walked after the cast
-          // lands on it, and the walk goes out *after* this - so the hex named
-          // here is where the client has it, not where the engine does. The
-          // uid is what survives that.
-          type: 'unit_effect', at: step.hexKey, uid: step.hexUid, hp: step.hexHp,
-        });
-      }
-    }
+    //
+    // All but the casts staged AFTER the turn's board action. Each carries the
+    // HP worked out for the turn so far, blow included, so sent ahead the
+    // engine wrote it and then struck the blow again over the top: a mend
+    // after a counter was lost, and a panel unit struck and then finished by
+    // a spell rose again on a reload. Those ride inside the move instead, and
+    // the engine lands them after it - still before the toll.
     const pending = this.pendingMove;
+    const boardAction = pending
+      ? this.stagedActions.reduce((last, step, i) => (step.spend ? last : i), -1)
+      : Infinity;
+    const after: any[] = [];
+    this.stagedActions.forEach((step, i) => {
+      if (step.attack !== null) return;
+      const effect = step.panelUnit
+        ? { unit: step.panelUnit, hp: step.panelUnitHp, panel: step.panelName }
+        // The uid as well as the hex: a unit can be walked after the cast
+        // lands on it, so the hex named here is where the client has it, not
+        // where the engine does. The uid is what survives that.
+        : step.hexKey && step.hexHp !== undefined && step.mark
+          ? { at: step.hexKey, uid: step.hexUid, hp: step.hexHp }
+          : null;
+      if (!effect) return;
+      if (i > boardAction) after.push(effect);
+      else this.wsService.sendMessage({ type: step.panelUnit ? 'panel_effect' : 'unit_effect', ...effect });
+    });
     if (!pending) {
       // Doing nothing is a legal turn.
       this.wsService.sendMessage({ type: 'pass_turn' });
@@ -4181,6 +4202,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // Whether the panel answers is the panel's rule, and the client owns
         // panels - the engine has no idea which one a unit is standing in.
         counters: swung.counters !== false,
+        ...(after.length ? { effects: after } : {}),
       });
       this.persistLocalUiState();
       return;
@@ -4211,6 +4233,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // keeps the record. Only the browser engine answers it, which is why
       // the board only offers it there (`entryBind`).
       ...(this.offBoard(pending.to) ? { withdraw: true } : {}),
+      ...(after.length ? { effects: after } : {}),
     });
     this.persistLocalUiState();
     // The staged board stays up until move_made confirms it - see the handler.
