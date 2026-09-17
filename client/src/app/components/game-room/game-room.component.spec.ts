@@ -58,6 +58,196 @@ describe('GameRoomComponent ability panel', () => {
       jasmine.objectContaining({ side: 'mine', index: TARGETED }));
   });
 
+  it('keeps a unit that crossed and later walked home at home, not departed', () => {
+    // `departedUids` was every unit that had EVER crossed, and the board hides
+    // any panel unit named in it - so a reserve unit that crossed and walked
+    // home was put back in its base and filtered straight out again.
+    const c = room();
+    c.gameState.snapshot.moveHistory = [
+      { entered: true, to: '3,8', unit: { uid: 'rbr4' } },
+      { withdrawn: true, to: '-12,11', unit: { uid: 'rbr4' } },
+    ];
+    expect(c.departedUids).toEqual([]);
+    expect(c.panelPositions).toEqual({ rbr4: '-12,11' });
+
+    // A walk inside the base moves it on; a second crossing departs it again.
+    c.gameState.snapshot.moveHistory = [
+      ...c.gameState.snapshot.moveHistory,
+      { panelMove: true, to: '-12,10', unit: { uid: 'rbr4' } },
+    ];
+    expect(c.panelPositions).toEqual({ rbr4: '-12,10' });
+    c.gameState.snapshot.moveHistory = [
+      ...c.gameState.snapshot.moveHistory,
+      { entered: true, to: '3,8', unit: { uid: 'rbr4' } },
+    ];
+    expect(c.departedUids).toEqual(['rbr4']);
+    expect(c.panelPositions).toEqual({});
+  });
+
+  it('adds up points from the history exactly the way the server does', () => {
+    // The server prices the wrap against this sum (engine/economy.py), so a
+    // purse that disagrees offers a crossing the server then refuses.
+    const c = room();
+    c.gameState.snapshot.config = { units: { knight: { value: 12 } } };
+    c.gameState.snapshot.turnNumber = 21;
+    c.gameState.snapshot.moveHistory = [];
+    // A point for each of white's eleven turns begun by ply 21.
+    expect(c.pointsFromHistory('white')).toBe(11);
+    expect(c.pointsFromHistory('black')).toBe(10);
+
+    const wrap = { panelMove: true, price: 12, unit: { color: 'white' } };
+    const home = { withdrawn: true, color: 'white', unit_id: 'knight', unit: {} };
+    c.gameState.snapshot.moveHistory = [wrap];
+    expect(c.pointsFromHistory('white')).toBe(-1);
+    // A round trip costs nothing.
+    c.gameState.snapshot.moveHistory = [wrap, home];
+    expect(c.pointsFromHistory('white')).toBe(11);
+
+    // A kill pays its maker; the attacker dying to a counter pays the defender;
+    // a cast that kills pays nobody.
+    c.gameState.snapshot.moveHistory = [
+      { color: 'white', defender_eliminated: true },
+      { color: 'black', attacker_eliminated: true },
+      { panelEffect: true, color: 'white', defender_eliminated: true },
+    ];
+    expect(c.pointsFromHistory('white')).toBe(13);
+    expect(c.pointsFromHistory('black')).toBe(10);
+  });
+
+  it('resets both purses from the history in a networked room, and leaves solo alone', () => {
+    const networked = room();
+    networked.isSinglePlayer = false;
+    networked.gameState.snapshot.config = { units: {} };
+    networked.gameState.snapshot.turnNumber = 3;
+    networked.gameState.snapshot.moveHistory = [];
+    networked.myPoints = 99;          // a stale tally, as after a reload
+    networked.reconcilePoints();
+    expect(networked.myPoints).toBe(2);
+    expect(networked.opponentPoints).toBe(1);
+
+    // Solo buys abilities with points, and abilities are not recorded:
+    // resetting to the record would hand back every point spent on one.
+    const solo = room();
+    solo.gameState.snapshot.config = { units: {} };
+    solo.gameState.snapshot.turnNumber = 3;
+    solo.gameState.snapshot.moveHistory = [];
+    solo.myPoints = 99;
+    solo.reconcilePoints();
+    expect(solo.myPoints).toBe(99);
+  });
+
+  it('puts the panels and the toll in play in every room, and keeps abilities solo', () => {
+    // These were one gate, `isSinglePlayer`, because no server knew what a
+    // panel was or took a toll. The panels went live first, which is why the
+    // toll was split off onto a gate of its own; the server takes the toll now
+    // too. Abilities are the one thing still the client's alone, so a
+    // networked room must still not act on a boost.
+    const solo = room();
+    expect(solo.entryBind).toBeTrue();
+    expect(solo.tollBind).toBeTrue();
+    expect(solo.buffsBind).toBeTrue();
+
+    const networked = room();
+    networked.isSinglePlayer = false;
+    expect(networked.entryBind).toBeTrue();
+    expect(networked.tollBind).toBeTrue();
+    expect(networked.buffsBind).toBeFalse();
+  });
+
+  it('takes a pick back for nothing in the turn it was made', () => {
+    // Changing your mind is not swapping. The four-slot cap made the order of
+    // picking matter - a pair only fits if it is picked second - and charging
+    // three turns of cooldown to undo a pick nobody had used yet turned that
+    // into a trap rather than a choice.
+    const c = room();
+    c.pickAbility('mine', UNIVERSAL);
+    expect(c.isPicked('mine', UNIVERSAL)).toBeTrue();
+
+    c.swapArmed = 'mine';
+    c.resetAbility('mine', UNIVERSAL);
+    expect(c.isPicked('mine', UNIVERSAL)).toBeFalse();
+    expect(c.swapDebt.mine).toBe(0);
+
+    // So the next pick arrives cold, the way a first pick does.
+    c.pickAbility('mine', TARGETED);
+    expect(c.myCooldowns[TARGETED]).toBeFalsy();
+    expect(c.myCooldowns[TARGETED_PAIR]).toBeFalsy();
+  });
+
+  it('charges for a pair handed back through the cold half of a used pick', () => {
+    // The hole the free take-back opened. `canReset` only looks at the index
+    // that was clicked, and a click gives the WHOLE pair back - so casting
+    // Mend and then handing the pair back through its untouched partner would
+    // have cost nothing, freeing a fresh pair to arrive cold and be cast in
+    // the same turn. Cast once, re-armed for free, every turn.
+    const c = room();
+    c.pickAbility('mine', UNIVERSAL);
+    expect(c.myLoadout).toEqual([UNIVERSAL_PAIR, UNIVERSAL]);
+
+    // One half has been cast; the other is untouched and still this turn's.
+    // A cast writes both the cooldown and the glow - and the glow is what the
+    // rule reads, because the cooldown row also holds pairs that merely
+    // arrived cold-started off a swapDebt slot and were never used at all.
+    c.myCooldowns[UNIVERSAL] = 3;
+    c.abilityGlow = { ...c.abilityGlow, mine: [UNIVERSAL] };
+
+    c.swapArmed = 'mine';
+    c.resetAbility('mine', UNIVERSAL_PAIR);      // the cold half
+    expect(c.myLoadout).toEqual([]);
+    expect(c.swapDebt.mine).toBe(2);
+
+    // So the replacement comes in on cooldown, like any other swap.
+    c.pickAbility('mine', TARGETED);
+    expect(c.myCooldowns[TARGETED]).toBe(3);
+  });
+
+  it('still charges for a swap made after the turn it was picked in', () => {
+    // The rule that debt was protecting: swapping is not a way to hand
+    // yourself a ready ability mid-match.
+    const c = room();
+    c.pickAbility('mine', UNIVERSAL);
+    // A turn has passed - beginTurnFor clears this, and it is the whole test.
+    c.pickedThisTurn = [];
+
+    c.swapArmed = 'mine';
+    c.resetAbility('mine', UNIVERSAL);
+    expect(c.swapDebt.mine).toBe(2);
+
+    c.pickAbility('mine', TARGETED);
+    expect(c.myCooldowns[TARGETED]).toBe(3);
+  });
+
+  it('draws a cast on a unit that walked home before the turn commits', () => {
+    // The base is fed by two derivations and only one of them was staged.
+    // A Mend on a withdrawn unit read back its COMMITTED HP, so the unit was
+    // drawn unhealed - and a second cast in the same turn worked from that
+    // stale number and wiped out the first. Two mends were worth one.
+    const c = room();
+    c.gameState.snapshot.turnNumber = 8;
+    c.gameState.snapshot.moveHistory = [
+      {
+        to: 'b1', turn: 6, withdrawn: true,
+        unit: { uid: 'u1', color: 'white', hp: 9, max_hp: 16 },
+      },
+    ];
+
+    // Derived alone: what it walked home on, plus whatever it has mended.
+    const settled = c.withdrawnUnits[0].unit.hp;
+    expect(settled).toBeLessThan(16);
+
+    // A Mend staged this turn, the way hpChange stages one onto a panel unit.
+    c.stagedActions = [{ panelUnit: { uid: 'u1' }, panelUnitHp: 16 }];
+    expect(c.withdrawnUnits[0].unit.hp).toBe(16);
+
+    // And a staged kill takes it off the base, the same way the record does.
+    c.stagedActions = [{ panelUnit: { uid: 'u1' }, panelUnitHp: 0 }];
+    expect(c.withdrawnUnits.length).toBe(0);
+
+    // Undo puts the action back and the unit stands again at its own HP.
+    c.stagedActions = [];
+    expect(c.withdrawnUnits[0].unit.hp).toBe(settled);
+  });
+
   it('names the reason it cannot be used, rather than listing all of them', () => {
     const c = room();
     c.selectAbility('mine', TARGETED, c.myCooldowns);
@@ -74,6 +264,37 @@ describe('GameRoomComponent ability panel', () => {
     c.clearAbilityFocus();
     c.selectAbility('mine', TARGETED, c.myCooldowns);
     expect(c.focusedAbilityBlocker).toContain('2 more turns');
+  });
+
+  it('tells a networked player abilities are solo-only, not that it is not their turn', () => {
+    // Abilities stay client-side until the real catalogue settles (PUNCHLIST
+    // 6.15). The panels still open, so the reason is what a player reads - and
+    // it used to be "not your turn", on their own turn.
+    const c = room();
+    c.isSinglePlayer = false;
+    c.selectAbility('mine', TARGETED, c.myCooldowns);
+    expect(c.focusedAbilityBlocker).toContain('single-player only');
+    expect(c.focusedAbilityBlocker).not.toContain('not your turn');
+    expect(c.pathBlocker('mine', 0)).toContain('single-player only');
+    expect(c.abilityBlockedNote).toContain('single-player only');
+  });
+
+  it('still says whose turn it is in a solo room', () => {
+    const c = room();
+    c.gameState.snapshot.currentTurn = 'someone else';
+    c.selectAbility('mine', TARGETED, c.myCooldowns);
+    expect(c.focusedAbilityBlocker).toContain('not your turn');
+    expect(c.pathBlocker('mine', 0)).toContain('not your turn');
+  });
+
+  it('names the opening, not the turn, when a carried ability cannot be cast in it', () => {
+    // Picking is open through the initialization; casting is not. The cast
+    // refusal said "not your turn" there too.
+    const c = room();
+    c.gameState.snapshot.turnNumber = 1;
+    c.pickAbility('mine', TARGETED);
+    c.selectAbility('mine', TARGETED, c.myCooldowns);
+    expect(c.focusedAbilityBlocker).toContain('initialization');
   });
 
   it('never lets the clock end a solo turn, so a doomed king plays it out', () => {
@@ -432,6 +653,11 @@ describe('GameRoomComponent ability panel', () => {
     // panel order, so Rally's partner comes in ahead of it.
     expect(c.myLoadout).toEqual([TARGETED, TARGETED_PAIR, UNIVERSAL_PAIR, UNIVERSAL]);
     expect(c.canPick('mine', 0)).toBeFalse();
+
+    // A turn passes, so these stop being this turn's picks. Giving one up is
+    // a swap now, and a swap is paid for; taking a pick back in the turn it
+    // was made is free - see the specs above.
+    c.pickedThisTurn = [];
 
     // Armed, every carried one is on offer - and only the carried ones.
     c.toggleSwap('mine');

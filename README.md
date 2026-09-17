@@ -30,8 +30,15 @@ ignoring obstacles - most reach only the six neighbours, some reach two or three
 less damage each ring (`rules.rangeFalloff`). Damage is flat and deterministic:
 
 ```
-damage = attacker ATK (at that range) - defender DEF     floored at 0
+damage = attacker ATK (at that range) - defender DEF
+         floored at rules.minStrikeDamage (default 1), capped at ATK
 ```
+
+**A blow that lands always takes something off.** Armour blunts a hit; it does not turn it
+aside. The floor used to be 0, which left whole matchups unable to hurt each other at all - a
+shieldman (8 ATK) dealt literally nothing to seven of the eight unit types. Set
+`rules.minStrikeDamage` to 0 for the old behaviour. An attacker with no ATK at all still deals
+nothing: the floor lifts a blow that was blunted, not one that was never thrown.
 
 The defender then counters with the same sum reversed, but only if the attacker is inside *its*
 range - so a two-ring unit striking a melee unit takes nothing back. A unit at 0 HP dies and

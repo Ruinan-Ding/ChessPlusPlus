@@ -1,7 +1,9 @@
 """A minimal WebSocket client and a pass/fail tally, shared by the e2e scripts."""
 import base64, json, os, socket, struct, time
 
-HOST, PORT = '127.0.0.1', 8000
+# E2E_PORT points the scripts at a server other than the dev one on 8000 - a
+# fresh daphne carrying code the long-running dev server predates, say.
+HOST, PORT = '127.0.0.1', int(os.environ.get('E2E_PORT', '8000'))
 results = []
 
 

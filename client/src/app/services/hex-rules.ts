@@ -292,12 +292,36 @@ export function hexDistanceKeys(a: string, b: string): number {
 }
 
 /**
+ * Fallback for a config that names no floor at all. `normaliseConfig` fills
+ * `rules.minStrikeDamage` in from `DEFAULT_GAME_CONFIG`, so this is only
+ * reached by a caller that hand-built a config object without going through
+ * the config service - several specs do exactly that.
+ */
+export const MIN_STRIKE_DAMAGE = 1;
+
+/**
  * Damage one unit lands on another: ring-scaled attack less the defender's
- * defence, floored at 0. Mirrors strike_damage() in game_logic.py.
+ * defence, floored at `rules.minStrikeDamage`. Mirrors strike_damage() in
+ * game_logic.py.
+ *
+ * At the default of 1 a blow that lands always takes something off. It used
+ * to floor at 0, and the owner's report was *"some shit simply doesn't seem
+ * to take any hit"* - which was the formula working exactly as written: a
+ * pawn (14 attack) against a shieldman (18 defence) came to -4 and floored to
+ * nothing, so the pair could trade blows all game and neither would ever
+ * move. Set the dial to 0 to have that back.
  *
  * A one-turn ability boost rides on top of the scaled numbers rather than the
  * raw stat, because that is where the hex and the unit panel show it: a +2 on
  * a unit whose second ring reads 19 makes that ring 21, not 21 less falloff.
+ *
+ * An attack of nothing is still nothing: the floor lifts a blow that was
+ * blunted, not one that was never thrown. Without that guard a unit with no
+ * attack stat at all would chip away a point a turn.
+ *
+ * Read off the config rather than a constant so the browser and the server
+ * cannot drift - this is the same config object `rangedDamage` takes
+ * `rangeFalloff` from, and `strike_damage()` reads the same field.
  */
 export function strikeDamage(
   attackerId: string, defenderId: string, distance: number, config: any,
@@ -306,5 +330,12 @@ export function strikeDamage(
   const attacker = config?.units?.[attackerId] ?? {};
   const defender = config?.units?.[defenderId] ?? {};
   const attack = rangedDamage(attacker.attack ?? 1, distance, config) + atkBonus;
-  return Math.max(0, attack - ((defender.defense ?? 0) + defBonus));
+  if (attack <= 0) return 0;
+  // Never more than the attacker could deal unblunted. The floor lifts a hit
+  // that armour absorbed; it is not a damage source of its own, and without
+  // this clamp a large `minStrikeDamage` would override the attack stat
+  // outright - every blow dealing the floor regardless of attack, defence or
+  // ring falloff, which makes all three dead config.
+  const floor = config?.rules?.minStrikeDamage ?? MIN_STRIKE_DAMAGE;
+  return Math.min(attack, Math.max(floor, attack - ((defender.defense ?? 0) + defBonus)));
 }

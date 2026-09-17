@@ -197,6 +197,11 @@
           "maximum": 1,
           "description": "Fraction of attack damage lost per ring beyond the first, applied linearly: ring 2 deals (1 - falloff) of the attack stat, ring 3 (1 - 2*falloff), floored, never below 1."
         },
+        "minStrikeDamage": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The least a blow that lands may deal, after defence is subtracted. 1 (the default) means armour blunts a hit but never turns it aside: without it a pawn (14 attack) took nothing at all off a shieldman (18 defence), so whole matchups were dead on the board with no rule saying so. 0 restores that, letting armour absorb a hit entirely. An attacker with no attack stat deals 0 either way - this lifts a blow that was blunted, not one that was never thrown."
+        },
         "objective": {
           "type": "string",
           "enum": [

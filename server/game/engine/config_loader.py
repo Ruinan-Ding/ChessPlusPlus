@@ -214,6 +214,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "rules": {
         # Fraction of damage lost per ring beyond the first.
         "rangeFalloff": 0.25,
+        # The least a blow that lands may deal, once defence is off it.
+        "minStrikeDamage": 1,
         "maxTurns": 0,
         "turnTimeLimit": 0,
         # A side loses when its commander dies; 'elimination' (no units left)
@@ -246,6 +248,18 @@ def _normalise_config(config: Dict[str, Any]) -> None:
     rules = config.get('rules')
     if rules is None and 'rules' not in config:
         rules = config['rules'] = {}
+    # Absent means the current default, not the rule that happened to be in
+    # force when the config was written.
+    #
+    # The tempting alternative - fill in 0, the old floor, so a room frozen
+    # before this existed keeps the combat it was played under - cannot tell a
+    # historical snapshot from a custom config authored today that simply did
+    # not mention the field. It would hand every new custom config the dead
+    # matchups this floor exists to remove, silently. An in-progress dev room
+    # settling its remaining blows one point differently is the cheaper of the
+    # two surprises. Read from DEFAULT_CONFIG so there is one literal.
+    if isinstance(rules, dict) and 'minStrikeDamage' not in rules:
+        rules['minStrikeDamage'] = DEFAULT_CONFIG['rules']['minStrikeDamage']
     if isinstance(rules, dict) and 'objective' not in rules:
         setup = config.get('setup') if isinstance(config.get('setup'), dict) else {}
         commanded = all(
@@ -304,6 +318,13 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
     falloff = rules.get('rangeFalloff', 0)
     if not isinstance(falloff, (int, float)) or isinstance(falloff, bool) or not 0 <= falloff <= 1:
         errors.append(f"rules.rangeFalloff must be a number 0-1, got {falloff}")
+
+    # Checked because a negative floor corrupts the board rather than merely
+    # unbalancing it: strike_damage would return a negative number and
+    # HexBoard.deal_damage subtracts it, so a blow would heal whatever it hit.
+    floor = rules.get('minStrikeDamage', 0)
+    if not isinstance(floor, int) or isinstance(floor, bool) or floor < 0:
+        errors.append(f"rules.minStrikeDamage must be an integer >= 0, got {floor}")
 
     if 'setup' not in config:
         errors.append("Missing 'setup'")

@@ -55,6 +55,39 @@ describe('ConfigService validation, against the server\'s', () => {
     expect(config.units.king.defense).toBe(0);
     // Commanders on both sides, so regicide is what it was played as.
     expect(config.rules.objective).toBe('regicide');
+    // The damage floor takes the CURRENT default, not the 0 that was in force
+    // when a config this old was written. Nothing here can tell such a
+    // snapshot from a config authored today that simply did not mention the
+    // field, and filling in 0 would hand that one the dead matchups the floor
+    // exists to remove - a pawn unable to scratch a shieldman, all game.
+    expect(config.rules.minStrikeDamage).toBe(1);
+  });
+
+  it('refuses a damage floor that would make a blow heal what it hit', () => {
+    // Negative is not merely unbalanced: strikeDamage would return a negative
+    // number and the engine subtracts it. _validate_config refuses it too, so
+    // the setup screen and the server reject the same configs.
+    const config: any = minimal();
+    config.rules.minStrikeDamage = -1;
+    expect(service.validateGameRules(config).valid).toBeFalse();
+
+    config.rules.minStrikeDamage = 0.5;
+    expect(service.validateGameRules(config).valid).toBeFalse();
+
+    // 0 is a real setting - it is the rule the game shipped with.
+    config.rules.minStrikeDamage = 0;
+    expect(service.validateGameRules(config).valid).toBeTrue();
+  });
+
+  it('refuses an explicit null floor, the way load_config does', () => {
+    // Both normalisers only fill an ABSENT key, so an explicit null survives
+    // on each side. This used to read it through `?? 0`, call it valid, and
+    // hand the server a config that raised "must be an integer >= 0, got
+    // None" - a room that would not start, after a setup screen that said it
+    // would. Whatever this accepts, load_config has to accept too.
+    const config: any = minimal();
+    config.rules.minStrikeDamage = null;
+    expect(service.validateGameRules(config).valid).toBeFalse();
   });
 
   it('calls a commanderless setup elimination, not a regicide it cannot win', () => {

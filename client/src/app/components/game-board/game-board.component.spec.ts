@@ -57,7 +57,7 @@ describe('GameBoardComponent reach preview', () => {
     // whoever just paid taking one, so there is something to watch.
     (config.units as any).archer.commander = true;
     // The toll is the browser engine's alone, and so is the mark over it.
-    board.entryBind = true;
+    board.tollBind = true;
     const king = () => cell('0,0');   // the white archer, now a commander
 
     // Nothing to take before overtime starts.
@@ -99,11 +99,97 @@ describe('GameBoardComponent reach preview', () => {
 
     // No engine but this browser's takes the toll, so a server game marks
     // nobody: a red -1 over a king whose HP never moves is a lie.
-    board.entryBind = false;
+    board.tollBind = false;
     board.turnNumber = 70;
     board.ngOnChanges({ turnNumber: new SimpleChange(69, 70, false) });
     await (board as any).settleUpkeep();
     expect(board.markOf(cell('3,0'))).toBe('');
+  });
+
+  it('writes the toll over the ghost of the king it just killed', async () => {
+    // The same shape as a cast that kills: nobody is left standing to hang
+    // the number on, so it hangs on the hex instead. This is the one `-1`
+    // most worth seeing - it is the one that ended the match - and it used to
+    // be dropped, because markOvertimeToll looked for a king that the board
+    // had already been rebuilt without.
+    (config.units as any).archer.commander = true;
+    board.tollBind = true;
+
+    // Alive on his last HP, on the very ply that is about to end - which is
+    // what the toll's victim looks like. All three facts are recorded: where
+    // he stood, on what, and when. A copy: boardState is shared by every spec
+    // in this file.
+    const dying: Record<string, any> = {
+      ...boardState, '0,0': { ...boardState['0,0'], hp: 1 },
+    };
+    board.boardState = dying;
+    board.turnNumber = 67;
+    board.ngOnChanges({
+      boardState: new SimpleChange(boardState, dying, false),
+      turnNumber: new SimpleChange(66, 67, false),
+    });
+    expect((board as any).kingHex.get('white')).toEqual({ at: '0,0', hp: 1, ply: 67 });
+
+    // Ply 67 commits, the toll takes his last point, and he is off the board
+    // by the time the ply turns over.
+    const without: Record<string, any> = { ...dying };
+    delete without['0,0'];
+    board.boardState = without;
+    board.turnNumber = 68;
+    board.ngOnChanges({
+      boardState: new SimpleChange(dying, without, false),
+      turnNumber: new SimpleChange(67, 68, false),
+    });
+    await (board as any).settleUpkeep();
+
+    expect(board.markOf(cell('0,0'))).toBe('-1');
+    // And in his own side's colours. An empty hex belongs to nobody, so the
+    // mark has to carry the side itself - reading the absence would draw your
+    // own king's last toll in the opponent's purple.
+    expect(board.markTheirs(cell('0,0'))).toBeFalse();
+
+    board.boardState = boardState;
+  });
+
+  it('leaves a king killed by anything but the toll unmarked', async () => {
+    // Only the toll's OWN kill is owed a toll mark. A commander cut down by a
+    // blow used to wear one he never paid - over the top of the real kill
+    // number the recap had just written on that same hex - and under an
+    // elimination objective, where losing him does not end the match, the same
+    // `-1` was re-owed on every one of that side's overtime plies for the rest
+    // of the game, over an empty hex, with no HP behind it.
+    (config.units as any).archer.commander = true;
+    board.tollBind = true;
+
+    // On his last HP, so the HP test alone would let him through - but last
+    // seen a ply BEFORE the one that just ended, which the toll's victim never
+    // is. The ply is the test that actually separates them: a king already
+    // down to his last point when a blow finishes him looks exactly like the
+    // toll's victim to anything that only reads HP.
+    const dying: Record<string, any> = {
+      ...boardState, '0,0': { ...boardState['0,0'], hp: 1 },
+    };
+    board.boardState = dying;
+    board.turnNumber = 66;
+    board.ngOnChanges({
+      boardState: new SimpleChange(boardState, dying, false),
+      turnNumber: new SimpleChange(65, 66, false),
+    });
+    expect((board as any).kingHex.get('white')).toEqual({ at: '0,0', hp: 1, ply: 66 });
+
+    const without: Record<string, any> = { ...dying };
+    delete without['0,0'];
+    board.boardState = without;
+    board.turnNumber = 68;
+    board.ngOnChanges({
+      boardState: new SimpleChange(dying, without, false),
+      turnNumber: new SimpleChange(67, 68, false),
+    });
+    await (board as any).settleUpkeep();
+
+    expect(board.markOf(cell('0,0'))).toBe('');
+
+    board.boardState = boardState;
   });
 
   it('pays the turn’s upkeep as the last beat, after the recap', async () => {
@@ -111,7 +197,7 @@ describe('GameBoardComponent reach preview', () => {
     // thing that happens in a turn. Owed as the ply turns over, and paid only
     // once every beat the turn itself had has played out.
     (config.units as any).archer.commander = true;
-    board.entryBind = true;
+    board.tollBind = true;
     const king = () => cell('0,0');
     board.turnNumber = 68;
     board.ngOnChanges({ turnNumber: new SimpleChange(67, 68, false) });
@@ -140,7 +226,7 @@ describe('GameBoardComponent reach preview', () => {
     // applied. So it runs as a playback of no beats: the board holds for the
     // same moment a recap's last beat would, and says when it is over.
     (config.units as any).archer.commander = true;
-    board.entryBind = true;
+    board.tollBind = true;
     const done = new Promise<void>(resolve => board.playbackDone.subscribe(() => resolve()));
     board.turnNumber = 68;
     board.ngOnChanges({ turnNumber: new SimpleChange(67, 68, false) });
@@ -159,7 +245,7 @@ describe('GameBoardComponent reach preview', () => {
     // turn's blows were still being struck - the one thing the owner's rule
     // forbids. The scheduled run owns it, and pays it at its own end.
     (config.units as any).archer.commander = true;
-    board.entryBind = true;
+    board.tollBind = true;
     const king = () => cell('0,0');
     const steps = [{ kind: 'pick', from: '', to: '', index: 0 }] as any;
     board.playback = steps;
@@ -565,8 +651,10 @@ describe('GameBoardComponent reach preview', () => {
       board.interactive = true;
       board.controlAllSides = true;
       board.turnColor = 'white';
-      // Panels are the browser engine's alone, so everything about them -
-      // crossing, walking home, and being in a fight - is solo-only.
+      // Everything about the panels - crossing, walking home, being in a
+      // fight - sits behind one gate. It was solo-only until the server
+      // learned to derive the panels; the room binds it on in both now, and
+      // these specs switch it on so they do not depend on which room it is.
       board.entryBind = true;
       // The wrap runs on a window, and the file's default ply 20 is turn 10,
       // which is past Phase 1's halftime and so shut. Ply 15 is turn 8 - the
@@ -620,9 +708,10 @@ describe('GameBoardComponent reach preview', () => {
       board.onHexClick(anyBoard().cellsByKey.get(inBase));
       expect(board.attackTargets.size).toBe(0);
 
-      // And no panel is in a fight at all in a server game: no engine but
-      // this browser's holds one, so the blow would go out to a server with
-      // no answer for it and stall the turn.
+      // And with the panels switched off, no panel is in a fight at all. The
+      // room no longer switches them off for a server game - the server
+      // answers `panel_attack` now - but the gate is still what stands between
+      // the board and a blow no engine could answer, so it is still pinned.
       board.entryBind = false;
       board.turnColor = 'black';
       board.selectedHex = null;
@@ -1065,8 +1154,21 @@ describe('GameBoardComponent reach preview', () => {
       expect(board.forecastDamage(hexes.mine)).toBeTruthy();
     });
 
+    // Same rule as the file's top-level afterEach: `config` is shared by every
+    // spec here, so a spec that makes the guard a commander has to put it back
+    // even when it fails partway. Doing it on the last line of the body does
+    // not - the assertions above it throw and the guard stays a commander for
+    // every spec that follows, silently changing doomedKing / markOvertimeToll
+    // / uidOf in tests that never mentioned it.
+    afterEach(() => { delete (config.units as any).guard.commander; });
+
     it('waves a skull over a king the end-of-turn toll will kill', () => {
       (config.units as any).guard.commander = true;
+      // The toll's own gate. This spec used to get it for free from the panel
+      // describe's `entryBind`, back when one switch covered both - which is
+      // exactly the coupling that had to be undone for the panels to go live
+      // in networked play while the toll stays solo.
+      board.tollBind = true;
       const doomed = (hp: number) => {
         anyBoard().boardState = {
           '0,0': { unit_id: 'guard', color: 'white', hp, max_hp: 9, uid: 'wking' },
@@ -1076,14 +1178,25 @@ describe('GameBoardComponent reach preview', () => {
       };
       fixture.componentRef.setInput('turnNumber', OVERTIME_FIRST_PLY + 1);
 
-      // Two HP is one turn clear of the toll: no warning.
-      expect(doomed(2)).toBeFalse();
+      // Three HP is two turns clear: still nothing to say.
+      expect(doomed(3)).toBeFalse();
 
-      // One is not. The king is still alive and still playable - the toll is
-      // the last thing the turn does - so this is a warning, not a corpse.
-      expect(doomed(1)).toBeTrue();
+      // Two is the early warning - a turn still in hand to spend on saving
+      // him. It used to be silent here, which made the skull a warning that
+      // arrived on the turn the king died, with nothing left to do about it.
+      expect(doomed(2)).toBeTrue();
+      expect(board.dyingKing(anyBoard().cellsByKey.get('0,0'))).toBeFalse();
       anyBoard().cdr.detectChanges();
       expect(fixture.nativeElement.querySelector('text.doom-skull')).toBeTruthy();
+      expect(fixture.nativeElement.querySelector('text.doom-skull.imminent')).toBeFalsy();
+
+      // One is the last call. The king is still alive and still playable - the
+      // toll is the last thing the turn does - so this is a warning, not a
+      // corpse, but it is drawn apart from the early one.
+      expect(doomed(1)).toBeTrue();
+      expect(board.dyingKing(anyBoard().cellsByKey.get('0,0'))).toBeTrue();
+      anyBoard().cdr.detectChanges();
+      expect(fixture.nativeElement.querySelector('text.doom-skull.imminent')).toBeTruthy();
 
       // Before overtime nothing is owed, so nothing is warned about.
       fixture.componentRef.setInput('turnNumber', OVERTIME_FIRST_PLY - 2);
@@ -1091,9 +1204,8 @@ describe('GameBoardComponent reach preview', () => {
 
       // And no engine but this browser's takes the toll at all.
       fixture.componentRef.setInput('turnNumber', OVERTIME_FIRST_PLY + 1);
-      board.entryBind = false;
+      board.tollBind = false;
       expect(doomed(1)).toBeFalse();
-      delete (config.units as any).guard.commander;
     });
 
     it('names the panel a blow landed in, so the mending can tell base from reserve', () => {
@@ -1417,13 +1529,14 @@ describe('GameBoardComponent reach preview', () => {
         expect(anyBoard().panelMoved.get('crossed')).toBe(1);
       });
 
-      it('offers no way home in a server game', () => {
+      it('offers no way home while the panels are switched off', () => {
         setUp();
         board.entryBind = false;
         board.onHexClick(anyBoard().cellsByKey.get(beside));
 
-        // No engine but this browser's has a base to put a unit in, so a
-        // server game draws the marks and walks nobody through them.
+        // With the gate off the marks are still drawn but nobody is walked
+        // through them. This used to be what every server game looked like;
+        // the server walks units home itself now, so the room leaves it on.
         expect(board.refundTargets.size).toBe(0);
         expect(board.legalTargets.has('-12,11')).toBeFalse();
       });
@@ -1443,9 +1556,16 @@ describe('GameBoardComponent reach preview', () => {
         // The room re-derives it a turn later with an HP more. It is already
         // standing here, so it mends where it stands rather than arriving a
         // second time - and carries the +1 that says so.
+        //
+        // A turn later for real: the ply has to move, or this is HP going up
+        // INSIDE a turn, which is a staged cast or an Undo and is owed no
+        // `+1`. Two plies, because a base mends at the end of its own side's
+        // turn. This used to hold turnNumber still and pass anyway, which is
+        // the hole a staged Mend on a withdrawn unit fell through.
         board.withdrawn = [
           { at: '-12,10', unit: { unit_id: 'scout', color: 'white', hp: 4, max_hp: 6, uid: 'athome' } },
         ] as any;
+        board.turnNumber += 2;
         anyBoard().buildCells();
         const standing = board.cells.filter(c => c.piece?.uid === 'athome');
         expect(standing.length).toBe(1);
@@ -1470,6 +1590,9 @@ describe('GameBoardComponent reach preview', () => {
         board.withdrawn = [
           { at: '-12,10', unit: { unit_id: 'scout', color: 'white', hp: 4, max_hp: 6, uid: 'athome' } },
         ] as any;
+        // A ply has to pass for that HP to be mending rather than a staged
+        // cast - see the spec above.
+        board.turnNumber += 2;
         anyBoard().buildCells();
         board.entryBind = true;
         const king = board.cells.find(c => c.piece?.color === 'black')!;
@@ -1723,12 +1846,13 @@ describe('GameBoardComponent reach preview', () => {
       expect([...board.legalTargets].some(k => anyBoard().cellsByKey.get(k)?.filler)).toBeTrue();
     });
 
-    it('leaves the gap shut in a server game', () => {
+    it('leaves the gap shut while the panels are switched off', () => {
       board.entryBind = false;
       const gate = onGate();
       board.onHexClick(anyBoard().cellsByKey.get(gate));
-      // Nothing on the board is offered: no engine but this browser's has a
-      // panel to take the unit out of, so a server would reject the walk.
+      // Nothing on the board is offered. A server game used to look like this,
+      // because no server had a panel to take the unit out of; it derives the
+      // panels now and answers `enter_board`, so the room leaves the gate on.
       expect(boardTargets().length).toBe(0);
     });
 
@@ -1946,5 +2070,89 @@ describe('GameBoardComponent reach preview', () => {
     // Black's own rows are the -r edge, so they become the near ones.
     expect(cell('0,-2').home).toBe('mine');
     expect(cell('0,2').home).toBe('theirs');
+  });
+
+  /**
+   * Walks inside a panel used to live in this component's memory and nowhere
+   * else. They are sent and recorded now, and placed back from the record.
+   */
+  describe('recorded panel moves', () => {
+    const anyBoard = () => board as any;
+    const zone = () => [...anyBoard().panelZones.get('br')] as string[];
+
+    it('sends every panel step of the turn, walks and crossings, in the order they happened', () => {
+      // Shuffled to the gateway, then crossed. Judged the other way round, the
+      // crossing finds nobody on the gateway - which is exactly how a server
+      // refused it, back when only the crossing was sent.
+      const archer = { unit_id: 'archer', color: 'white', hp: 5, max_hp: 5, uid: 'ra' };
+      anyBoard().panelHistory = [
+        { from: 'p1', to: 'p2', uid: 'ra', cost: 1, price: 0, at: 1, piece: archer, panel: 'br' },
+        { from: 'p2', to: '0,1', uid: 'ra', cost: 3, price: 0, at: 2, entry: true },
+      ];
+      anyBoard().entered = { '0,1': archer };
+
+      const steps = board.pendingPanelSteps as any[];
+      expect(steps.map(s => s.type)).toEqual(['panel_move', 'enter_board']);
+      expect(steps[0]).toEqual(jasmine.objectContaining(
+        { from: 'p1', to: 'p2', panel: 'br', cost: 1, price: 0 }));
+      expect(steps[0].unit.uid).toBe('ra');
+      expect(steps[1]).toEqual(jasmine.objectContaining({ from: 'p2', to: '0,1' }));
+    });
+
+    it('drops a crossing that was taken back, and keeps the walk', () => {
+      const archer = { unit_id: 'archer', color: 'white', hp: 5, max_hp: 5, uid: 'ra' };
+      anyBoard().panelHistory = [
+        { from: 'p1', to: 'p2', uid: 'ra', cost: 1, price: 0, at: 1, piece: archer, panel: 'br' },
+        { from: 'p2', to: '0,1', uid: 'ra', cost: 3, price: 0, at: 2, entry: true },
+      ];
+      anyBoard().entered = {};
+      expect((board.pendingPanelSteps as any[]).map(s => s.type)).toEqual(['panel_move']);
+    });
+
+    it('puts a unit the history has walked where the history says it stands', () => {
+      // This is how the OTHER player sees a shuffle, and how a reload keeps one.
+      const [start, dest] = zone();
+      const walker = { unit_id: 'archer', color: 'white', hp: 5, max_hp: 5, uid: 'walker' };
+      anyBoard().reserves = { [start]: walker };
+      anyBoard().panelHistory = [];
+      board.panelPositions = { walker: dest };
+
+      anyBoard().placeRecorded();
+
+      expect(anyBoard().reserves[dest]).toBe(walker);
+      expect(anyBoard().reserves[start]).toBeUndefined();
+    });
+
+    it('leaves a unit this turn has walked, and not yet sent, where the turn put it', () => {
+      const [start, dest] = zone();
+      const walker = { unit_id: 'archer', color: 'white', hp: 5, max_hp: 5, uid: 'walker' };
+      anyBoard().reserves = { [start]: walker };
+      anyBoard().panelHistory = [
+        { from: dest, to: start, uid: 'walker', cost: 1, price: 0, at: 1, panel: 'br' },
+      ];
+      board.panelPositions = { walker: dest };
+
+      anyBoard().placeRecorded();
+
+      // The staged hex is newer than the record.
+      expect(anyBoard().reserves[start]).toBe(walker);
+    });
+
+    it('never drops a unit whose recorded hex is taken', () => {
+      const [start, dest] = zone();
+      const walker = { unit_id: 'archer', color: 'white', hp: 5, max_hp: 5, uid: 'walker' };
+      const sitter = { unit_id: 'guard', color: 'white', hp: 9, max_hp: 9, uid: 'sitter' };
+      anyBoard().reserves = { [start]: walker, [dest]: sitter };
+      anyBoard().panelHistory = [];
+      board.panelPositions = { walker: dest };
+
+      anyBoard().placeRecorded();
+
+      expect(anyBoard().reserves[dest]).toBe(sitter);
+      const stands = Object.entries(anyBoard().reserves)
+        .filter(([, p]: [string, any]) => p.uid === 'walker').map(([at]) => at);
+      expect(stands.length).toBe(1);
+      expect(zone()).toContain(stands[0]);
+    });
   });
 });

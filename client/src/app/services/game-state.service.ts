@@ -170,8 +170,8 @@ export class GameStateService {
   /**
    * Apply a `turn_passed` message - the turn moves on, and usually the board
    * does not. Usually: overtime's toll is taken at the end of a turn whether
-   * or not anybody moved, so the browser engine sends the board it left
-   * behind. The networked server sends none and the board stands.
+   * or not anybody moved, so both engines send the board they left behind. The
+   * server did not always; a message without one leaves the board standing.
    */
   applyTurnPassed(msg: any): void {
     const prev = this.snapshot;

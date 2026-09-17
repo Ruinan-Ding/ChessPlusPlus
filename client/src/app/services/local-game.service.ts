@@ -132,6 +132,10 @@ export class LocalGameService {
         this.enter(msg.from, msg.to, msg.unit);
         break;
 
+      case 'panel_move':
+        this.walkInPanel(msg.from, msg.to, msg.unit, msg.panel, msg.cost, msg.price);
+        break;
+
       case 'panel_attack':
         this.attackIntoPanel(
           msg.from, msg.to ?? msg.from, msg.attack, msg.unit,
@@ -280,6 +284,40 @@ export class LocalGameService {
       // it once stood on says nothing: the board it walked onto forgets it
       // the moment it dies.
       entered: true, unit,
+    }];
+    this.persist();
+    this.emit({ type: 'game_state_update', ...this.snapshot() });
+  }
+
+  /**
+   * A walk inside a panel, or the wrap out of a base. Recorded rather than
+   * resolved: like a crossing it is deployment, not the turn's action, so the
+   * ply and the seat stay where they are.
+   *
+   * These used to reach no engine at all. The board moved the unit in its own
+   * memory, so a reload re-dealt it to where it began and the other player
+   * never saw it move. Recorded, the panels are replayed from the history in
+   * order - here and on the server, which re-derives the walk's cost and the
+   * wrap's price where this engine takes them as sent, having nobody to cheat.
+   */
+  private walkInPanel(
+    from: string, to: string, unit: any, panel?: string, cost?: number, price?: number,
+  ): void {
+    const g = this.game;
+    if (!g || !g.started || g.endReason) return;
+    if (!unit?.uid || unit.color !== this.colorOf(g.currentTurn) || !from || !to || from === to) {
+      this.emit({ type: 'invalid_move', message: 'That unit cannot walk there' });
+      return;
+    }
+    g.moveHistory = [...g.moveHistory, {
+      from, to, unit_id: unit.unit_id, color: unit.color, turn: g.turnNumber,
+      captured: null, attacked: false, damage_dealt: 0,
+      defender_eliminated: false, moved: true,
+      panelMove: true,
+      ...(panel ? { panel } : {}),
+      cost: Math.max(0, Math.trunc(Number(cost) || 0)),
+      price: Math.max(0, Math.trunc(Number(price) || 0)),
+      unit,
     }];
     this.persist();
     this.emit({ type: 'game_state_update', ...this.snapshot() });
@@ -731,7 +769,14 @@ export class LocalGameService {
     // not start: a side can hold no commander on the BOARD for reasons of its
     // own - one that walked home into its base is off the board and alive.
     const felled = this.overtimeToll(board);
-    const beaten = cast.killed ? this.defeatedSides(board) : felled ? [felled] : [];
+    // The felled side is judged by the objective, like every other ending -
+    // and only that side, for the reason above. This used to be `[felled]`
+    // outright, which under `elimination` called a king the toll killed a
+    // defeat while his army still stood; `move` never did, and the server's
+    // `_settle_pass` does not either. Under regicide it is the same answer.
+    const beaten = cast.killed
+      ? this.defeatedSides(board)
+      : felled ? this.defeatedSides(board).filter(side => side === felled) : [];
     g.boardState = board;
     if (cast.records.length) g.moveHistory = [...g.moveHistory, ...cast.records];
     const maxTurns: number = g.config?.rules?.maxTurns ?? 0;

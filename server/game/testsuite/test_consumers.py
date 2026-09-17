@@ -14,6 +14,7 @@ from datetime import timedelta
 from django.utils import timezone
 
 from game.models import GameChallenge, GameRoom, GameState, PlayerConnection
+from game.engine import economy, panels
 from game.engine.config_loader import DEFAULT_CONFIG
 from game.routing import websocket_urlpatterns
 
@@ -1405,3 +1406,745 @@ class CleanupCommandTests(TestCase):
         out = StringIO()
         call_command('cleanup_game_state', stdout=out)
         self.assertIn('Cleanup complete.', out.getvalue())
+
+
+async def _start_seated_game():
+    """
+    Two players in a started room. Returns the room, both sockets, and which of
+    them is white and which black - the seat is chosen at start, so the tests
+    that need a side to move cannot assume the host has it.
+    """
+    game = await GameRoom.objects.acreate(
+        host='alice', opponent='bob', status='waiting',
+        host_token='host-tok', opponent_token='opp-tok',
+    )
+    application = URLRouter(websocket_urlpatterns)
+    host_comm = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+    opp_comm = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+    await host_comm.connect()
+    await opp_comm.connect()
+    await host_comm.send_json_to({
+        'type': 'join_game_room', 'username': 'alice',
+        'gameId': game.game_id, 'token': 'host-tok',
+    })
+    await _receive_until(host_comm, 'join_game_room_success')
+    await opp_comm.send_json_to({
+        'type': 'join_game_room', 'username': 'bob',
+        'gameId': game.game_id, 'token': 'opp-tok',
+    })
+    await _receive_until(opp_comm, 'join_game_room_success')
+    await _both_ready_then_start(host_comm, opp_comm, game.game_id)
+    started = await _receive_until(host_comm, 'game_started')
+    await _receive_until(opp_comm, 'game_started')
+    white = host_comm if started['currentTurn'] == 'alice' else opp_comm
+    black = opp_comm if white is host_comm else host_comm
+    return game, host_comm, opp_comm, white, black
+
+
+class PanelCrossingLiveIntegrationTests(TransactionTestCase):
+    """
+    A reserve unit stepping onto the battlefield, against a live consumer.
+
+    Until now the server knew nothing about panels, so a networked game could
+    not offer a crossing and the client gated the whole feature behind
+    `entryBind`. These pin the three things that make the server's answer worth
+    more than the browser engine's, which takes the same message on trust.
+
+    White's archer is dealt to '7,7' in its reserve and the gateway at '3,9'
+    puts '3,8' one step inside the board - four steps to the gap plus one
+    through it, which is inside its six MOV. Both coordinates come from the
+    panel deal, which is derived, not stored (see engine/panels.py).
+    """
+
+    ARCHER_AT = '7,7'
+    LANDS_ON = '3,8'
+
+    async def _start_game(self):
+        return await _start_seated_game()
+
+    async def test_a_reserve_unit_crosses_without_taking_the_turn(self):
+        """
+        A crossing is deployment, not the turn's board action: several may come
+        through in one turn, so it must hand nothing over.
+        """
+        game, host_comm, opp_comm, white, _black = await self._start_game()
+        try:
+            await white.send_json_to({
+                'type': 'enter_board', 'from': self.ARCHER_AT, 'to': self.LANDS_ON,
+            })
+            update = await _receive_until(white, 'game_state_update')
+
+            self.assertIn(self.LANDS_ON, update['boardState'])
+            landed = update['boardState'][self.LANDS_ON]
+            self.assertEqual(landed['unit_id'], 'archer')
+            self.assertEqual(landed['color'], 'white')
+            self.assertEqual(landed['uid'], 'rbr4')
+
+            state = await GameState.objects.aget(game_id=game.game_id)
+            # The ply and the seat are untouched - nothing was handed over.
+            self.assertEqual(state.turn_number, 1)
+            self.assertEqual(state.current_turn, update['currentTurn'])
+
+            record = state.move_history[-1]
+            # The fields the client's panel derivations read. If any of these
+            # is dropped the panel re-deals the unit at home, alive and ready
+            # to cross again - and mending breaks without a line of mending
+            # code being touched.
+            self.assertTrue(record['entered'])
+            self.assertEqual(record['unit']['uid'], 'rbr4')
+            self.assertEqual(record['from'], self.ARCHER_AT)
+            self.assertEqual(record['to'], self.LANDS_ON)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_the_same_unit_cannot_cross_twice(self):
+        """
+        `entered` takes it out of its panel for good. Without that the panel
+        would re-deal it and it could pour the same archer onto the board.
+        """
+        game, host_comm, opp_comm, white, _black = await self._start_game()
+        try:
+            await white.send_json_to({
+                'type': 'enter_board', 'from': self.ARCHER_AT, 'to': self.LANDS_ON,
+            })
+            await _receive_until(white, 'game_state_update')
+
+            await white.send_json_to({
+                'type': 'enter_board', 'from': self.ARCHER_AT, 'to': '3,7',
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_the_unit_on_the_wire_is_ignored_and_the_derived_one_used(self):
+        """
+        The whole difference between this and the browser engine. It accepts
+        the unit, the hex and the HP as sent, because it has nobody to cheat;
+        a server hands a console-armed client a free unit if it does the same.
+        """
+        game, host_comm, opp_comm, white, _black = await self._start_game()
+        try:
+            await white.send_json_to({
+                'type': 'enter_board', 'from': self.ARCHER_AT, 'to': self.LANDS_ON,
+                # A queen with a thousand HP, which is not what is standing there.
+                'unit': {
+                    'unit_id': 'queen', 'color': 'white',
+                    'hp': 1000, 'max_hp': 1000, 'uid': 'rbr4',
+                },
+            })
+            update = await _receive_until(white, 'game_state_update')
+
+            landed = update['boardState'][self.LANDS_ON]
+            self.assertEqual(landed['unit_id'], 'archer')
+            self.assertEqual(landed['hp'], 16)
+            self.assertNotEqual(landed['hp'], 1000)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_crossing_out_of_reach_is_refused(self):
+        """
+        The gateway is four steps from the archer and one more through the gap.
+        A hex the walk cannot pay for is not on offer however well-formed the
+        message is.
+        """
+        game, host_comm, opp_comm, white, _black = await self._start_game()
+        try:
+            # '0,0' is the middle of the board - far past six MOV.
+            await white.send_json_to({
+                'type': 'enter_board', 'from': self.ARCHER_AT, 'to': '0,0',
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+
+            # And the three reserve units further back cannot cross at all.
+            await white.send_json_to({
+                'type': 'enter_board', 'from': '9,3', 'to': self.LANDS_ON,
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_only_the_side_to_move_may_cross(self):
+        game, host_comm, opp_comm, _white, black = await self._start_game()
+        try:
+            await black.send_json_to({
+                'type': 'enter_board', 'from': '-7,-7', 'to': '-3,-8',
+            })
+            err = await _receive_until(black, 'error')
+            self.assertEqual(err['code'], 'NOT_YOUR_TURN')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+
+class PanelAttackLiveIntegrationTests(TransactionTestCase):
+    """
+    A board unit striking into a panel, against a live consumer.
+
+    Nothing of white's reaches a black panel from the opening position, so each
+    test stands a white pawn beside one in the stored state first. The numbers
+    are the ones PUNCHLIST 4.1 records as watched in a solo game.
+    """
+
+    BESIDE_RESERVE = '-8,-3'   # beside rtl0, black's reserve queen
+    RESERVE_QUEEN = '-9,-3'
+    BESIDE_BASE = '11,-3'      # beside rtr1, black's base rook
+    BASE_ROOK = '12,-4'
+    #: Ply 7: the first of Phase 1, and white's. These tests used to strike on
+    #: ply 1, which is the opening - where nobody attacks. Nothing enforced that
+    #: until the server had a phase schedule, so they passed while striking a
+    #: blow the game's own rules forbid.
+    PAST_OPENING = 7
+
+    async def _stand_pawn(self, game, at):
+        state = await GameState.objects.aget(game_id=game.game_id)
+        board = dict(state.board_state)
+        board[at] = {'unit_id': 'pawn', 'color': 'white', 'hp': 20, 'max_hp': 20, 'uid': 'wtest'}
+        await GameState.objects.filter(game_id=game.game_id).aupdate(
+            board_state=board, turn_number=self.PAST_OPENING)
+
+    async def test_a_blow_into_a_reserve_is_answered_and_takes_the_turn(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await self._stand_pawn(game, self.BESIDE_RESERVE)
+            await white.send_json_to({
+                'type': 'panel_attack',
+                'from': self.BESIDE_RESERVE, 'to': self.BESIDE_RESERVE,
+                'attack': self.RESERVE_QUEEN,
+            })
+            made = await _receive_until(white, 'move_made')
+
+            record = made['move']
+            self.assertEqual(record['damage_dealt'], 2)
+            self.assertEqual(record['defenderHp'], 28)
+            self.assertEqual(record['counter_damage'], 16)
+            self.assertEqual(record['panel'], 'tl')
+            self.assertEqual(made['boardState'][self.BESIDE_RESERVE]['hp'], 4)
+
+            state = await GameState.objects.aget(game_id=game.game_id)
+            # Unlike a crossing, a blow IS the turn's board action.
+            self.assertEqual(state.turn_number, self.PAST_OPENING + 1)
+            self.assertTrue(state.move_history[-1]['intoPanel'])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_counters_flag_off_the_wire_changes_nothing(self):
+        """
+        The browser engine reads `counters` straight off the message, so a
+        client could switch off the counter-attack against its own blows.
+        """
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await self._stand_pawn(game, self.BESIDE_RESERVE)
+            await white.send_json_to({
+                'type': 'panel_attack',
+                'from': self.BESIDE_RESERVE, 'to': self.BESIDE_RESERVE,
+                'attack': self.RESERVE_QUEEN,
+                'counters': False,
+                # And a panel and a unit that are not the truth either.
+                'panel': 'tr',
+                'unit': {'unit_id': 'pawn', 'color': 'black', 'hp': 1, 'uid': 'rtl0'},
+            })
+            made = await _receive_until(white, 'move_made')
+
+            self.assertEqual(made['move']['counter_damage'], 16)
+            self.assertEqual(made['move']['panel'], 'tl')
+            self.assertEqual(made['move']['defenderHp'], 28)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_blow_into_a_base_is_never_answered(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await self._stand_pawn(game, self.BESIDE_BASE)
+            await white.send_json_to({
+                'type': 'panel_attack',
+                'from': self.BESIDE_BASE, 'to': self.BESIDE_BASE,
+                'attack': self.BASE_ROOK,
+            })
+            made = await _receive_until(white, 'move_made')
+
+            self.assertEqual(made['move']['damage_dealt'], 1)
+            self.assertEqual(made['move']['counter_damage'], 0)
+            self.assertEqual(made['move']['panel'], 'tr')
+            self.assertEqual(made['boardState'][self.BESIDE_BASE]['hp'], 20)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_refused_blow_does_not_take_the_turn(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await self._stand_pawn(game, self.BESIDE_RESERVE)
+            # Black's reserve bishop, three hexes out of a pawn's reach of one.
+            await white.send_json_to({
+                'type': 'panel_attack',
+                'from': self.BESIDE_RESERVE, 'to': self.BESIDE_RESERVE,
+                'attack': '-9,-5',
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+            # Refused for its range, not for the opening: this is ply 7.
+            self.assertNotIn('opening', err.get('message', ''))
+
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.turn_number, self.PAST_OPENING)
+            self.assertEqual(state.move_history, [])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+
+class PanelWithdrawalLiveIntegrationTests(TransactionTestCase):
+    """
+    A board unit walking off the battlefield into its own base, on `make_move`.
+
+    White's pawn at '-11,11' starts beside its own doorway at '-12,11', so the
+    walk home costs a single step.
+    """
+
+    PAWN_AT = '-11,11'
+    DOORWAY = '-12,11'
+
+    async def test_a_unit_walks_home_and_the_base_keeps_it(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await white.send_json_to({
+                'type': 'make_move', 'from': self.PAWN_AT, 'to': self.DOORWAY,
+                'withdraw': True,
+            })
+            made = await _receive_until(white, 'move_made')
+
+            # Off the board - the doorway is a panel hex, which no board holds.
+            self.assertNotIn(self.PAWN_AT, made['boardState'])
+            self.assertNotIn(self.DOORWAY, made['boardState'])
+
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.turn_number, 2)
+            record = state.move_history[-1]
+            self.assertTrue(record['withdrawn'])
+            self.assertEqual(record['unit']['uid'], 'w-11,11')
+
+            # And the record is enough on its own to put it back in its base,
+            # which is what a reload - or the other player's screen - does.
+            standing = panels.panel_occupancy(
+                state.config_snapshot, state.config_snapshot['board']['radius'],
+                state.move_history)
+            self.assertEqual(standing[self.DOORWAY]['uid'], 'w-11,11')
+            self.assertTrue(panels.is_base(standing[self.DOORWAY]['panel']))
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_nobody_walks_home_into_the_other_sides_base(self):
+        """
+        The browser engine's test is only the sign of q, so it never needed a
+        doorway at all. Black's doorways are not white's way home.
+        """
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await white.send_json_to({
+                'type': 'make_move', 'from': self.PAWN_AT, 'to': '12,-11',
+                'withdraw': True,
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.turn_number, 1)
+            self.assertIn(self.PAWN_AT, state.board_state)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_unit_does_not_come_home_from_across_the_board(self):
+        """A queen five hexes out spends all her MOV reaching the doorway."""
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            # Deeper into the base than the doorway - past what six MOV buys.
+            await white.send_json_to({
+                'type': 'make_move', 'from': '-6,11', 'to': '-13,11',
+                'withdraw': True,
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_striking_and_walking_home_in_one_turn_is_refused(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await white.send_json_to({
+                'type': 'make_move', 'from': self.PAWN_AT, 'to': self.DOORWAY,
+                'withdraw': True, 'attack': '0,0',
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertIn(self.PAWN_AT, state.board_state)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+class OvertimeTollLiveIntegrationTests(TransactionTestCase):
+    """
+    Overtime's toll, taken by the server at the end of every turn in overtime.
+
+    Each test winds the stored game on to ply 67, which is overtime's first
+    and white's to play, and sets white's king to the HP it needs. The toll is
+    taken on all three ways a turn can end - a move, a pass, and the clock -
+    and a king on his last HP must not be able to pass his way past it.
+    """
+
+    OVERTIME = 67
+
+    async def _overtime(self, game, king_hp, objective=None):
+        state = await GameState.objects.aget(game_id=game.game_id)
+        board = dict(state.board_state)
+        king_at = next(k for k, v in board.items()
+                       if v['unit_id'] == 'king' and v['color'] == 'white')
+        board[king_at] = {**board[king_at], 'hp': king_hp}
+        config = copy.deepcopy(state.config_snapshot)
+        if objective:
+            config.setdefault('rules', {})['objective'] = objective
+        await GameState.objects.filter(game_id=game.game_id).aupdate(
+            board_state=board, turn_number=self.OVERTIME, config_snapshot=config)
+        return king_at
+
+    async def test_a_pass_in_overtime_takes_the_toll_and_sends_the_board(self):
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            king_at = await self._overtime(game, 10)
+            await white.send_json_to({'type': 'pass_turn'})
+            passed = await _receive_until(black, 'turn_passed')
+
+            # The board rides on the pass now: the client already takes one,
+            # and without it the toll would never reach the other screen.
+            self.assertEqual(passed['boardState'][king_at]['hp'], 9)
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.board_state[king_at]['hp'], 9)
+            self.assertEqual(state.turn_number, self.OVERTIME + 1)
+            self.assertEqual(state.end_reason, '')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_king_on_his_last_point_cannot_pass_his_way_past_it(self):
+        """Before the toll a pass never touched the board or asked who lost."""
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            king_at = await self._overtime(game, 1)
+            await white.send_json_to({'type': 'pass_turn'})
+            over = await _receive_until(black, 'game_over')
+
+            self.assertEqual(over['endReason'], 'regicide')
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(over['winner'], state.player_black)
+            self.assertNotIn(king_at, state.board_state)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_move_in_overtime_takes_the_toll_from_the_side_that_moved(self):
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            king_at = await self._overtime(game, 10)
+            state = await GameState.objects.aget(game_id=game.game_id)
+            board = state.board_state
+            # Any white pawn with an empty hex straight ahead of it.
+            frm, to = next(
+                (k, f"{int(k.split(',')[0])},{int(k.split(',')[1]) - 1}")
+                for k, v in board.items()
+                if v['unit_id'] == 'pawn' and v['color'] == 'white'
+                and f"{int(k.split(',')[0])},{int(k.split(',')[1]) - 1}" not in board)
+            await white.send_json_to({'type': 'make_move', 'from': frm, 'to': to})
+            made = await _receive_until(black, 'move_made')
+
+            self.assertEqual(made['boardState'][king_at]['hp'], 9)
+            # Black's king has not played, and pays nothing.
+            black_king = next(v for v in made['boardState'].values()
+                              if v['unit_id'] == 'king' and v['color'] == 'black')
+            self.assertEqual(black_king['hp'], black_king['max_hp'])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_under_elimination_a_king_the_toll_kills_loses_nothing(self):
+        """
+        Elimination only ends when a side has no units at all, so a king the
+        toll kills on a pass is a loss of a unit, not of the match. The browser
+        engine's pass used to call it a defeat all the same, while its move did
+        not; both judge the felled side by its objective now.
+        """
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            king_at = await self._overtime(game, 1, objective='elimination')
+            await white.send_json_to({'type': 'pass_turn'})
+            passed = await _receive_until(black, 'turn_passed')
+
+            self.assertNotIn(king_at, passed['boardState'])
+            self.assertTrue(passed['currentTurn'])
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.end_reason, '')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+
+class PanelMoveLiveIntegrationTests(TransactionTestCase):
+    """
+    Walking a unit inside its panel, and the wrap, against a live consumer.
+
+    Neither used to reach any engine. The board moved the unit in its own memory
+    and sent nothing, so a networked player who shuffled a reserve unit and then
+    crossed it from its new hex was refused - the server still had it on the hex
+    it was dealt to.
+    """
+
+    ARCHER_AT = '7,7'       # rbr4, white's reserve archer
+    SHUFFLED_TO = '6,7'     # one step nearer its gateway
+    LANDS_ON = '3,8'        # four steps on from there, through the gap
+    KNIGHT_AT = '-12,6'     # rbl3, white's base knight
+    WRAP_OPEN_PLY = 47      # turn 24: Phase 3 before its halftime, 24 points
+
+    async def _history(self, game):
+        state = await GameState.objects.aget(game_id=game.game_id)
+        return state
+
+    async def test_a_unit_shuffled_first_can_still_cross_from_where_it_stands(self):
+        """The hole this fixes, end to end."""
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await white.send_json_to({
+                'type': 'panel_move', 'from': self.ARCHER_AT, 'to': self.SHUFFLED_TO,
+            })
+            moved = await _receive_until(white, 'game_state_update')
+            record = moved['moveHistory'][-1]
+            self.assertTrue(record['panelMove'])
+            self.assertEqual(record['unit']['uid'], 'rbr4')
+            self.assertEqual(record['cost'], 1)
+            self.assertEqual(record['panel'], 'br')
+            # A walk inside a panel is deployment: it hands nothing over.
+            self.assertEqual(moved['turnNumber'], 1)
+
+            await white.send_json_to({
+                'type': 'enter_board', 'from': self.SHUFFLED_TO, 'to': self.LANDS_ON,
+            })
+            crossed = await _receive_until(white, 'game_state_update')
+            self.assertEqual(crossed['boardState'][self.LANDS_ON]['uid'], 'rbr4')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_crossing_cannot_spend_mov_the_unit_already_walked(self):
+        """
+        Shuffled one step, the archer has five of its six left. '2,7' is six
+        away from where it now stands: reachable on a full MOV, not on what is
+        left. Before the allowance a crossing always got the whole stat.
+        """
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await white.send_json_to({
+                'type': 'panel_move', 'from': self.ARCHER_AT, 'to': self.SHUFFLED_TO,
+            })
+            await _receive_until(white, 'game_state_update')
+            await white.send_json_to({
+                'type': 'enter_board', 'from': self.SHUFFLED_TO, 'to': '2,7',
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_walk_never_leaves_its_panel(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            # Straight onto the battlefield is a crossing, not a walk.
+            await white.send_json_to({
+                'type': 'panel_move', 'from': self.ARCHER_AT, 'to': self.LANDS_ON,
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.move_history, [])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_the_wrap_is_paid_for_in_points_and_the_price_comes_off(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                turn_number=self.WRAP_OPEN_PLY)
+            state = await GameState.objects.aget(game_id=game.game_id)
+            radius = state.config_snapshot['board']['radius']
+            tip = panels.wrap_tips('white', radius)['reserve']
+            before = economy.points_of(
+                'white', self.WRAP_OPEN_PLY, state.move_history, state.config_snapshot)
+            self.assertEqual(before, 24)
+
+            await white.send_json_to({'type': 'panel_move', 'from': self.KNIGHT_AT, 'to': tip})
+            wrapped = await _receive_until(white, 'game_state_update')
+            record = wrapped['moveHistory'][-1]
+            self.assertEqual(record['price'], 12)      # a knight is worth 12
+            self.assertEqual(record['panel'], 'bl')    # it began in the base
+
+            after = economy.points_of(
+                'white', self.WRAP_OPEN_PLY, wrapped['moveHistory'], wrapped['config'])
+            self.assertEqual(after, 12)
+
+            # The queen is worth 30, and there are 12 left.
+            await white.send_json_to({'type': 'panel_move', 'from': '-13,3', 'to': '10,1'})
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_the_wrap_is_shut_at_halftime_however_rich(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            # Ply 57 is turn 29: Phase 3's halftime, shut.
+            await GameState.objects.filter(game_id=game.game_id).aupdate(turn_number=57)
+            state = await GameState.objects.aget(game_id=game.game_id)
+            tip = panels.wrap_tips('white', state.config_snapshot['board']['radius'])['reserve']
+            await white.send_json_to({'type': 'panel_move', 'from': self.KNIGHT_AT, 'to': tip})
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_fourth_reserve_unit_may_not_start_moving(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            async def step_once(uid):
+                state = await GameState.objects.aget(game_id=game.game_id)
+                config = state.config_snapshot
+                radius = config['board']['radius']
+                occupancy = panels.panel_occupancy(
+                    config, radius, state.move_history, ply=state.turn_number)
+                frm = next(k for k, u in occupancy.items() if u['uid'] == uid)
+                targets = panels.panel_move_targets(
+                    config, radius, state.move_history, state.board_state, frm,
+                    state.turn_number, points=0)
+                to = min(targets, key=lambda k: (targets[k]['cost'], k)) if targets else frm
+                await white.send_json_to({'type': 'panel_move', 'from': frm, 'to': to})
+                return frm
+
+            for uid in ('rbr0', 'rbr1', 'rbr2'):
+                await step_once(uid)
+                await _receive_until(white, 'game_state_update')
+            # The three movers are spent, and rbr3 is not one of them.
+            await step_once('rbr3')
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+
+class OpeningRulesLiveIntegrationTests(TransactionTestCase):
+    """
+    The opening's three turns: nobody attacks, and a battlefield unit gets one
+    move for the whole phase rather than one a turn.
+
+    The board enforced both in its click handler and nowhere else. Neither
+    engine knew what the opening was - the server had no phase schedule at all -
+    so a crafted message could strike on the first turn, or walk the same unit
+    three times.
+    """
+
+    async def _pawn_steps(self, game, count):
+        """`count` white pawns with an empty hex straight ahead of each."""
+        state = await GameState.objects.aget(game_id=game.game_id)
+        board = state.board_state
+        out = []
+        for key, cell in board.items():
+            if cell['unit_id'] != 'pawn' or cell['color'] != 'white':
+                continue
+            q, r = (int(n) for n in key.split(','))
+            ahead = f'{q},{r - 1}'
+            if ahead not in board:
+                out.append((key, ahead))
+            if len(out) == count:
+                break
+        return out
+
+    async def test_nobody_attacks_in_the_opening(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            (frm, to), = await self._pawn_steps(game, 1)
+            await white.send_json_to({
+                'type': 'make_move', 'from': frm, 'to': to, 'attack': '0,0',
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+            self.assertIn('opening', err['message'])
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.turn_number, 1)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_nor_into_a_panel(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await white.send_json_to({
+                'type': 'panel_attack', 'from': '-8,-3', 'to': '-8,-3', 'attack': '-9,-3',
+            })
+            err = await _receive_until(white, 'error')
+            self.assertIn('opening', err['message'])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_unit_that_moved_in_the_opening_is_done_until_it_ends(self):
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            (frm, to), (other_frm, other_to) = await self._pawn_steps(game, 2)
+            await white.send_json_to({'type': 'make_move', 'from': frm, 'to': to})
+            await _receive_until(white, 'move_made')
+            await black.send_json_to({'type': 'pass_turn'})
+            await _receive_until(white, 'turn_passed')
+
+            # Ply 3, still the opening: the same pawn may not go again.
+            q, r = (int(n) for n in to.split(','))
+            await white.send_json_to({'type': 'make_move', 'from': to, 'to': f'{q},{r - 1}'})
+            err = await _receive_until(white, 'error')
+            self.assertIn('its move for the opening', err['message'])
+
+            # But a different one may.
+            await white.send_json_to({'type': 'make_move', 'from': other_frm, 'to': other_to})
+            made = await _receive_until(white, 'move_made')
+            self.assertEqual(made['move']['to'], other_to)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_the_lock_lifts_when_the_opening_ends(self):
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            (frm, to), = await self._pawn_steps(game, 1)
+            await white.send_json_to({'type': 'make_move', 'from': frm, 'to': to})
+            await _receive_until(white, 'move_made')
+            # Wind on to ply 7, the first of Phase 1 and white's again.
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                turn_number=7, current_turn=(await GameState.objects.aget(
+                    game_id=game.game_id)).player_white)
+            q, r = (int(n) for n in to.split(','))
+            await white.send_json_to({'type': 'make_move', 'from': to, 'to': f'{q},{r - 1}'})
+            made = await _receive_until(white, 'move_made')
+            self.assertEqual(made['move']['from'], to)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()

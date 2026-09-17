@@ -142,6 +142,9 @@ const DEFAULT_GAME_CONFIG = {
     turnTimeLimit: 0,
     // Fraction of damage lost per ring beyond the first.
     rangeFalloff: 0.25,
+    // The least a blow that lands may deal, once defence is off it. Must match
+    // DEFAULT_CONFIG in config_loader.py byte for byte.
+    minStrikeDamage: 1,
     // A side loses when its commander dies; 'elimination' (no units left) is
     // the other supported objective.
     objective: 'regicide'
@@ -192,6 +195,15 @@ export class ConfigService {
     }
     if (config && config.rules === undefined) config.rules = {};
     const rules = config?.rules;
+    // Absent means the current default, not whatever floor happened to be in
+    // force when the config was written - _normalise_config says the same, and
+    // for the same reason: nothing here can tell a snapshot frozen before the
+    // floor existed from a custom config authored today that simply did not
+    // mention it, and filling in the old 0 would hand every new custom config
+    // the dead matchups the floor exists to remove.
+    if (rules && typeof rules === 'object' && rules.minStrikeDamage === undefined) {
+      rules.minStrikeDamage = DEFAULT_GAME_CONFIG.rules['minStrikeDamage'];
+    }
     if (rules && typeof rules === 'object' && rules.objective === undefined) {
       const setup = config.setup;
       const commanded = ['white', 'black'].every(side => {
@@ -275,6 +287,23 @@ export class ConfigService {
       const falloff = config.rules.rangeFalloff ?? 0;
       if (typeof falloff !== 'number' || falloff < 0 || falloff > 1) {
         errors.push('rules.rangeFalloff must be a number between 0 and 1');
+      }
+
+      // Checked because a negative floor corrupts the board rather than merely
+      // unbalancing it: strikeDamage would return a negative number and the
+      // engine subtracts it, so a blow would heal whatever it hit.
+      // _validate_config says the same, so the setup screen and the server
+      // reject the same configs.
+      // The raw value, with no `?? 0` in front of it. Coalescing here let an
+      // explicit `null` through as 0 while the server - whose normaliser also
+      // only fills an ABSENT key - kept the None and refused it, so a config
+      // the setup screen called valid failed to start the room with an error
+      // the screen had said would not happen. normaliseConfig has already
+      // supplied a missing one, so anything left that is not a whole number
+      // was written that way on purpose.
+      const floor = config.rules.minStrikeDamage;
+      if (!Number.isInteger(floor) || floor < 0) {
+        errors.push('rules.minStrikeDamage must be an integer >= 0');
       }
 
       // The objective decides how a game is lost, so a config that cannot

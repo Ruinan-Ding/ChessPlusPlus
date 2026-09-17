@@ -131,8 +131,16 @@ def rejoin():
     check('a dropped player rejoins onto the same position',
           st.get('turnNumber') == 4 and st.get('boardState', {}).get(ctx['bt']) and st.get('currentTurn') == name,
           {k: st.get(k) for k in ('turnNumber', 'currentTurn')})
-    q, r = ctx['bt'].split(',')
-    nb.send({'type': 'make_move', 'from': ctx['bt'], 'to': f'{q},{int(r) + 1}'})
+    # A DIFFERENT pawn from the one black moved on ply 2. This is ply 4, still
+    # the opening, where a unit gets one move for the whole phase - this used to
+    # move the same pawn again, and passed only while nothing enforced that.
+    board = st.get('boardState', {})
+    frm, to = next(
+        (k, f"{k.split(',')[0]},{int(k.split(',')[1]) + 1}")
+        for k, p in board.items()
+        if p['color'] == 'black' and p['unit_id'] == 'pawn' and k != ctx['bt']
+        and f"{k.split(',')[0]},{int(k.split(',')[1]) + 1}" not in board)
+    nb.send({'type': 'make_move', 'from': frm, 'to': to})
     m = ctx['white'].type('move_made')
     check('the rejoined player can still move', m['turnNumber'] == 5, m)
     # Back in the lobby on a fresh socket, as the client does. Rejoining the

@@ -232,6 +232,19 @@ const UPKEEP_MS = beat(760);
 /** How long an end-of-turn `+1` / `-1` stays legible after its swell. */
 const MARK_FADE_MS = beat(2200);
 
+/**
+ * How many of its own turns a king is warned before overtime's toll kills it.
+ *
+ * It was one - the skull appeared on the turn the king died, which is a
+ * warning with nothing left to do about it. Two gives a turn to spend on
+ * saving him: walk him home to mend, or land a heal.
+ *
+ * The skull is still the same skull; the nearer one is drawn `imminent` and
+ * the earlier one is dimmer, so "he dies at this commit" and "he dies at the
+ * next one" stay tellable apart at a glance.
+ */
+const DOOM_WARNING_TURNS = 2;
+
 /** Padding around the outermost hex centres in the viewBox. Must match buildCells(). */
 const VIEWBOX_PADDING = HEX_SIZE + 4;
 
@@ -791,16 +804,22 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
                     class="stat stat-range"
                     [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
               >{{ hex.stats?.rangeLow }}</text>
-              <!-- A king overtime's toll will kill at the end of its side's
-                   next turn. It is not dead yet - a heal saves it, and so
+              <!-- A king overtime's toll will kill within the next couple of
+                   its own turns. It is not dead yet - a heal saves it, and so
                    does the match ending first - so it fades in and out over
                    the face rather than sitting there as a headstone. Drawn
                    before the forecast skull, which takes the same spot and
-                   belongs to the trade actually being aimed. -->
-              <text *ngIf="doomedKing(hex)"
+                   belongs to the trade actually being aimed.
+
+                   The imminent class is the one that dies at THIS commit;
+                   without it the earlier warning and the last call look
+                   identical. No backticks in here - they would end the
+                   template literal this whole template is written in. -->
+              <text *ngIf="doomState(hex) as doom"
                     [attr.x]="hex.cx" [attr.y]="hex.cy + 1"
                     [attr.transform]="textTransform(hex.cx, hex.cy)"
-                    class="doom-skull">&#9760;</text>
+                    class="doom-skull"
+                    [class.imminent]="doom === 'imminent'">&#9760;</text>
               <!-- Whoever the hovered trade would kill wears it on the face,
                    and fades out under it (see .doomed on the plate). -->
               <text *ngIf="wouldDie(hex.key)"
@@ -1495,12 +1514,17 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       pointer-events: none;
     }
 
-    /* The end-of-turn toll has this king's last HP. Over the face, like every
+    /* The end-of-turn toll is coming for this king. Over the face, like every
        other thing that is about to happen to a unit, and waving from nothing
        to solid rather than simply sitting there: a still skull reads as
        already dead, and it is not - not until the turn commits. Only opacity
        moves, so the transform attribute that keeps text upright on a flipped
-       board is left alone - a backtick in here would end the styles literal. */
+       board is left alone - a backtick in here would end the styles literal.
+
+       This is the EARLY warning - a turn still in hand. Amber, slower, and
+       peaking short of solid, so it reads as "this is coming" rather than as
+       the last call. The .imminent rule below is the last call. (No backticks
+       in here - see the note on .doom-skull's own literal above.) */
     .doom-skull {
       font-size: 26px;
       text-anchor: middle;
@@ -1510,6 +1534,17 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       paint-order: stroke;
       stroke: rgba(0, 0, 0, 0.9);
       stroke-width: 3.5;
+      fill: #f59e0b;
+      animation: doom-wave-early 2.4s ease-in-out infinite;
+    }
+    @keyframes doom-wave-early {
+      0%, 100% { opacity: 0; }
+      50%      { opacity: 0.6; }
+    }
+
+    /* This commit kills him. Red, faster, all the way to solid - the look the
+       skull has always had, now reserved for the turn it was describing. */
+    .doom-skull.imminent {
       fill: #ff5555;
       animation: doom-wave 1.6s ease-in-out infinite;
     }
@@ -1671,15 +1706,30 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   @Input() theirPoints = 0;
 
   /**
-   * Whether stepping out of the reserve is offered at all.
+   * Whether the panels are in play: stepping out of a reserve, walking home
+   * into a base, and striking a unit that stands in a panel.
    *
-   * The panels are the client's own - no engine has a reserve to take a unit
-   * out of - so the only engine that can honour an entry is the one in this
-   * browser. Offering it in a server game would stage a walk the server
-   * rejects as "no piece at source coordinate".
-   * ponytail: one predicate, to lift the day reserves live in the engine.
+   * These used to be the browser's alone, because no engine had a panel to
+   * take a unit out of, and offering one in a server game staged a walk the
+   * server rejected as "no piece at source coordinate". The server derives the
+   * panels now (engine/panels.py) and answers `enter_board`, `panel_attack`
+   * and a withdrawing `make_move` itself, so a networked room binds this too.
+   *
+   * The overtime toll is NOT behind this - see `tollBind`. The two were one
+   * switch, which is why the panels could not be turned on alone.
    */
   @Input() entryBind = false;
+
+  /**
+   * Whether overtime's toll is in play: the red `-1` on a king at the end of
+   * his side's turn, and the skull warning that it is coming.
+   *
+   * Both engines take the toll now, so the room binds this on everywhere. It
+   * stays a gate of its own because it was once the reason the panels could not
+   * go live: it shared `entryBind`, and a toll no server took would have put a
+   * death warning over a king whose HP was never going to move.
+   */
+  @Input() tollBind = false;
 
   /**
    * The board as the engine has it, without this turn's staged move.
@@ -1707,6 +1757,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * its old hex, whole and ready to cross again.
    */
   @Input() departedUids: string[] = [];
+
+  /**
+   * Where each panel unit that has been walked or brought home now stands, by
+   * uid, as the history records it. The squads are dealt where they began and
+   * these units are placed on top - see `placeRecorded`.
+   */
+  @Input() panelPositions: Record<string, string> = {};
 
   /**
    * What a reserve unit has left, by uid, for the ones that have been in a
@@ -2304,6 +2361,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (changes['boardState'] || changes['radius'] || changes['config']
         || changes['unitBuffs'] || changes['myColor']
         || changes['withdrawn'] || changes['departedUids'] || changes['committedBoard']
+        || changes['panelPositions']
         || changes['panelHp']) {
       this.buildCells();
     }
@@ -2638,6 +2696,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     this.buildReserves();
     this.woundReserves();
     this.absorbWithdrawn();
+    this.placeRecorded();
     // A reserve that has stepped onto the battlefield is no longer in its
     // panel: `departedUids` says so from the record of the crossing, and a
     // crossing still staged says so from the overlay it is drawn in. Reading
@@ -2703,6 +2762,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     this.cellsByKey = new Map(this.cells.map(c => [c.key, c]));
     this.strikeBounds = { white: new Set(), black: new Set() };
     for (const cell of this.cells) {
+      // Where each commander stands, on what, and when. Once a king is off the
+      // board this is the only record of where he was, and the toll that killed
+      // him still owes a mark there - see markOvertimeToll. Read off this loop
+      // rather than a second pass over all ~400 cells.
+      //
+      // Battlefield only: a commander in a panel has walked home, out of the
+      // toll's reach, so his panel hex is not where any toll will fell him.
+      const piece = cell.piece;
+      if (!cell.panel && piece && this.config?.units?.[piece.unit_id]?.commander) {
+        this.kingHex.set(piece.color, {
+          at: cell.key, hp: piece.hp ?? 0, ply: this.turnNumber,
+        });
+      }
       // A panel belongs to the side whose corner it is - the same reading
       // buildReserves deals by.
       const owner = cell.panel ? (cell.panel[0] === 'b' ? 'white' : 'black') : '';
@@ -2816,7 +2888,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     }
     // Units that walked home are `absorbWithdrawn`'s: this knows no HP of theirs to go back to.
     const home = new Set(this.withdrawn.map(w => w.unit['uid']));
-    const newTurn = this.turnNumber !== this.woundTurn;
+    // Shared with `absorbWithdrawn`, which pays the other half of the base's
+    // mending and has to tell the same mend from the same Undo. Captured into
+    // a field because `woundTurn` is bumped on the very next line, so it
+    // cannot be asked the question a second time.
+    const newTurn = this.mendingTurn = this.turnNumber !== this.woundTurn;
     this.woundTurn = this.turnNumber;
     for (const [at, piece] of Object.entries(this.reserves)) {
       if (!piece.uid) continue;
@@ -2843,6 +2919,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   private fallen = new Map<string, { at: string; piece: PieceData }>();
   /** The ply `woundReserves` last looked at, to tell a mend from an Undo. */
   private woundTurn = -1;
+  /**
+   * Whether this rebuild is the first of a new ply - i.e. whether HP going up
+   * in a base is the turn's mending or something staged inside the turn.
+   * Set by `woundReserves` and read by `absorbWithdrawn`, so both halves of a
+   * base answer it the same way.
+   */
+  private mendingTurn = false;
 
   /**
    * Units that have come home join the base as ordinary panel units - they
@@ -2863,7 +2946,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       if (here) {
         // What it has mended since the last look is the +1 it is owed -
         // paid at the end of the turn's animation, not here.
-        if (unit['hp'] > (this.reserves[here].hp ?? 0)) this.oweMark(unit['uid'], '+1');
+        //
+        // Only across a ply, the same test `woundReserves` makes. HP going up
+        // inside a turn is a staged cast or an Undo, and now that the staged
+        // turn reaches this list at all (see stageWithdrawn), a Mend on a
+        // withdrawn unit would otherwise owe it a `+1` for mending on top of
+        // the `+20` the cast already writes.
+        if (this.mendingTurn && unit['hp'] > (this.reserves[here].hp ?? 0)) {
+          this.oweMark(unit['uid'], '+1');
+        }
         this.reserves[here] = { ...this.reserves[here], hp: unit['hp'] };
         continue;
       }
@@ -2872,6 +2963,44 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // want of somewhere to stand.
       const spot = this.reserves[landing] ? this.freePanelHex(landing) : landing;
       if (spot) this.reserves[spot] = { ...unit } as PieceData;
+    }
+  }
+
+  /**
+   * Put every panel unit the history has walked where the history says it
+   * stands. Runs after the deal and the walks home, so it can move either.
+   *
+   * The deal is skipped while nothing about it changes, which is what lets a
+   * unit shuffled on THIS screen stay put - but that was the only place a
+   * shuffle ever lived. The other player's board never learnt of it, and a
+   * reload re-dealt the unit where it began. Walks are recorded now, and this
+   * is where the record wins.
+   *
+   * Except over a unit this turn has walked and not yet sent: its staged hex
+   * is newer than anything recorded. Two passes - lift every unit that has to
+   * move, then set them down - so one landing on a hex another is leaving
+   * never finds it still occupied; one that finds its hex taken all the same
+   * goes to the first free hex of that panel rather than being dropped.
+   */
+  private placeRecorded(): void {
+    const positions = this.panelPositions ?? {};
+    if (!Object.keys(positions).length) return;
+    const staged = new Set(this.panelHistory.map(step => step.uid));
+    const standing = new Map<string, string>();
+    for (const [at, piece] of Object.entries(this.reserves)) {
+      if (piece.uid) standing.set(piece.uid, at);
+    }
+    const lifted: Array<[string, PieceData]> = [];
+    for (const [uid, hex] of Object.entries(positions)) {
+      if (staged.has(uid)) continue;
+      const at = standing.get(uid);
+      if (!at || at === hex) continue;
+      lifted.push([hex, this.reserves[at]]);
+      delete this.reserves[at];
+    }
+    for (const [hex, piece] of lifted) {
+      const spot = this.reserves[hex] ? this.freePanelHex(hex) : hex;
+      if (spot) this.reserves[spot] = piece;
     }
   }
 
@@ -2934,12 +3063,31 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     }
     for (const [uid, text] of owed) {
       this.turnMarks.set(uid, text);
-      const key = at.get(uid);
+      // A mark owed against a hex rather than a unit - the toll that killed a
+      // king, who is no longer standing anywhere to be looked up. `markOf`
+      // already reads the map both ways; this is the same fallback on the
+      // side that puts the swell on screen.
+      const standing = at.get(uid);
+      const key = standing ?? (this.cellsByKey.has(uid) ? uid : undefined);
       if (!key) continue;
       // Taken away rather than given, so the toll shrinks where a mend
       // swells - the same shape a blow landing already has.
       const struck = text.charAt(0) === '-';
-      const mine = this.cellsByKey.get(key)?.piece?.color === (this.myColor || 'white');
+      // Whose mark it is. A unit standing to own it answers for itself; only
+      // a hex-keyed one - nobody left to ask - falls back to the record.
+      //
+      // Both orders are wrong on their own, and I have now had each. Reading
+      // the occupant first drew a dead king's toll in the enemy's purple as
+      // soon as anything stepped onto the hex he died on. Reading `markColors`
+      // first fixed that and broke the commoner case: `showMark` keys a
+      // killing cast's number to the HEX, so a hex that carried a kill earlier
+      // in the turn kept the victim's colour, and a unit later shuffled onto
+      // it wore its own `+1` in the wrong side's shade. The question is not
+      // which map wins, it is whether this mark has an owner.
+      const side = standing
+        ? this.cellsByKey.get(key)?.piece?.color
+        : this.markColors.get(key) ?? this.cellsByKey.get(key)?.piece?.color;
+      const mine = side === (this.myColor || 'white');
       // The swell wears the mark's own colour, a shade brighter so it carries
       // as a glow: green for your mending, blue for theirs, red for your king
       // paying overtime and purple for theirs.
@@ -3043,14 +3191,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * 1 HP dies of it - so this is the mark over damage that has already
    * landed, not a shake standing in for it.
    *
-   * ponytail: **the browser engine's alone**, like the toll it draws. A
-   * networked server takes no HP off anybody, so marking a king there would
-   * be a red -1 over a unit whose HP never moves - the same line `entryBind`
-   * draws for every other client-only rule.
+   * Behind `tollBind`. Both engines take the toll now - the server on a move,
+   * a pass and the clock's pass - so the mark is over HP that really moved in
+   * every room. While only the browser took it, marking a king in a networked
+   * game put a red -1 over a unit whose HP never moved.
    */
   private markOvertimeToll(previous: number, now: number): void {
     const ended = now - 1;
-    if (!this.entryBind || now <= previous || ended < OVERTIME_FIRST_PLY) return;
+    if (!this.tollBind || now <= previous || ended < OVERTIME_FIRST_PLY) return;
     // Only the side that just paid wears one: the hand-over before this was
     // the other side's, and that toll has had its turn on screen. Dropped
     // before the king is looked for, so a side without one still clears it.
@@ -3060,14 +3208,65 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // marks out by their text cannot tell the two apart. A new ply is the end
     // of the last one's marks whatever they said.
     this.turnMarks.clear();
+    // The colours go with them. A hex-keyed mark carries its side in here, so
+    // leaving last ply's entries behind would have an empty hex still
+    // insisting whose it was.
+    this.markColors.clear();
     const color = sideOfPly(ended);
-    const king = this.cells.find(cell => cell.piece?.color === color
+    // Not a king in a panel. `overtimeToll()` searches the board alone, so a
+    // commander who walked home pays nothing and mends an HP a turn instead -
+    // marking him would swell a red `-1` over a unit whose HP is going UP.
+    // Same guard as `doomedKing`, which had it first; this is the other half
+    // of the same rule.
+    const king = this.cells.find(cell => !cell.panel && cell.piece?.color === color
       && this.config?.units?.[cell.piece.unit_id]?.commander);
-    // No king to mark means it has just died of the toll, which the engine
-    // has already turned into the end of the game.
-    if (!king?.piece) return;
-    this.oweMark(this.uidOf(king), '-1');
+    if (king?.piece) {
+      this.oweMark(this.uidOf(king), '-1');
+      return;
+    }
+    // No king standing *and he was on his last HP* means the toll has just
+    // killed him - and that is the one `-1` most worth seeing, so it goes on
+    // the hex he died on rather than being dropped. The same shape as a cast
+    // that kills (see markKey): there is nobody left to hang the number on, so
+    // it hangs on the ghost. `kingHex` is where he was last seen, because the
+    // board has already been rebuilt without him by the time this runs.
+    //
+    // Two tests keep this to the toll's OWN kill, and the ply is the real one.
+    //
+    // The toll takes him during the commit of the ply that just ended, so the
+    // last rebuild that still held him was a rebuild of THAT ply. A king cut
+    // down by an enemy blow vanished on some earlier ply and his record is
+    // stamped with it, so `ply !== ended` throws him out. HP alone could not:
+    // a king already down to his last point when a blow finished him passes
+    // `hp <= OVERTIME_TOLL` just as the toll's victim does, and he would wear
+    // a toll he never paid - written over the top of the recap's real kill
+    // number on that same hex.
+    //
+    // Without either test, ANY missing commander was marked, and under
+    // `objective: 'elimination'` - where losing him does not end the match -
+    // the same `-1` came back on every one of that side's overtime plies.
+    const fell = this.kingHex.get(color);
+    if (!fell || fell.hp > OVERTIME_TOLL || fell.ply !== ended) return;
+    // Paid once. Nothing will put him back, so nothing should mark him twice.
+    this.kingHex.delete(color);
+    this.oweMark(fell.at, '-1');
+    // By hex, the mark has no unit to read its colour off, and `markTheirs`
+    // would draw every dead king's toll in the opponent's colours.
+    this.markColors.set(fell.at, color);
   }
+
+  /**
+   * Where each side's commander was last seen, what he had left, and the ply
+   * he was seen on, by colour. Written on every rebuild: once he is off the
+   * board this is the only record of where he stood, which is exactly when it
+   * is read. The HP and the ply go with it so the toll can tell its own kill
+   * from any other way of dying - see `markOvertimeToll`.
+   *
+   * Battlefield hexes only. A commander in a panel has walked home, where the
+   * toll cannot reach him, so recording that hex would aim the ghost mark at
+   * a square the toll never touched.
+   */
+  private kingHex = new Map<'white' | 'black', { at: string; hp: number; ply: number }>();
 
   /**
    * The hexes a side's wrap needs kept clear to be usable at all: both tips,
@@ -3407,6 +3606,42 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /**
+   * Everything the panels did this turn, as the messages that commit it, **in
+   * the order it happened**: every walk inside a panel and every crossing out
+   * of one.
+   *
+   * Order is the whole point. A unit shuffled to its gateway and then crossed
+   * is two messages, and an engine judging the crossing first finds nobody on
+   * the gateway. Walks used to be sent not at all - only `pendingEntries` went
+   * out - so a server refused exactly that crossing, and the other player
+   * never saw a shuffle happen.
+   */
+  get pendingPanelSteps(): Array<
+    | {
+      type: 'panel_move'; from: string; to: string;
+      unit?: PieceData; panel?: string; cost: number; price: number;
+    }
+    | { type: 'enter_board'; from: string; to: string; unit: PieceData }
+  > {
+    const out: Array<any> = [];
+    for (const step of this.panelHistory) {
+      if (step.entry) {
+        const unit = this.entered[step.to];
+        if (unit) out.push({ type: 'enter_board', from: step.from, to: step.to, unit });
+      } else {
+        // The unit, its panel, the cost and the price ride along for the
+        // browser engine, which records what it is sent. The server reads none
+        // of them: it works each one out from where the unit really stands.
+        out.push({
+          type: 'panel_move', from: step.from, to: step.to,
+          unit: step.piece, panel: step.panel, cost: step.cost, price: step.price,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
    * Drop the crossings this turn staged, without handing back what they
    * spent.
    *
@@ -3519,6 +3754,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     from: string; to: string; uid: string; cost: number; price: number; at: number;
     /** Whether the walk crossed onto the battlefield rather than inside a panel. */
     entry?: boolean;
+    /**
+     * The unit, and the panel the walk BEGAN in, as they were at that step.
+     * Kept per step because a unit may be walked several times in a turn, and
+     * each message that commits one needs its own origin - the wrap starts in
+     * the base, and which panel's movers it spends is decided by that.
+     */
+    piece?: PieceData;
+    panel?: string;
   }> = [];
 
   /** When the last panel walk was taken, or 0 if none this turn. */
@@ -3581,7 +3824,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       const cost = this.moveCosts.get(to) ?? 1;
       this.panelMoved.set(uid, (this.panelMoved.get(uid) ?? 0) + cost);
       (BASE_PANELS.has(moving.panel) ? this.baseMovers : this.reserveMovers).add(uid);
-      this.panelHistory.push({ from, to, uid, cost, price, at: Date.now() });
+      this.panelHistory.push({
+        from, to, uid, cost, price, at: Date.now(),
+        piece: this.reserves[from], panel: moving.panel,
+      });
     }
     this.reserves[to] = this.reserves[from];
     delete this.reserves[from];
@@ -3888,18 +4134,29 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   forecastDamage(key: string): string | null {
     const f = this.forecast;
     if (!f) return null;
-    // The cell draws twoDigits(hp), so the delta has to be against the same
-    // number the player is looking at.
-    const hp = this.cellsByKey.get(key)?.stats?.hp ?? 0;
+    // The unit's real HP, not the `twoDigits` one the hex draws. Both sides of
+    // this subtraction used to be clamped to 99, so on a config with units
+    // above that the whole blow vanished: 120 HP struck for 21 is 99 before
+    // and 99 after, a delta of nothing, drawn as a bounce. The readout is
+    // capped because three digits do not fit on a hex; the damage is not, and
+    // saying `0` over a blow that lands is the worse of the two lies.
+    // No `stats.hp` fallback: `stats` is built alongside `piece`, so it is
+    // non-null exactly when `piece` is, and the only way past the first term
+    // is an undefined `piece.hp` - where `stats.hp` is `twoDigits(undefined)`,
+    // i.e. null, and no more use. It would only ever put the 99 clamp this
+    // comment is about back into the subtraction.
+    const hp = this.cellsByKey.get(key)?.piece?.hp ?? 0;
     const after = key === f.target ? f.targetHp : key === f.attacker ? f.attackerHp : null;
     if (after === null) return null;
-    const dealt = hp - twoDigits(after)!;
+    const dealt = hp - after;
     if (dealt > 0) return `-${dealt}`;
-    // Damage is attack minus defence, floored at zero, so whole matchups
-    // bounce: a pawn on 14 attack takes nothing at all off a shieldman on 18
-    // defence. Drawing no number read as the preview being broken - the owner
-    // reported exactly that - so a bounce says 0 and means it. Only over the
-    // target: a blank over your own face already means "nothing comes back".
+    // A blow that takes nothing off. Since the floor came in this needs an
+    // attacker with no attack stat at all - `rules.minStrikeDamage` means
+    // armour alone can no longer reduce a landed blow to nothing, unless the
+    // dial is turned back to 0. Drawing no number read as the preview being
+    // broken - the owner reported exactly that - so a bounce says 0 and means
+    // it. Only over the target: a blank over your own face already means
+    // "nothing comes back".
     return key === f.target ? '0' : null;
   }
 
@@ -3923,13 +4180,49 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * theirs is one turn from falling is as much of the position as knowing
    * yours is.
    *
-   * ponytail: **the browser engine's alone**, like the toll it warns about -
-   * the same line `entryBind` draws for every other client-only rule.
+   * It now warns `DOOM_WARNING_TURNS` turns out rather than one. A skull that
+   * arrives on the turn the king dies is not a warning - by the time it is on
+   * screen the toll is already being counted, and nothing can be spent on
+   * saving him. The nearer of the two wears `imminent`; see `dyingKing`.
+   *
+   * Behind `tollBind`, like the toll it warns about - which both engines take.
+   *
+   * How near the toll is, in one pass. `'imminent'` dies at THIS commit,
+   * `'early'` at the next, `''` is no warning at all - and `''` being falsy is
+   * what lets the template gate the skull and pick its class off a single
+   * evaluation (`*ngIf="doomState(hex) as doom"`). It used to run `*ngIf`
+   * on one predicate and the class binding on another that re-ran the first,
+   * which is three full evaluations per commander cell per change-detection
+   * pass, over ~400 cells.
    */
+  doomState(hex: HexCell): '' | 'early' | 'imminent' {
+    if (!this.tollBind || !isOvertime(this.turnNumber) || !hex.piece) return '';
+    // Not in a panel. `overtimeToll()` searches the *board* alone, and a
+    // committed withdrawal is off it - so a king who walked home takes no toll
+    // and mends an HP a turn instead. Warning about him there was always
+    // wrong, and widening the window to two turns only made it louder: the
+    // doc above names walking him home as the remedy the warning exists to
+    // make room for, so the board has to admit when it has worked.
+    if (hex.panel) return '';
+    if (!this.config?.units?.[hex.piece.unit_id]?.commander) return '';
+    const hp = hex.piece.hp ?? 0;
+    if (hp > OVERTIME_TOLL * DOOM_WARNING_TURNS) return '';
+    return hp <= OVERTIME_TOLL ? 'imminent' : 'early';
+  }
+
+  /** Whether this king wears a skull at all - either stage of the warning. */
   doomedKing(hex: HexCell): boolean {
-    if (!this.entryBind || !isOvertime(this.turnNumber) || !hex.piece) return false;
-    if (!this.config?.units?.[hex.piece.unit_id]?.commander) return false;
-    return (hex.piece.hp ?? 0) <= OVERTIME_TOLL;
+    return this.doomState(hex) !== '';
+  }
+
+  /**
+   * The half of `doomedKing` that dies at *this* commit rather than the next.
+   * Drawn solid and urgent, where the earlier warning is dimmed: widening the
+   * warning is only worth having if the last turn still reads as the last
+   * turn.
+   */
+  dyingKing(hex: HexCell): boolean {
+    return this.doomState(hex) === 'imminent';
   }
 
   /** True while the hovered trade would leave this unit dead. */

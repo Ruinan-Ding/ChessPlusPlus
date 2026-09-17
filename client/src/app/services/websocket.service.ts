@@ -15,14 +15,17 @@ const LOCAL_GAME_TYPES = new Set([
   // the browser engine answers it; no server has a restart protocol yet,
   // which is why the button offers it in solo alone.
   'reset_game',
-  // Walking a reserve onto the board. The browser engine is the only one that
-  // answers it - no server has a panel to take a unit out of - and the board
-  // only offers the crossing in a solo game (`entryBind`) for that reason.
+  // Walking a reserve onto the board. Both engines answer it: the server
+  // derives the panels from the config and the move history.
   'enter_board',
-  // A reserve swinging at the battlefield from inside its panel. Same reason
-  // as above: the attacker is the client's, so only the browser engine can
-  // resolve it.
+  // A blow struck into a panel. Both engines answer it; the server works out
+  // the defender, its panel and whether it answers rather than reading them.
   'panel_attack',
+  // A walk inside a panel, or the wrap out of a base. It used to reach no
+  // engine at all - the board moved the unit in its own memory - so the other
+  // player never saw a shuffle and the server refused a crossing from where
+  // the shuffle left the unit.
+  'panel_move',
 
   'game_room_message',
 ]);

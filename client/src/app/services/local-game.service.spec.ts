@@ -223,6 +223,36 @@ describe('LocalGameService', () => {
     expect(state.turnNumber).toBe(1);
   });
 
+  it('records a walk inside a panel without ending the turn', async () => {
+    // A walk used to reach no engine: the board kept it in its own memory, so
+    // a reload re-dealt the unit where it began. Recorded, it is replayed.
+    const archer = { unit_id: 'archer', color: 'white', hp: 16, max_hp: 16, uid: 'rbr4' };
+    service.send({
+      type: 'panel_move', from: '7,7', to: '6,7', unit: archer, panel: 'br', cost: 1, price: 0,
+    });
+    await flush();
+
+    const state = last('game_state_update');
+    const record = state.moveHistory[state.moveHistory.length - 1];
+    expect(record.panelMove).toBeTrue();
+    expect(record.unit.uid).toBe('rbr4');
+    expect(record.panel).toBe('br');
+    expect(record.cost).toBe(1);
+    expect(record.to).toBe('6,7');
+    expect(state.currentTurn).toBe('Solo');
+    expect(state.turnNumber).toBe(1);
+  });
+
+  it('refuses a walk for the side that is not on turn', async () => {
+    service.send({
+      type: 'panel_move', from: '-7,-7', to: '-6,-7', panel: 'tl', cost: 1, price: 0,
+      unit: { unit_id: 'archer', color: 'black', hp: 16, max_hp: 16, uid: 'rtl4' },
+    });
+    await flush();
+    expect(last('invalid_move')).toBeTruthy();
+    expect(last('game_state_update')).toBeUndefined();
+  });
+
   it('refuses an entry onto an occupied hex or off the board', async () => {
     const started = last('game_started');
     const taken = Object.keys(started.boardState)[0];
@@ -465,6 +495,36 @@ describe('LocalGameService', () => {
       expect(g.find('turn_passed').currentTurn).toBe('');
       expect(g.find('game_over').endReason).toBe('regicide');
       expect(g.find('game_over').winner).toBe(LOCAL_OPPONENT);
+    });
+
+    it('under elimination, a king the toll kills loses nothing while his army stands', async () => {
+      // Elimination ends when a side has no units at all. This called the
+      // felled king a defeat on a pass - `move` never did - and the server's
+      // pass does not either, so the two engines would disagree about whether
+      // a networked match was over.
+      const config = JSON.parse(JSON.stringify((service as any).game.config));
+      config.rules = { ...config.rules, objective: 'elimination' };
+      localStorage.setItem('cpp.localGame.v1', JSON.stringify({
+        username: 'Solo', hostColor: 'white', started: true, config,
+        boardState: {
+          '-5,0': { unit_id: 'king', color: 'white', hp: 1, max_hp: 45, uid: 'wk' },
+          '-4,0': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'wp' },
+          '5,0': { unit_id: 'king', color: 'black', hp: 40, max_hp: 45, uid: 'bk' },
+        },
+        currentTurn: 'Solo', turnNumber: 67, moveHistory: [], winner: '', endReason: '',
+        turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
+      }));
+      const engine = new LocalGameService((service as any).configService);
+      const seen: any[] = [];
+      engine.messages$.subscribe(m => seen.push(m));
+
+      engine.send({ type: 'pass_turn' });
+      await flush();
+
+      const passed = seen.find(m => m.type === 'turn_passed');
+      expect(passed.boardState['-5,0']).toBeUndefined();
+      expect(passed.currentTurn).toBeTruthy();
+      expect(seen.find(m => m.type === 'game_over')).toBeUndefined();
     });
 
     it('saves a king healed off 1 before the turn commits', async () => {
