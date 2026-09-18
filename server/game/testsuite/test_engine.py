@@ -1490,12 +1490,30 @@ class OvertimeTollTestCase(TestCase):
         # Which is a regicide.
         self.assertEqual(defeated_sides(board, self._cfg()), ['white'])
 
-    def test_a_king_who_walked_home_is_out_of_its_reach(self):
-        """Off the board, in his base, where he mends rather than bleeds."""
+    def test_no_king_on_the_board_is_no_toll(self):
+        """
+        Under elimination a side plays on after its king falls, and the toll
+        has nobody left to take from - it must not fall on anyone else.
+        """
         board = self._board(1)
         board.remove(0, 3)
         self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 67))
         self.assertEqual(board.get(1, 2)['hp'], 20)
+
+    def test_the_king_is_never_offered_a_way_home(self):
+        """
+        The owner's rule. Walked home he was off the board, and under regicide
+        a side with no commander on it has lost - so the walk lost the match.
+        """
+        config = self._cfg()
+        radius = config['board']['radius']
+        board = {
+            '-11,11': {'unit_id': 'king', 'color': 'white', 'hp': 45, 'max_hp': 45, 'uid': 'wk'},
+        }
+        self.assertEqual(panels.homecoming_targets(config, radius, {}, board, '-11,11'), {})
+        # A pawn on the same hex is offered the doorway beside it.
+        board['-11,11'] = {'unit_id': 'pawn', 'color': 'white', 'hp': 20, 'max_hp': 20, 'uid': 'wp'}
+        self.assertIn('-12,11', panels.homecoming_targets(config, radius, {}, board, '-11,11'))
 
 
 def _panel_step(uid, unit_id, color, frm, to, turn, panel, cost=1, price=0):

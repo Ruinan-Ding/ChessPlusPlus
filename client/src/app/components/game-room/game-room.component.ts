@@ -16,6 +16,7 @@ import {
   captureClaims, captureScore, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
 } from '../../services/hex-rules';
 import { buildPlayback } from '../../services/playback';
+import { openingMovedHexes } from '../../services/history-rules';
 import {
   SCORING_PHASES, handOversBy, isInitialization, isOvertime,
   phaseIndexAt, stageAt, turnHeading, turnOf,
@@ -325,6 +326,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   private destroy$ = new Subject<void>();
 
+  /** Whether this page ever asked to join its room - see ngOnDestroy. */
+  private roomJoinSent = false;
+
   constructor(
     private wsService: WebsocketService,
     private route: ActivatedRoute,
@@ -448,6 +452,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         }
         
         const join = () => {
+          this.roomJoinSent = true;
           this.wsService.sendMessage({
             type: 'join_game_room',
             username: this.username,
@@ -507,15 +512,25 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
     this.gameState.reset();
     
-    // Only send leave message if not already sent via leaveGameRoom().
-    // Never for a solo room: leave_game_room is what clears the saved game,
-    // and a browser Back is not the player throwing their position away.
+    // Only on an incidental exit, and never for a solo room: leave_game_room
+    // is what clears the saved game, and a browser Back is not the player
+    // throwing their position away.
     if (!isIntentionalNav && !this.wsService.isLocal()) {
-      this.wsService.sendMessage({
-        type: 'leave_game_room',
-        username: this.username,
-        gameId: this.gameId
-      });
+      // **The leave and the teardown are two different questions.** Only a
+      // room this page actually joined is left: opened without a token it
+      // goes straight back to the lobby, and the leave sat in the socket's
+      // queue, went out on the lobby's connection before anyone had joined
+      // it, and the lobby showed "Error: Can only leave as yourself".
+      if (this.roomJoinSent) {
+        this.wsService.sendMessage({
+          type: 'leave_game_room',
+          username: this.username,
+          gameId: this.gameId
+        });
+      }
+      // The socket comes down either way. It was opened for this room the
+      // moment the token checked out, so gating this on the join as well left
+      // a room socket open behind a page that had already gone.
       this.wsService.disconnect();
     }
 
@@ -1509,10 +1524,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * "you disabled all units during initialization". What lasts the phase is
    * the lock on the *unit* that moved (`initMovedHexes`), not the allowance.
    *
-   * Read off the move history rather than counted as it goes: a panel walk
-   * is client-side and never reaches the record, so every move in there is a
-   * battlefield move, and deriving it means a reload and the other player
-   * see the same thing.
+   * Read off the move history rather than counted as it goes, so a reload and
+   * the other player see the same thing.
+   *
+   * **Only a battlefield move spends it**, and the record has to be read for
+   * which kind it is. This once tested `!entered` alone, on the reasoning that
+   * "a panel walk is client-side and never reaches the record, so every move
+   * in there is a battlefield move" - true when it was written and false since
+   * stage 3 recorded panel walks. A player who shuffled one reserve unit in
+   * the opening was told they had spent their board move, and every
+   * battlefield unit went grey for the turn. The same four kinds are skipped
+   * here as in `openingMovedHexes`, and for the same reason; the sibling was
+   * fixed first and this one was missed.
    */
   get initBoardSpent(): boolean {
     const s = this.gameState.snapshot;
@@ -1521,8 +1544,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (!color) return false;
     const turn = turnOf(s.turnNumber);
     return (s.moveHistory ?? []).some(
-      // A crossing is a reserve's move, not the board move of the opening.
-      m => m.color === color && turnOf(m.turn) === turn && !m.entered);
+      // A crossing is the reserve's move, a walk inside a panel never touches
+      // the board, and a cast is nobody's move. A walk home IS one: it ends
+      // the turn like any other.
+      (m: any) => m.color === color && turnOf(m.turn) === turn
+        && !m.entered && !m.panelMove && !m.panelEffect);
   }
 
   /**
@@ -1544,18 +1570,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (this.initMovedCache?.history === history && this.initMovedCache.turn === turn) {
       return this.initMovedCache.hexes;
     }
-    let hexes: string[] = [];
+    // A walk inside a panel is not a battlefield move either, and since those
+    // are recorded now its destination - a panel hex - would otherwise be
+    // listed here. `openingMovedHexes` excludes it, as `opening_moved_hexes`
+    // does on the server: one derivation, which the offline engine shares.
     const color = isInitialization(turn) ? this.gameState.myColor(s.currentTurn) : null;
-    if (color) {
-      // A walk inside a panel is not a battlefield move either, and since those
-      // are recorded now its destination - a panel hex - would otherwise be
-      // listed here. Harmless while only battlefield hexes are looked up, but
-      // `opening_moved_hexes` on the server excludes it, and the two agree.
-      hexes = (history ?? [])
-        .filter((m: any) => m.color === color && isInitialization(m.turn)
-          && !m.entered && !m.withdrawn && !m.panelMove)
-        .map((m: any) => m.to);
-    }
+    const hexes: string[] = color ? [...openingMovedHexes(history as any, color)] : [];
     this.initMovedCache = { history, turn, hexes };
     return hexes;
   }

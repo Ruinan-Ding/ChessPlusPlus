@@ -69,7 +69,7 @@ PANEL_SPACING = 3
 #: How many of a panel's units may be walked in a turn: three out of the base
 #: and three out of the reserve, never three between them. A unit already
 #: walked this turn may keep spending what is left of its MOV. Mirrors
-#: PANEL_MOVERS_PER_TURN in game-board.component.ts.
+#: PANEL_MOVERS_PER_TURN in client/src/app/services/history-rules.ts.
 PANEL_MOVERS_PER_TURN = 3
 
 Coord = Tuple[int, int]
@@ -760,6 +760,11 @@ def homecoming_targets(
     doorway is a *panel* hex, so the question is asked of the panel occupancy -
     the board never holds a panel hex and could not answer it.
 
+    **The king never walks home** - the owner's rule. A commander belongs on
+    the board, the way :func:`panel_roster` never deals one into a panel, so he
+    is offered nowhere. Walked home, he was off the board, and under regicide a
+    side with no commander on it has lost.
+
     The browser engine checks none of this. It takes any off-board hex on the
     mover's own side by a sign-of-q test, which would let a unit land in the
     wrong panel entirely, or from anywhere on the board.
@@ -773,6 +778,8 @@ def homecoming_targets(
         return {}
     color = unit.get('color')
     unit_def = (config.get('units') or {}).get(unit.get('unit_id')) or {}
+    if unit_def.get('commander'):
+        return {}
     mov = unit_def.get('move', 0) if moves_left is None else moves_left
     try:
         mov = int(mov)
@@ -868,7 +875,9 @@ def panel_movers(
     """
     The units of *color* walked this ply, split by the panel each walk began in.
 
-    Mirrors `baseMovers` / `reserveMovers`. The wrap starts in the base, so it
+    Mirrors `panelMoversAt` in history-rules.ts (and the board's own running
+    `baseMovers` / `reserveMovers`, which it keeps to draw an unrecorded turn).
+    The wrap starts in the base, so it
     spends a base mover; a crossing starts in the reserve and spends a reserve
     one. One set each, because the cap is a per-panel allowance, and counting one
     panel's walks against the other spends it on units it was never about.
@@ -894,8 +903,9 @@ def locked_units(history: Iterable[Dict[str, Any]], ply: int) -> frozenset:
 
     Through the initialization a unit gets one move for the whole phase, so one
     that moved on an earlier turn of it stays out until the phase ends - and
-    only then. Mirrors `lockedUnits`, which is filled as each opening ply turns
-    over and emptied the moment the phase is gone.
+    only then. Mirrors `lockedPanelUnits` in history-rules.ts, and the board's
+    own `lockedUnits`, which is filled as each opening ply turns over and
+    emptied the moment the phase is gone.
     """
     from .phases import is_initialization
 

@@ -1,4 +1,6 @@
+import { BehaviorSubject, Subject, of } from 'rxjs';
 import { GameRoomComponent } from './game-room.component';
+import { NavigationStateService } from '../../services/navigation-state.service';
 
 /**
  * The ability panel decides everything below on its own fields, so it is built
@@ -1582,5 +1584,109 @@ describe('GameRoomComponent ability panel', () => {
     // Picked and returned inside one turn is not a pick: nothing for the
     // other player to read, and nothing for the recap to replay.
     expect(c.isRecentPick('mine', TARGETED)).toBeFalse();
+  });
+});
+
+/**
+ * Leaving a room on the way out - and only a room this page actually joined.
+ */
+describe('GameRoomComponent leaving', () => {
+  const room = (token: string) => {
+    const sent: any[] = [];
+    const disconnects: number[] = [];
+    const ws: any = {
+      sendMessage: (m: any) => sent.push(m),
+      isLocal: () => false,
+      isOffline: () => false,
+      connect: () => {},
+      disconnect: () => disconnects.push(1),
+      endLocalGame: () => {},
+      reconnecting$: new Subject(),
+      reconnectAttempts$: new Subject(),
+      connectionFailed$: new Subject(),
+      connectionStatus$: new BehaviorSubject(true),
+      messages$: new Subject(),
+    };
+    const shared: any = {
+      getLobbyMessages: () => [], getLobbyUsers: () => [],
+      lobbyMessages$: new Subject(), lobbyUsers$: new Subject(),
+    };
+    const route: any = { params: of({ id: 'room-1' }), queryParams: of(token ? { token } : {}) };
+    const router: any = { navigate: () => Promise.resolve(true) };
+    const auth: any = { getUsername: () => 'me', getIdentitySecret: () => 'secret' };
+    const cdr: any = { markForCheck: () => {}, detectChanges: () => {} };
+    const gameState: any = {
+      snapshot: {}, reset: () => {},
+      myColor: (who: string) => (who === 'me' ? 'white' : 'black'),
+    };
+    const c: any = new GameRoomComponent(
+      ws, route, router, shared, new NavigationStateService(), cdr, gameState, auth,
+      { playTone: () => {} } as any,
+    );
+    return { c, sent, ws, gameState, disconnects };
+  };
+
+  beforeEach(() => sessionStorage.removeItem('cpp.roomToken.room-1'));
+  afterEach(() => sessionStorage.removeItem('cpp.roomToken.room-1'));
+
+  it('sends no leave for a room it never joined', () => {
+    // Opened without a token, the page goes straight back to the lobby. Its
+    // leave used to sit in the socket's queue and go out on the lobby's
+    // connection, where the lobby answered "Can only leave as yourself".
+    const { c, sent } = room('');
+    c.ngOnInit();
+    c.ngOnDestroy();
+    expect(sent.some(m => m.type === 'join_game_room')).toBeFalse();
+    expect(sent.some(m => m.type === 'leave_game_room')).toBeFalse();
+  });
+
+  it('still leaves a room it did join', () => {
+    const { c, sent, disconnects } = room('tok');
+    c.ngOnInit();
+    expect(sent.some(m => m.type === 'join_game_room')).toBeTrue();
+    c.ngOnDestroy();
+    expect(sent.some(m => m.type === 'leave_game_room')).toBeTrue();
+    expect(disconnects.length).toBe(1);
+  });
+
+  it('still takes the socket down for a room it never joined', () => {
+    // The leave and the teardown are two different questions. Gating both on
+    // the join left a room socket open behind a page that had already gone.
+    const { c, disconnects } = room('');
+    c.ngOnInit();
+    c.ngOnDestroy();
+    expect(disconnects.length).toBe(1);
+  });
+
+  /**
+   * The opening hands a side ONE battlefield move a turn, and only a
+   * battlefield move spends it. Panel walks reach the record since stage 3, so
+   * reading every non-crossing record as a board move meant shuffling one
+   * reserve unit greyed out every unit on the board for the rest of the turn.
+   */
+  describe("the opening's one board move", () => {
+    const spent = (history: any[]) => {
+      const { c, gameState } = room('tok');
+      gameState.snapshot = { turnNumber: 1, currentTurn: 'me', moveHistory: history };
+      return c.initBoardSpent;
+    };
+
+    it('is spent by a board move', () => {
+      expect(spent([{ color: 'white', turn: 1, to: '-5,8', moved: true }])).toBeTrue();
+    });
+
+    it('is spent by a walk home, which ends the turn like any other move', () => {
+      expect(spent([{ color: 'white', turn: 1, to: '-12,11', withdrawn: true }])).toBeTrue();
+    });
+
+    it('is not spent by a crossing, a panel walk or a cast', () => {
+      expect(spent([{ color: 'white', turn: 1, to: '-5,8', entered: true }])).toBeFalse();
+      expect(spent([{ color: 'white', turn: 1, to: 'bl-2', panelMove: true }])).toBeFalse();
+      expect(spent([{ color: 'white', turn: 1, to: '', panelEffect: true }])).toBeFalse();
+    });
+
+    it('is not spent by the other side', () => {
+      expect(spent([{ color: 'black', turn: 1, to: '5,8', moved: true }])).toBeFalse();
+    });
   });
 });

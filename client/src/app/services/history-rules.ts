@@ -1,0 +1,140 @@
+/**
+ * What the move history says about who has already moved.
+ *
+ * The opening's lock and the panels' allowance are **derived, not tallied** -
+ * the same choice the panels and the points made. The board keeps its own
+ * running Sets (`lockedUnits`, `baseMovers`, `reserveMovers`) because it has
+ * to draw a half-staged turn before anything is recorded; these are the same
+ * answers read off the record, for the two places that have only the record:
+ * the room after a reload, and the offline engine.
+ *
+ * Each one mirrors a server function, named in its own doc comment, and the
+ * server's are the authority. Both sides of a networked game are checked
+ * there; these keep a solo game honest about the same rules.
+ */
+
+import { BASE_PANELS } from './hex-rules';
+import { isInitialization } from './phases';
+
+/**
+ * How many units of one panel may be started in a turn. An allowance each:
+ * three out of the base and three out of the reserve, all match.
+ * ponytail: the owner's placeholder - "3 of these (for now)". A constant
+ * because that is all it is; it moves to config when the real number lands.
+ * Mirrors PANEL_MOVERS_PER_TURN in server/game/engine/panels.py.
+ */
+export const PANEL_MOVERS_PER_TURN = 3;
+
+/**
+ * A move record, as loosely as the history actually holds one: what a record
+ * carries depends on what kind of move it was, and these read whichever keys
+ * that kind put there.
+ */
+type Move = any;
+
+/**
+ * "q, r" in whatever form a message used, back to the one the board keys on.
+ *
+ * **Exactly two integer fields, or nothing.** The server's `int()` raises on
+ * anything else and the record is skipped; a looser parse here would disagree
+ * with it on exactly the malformed keys it was written to survive - `Number('')`
+ * is 0, so `','` would come back `'0,0'` and lock a hex on one side only.
+ */
+function normalizeKey(key: unknown): string | null {
+  const parts = String(key ?? '').split(',');
+  if (parts.length !== 2) return null;
+  const [q, r] = parts.map(part => (part.trim() === '' ? NaN : Number(part)));
+  return Number.isInteger(q) && Number.isInteger(r) ? `${q},${r}` : null;
+}
+
+/**
+ * Where *color*'s battlefield units that have already moved in the opening
+ * now stand. Mirrors `opening_moved_hexes` in server/game/engine/game_logic.py.
+ *
+ * Through the initialization a battlefield unit gets one move for the whole
+ * phase, not one a turn. Keyed by the hex it moved to: nothing is captured in
+ * the opening - nobody may attack - so a unit that has moved is still standing
+ * where it landed, and a board move's record carries no uid to key on.
+ *
+ * Crossings, walks home and walks inside a panel are not battlefield moves and
+ * are not counted. A unit sent home has left the board entirely.
+ *
+ * **The hex key rests on "nothing is captured in the opening", which is true
+ * of the server and not quite of solo play**: a damage ability can empty a hex
+ * during the opening, and a different unit that later moves onto it inherits
+ * the lock. It wants a uid on a board move's record to fix properly, which is
+ * a protocol change; on the shipped three-turn opening the window is one ply
+ * wide. Written down rather than papered over - and one more thing that
+ * settles when the abilities do.
+ */
+export function openingMovedHexes(history: Move[] | undefined, color: string): Set<string> {
+  const out = new Set<string>();
+  for (const move of history ?? []) {
+    if (!move || move.color !== color) continue;
+    if (move.entered || move.withdrawn || move.panelMove || move.panelEffect) continue;
+    if (move.turn == null || !isInitialization(move.turn)) continue;
+    const key = normalizeKey(move.to);
+    if (key) out.add(key);
+  }
+  return out;
+}
+
+/**
+ * Panel units that may not move again for the rest of the opening. Mirrors
+ * `locked_units` in server/game/engine/panels.py.
+ *
+ * Through the initialization a panel unit gets one move for the whole phase,
+ * so one that moved on an *earlier* turn of it stays out until the phase ends -
+ * and only then. This turn's own walks are not a lock: a unit is walked a few
+ * steps at a time, and each step is a record.
+ */
+export function lockedPanelUnits(history: Move[] | undefined, ply: number): Set<string> {
+  const out = new Set<string>();
+  if (!isInitialization(ply)) return out;
+  for (const move of history ?? []) {
+    if (!move || !(move.panelMove || move.entered)) continue;
+    const turn = move.turn;
+    if (turn == null || turn >= ply || !isInitialization(turn)) continue;
+    const uid = move.unit?.uid;
+    if (uid) out.add(uid);
+  }
+  return out;
+}
+
+/**
+ * The units of *color* walked this ply, split by the panel each walk began in.
+ * Mirrors `panel_movers` in server/game/engine/panels.py.
+ *
+ * The wrap starts in the base, so it spends a base mover; a crossing starts in
+ * the reserve and spends a reserve one. One set each, because the cap is a
+ * per-panel allowance, and counting one panel's walks against the other would
+ * spend it on units it was never about.
+ */
+export function panelMoversAt(
+  history: Move[] | undefined, ply: number, color: string,
+): { base: Set<string>; reserve: Set<string> } {
+  const movers = { base: new Set<string>(), reserve: new Set<string>() };
+  for (const move of history ?? []) {
+    if (!move || move.turn !== ply) continue;
+    const unit = move.unit ?? {};
+    if (!unit.uid || unit.color !== color) continue;
+    if (move.entered) movers.reserve.add(unit.uid);
+    else if (move.panelMove) {
+      movers[BASE_PANELS.has(move.panel) ? 'base' : 'reserve'].add(unit.uid);
+    }
+  }
+  return movers;
+}
+
+/**
+ * Whether *uid* may be started out of `panel` this ply - it is already one of
+ * the panel's movers, or the panel has an allowance left. Mirrors the mover
+ * half of `panel_allowance`; the MOV half stays with the board, which is the
+ * only place that knows what a one-turn boost lent the unit.
+ */
+export function panelMoverAllowed(
+  history: Move[] | undefined, ply: number, color: string, uid: string, panel?: string,
+): boolean {
+  const movers = panelMoversAt(history, ply, color)[BASE_PANELS.has(panel ?? '') ? 'base' : 'reserve'];
+  return movers.has(uid) || movers.size < PANEL_MOVERS_PER_TURN;
+}

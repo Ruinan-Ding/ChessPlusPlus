@@ -100,10 +100,8 @@ def _settle_pass(state) -> tuple:
     or ask who was beaten, and before the toll neither needed to - a king on
     1 HP could simply pass his way past it.
 
-    **Only the side the toll touched is judged.** A pass has never asked who is
-    beaten in general and must not start, for the reason the browser engine
-    gives: a side can hold no commander on the board for reasons of its own - a
-    king who walked home is off it and alive. So the felled side is checked
+    **Only the side the toll touched is judged.** A pass does not change who
+    stands where, so nobody else can have lost on it. The felled side is checked
     against its objective, and nothing else is: under `elimination` a king the
     toll kills loses nothing while his army stands.
     """
@@ -441,8 +439,25 @@ class GameConsumer(AsyncWebsocketConsumer):
                 # ponytail: single seam for identity verification - replace this
                 # comparison with real credential checking if accounts are added later.
                 secret_ok = bool(existing_connection.secret) and _same_secret(existing_connection.secret, client_secret)
-                if data.get('rejoining', False) and secret_ok:
-                    logger.info(f"User {username} rejoining lobby with new channel")
+                # A row nobody has heartbeated for STALE_AFTER is almost
+                # certainly abandoned: a server that dies runs no disconnects,
+                # so every player's row outlives it, and the sweep that clears
+                # them runs a moment later in _get_all_online_users. Left to
+                # that sweep alone, the first player back after a restart was
+                # renamed to a guest and lost their seat with the name (6.18).
+                #
+                # **Almost certainly is not certainly, so the secret still
+                # decides.** A sleeping laptop misses three heartbeats too, and
+                # the name is what holds a seat - freeing the row outright
+                # would hand a live player's name, and the game they are sat
+                # in, to whoever asked for it next. Staleness widens WHEN the
+                # owner may take their row back; it never widens WHO. A row
+                # carrying no secret has nothing to check and nothing to
+                # protect, so age alone is enough for that one.
+                stale = existing_connection.last_activity < timezone.now() - STALE_AFTER
+                if (secret_ok and (data.get('rejoining', False) or stale)) \
+                        or (stale and not existing_connection.secret):
+                    logger.info(f"User {username} taking back their lobby row (stale: {stale})")
                     takeover = True
                 else:
                     if data.get('rejoining', False):
@@ -1707,6 +1722,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if data.get('attack'):
                     await send_error(
                         self, 'INVALID_MOVE', 'A unit cannot strike and walk home in one turn')
+                    return
+                # Said by name: `homecoming_targets` offers him nowhere, and
+                # "cannot walk home there" would send the player looking for
+                # a doorway that works.
+                if config.get('units', {}).get(piece['unit_id'], {}).get('commander'):
+                    await send_error(self, 'INVALID_MOVE', 'The king never walks home')
                     return
                 from_key = panels.coord_key(fq, fr)
                 to_key = panels.coord_key(tq, tr)

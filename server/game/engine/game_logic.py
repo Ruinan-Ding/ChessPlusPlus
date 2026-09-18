@@ -292,7 +292,9 @@ def resolve_panel_attack(
 def opening_moved_hexes(history: List[Dict[str, Any]], color: str) -> set:
     """
     Where *color*'s battlefield units that have already moved in the opening
-    now stand. Mirrors ``initMovedHexes`` in game-room.component.ts.
+    now stand. Mirrors ``openingMovedHexes`` in
+    client/src/app/services/history-rules.ts, which the room's ``initMovedHexes``
+    and the offline engine both read through.
 
     Through the initialization a battlefield unit gets one move for the whole
     phase, not one a turn. Keyed by the hex it moved to, as the client keys it:
@@ -341,8 +343,8 @@ def overtime_toll(
     Real damage, not a blow: defence does not blunt it, which is why this goes
     through ``deal_damage`` and not ``strike_damage``.
 
-    Only a commander **on the board** pays. One who has walked home into his
-    base is off it, out of the toll's reach, and mends there instead.
+    Only a commander **on the board** pays, which is the only place one ever
+    stands: he is never dealt into a panel and never walks home.
     """
     from .phases import OVERTIME_FIRST_PLY, OVERTIME_TOLL
 

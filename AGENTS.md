@@ -473,9 +473,14 @@ Decided so far:
     in reverse: reaching a board hex beside a mark is an ordinary walk, stepping through costs
     one more, and it carries on inside the base with whatever MOV is left. Only ever into
     **its own** base. It is the turn's board move, staged and undone like any other.
+    - **The king never walks home** - the owner's rule, 17 Sep 2026. A commander belongs on
+      the board, the way he is never dealt into a panel. Walked home, he was off the board,
+      and under regicide a side with no commander on it has lost, so the walk lost the match
+      (PUNCHLIST 6.13). All three refuse it: `addBaseEntry()` offers him no doorway,
+      `homecoming_targets()` offers him nothing and the consumer says so by name, and the
+      browser engine's `move()` will not let him leave.
     - **A unit walks home in range; it does not teleport in.** Out of MOV is out of reach -
-      on the shipped board the king starts nine hexes from its own base and has six, so it
-      cannot go home in one turn. This was briefly made free-from-anywhere and the owner
+      a scout far across the board cannot go home in one turn. This was briefly made free-from-anywhere and the owner
       rejected it twice: "units range can move into the base. NOT teleport into it". Do not
       make it free again.
   - **Who may fight whom. Only the battlefield ever starts a fight:**
@@ -654,10 +659,9 @@ Decided so far:
     the last word); and **a move the engine refused came back half-played**, the casts
     already kept. Now a refusal keeps none of it. Board casts carry the **uid** as well as
     the hex, so a stale hex still finds its unit. A cast that empties a commander ends the
-    match, like a blow, but **only when a cast actually emptied one** - a side can hold no
-    commander on the board for reasons of its own (one that walked home is off the board and
-    alive), and a heal that ends a match it had no part in is worse than no check. This is
-    the same line `pass()` draws for the toll.
+    match, like a blow, but **only when a cast actually emptied one** - a heal that ends a
+    match it had no part in is worse than no check. This is the same line `pass()` draws for
+    the toll.
 
     **Both message types must be in `LOCAL_GAME_TYPES`** (`websocket.service.ts`) and neither
     was. A solo game keeps its socket when a server is reachable, and only listed types are
@@ -980,9 +984,8 @@ Decided so far:
       every overtime ply.
     - **Battlefield only, on both sides of it.** `markOvertimeToll` skips panel cells when it
       looks for the standing king, and `kingHex` records only battlefield hexes. A commander
-      who walked home pays no toll and mends instead, so marking him swells a red `-1` over a
-      unit whose HP is going *up*, and recording his panel hex aims the ghost mark at a square
-      the toll never touched.
+      never stands in a panel - never dealt there, never walks home - so these only keep a
+      hand-built board from aiming a toll mark at a square the toll never touches.
   - **The doom skull warns `DOOM_WARNING_TURNS` (2) of that side's turns out**, not one. A
     warning that arrives on the turn the king dies has nothing left to act on. `doomState()`
     is the primitive and returns `'' | 'early' | 'imminent'`; `doomedKing()` and `dyingKing()`
@@ -993,10 +996,9 @@ Decided so far:
       (`*ngIf="doomState(hex) as doom"`), because `''` is falsy. Running `*ngIf` on one
       predicate and the class binding on another that re-ran the first was three full
       evaluations per commander cell per change-detection pass, over ~400 cells.
-    - **Never over a king in a panel.** `overtimeToll()` searches the board alone, so a
-      commander who walked home takes no toll and mends instead — walking him home is the
-      remedy the wider warning exists to make room for, and the board has to admit when it has
-      worked. `doomedKing()` returns false on any `hex.panel`.
+    - **Never over a king in a panel.** `overtimeToll()` searches the board alone, and a king
+      never walks home, so this only keeps a hand-built board honest. `doomedKing()` returns
+      false on any `hex.panel`. The turn the wider warning buys is for landing a heal.
   - **The END of turn 50 gives it to black** (`OVERTIME_LAST_TURN`), however level it still
     is - turn 50 is played out first, so the verdict flips at hand-over 101, not 99.
   - *The verdict is read, not enforced.* The engine ends a game on elimination, resignation or
@@ -1071,6 +1073,30 @@ UUID, no access token, no socket. It runs entirely in the browser.
   preview and the local engine; the damage sums and the defeat check are duplicated from
   `game_logic.py` and have specs pinning them to the same numbers. A rule that lands server-side
   has to land here too, or offline play quietly diverges.
+- **What the offline engine checks, and what it takes on trust.** The server re-derives every
+  move; the offline engine cannot, because the panels, the points and the abilities are all
+  still the client's own. So it keeps every rule that needs none of them: the board move and its
+  reach, the walk home, **the opening's rules** (nobody attacks - on the board or into a panel -
+  a battlefield unit gets one move for the whole phase, and a panel unit is locked out once it
+  has moved), **a panel's three starts a turn**, and, for a unit named in a panel message, that
+  the config knows it, it is not already standing on the board, and its HP is neither above what
+  its own config allows nor back from the dead - attacker and defender alike, a `panel_attack`
+  naming both. The wrap is held to its schedule (`isWrapOpen` needs only the ply) and charged
+  the unit's `value` from config rather than the number on the message - but **the decision that
+  a price is owed at all is still the message's**, because telling a crossing from a shuffle
+  inside a base needs the panel geometry the engine has not got, so `price: 0` crosses free. It still takes on trust what an ability is worth - a boost, a mend, a cast's HP - and
+  what needs a panel to work out: which panel a unit stands in, what a walk inside one cost, and
+  whether a side can afford the wrap. That last one is **not** an oversight: a solo purse holds
+  what abilities have paid in and out (Rally hands out 300) as well as what the record shows, so
+  a check against the record alone would refuse a crossing the player really could afford. It
+  waits on the ability catalogue - see 6.15 and 6.17 on the punchlist, which settle together.
+- **The opening's lock and the panels' allowance are derived, in one place.**
+  `services/history-rules.ts` reads them off the move history - `openingMovedHexes`,
+  `lockedPanelUnits`, `panelMoversAt`, `panelMoverAllowed` - and each names the server function
+  it mirrors in its own doc comment. The room (after a reload) and the offline engine both use
+  it; the **board** keeps its own running Sets as well, because it has to draw a half-staged
+  turn before any of it is recorded. Three readers, one derivation: a rule change goes there and
+  in the server function it names, and nowhere else on the client.
 - **The mirror covers the protocol, not only the rules.** `move_made` and `turn_passed` name
   **nobody's turn** (`currentTurn: ''`) on the action that ends a game, as consumers.py does -
   naming the next player starts a clock and sounds a turn for a finished match in the moment
@@ -1311,6 +1337,28 @@ lobby failed its own rejoin check - `bool(existing.secret)` - and was handed a g
 anyone who reloaded mid-game came back a stranger. The client sends `secret` with
 `join_game_room`; the server stores it once the token has proved the seat, and a join without
 one leaves the stored secret alone.
+
+**A name nobody has heartbeated may be taken back by its owner - and by nobody else.** A row older
+than `STALE_AFTER` (45s, three missed heartbeats) is almost certainly abandoned: a server that dies
+runs no disconnects, so every player's row outlives a restart, and the roster sweep
+(`_get_all_online_users`) clears those rows a moment *later* - so the first player back was renamed
+to a guest, which also cost them their seat, while everyone after them kept their name
+(PUNCHLIST 6.18). So `_handle_join_lobby` lets staleness stand in for `rejoining`.
+
+**Staleness widens WHEN a row may be taken back, never WHO may take it.** The secret still has to
+match. An earlier fix deleted the stale row outright before the comparison, which meant a sleeping
+laptop - three missed heartbeats, socket still open, seat still held by that name - handed its name
+and its game to whoever asked next, with no secret at all. A row carrying no secret has nothing to
+check and nothing to protect, and age alone frees that one. The sweep, the turn clock's liveness
+check and this all read the one constant.
+
+**A room page leaves only a room it joined - but always takes its socket down.** Opened without a
+token it goes straight back to the lobby, and its `ngOnDestroy` used to send `leave_game_room`
+anyway: the message sat in the socket's queue, went out on the lobby's new connection before anyone
+had joined it, and the lobby showed "Error: Can only leave as yourself". `roomJoinSent` is set by
+`join()` and gates the leave. It does **not** gate `disconnect()`: the socket was opened for this
+room the moment the token checked out, so gating both on the join left a room socket open behind a
+page that had already gone. Two questions, two conditions.
 
 **Tokens and secrets compare through `_same_secret`** - `secrets.compare_digest` over encoded
 bytes, because `compare_digest` rejects non-ASCII `str` and both of these arrive off the wire.

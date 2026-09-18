@@ -16,6 +16,7 @@ import {
   attackTiers, captureClaims, captureZoneHexes, computeAttackZone, computeLegalMoves,
   computeMoveCosts, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS, HEX_DIRS,
 } from '../../services/hex-rules';
+import { PANEL_MOVERS_PER_TURN } from '../../services/history-rules';
 import {
   OVERTIME_FIRST_PLY, OVERTIME_TOLL, isInitialization, isOvertime, isWrapOpen, sideOfPly,
 } from '../../services/phases';
@@ -237,7 +238,8 @@ const MARK_FADE_MS = beat(2200);
  *
  * It was one - the skull appeared on the turn the king died, which is a
  * warning with nothing left to do about it. Two gives a turn to spend on
- * saving him: walk him home to mend, or land a heal.
+ * saving him: land a heal, or finish the match first. He cannot walk home -
+ * a king never does.
  *
  * The skull is still the same skull; the nearer one is drawn `imminent` and
  * the earlier one is dimmer, so "he dies at this commit" and "he dies at the
@@ -370,15 +372,6 @@ export function hexNumberMap(
 function panelOf(x: number, y: number): string {
   return `${y < 0 ? 't' : 'b'}${x < 0 ? 'l' : 'r'}`;
 }
-
-/**
- * How many units of one panel may be started in a turn. An allowance each:
- * three out of the base and three out of the reserve, all match. The reserve
- * used to be capped only through the opening and shuffle freely after.
- * ponytail: the owner's placeholder - "3 of these (for now)". A constant
- * because that is all it is; it moves to config when the real number lands.
- */
-const PANEL_MOVERS_PER_TURN = 3;
 
 /**
  * The three reserve hexes a side may step onto the battlefield from, each
@@ -2767,8 +2760,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // him still owes a mark there - see markOvertimeToll. Read off this loop
       // rather than a second pass over all ~400 cells.
       //
-      // Battlefield only: a commander in a panel has walked home, out of the
-      // toll's reach, so his panel hex is not where any toll will fell him.
+      // Battlefield only, which is the only place a commander stands: he is
+      // never dealt into a panel and never walks home. The guard is cheap and
+      // keeps a hand-built board from aiming the toll's ghost into a panel.
       const piece = cell.piece;
       if (!cell.panel && piece && this.config?.units?.[piece.unit_id]?.commander) {
         this.kingHex.set(piece.color, {
@@ -3213,11 +3207,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // insisting whose it was.
     this.markColors.clear();
     const color = sideOfPly(ended);
-    // Not a king in a panel. `overtimeToll()` searches the board alone, so a
-    // commander who walked home pays nothing and mends an HP a turn instead -
-    // marking him would swell a red `-1` over a unit whose HP is going UP.
-    // Same guard as `doomedKing`, which had it first; this is the other half
-    // of the same rule.
+    // Not a king in a panel. `overtimeToll()` searches the board alone, and a
+    // commander is never in one - never dealt there, and never walks home - so
+    // this only keeps a hand-built board honest. Same guard as `doomedKing`.
     const king = this.cells.find(cell => !cell.panel && cell.piece?.color === color
       && this.config?.units?.[cell.piece.unit_id]?.commander);
     if (king?.piece) {
@@ -3262,9 +3254,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * is read. The HP and the ply go with it so the toll can tell its own kill
    * from any other way of dying - see `markOvertimeToll`.
    *
-   * Battlefield hexes only. A commander in a panel has walked home, where the
-   * toll cannot reach him, so recording that hex would aim the ghost mark at
-   * a square the toll never touched.
+   * Battlefield hexes only. A commander never stands in a panel - a king
+   * never walks home - and the toll searches the board alone, so a panel hex
+   * is a square the toll never touches.
    */
   private kingHex = new Map<'white' | 'black', { at: string; hp: number; ply: number }>();
 
@@ -3368,12 +3360,17 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * Coming home **pays**: the unit's own worth goes back to the side that
    * brought it in, which is the same number the wrap charged to send one out.
    *
+   * **The king never walks home.** The owner's rule: a commander belongs on
+   * the board, the way he is never dealt into a panel. Both engines refuse it
+   * too - see `homecoming_targets` and the browser engine's `move`.
+   *
    * ponytail: the owner has said certain turns and phases will close this.
    * Until they are named it is open whenever a unit can reach it - the gate
    * belongs here, one condition alongside `entryBind`.
    */
   private addBaseEntry(cell: HexCell, key: string, budget: number | undefined): void {
     if (!this.entryBind) return;
+    if (this.config?.units?.[cell.piece?.unit_id ?? '']?.commander) return;
     const color = cell.piece?.color ?? 'white';
     const refund = this.wrapCost(cell);
     const mov = budget ?? this.config?.units?.[cell.piece?.unit_id ?? '']?.move ?? 0;
@@ -4197,12 +4194,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    */
   doomState(hex: HexCell): '' | 'early' | 'imminent' {
     if (!this.tollBind || !isOvertime(this.turnNumber) || !hex.piece) return '';
-    // Not in a panel. `overtimeToll()` searches the *board* alone, and a
-    // committed withdrawal is off it - so a king who walked home takes no toll
-    // and mends an HP a turn instead. Warning about him there was always
-    // wrong, and widening the window to two turns only made it louder: the
-    // doc above names walking him home as the remedy the warning exists to
-    // make room for, so the board has to admit when it has worked.
+    // Not in a panel. `overtimeToll()` searches the *board* alone. A king is
+    // never in one - he never walks home - so this only keeps a hand-built
+    // board from warning about a toll that would never come.
     if (hex.panel) return '';
     if (!this.config?.units?.[hex.piece.unit_id]?.commander) return '';
     const hp = hex.piece.hp ?? 0;

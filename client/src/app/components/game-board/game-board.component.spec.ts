@@ -1446,6 +1446,26 @@ describe('GameBoardComponent reach preview', () => {
         expect(board.refundTargets.size).toBe(0);
       });
 
+      it('never walks the king home, even from the doorstep', () => {
+        // The owner's rule: the king belongs on the board. Offered a way in,
+        // he walked off it, and the engine judged the match lost for want of
+        // a commander.
+        // This config has no king, so the scout beside the doorway is made
+        // one - and put back, since the config is shared by every spec here.
+        setUp();
+        (config.units as any).scout.commander = true;
+        try {
+          board.onHexClick(anyBoard().cellsByKey.get(beside));
+          // He can still walk the battlefield - just not through the doorway.
+          expect(board.legalTargets.size).toBeGreaterThan(0);
+          expect(board.refundTargets.size).toBe(0);
+          expect([...board.legalTargets]
+            .some(k => anyBoard().cellsByKey.get(k)?.panel)).toBeFalse();
+        } finally {
+          delete (config.units as any).scout.commander;
+        }
+      });
+
       it('sends the refund out with the move', () => {
         setUp();
         const moves: any[] = [];

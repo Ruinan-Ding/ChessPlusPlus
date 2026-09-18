@@ -2,7 +2,10 @@ import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 import { ConfigService } from './config.service';
 import { computeLegalMoves, hexDistanceKeys, isInsideBoard, strikeDamage } from './hex-rules';
-import { OVERTIME_FIRST_PLY, OVERTIME_TOLL } from './phases';
+import {
+  lockedPanelUnits, openingMovedHexes, panelMoverAllowed,
+} from './history-rules';
+import { isInitialization, isWrapOpen, OVERTIME_FIRST_PLY, OVERTIME_TOLL } from './phases';
 
 /**
  * What overtime costs a commander at the end of each of its side's turns.
@@ -25,6 +28,24 @@ import { OVERTIME_FIRST_PLY, OVERTIME_TOLL } from './phases';
  * counter-attacks, and the regicide win condition. Endings are resign, draw,
  * and losing your commander. Anything the engine learns has to land here too,
  * or offline play quietly diverges from online play.
+ *
+ * **What it checks, and what it takes on trust.** The server re-derives every
+ * move; this engine cannot, because the panels, the points and the abilities
+ * are all still the client's own. So it checks what needs none of them: the
+ * board move and its reach, the walk home, the opening's rules (no attacks,
+ * one move a unit for the phase), a panel's three starts a turn, the wrap's
+ * schedule, and - for any unit a panel message names, attacker or defender -
+ * that the config knows it, it is not already standing on the board, and it is
+ * neither above the HP its config allows nor back from the dead.
+ *
+ * It takes on trust what an ability is worth (a boost, a mend, a cast's HP)
+ * and everything that wants a panel to work out: which panel a unit stands in,
+ * what a walk inside one cost, and **whether a walk is a crossing at all** -
+ * so the price of a wrap is derived but the decision that one is owed is not,
+ * and a message claiming `price: 0` crosses for nothing. Whether a side can
+ * afford it is the room's for a further reason: a solo purse holds what
+ * abilities have paid in and out as well as what the record shows. Those are
+ * 6.15 and 6.17 on the punchlist, and they settle together or not at all.
  */
 
 const STORAGE_KEY = 'cpp.localGame.v1';
@@ -254,14 +275,46 @@ export class LocalGameService {
   }
 
   /**
+   * What is wrong with a unit that arrived inside a panel message, or null if
+   * nothing is. Mirrors the checks `_handle_panel_move` makes on the server
+   * that need no panel to make.
+   *
+   * A panel unit is the client's word entirely - no engine here holds the
+   * panels - but three things can be told without one: the config knows what
+   * it is, it is not a second copy of something already standing on the board,
+   * and the opening has not already spent its one move for the phase.
+   *
+   * `moving` is false for the unit on the RECEIVING end of a blow, which has
+   * not moved and so spends no allowance - but is still named by a message and
+   * still has to be a unit that exists and is not on the board. Without this
+   * the swing landed on whatever the message described, `strikeDamage` read an
+   * undefined unit out of config, and the record went into the history for the
+   * panels to replay.
+   */
+  private panelUnitFault(unit: any, moving = true): string | null {
+    const g = this.game!;
+    if (!g.config?.units?.[unit?.unit_id]) return 'No such unit';
+    if (Object.values(g.boardState).some((p: any) => p?.uid && p.uid === unit?.uid)) {
+      return 'That unit is already on the board';
+    }
+    if (moving && lockedPanelUnits(g.moveHistory, g.turnNumber).has(unit?.uid)) {
+      return 'That unit has had its move for the opening';
+    }
+    return null;
+  }
+
+  /**
    * Walk a unit in from a panel. Deployment rather than the turn's action -
    * several may come through in a turn - so unlike a move this hands the turn
    * to nobody and counts no ply.
    *
    * The unit arrives with the message: the panels are the client's own and no
-   * engine holds them, so there is nothing here to look it up in. Taken on
-   * trust for the same reason a boost is - this engine has nobody to cheat -
-   * after checking it lands somewhere real and empty.
+   * engine holds them, so there is nothing here to look it up in. Which panel
+   * it stood in and how far it walked to the gateway are still taken on trust -
+   * both need the panel model this engine has not got - but what can be
+   * checked without one is: the config knows the unit, it is not already
+   * standing on the board, the opening has not locked it, its reserve has an
+   * allowance left, and it lands somewhere real and empty.
    */
   private enter(from: string, to: string, unit: any): void {
     const g = this.game;
@@ -274,6 +327,33 @@ export class LocalGameService {
       this.emit({ type: 'invalid_move', message: 'Nothing may enter there' });
       return;
     }
+    const wrong = this.panelUnitFault(unit);
+    if (wrong) {
+      this.emit({ type: 'invalid_move', message: wrong });
+      return;
+    }
+    // A crossing spends one of the reserve's three starts for the turn, and
+    // the opening gives a unit one move for the whole phase.
+    if (!panelMoverAllowed(g.moveHistory, g.turnNumber, unit.color, unit.uid)) {
+      this.emit({ type: 'invalid_move', message: 'That reserve has started its units for the turn' });
+      return;
+    }
+    // Its HP is the client's word, like a boost - a cast may have mended or
+    // hurt it in the panel - but not above what its own config allows.
+    const full = g.config?.units?.[unit.unit_id]?.hp ?? unit.max_hp ?? 1;
+    const hp = Math.min(full, Math.trunc(Number(unit.hp) || 0));
+    // **Not back from the dead, either.** A panel unit a cast emptied is off
+    // the roster the server rebuilds (`deal_panels` skips anything on 0), so
+    // flooring this at 1 would walk a dead unit onto the board rather than
+    // refuse it.
+    if (hp <= 0) {
+      this.emit({ type: 'invalid_move', message: 'Nothing is standing there' });
+      return;
+    }
+    // `max_hp` is taken from config too, not just `hp`. It is the ceiling
+    // every later cast is clamped against (`landOnBoard`), so accepting the
+    // message's word for it undoes the clamp above one mend later.
+    unit = { ...unit, hp, max_hp: full };
     g.boardState = { ...g.boardState, [to]: unit };
     g.moveHistory = [...g.moveHistory, {
       from, to, unit_id: unit.unit_id, color: unit.color, turn: g.turnNumber,
@@ -309,6 +389,36 @@ export class LocalGameService {
       this.emit({ type: 'invalid_move', message: 'That unit cannot walk there' });
       return;
     }
+    const wrong = this.panelUnitFault(unit);
+    if (wrong) {
+      this.emit({ type: 'invalid_move', message: wrong });
+      return;
+    }
+    // One of the panel's three starts for the turn, and not a unit the opening
+    // has already spent. Where the walk goes and what it costs to get there
+    // are still the client's - both want the panel model this engine has not
+    // got, and the cost wants the boost that may have lent the steps.
+    if (!panelMoverAllowed(g.moveHistory, g.turnNumber, unit.color, unit.uid, panel)) {
+      this.emit({ type: 'invalid_move', message: 'That panel has started its units for the turn' });
+      return;
+    }
+    // A walk the message says is a crossing is one, so it is held to the
+    // schedule - which needs only the ply, and so needs none of the three
+    // things this engine has not got. `panel_move_targets` offers no wrap at
+    // all in a shut window, and solo used to take one.
+    const wrap = Number(price) > 0;
+    if (wrap && !isWrapOpen(g.turnNumber)) {
+      this.emit({ type: 'invalid_move', message: 'The wrap is shut' });
+      return;
+    }
+    // **The amount is derived; the decision is not.** The price is the unit's
+    // own worth from config rather than the number the message put on it - but
+    // whether a price is owed at all is still the message's word, because
+    // telling a crossing from a shuffle inside a base needs the panel geometry
+    // this engine has not got. A message claiming `price: 0` still wraps for
+    // nothing. Whether the side can afford it is the room's for a third
+    // reason: a solo purse holds what abilities have paid in and out too.
+    const worth = Math.max(0, Math.trunc(Number(g.config?.units?.[unit.unit_id]?.value) || 0));
     g.moveHistory = [...g.moveHistory, {
       from, to, unit_id: unit.unit_id, color: unit.color, turn: g.turnNumber,
       captured: null, attacked: false, damage_dealt: 0,
@@ -316,7 +426,7 @@ export class LocalGameService {
       panelMove: true,
       ...(panel ? { panel } : {}),
       cost: Math.max(0, Math.trunc(Number(cost) || 0)),
-      price: Math.max(0, Math.trunc(Number(price) || 0)),
+      price: wrap ? worth : 0,
       unit,
     }];
     this.persist();
@@ -358,6 +468,19 @@ export class LocalGameService {
     const movingColor = this.colorOf(g.currentTurn);
     if (!attacker || attacker.color !== movingColor || !unit || unit.color === movingColor) {
       this.emit({ type: 'invalid_move', message: 'Nothing to attack there' });
+      return;
+    }
+    // Nobody attacks in the opening, a panel being no exception - the board
+    // never offered one there, and until now nothing else said no.
+    if (isInitialization(g.turnNumber)) {
+      this.emit({ type: 'invalid_move', message: 'Nobody attacks in the opening' });
+      return;
+    }
+    // The defender is named by the message too, so it gets the same checks the
+    // walkers get, less the opening's lock - it is not the one moving.
+    const bad = this.panelUnitFault(unit, false);
+    if (bad) {
+      this.emit({ type: 'invalid_move', message: bad });
       return;
     }
     // The walk comes with the swing - this message is the whole turn - so it
@@ -571,9 +694,20 @@ export class LocalGameService {
     // walking into the enemy's back line to mend there.
     // ponytail: a real panel model in the engine replaces this with a lookup.
     const ownSide = movingColor === 'white' ? tq < 0 : tq > 0;
-    const leaving = !!withdraw && relocating && !attack
+    // The king never walks home - the owner's rule. Off the board he counted
+    // as no commander, so the walk lost the match on the spot.
+    const king = !!g.config?.units?.[piece?.unit_id]?.commander;
+    const leaving = !!withdraw && relocating && !attack && !king
       && Number.isInteger(tq) && Number.isInteger(tr)
       && !isInsideBoard(tq, tr, radius) && !start[to] && ownSide;
+    // Say which rule refused him, as the consumer does. Folded into the
+    // general refusal below he came back "Illegal move", which sends the
+    // player looking for a doorway that works - the exact outcome the server
+    // spells the message out to avoid.
+    if (withdraw && king && piece?.color === movingColor) {
+      this.emit({ type: 'invalid_move', message: 'The king never walks home' });
+      return;
+    }
     if (!piece || piece.color !== movingColor || !Number.isInteger(q) || !Number.isInteger(r)
         || (withdraw
             ? !leaving
@@ -582,6 +716,23 @@ export class LocalGameService {
         || (!relocating && !attack)) {
       this.emit({ type: 'invalid_move', message: 'Illegal move' });
       return;
+    }
+
+    // The opening's rules. The board's click handler enforced these and
+    // nothing else did, so a crafted message could attack on the first turn or
+    // walk one unit up the board three turns running. Mirrors the block in
+    // `_handle_make_move`; a boost changes how FAR a unit goes, never how many
+    // times it goes, so none of this waits on the abilities settling.
+    if (isInitialization(g.turnNumber)) {
+      // Landing on an enemy is an attack too, by another road.
+      if (attack || (relocating && start[to] && start[to].color !== movingColor)) {
+        this.emit({ type: 'invalid_move', message: 'Nobody attacks in the opening' });
+        return;
+      }
+      if (openingMovedHexes(g.moveHistory, movingColor).has(`${q},${r}`)) {
+        this.emit({ type: 'invalid_move', message: 'That unit has had its move for the opening' });
+        return;
+      }
     }
 
     const board = { ...start };
@@ -765,9 +916,9 @@ export class LocalGameService {
     // the healed HP.
     const cast = this.landEffects(board, effectsBefore);
     // Only a king the toll felled, or a cast that took a unit off, ends the
-    // game here. A pass has never looked at who is beaten otherwise, and must
-    // not start: a side can hold no commander on the BOARD for reasons of its
-    // own - one that walked home into its base is off the board and alive.
+    // game here. Nothing else on a pass moves anybody, so nobody else can have
+    // lost on it - the casts are the reason this is not simply `[felled]`,
+    // which is what the server's `_settle_pass` can say and this cannot.
     const felled = this.overtimeToll(board);
     // The felled side is judged by the objective, like every other ending -
     // and only that side, for the reason above. This used to be `[felled]`

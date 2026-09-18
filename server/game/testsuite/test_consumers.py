@@ -13,6 +13,7 @@ from datetime import timedelta
 
 from django.utils import timezone
 
+from game.consumers import STALE_AFTER
 from game.models import GameChallenge, GameRoom, GameState, PlayerConnection
 from game.engine import economy, panels
 from game.engine.config_loader import DEFAULT_CONFIG
@@ -934,6 +935,75 @@ class LobbyIdentityHijackTests(TransactionTestCase):
             await owner.disconnect()
             await attacker.disconnect()
 
+    async def _join_lobby(self, username, secret):
+        """Join the lobby; the messages seen up to the user list, and the socket."""
+        comm = WebsocketCommunicator(URLRouter(websocket_urlpatterns), "/ws/game/lobby/")
+        await comm.connect()
+        await comm.send_json_to({'type': 'join_lobby', 'username': username, 'secret': secret})
+        seen = []
+        while not seen or seen[-1]['type'] != 'user_list':
+            seen.append(await comm.receive_json_from(timeout=5))
+        return seen, comm
+
+    async def test_a_row_left_by_a_dead_server_does_not_hold_the_name(self):
+        """
+        A server that dies runs no disconnects. The row it left behind was
+        taken for a live player on the first join after the restart, and that
+        player was renamed to a guest - which also cost them their seat.
+        """
+        await PlayerConnection.objects.acreate(
+            username='carol_test', channel_name='before-the-restart', secret='carol-secret',
+            status='in-game')
+        await PlayerConnection.objects.filter(username='carol_test').aupdate(
+            last_activity=timezone.now() - STALE_AFTER - timedelta(seconds=1))
+        seen, comm = await self._join_lobby('carol_test', 'carol-secret')
+        try:
+            self.assertNotIn('username_assigned', [m['type'] for m in seen])
+            row = await PlayerConnection.objects.aget(username='carol_test')
+            self.assertNotEqual(row.channel_name, 'before-the-restart')
+        finally:
+            await comm.disconnect()
+
+    async def test_a_stale_row_still_holds_its_name_against_the_wrong_secret(self):
+        """
+        Age says the owner is *probably* gone, never that they are - a sleeping
+        laptop misses three heartbeats too, and the name is what holds a seat.
+        Freeing a stale row outright handed a live player's name, and their
+        game, to whoever asked for it next.
+        """
+        await PlayerConnection.objects.acreate(
+            username='erin_test', channel_name='a-sleeping-laptop', secret='erin-secret',
+            status='in-game')
+        await PlayerConnection.objects.filter(username='erin_test').aupdate(
+            last_activity=timezone.now() - STALE_AFTER - timedelta(seconds=1))
+        seen, comm = await self._join_lobby('erin_test', 'not-erins-secret')
+        try:
+            assigned = next(m for m in seen if m['type'] == 'username_assigned')
+            self.assertEqual(assigned['originalUsername'], 'erin_test')
+            self.assertNotEqual(assigned['username'], 'erin_test')
+            # The row itself may well be gone - the sweep in
+            # _get_all_online_users clears stale rows on every user list, and
+            # always has. What matters is that it was not handed over: no row
+            # for this name belongs to the socket that asked for it.
+            taken = await PlayerConnection.objects.filter(
+                username='erin_test').exclude(channel_name='a-sleeping-laptop').acount()
+            self.assertEqual(taken, 0)
+        finally:
+            await comm.disconnect()
+
+    async def test_a_row_still_being_heartbeated_holds_the_name(self):
+        await PlayerConnection.objects.acreate(
+            username='dave_test', channel_name='a-live-socket', secret='dave-secret',
+            status='online')
+        seen, comm = await self._join_lobby('dave_test', 'someone-else')
+        try:
+            assigned = next(m for m in seen if m['type'] == 'username_assigned')
+            self.assertEqual(assigned['originalUsername'], 'dave_test')
+            row = await PlayerConnection.objects.aget(username='dave_test')
+            self.assertEqual(row.channel_name, 'a-live-socket')
+        finally:
+            await comm.disconnect()
+
 
 class RoomAccessGuardTests(TransactionTestCase):
     """
@@ -1740,6 +1810,36 @@ class PanelWithdrawalLiveIntegrationTests(TransactionTestCase):
                 state.move_history)
             self.assertEqual(standing[self.DOORWAY]['uid'], 'w-11,11')
             self.assertTrue(panels.is_base(standing[self.DOORWAY]['panel']))
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_the_king_never_walks_home(self):
+        """
+        The owner's rule. It used to be allowed, and it lost the match on the
+        spot: off the board, he counted as no commander.
+        """
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            # White's king, stood where the pawn starts - one step from home.
+            state = await GameState.objects.aget(game_id=game.game_id)
+            board = dict(state.board_state)
+            king_at = next(k for k, v in board.items()
+                           if v['unit_id'] == 'king' and v['color'] == 'white')
+            board[self.PAWN_AT] = board.pop(king_at)
+            await GameState.objects.filter(game_id=game.game_id).aupdate(board_state=board)
+
+            await white.send_json_to({
+                'type': 'make_move', 'from': self.PAWN_AT, 'to': self.DOORWAY,
+                'withdraw': True,
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+            self.assertIn('king', err['message'])
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.turn_number, 1)
+            self.assertEqual(state.end_reason, '')
+            self.assertEqual(state.board_state[self.PAWN_AT]['unit_id'], 'king')
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()

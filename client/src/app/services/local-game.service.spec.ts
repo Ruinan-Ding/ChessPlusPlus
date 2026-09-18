@@ -26,6 +26,19 @@ describe('LocalGameService', () => {
 
   const last = (type: string) => [...replies].reverse().find(m => m.type === type);
 
+  /**
+   * Past the opening, where nobody attacks at all.
+   *
+   * Six plies of passing rather than a turn number written over the cache:
+   * the pass is what a real game does to get there, and the specs that need
+   * it are about blows, which the opening now refuses outright. A pass moves
+   * nobody, so the board they were written against is the board they get.
+   */
+  const pastOpening = async () => {
+    for (let i = 0; i < 6; i++) service.send({ type: 'pass_turn' });
+    await flush();
+  };
+
   // The stock unit these tests push about is the pawn on -5,9. The two hexes
   // it has been on before, -9,9 and -7,9, have each in turn been dealt an
   // archer; -5,9 is a pawn on the setup as it stands.
@@ -67,6 +80,7 @@ describe('LocalGameService', () => {
     // The blow's record used to be the last word on the unit's HP: the cast
     // went ahead of it, so a panel unit struck and then finished by a spell
     // came back from the dead on a reload.
+    await pastOpening();
     const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
     service.send({
       type: 'panel_attack', intoPanel: true, panel: 'tr',
@@ -89,6 +103,8 @@ describe('LocalGameService', () => {
     const started = last('game_started');
     const attacker = '-5,9';
     expect(started.boardState[attacker].unit_id).toBe('pawn');
+    await pastOpening();
+    const opened = last('turn_passed').turnNumber;
 
     const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
     service.send({
@@ -115,7 +131,7 @@ describe('LocalGameService', () => {
     // base unit never starts a fight but always finishes its part of one.
     expect(hit.counter_damage).toBeGreaterThan(0);
     expect(msg.boardState[attacker].hp).toBeLessThan(started.boardState[attacker].hp);
-    expect(msg.turnNumber).toBe(started.turnNumber + 1);
+    expect(msg.turnNumber).toBe(opened + 1);
 
     // Out of range is refused rather than resolved.
     service.send({
@@ -130,6 +146,7 @@ describe('LocalGameService', () => {
     // Whether a panel answers is the panel's own rule and travels with the
     // message - the client owns panels, this engine has no idea which one a
     // unit is standing in. A reserve strikes back; a base never does.
+    await pastOpening();
     const attacker = '-4,9';
     const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rbl0' };
     const struck = () => last('move_made').move;
@@ -155,6 +172,7 @@ describe('LocalGameService', () => {
     const from = '-5,9', to = '-5,8';
     expect(started.boardState[from].unit_id).toBe('pawn');
     expect(started.boardState[to]).toBeUndefined();
+    await pastOpening();
 
     const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
     service.send({
@@ -290,6 +308,19 @@ describe('LocalGameService', () => {
     expect(record.unit.unit_id).toBe('pawn');
   });
 
+  it('never walks the king home', async () => {
+    // The owner's rule. Off the board he counted as no commander, so the walk
+    // home lost the match on the spot.
+    const started = last('game_started');
+    const king = Object.keys(started.boardState).find(k =>
+      started.boardState[k].unit_id === 'king' && started.boardState[k].color === 'white')!;
+    service.send({ type: 'make_move', from: king, to: '-12,11', withdraw: true });
+    await flush();
+    expect(last('invalid_move')).toBeDefined();
+    expect(last('move_made')).toBeUndefined();
+    expect(last('game_over')).toBeUndefined();
+  });
+
   it('resumes the cached game after a reload', async () => {
     service.send({ type: 'make_move', from: '-5,9', to: '-5,8' });
     await flush();
@@ -366,7 +397,8 @@ describe('LocalGameService', () => {
         '0,0': { unit_id: 'rook', color: 'white', hp, max_hp: hp, uid: 'w0,0' },
         '1,0': { unit_id: 'rook', color: 'black', hp, max_hp: hp, uid: 'b1,0' },
       },
-      currentTurn: 'Solo', turnNumber: 1, moveHistory: [], winner: '', endReason: '',
+      // Ply 7: the first on which anybody may swing at all.
+      currentTurn: 'Solo', turnNumber: 7, moveHistory: [], winner: '', endReason: '',
       turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
     });
 
@@ -403,7 +435,8 @@ describe('LocalGameService', () => {
         '1,0': { unit_id: 'king', color: 'black', hp: 5, max_hp: 45, uid: 'b1,0' },
         '-5,0': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'w-5,0' },
       },
-      currentTurn: 'Solo', turnNumber: 1, moveHistory: [], winner: '', endReason: '',
+      // Ply 7: the opening is over, so the killing blow is allowed to land.
+      currentTurn: 'Solo', turnNumber: 7, moveHistory: [], winner: '', endReason: '',
       turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
     }));
     const engine = new LocalGameService((service as any).configService);
@@ -570,8 +603,8 @@ describe('LocalGameService', () => {
       // BOARD for reasons of its own - one that walked home into its base is
       // off the board and still alive. Checking who is beaten on every cast
       // meant a heal on your own pawn could end a match it had no part in.
-      // Black already holds no commander on the board - walked home, say. A
-      // mend on white's own king must not read that as a regicide.
+      // Black holds no commander on the board - a hand-built position. A mend
+      // on white's own king must not read that as a regicide.
       const g = at(20, 12, 40);
       delete (g.engine as any).game.boardState['5,0'];
       g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-5,0', hp: 20, uid: 'wk' }] });
@@ -634,5 +667,235 @@ describe('LocalGameService', () => {
     expect(last('game_over')).toEqual(jasmine.objectContaining({
       winner: LOCAL_OPPONENT, endReason: 'resign', resignedBy: 'Solo',
     }));
+  });
+
+  /**
+   * The rules this engine can keep without a panel model, a purse or an
+   * ability catalogue - so they hold today and do not have to be written
+   * twice when those settle. The board's click handler keeps an honest player
+   * inside them; these are what a console runs into.
+   *
+   * What is deliberately NOT here: how far a panel walk went, which panel a
+   * unit stood in, and whether a side could afford the wrap. Each wants
+   * something this engine has not got, and the purse also holds what
+   * abilities have paid in and out - see 6.15 and 6.17.
+   */
+  describe('the rules it keeps without a panel', () => {
+    /** A reserve unit of white's, as a panel message carries one. */
+    const reserve = (uid: string, over: any = {}) => ({
+      unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid, ...over,
+    });
+
+    it('refuses an attack in the opening', async () => {
+      // The board never offered one; nothing else said no, so a crafted
+      // message could open the match by swinging.
+      service.send({ type: 'make_move', from: '-5,9', to: '-5,9', attack: '-5,8' });
+      await flush();
+      expect(last('invalid_move').message).toBe('Nobody attacks in the opening');
+      expect(last('move_made')).toBeUndefined();
+    });
+
+    it('refuses a blow into a panel in the opening', async () => {
+      service.send({
+        type: 'panel_attack', intoPanel: true, panel: 'tr',
+        from: '-5,9', attack: '-5,8',
+        unit: { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' },
+      });
+      await flush();
+      expect(last('invalid_move').message).toBe('Nobody attacks in the opening');
+      expect(last('move_made')).toBeUndefined();
+    });
+
+    it('gives a battlefield unit one move for the whole opening', async () => {
+      service.send({ type: 'make_move', from: '-5,9', to: '-5,8' });
+      await flush();
+      expect(last('move_made').move.moved).toBeTrue();
+      // Round to white again, still inside the opening.
+      service.send({ type: 'pass_turn' });
+      await flush();
+      expect(last('turn_passed').turnNumber).toBe(3);
+
+      service.send({ type: 'make_move', from: '-5,8', to: '-5,7' });
+      await flush();
+      expect(last('invalid_move').message).toBe('That unit has had its move for the opening');
+      // It has not budged.
+      service.send({ type: 'request_game_state' });
+      await flush();
+      expect(last('game_state_update').boardState['-5,8'].unit_id).toBe('pawn');
+    });
+
+    it('refuses a crossing by a unit already standing on the board', async () => {
+      // The uid is the one on -5,9 in the dealt setup, so this is that unit
+      // asking to be in two places at once.
+      const standing = last('game_started').boardState['-5,9'];
+      service.send({
+        type: 'enter_board', from: 'bl-1', to: '0,0',
+        unit: { ...standing, hp: 20 },
+      });
+      await flush();
+      expect(last('invalid_move').message).toBe('That unit is already on the board');
+      service.send({ type: 'request_game_state' });
+      await flush();
+      expect(last('game_state_update').boardState['0,0']).toBeUndefined();
+    });
+
+    it('refuses a panel message naming a unit the config never heard of', async () => {
+      service.send({
+        type: 'enter_board', from: 'bl-1', to: '0,0',
+        unit: reserve('made-up', { unit_id: 'dragon' }),
+      });
+      await flush();
+      expect(last('invalid_move').message).toBe('No such unit');
+    });
+
+    it('clamps a crossing unit to the HP its own config allows', async () => {
+      service.send({
+        type: 'enter_board', from: 'bl-1', to: '0,0', unit: reserve('r1', { hp: 9999 }),
+      });
+      await flush();
+      service.send({ type: 'request_game_state' });
+      await flush();
+      // A pawn's 20, not the 9999 it asked for. A cast may have mended or hurt
+      // it in the panel, so a lower number is still taken on trust.
+      expect(last('game_state_update').boardState['0,0'].hp).toBe(20);
+    });
+
+    it('starts three of a panel in a turn and no more', async () => {
+      const hexes = ['0,0', '0,1', '0,2', '0,3'];
+      hexes.forEach((to, i) => service.send({
+        type: 'enter_board', from: 'bl-1', to, unit: reserve(`r${i}`),
+      }));
+      await flush();
+      expect(last('invalid_move').message)
+        .toBe('That reserve has started its units for the turn');
+      service.send({ type: 'request_game_state' });
+      await flush();
+      const board = last('game_state_update').boardState;
+      expect(hexes.filter(h => board[h]).length).toBe(3);
+    });
+
+    it('locks a panel unit out for the rest of the opening once it has moved', async () => {
+      // A walk inside a panel, so the unit is still in the panel afterwards -
+      // a crossing would put it on the board, which is refused first and for
+      // a different reason.
+      const walk = (to: string) => service.send({
+        type: 'panel_move', from: 'bl-1', to, panel: 'bl', cost: 1, unit: reserve('r1'),
+      });
+      walk('bl-2');
+      await flush();
+      expect(last('invalid_move')).toBeUndefined();
+
+      // A panel walk does not end the turn, so two passes come back round to
+      // white - still inside the opening.
+      service.send({ type: 'pass_turn' });
+      service.send({ type: 'pass_turn' });
+      await flush();
+      expect(last('turn_passed').turnNumber).toBe(3);
+
+      walk('bl-3');
+      await flush();
+      expect(last('invalid_move').message)
+        .toBe('That unit has had its move for the opening');
+    });
+
+    it('refuses a crossing by a unit the record says is dead', async () => {
+      // A panel unit a cast emptied is off the roster the server rebuilds.
+      // Flooring the HP at 1 walked it onto the board instead of refusing it.
+      service.send({
+        type: 'enter_board', from: 'bl-1', to: '0,0', unit: reserve('r1', { hp: 0 }),
+      });
+      await flush();
+      expect(last('invalid_move').message).toBe('Nothing is standing there');
+      service.send({ type: 'request_game_state' });
+      await flush();
+      expect(last('game_state_update').boardState['0,0']).toBeUndefined();
+    });
+
+    it("takes a crossing unit's ceiling from config, not from the message", async () => {
+      // max_hp is what every later cast is clamped against, so trusting it
+      // undid the HP clamp one mend later.
+      service.send({
+        type: 'enter_board', from: 'bl-1', to: '0,0',
+        unit: reserve('r1', { hp: 20, max_hp: 9999 }),
+      });
+      await flush();
+      service.send({ type: 'request_game_state' });
+      await flush();
+      expect(last('game_state_update').boardState['0,0'].max_hp).toBe(20);
+    });
+
+    it('refuses a blow into a panel against a unit the config never heard of', async () => {
+      // The defender is named by the message too. Unchecked, strikeDamage read
+      // an undefined unit out of config and the record went into the history.
+      await pastOpening();
+      service.send({
+        type: 'panel_attack', intoPanel: true, panel: 'tr', from: '-5,9', attack: '-5,8',
+        unit: { unit_id: 'dragon', color: 'black', hp: 1, max_hp: 1, uid: 'z' },
+      });
+      await flush();
+      expect(last('invalid_move').message).toBe('No such unit');
+      expect(last('move_made')).toBeUndefined();
+    });
+
+    it('refuses the wrap while it is shut', async () => {
+      // The schedule needs only the ply, so it needs none of the three things
+      // this engine has not got. Turns 9-13 are a shut halftime window; ply 17
+      // is turn 9. `panel_move_targets` offers no wrap there at all.
+      const config = (service as any).game.config;
+      localStorage.setItem('cpp.localGame.v1', JSON.stringify({
+        username: 'Solo', hostColor: 'white', started: true, config,
+        boardState: {}, currentTurn: 'Solo', turnNumber: 17, moveHistory: [],
+        winner: '', endReason: '',
+        turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
+      }));
+      const engine = new LocalGameService((service as any).configService);
+      const seen: any[] = [];
+      engine.messages$.subscribe(m => seen.push(m));
+      engine.send({
+        type: 'panel_move', from: 'bl-1', to: 'tr-1', panel: 'bl',
+        cost: 2, price: 5, unit: reserve('r9'),
+      });
+      await flush();
+      expect(seen.find(m => m.type === 'invalid_move').message).toBe('The wrap is shut');
+    });
+
+    it('names the rule that refuses the king his walk home', async () => {
+      // "Illegal move" sends the player looking for a doorway that works.
+      const config = (service as any).game.config;
+      localStorage.setItem('cpp.localGame.v1', JSON.stringify({
+        username: 'Solo', hostColor: 'white', started: true, config,
+        boardState: {
+          '-11,11': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'wk' },
+        },
+        currentTurn: 'Solo', turnNumber: 7, moveHistory: [], winner: '', endReason: '',
+        turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
+      }));
+      const engine = new LocalGameService((service as any).configService);
+      const seen: any[] = [];
+      engine.messages$.subscribe(m => seen.push(m));
+      engine.send({ type: 'make_move', from: '-11,11', to: '-12,11', withdraw: true });
+      await flush();
+      expect(seen.find(m => m.type === 'invalid_move').message)
+        .toBe('The king never walks home');
+      expect(seen.find(m => m.type === 'move_made')).toBeUndefined();
+    });
+
+    it('charges the wrap what the unit is worth, not what the message says', async () => {
+      // The price is a config lookup, so it needs no panel and no purse: a
+      // message claiming the crossing was a bargain is corrected. Whether the
+      // side could afford it is still the room's - a solo purse holds what
+      // abilities paid in and out as well.
+      service.send({
+        type: 'panel_move', from: 'bl-1', to: 'tr-1', panel: 'bl',
+        cost: 2, price: 1, unit: reserve('r9'),
+      });
+      await flush();
+      service.send({ type: 'request_game_state' });
+      await flush();
+      const walk = last('game_state_update').moveHistory.slice(-1)[0];
+      expect(walk.panelMove).toBeTrue();
+      expect(walk.price).toBe(5);              // the pawn's value, not the 1 sent
+      expect(walk.cost).toBe(2);               // what it cost to walk is still theirs
+    });
   });
 });
