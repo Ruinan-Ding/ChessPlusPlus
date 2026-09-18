@@ -14,11 +14,14 @@ import {
 import { CommonModule } from '@angular/common';
 import {
   attackTiers, captureClaims, captureZoneHexes, computeAttackZone, computeLegalMoves,
-  computeMoveCosts, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS, HEX_DIRS,
+  computeMoveCosts, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
+  BASE_PANELS, HEX_DIRS,
 } from '../../services/hex-rules';
 import { PANEL_MOVERS_PER_TURN } from '../../services/history-rules';
 import {
-  OVERTIME_FIRST_PLY, OVERTIME_TOLL, isInitialization, isOvertime, isWrapOpen, sideOfPly,
+  HOMECOMINGS_PER_SETUP_TURN, OVERTIME_FIRST_PLY, OVERTIME_TOLL, PHASE_INIT_ENTRIES,
+  isEntryOpen, isHomecomingOpen, isInitialization, isOvertime, isPhaseInitialization,
+  isSetupTurn, isWrapOpen, sideOfPly,
 } from '../../services/phases';
 
 // ---------------------------------------------------------------------------
@@ -156,6 +159,12 @@ interface HexCell {
   arrowBack: boolean;
   /** The base tip a wrap leaves from - the end the schedule can shut. */
   wrapOut: boolean;
+  /**
+   * Which schedule shuts this arrow: the reserve's three ways in, the base's
+   * three ways home, or the wrap. Three arrows on a side and three different
+   * windows, so the cross cannot be drawn off one predicate - see `arrowShut`.
+   */
+  arrowKind: 'entry' | 'home' | 'wrap' | '';
   /** 1-based reading order over every hex, panels included. */
   num: number;
   /** Smaller hex drawn under an occupying unit. */
@@ -582,9 +591,9 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             class="gateway-arrow"
             [class.arrow-theirs]="hex.arrowSide === 'theirs'"
           />
-          <!-- A wrap the schedule has shut, over the arrow it has shut. -->
+          <!-- An arrow the schedule has shut, over the arrow it has shut. -->
           <path
-            *ngIf="hex.wrapOut && !wrapOpen"
+            *ngIf="arrowShut(hex)"
             [attr.d]="arrowCross(hex)"
             class="gateway-shut"
           />
@@ -1714,6 +1723,16 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   @Input() entryBind = false;
 
   /**
+   * How many of this side's units have already walked home this ply, so the
+   * board stops offering the fourth. Derived by the room from the record
+   * (`homecomingsAt`), the way `initMoved` and `boardMoveSpent` are: the board
+   * draws a half-staged turn and cannot count off the history alone.
+   *
+   * Only a setup turn counts them. Overtime opens the doorways with no cap.
+   */
+  @Input() homecomingsSpent = 0;
+
+  /**
    * Whether overtime's toll is in play: the red `-1` on a king at the end of
    * his side's turn, and the skull warning that it is coming.
    *
@@ -1745,9 +1764,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   /**
    * Reserves that have crossed onto the battlefield, by uid. They are struck
-   * out of the panel for good: a panel holds its dealt squad all game, so a
-   * unit that crossed and was later killed would otherwise be drawn back in
-   * its old hex, whole and ready to cross again.
+   * out of the panel for good: when a panel unit exists from recorded history,
+   * it must not be drawn back after crossing and later being killed.
    */
   @Input() departedUids: string[] = [];
 
@@ -2619,23 +2637,62 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
 
   /**
    * Whether the wrap is open this turn. Both sides' at once: it is a point on
-   * the schedule, not something either player holds.
+   * the schedule, not something either player holds. The same goes for the
+   * two below - every window is read off the ply and nothing else.
    */
   get wrapOpen(): boolean {
     return isWrapOpen(this.turnNumber);
   }
 
+  /** Whether units may come out of a reserve onto the board this turn. */
+  get entryOpen(): boolean {
+    return isEntryOpen(this.turnNumber);
+  }
+
+  /** Whether units may walk home into their own base this turn. */
+  get homecomingOpen(): boolean {
+    return isHomecomingOpen(this.turnNumber);
+  }
+
   /**
-   * The cross over a shut wrap's arrow, centred on the arrowhead. Struck out
-   * rather than taken away: an arrow that vanished for five turns and came
-   * back would read as the board losing a feature, not as a closed window.
+   * Whether this hex's arrow is struck out this turn.
+   *
+   * Three arrows a side and three schedules: the reserve's ways in run on the
+   * setup turns and each phase's halftime half, the base's ways home on the
+   * setup turns and all of overtime, and the wrap on the halves between. Only
+   * the tip a wrap *leaves* from is crossed - the far tip is where it arrives,
+   * and nothing is shut there.
+   */
+  arrowShut(hex: HexCell): boolean {
+    switch (hex.arrowKind) {
+      case 'wrap': return hex.wrapOut && !this.wrapOpen;
+      case 'entry': return !this.entryOpen;
+      case 'home': return !this.homecomingOpen;
+      default: return false;
+    }
+  }
+
+  /**
+   * The cross over a shut arrow, centred on the arrowhead. Struck out rather
+   * than taken away: an arrow that vanished for five turns and came back would
+   * read as the board losing a feature, not as a closed window.
+   *
+   * Follows `arrowPoints`, so the cross sits on the head wherever that put it:
+   * out at the flat left or right edge on a sideways arrow, in at the corner
+   * on an up or down one.
    */
   arrowCross(hex: HexCell): string {
-    const dir = hex.gateway === 'down' ? 1 : -1;
-    const y = hex.cy + dir * 14;
     const s = 9;
-    return `M${hex.cx - s},${y - s} L${hex.cx + s},${y + s}`
-         + ` M${hex.cx + s},${y - s} L${hex.cx - s},${y + s}`;
+    let cx = hex.cx;
+    let cy = hex.cy;
+    if (hex.gateway === 'up' || hex.gateway === 'down') {
+      cy += (hex.gateway === 'down' ? 1 : -1) * 14;
+    } else {
+      const dir = hex.gateway === 'left' ? -1 : 1;
+      cx += (hex.arrowBack ? -dir : dir) * 17;
+    }
+    return `M${cx - s},${cy - s} L${cx + s},${cy + s}`
+         + ` M${cx + s},${cy - s} L${cx - s},${cy + s}`;
   }
 
   /** Whose an arrow is, from this client's seat. */
@@ -2654,9 +2711,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * the player's own, defaulting to white for a client without one.
    */
   private homeOf(r: number): 'mine' | 'theirs' | '' {
-    const edge = Math.max(1, this.radius - 2);
-    if (Math.abs(r) < edge) return '';
-    return (r >= edge ? 'white' : 'black') === (this.myColor || 'white') ? 'mine' : 'theirs';
+    // One answer for the tint and for the rule. These rows now bound where a
+    // crossing may stop and where a walk home may start, so a tint that drifted
+    // from `inHomeRows` would colour ground the rules disagreed about.
+    for (const color of ['white', 'black'] as const) {
+      if (inHomeRows(color, r, this.radius)) {
+        return color === (this.myColor || 'white') ? 'mine' : 'theirs';
+      }
+    }
+    return '';
   }
 
   /** Board orientation from config (cosmetic); the default board is edge-up. */
@@ -2674,8 +2737,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // and the two ends of each side's wrap. They never share a hex.
     const arrows = new Map<string, {
       dir: 'left' | 'right' | 'up' | 'down'; color: 'white' | 'black';
-      back?: boolean; out?: boolean;
-    }>([...gatewayHexes(r), ...baseGatewayHexes(r), ...this.wrapMarks()]);
+      back?: boolean; out?: boolean; kind: 'entry' | 'home' | 'wrap';
+    }>();
+    // Tagged as they go in, because once they are one map nothing tells them
+    // apart - and each of the three runs on its own schedule.
+    const mark = (
+      source: Map<string, { dir: any; color: 'white' | 'black'; back?: boolean; out?: boolean }>,
+      kind: 'entry' | 'home' | 'wrap',
+    ) => {
+      for (const [at, arrow] of source) arrows.set(at, { ...arrow, kind });
+    };
+    mark(gatewayHexes(r), 'entry');
+    mark(baseGatewayHexes(r), 'home');
+    mark(this.wrapMarks(), 'wrap');
 
     // Panels first: the reserves that live in them decide what the cells hold.
     this.panelZones = new Map();
@@ -2748,6 +2822,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
           ? '' : this.arrowSideOf(arrows.get(key)!.color),
         arrowBack: !c.onBattlefield && !!arrows.get(key)?.back,
         wrapOut: !c.onBattlefield && !!arrows.get(key)?.out,
+        arrowKind: c.onBattlefield ? '' : arrows.get(key)?.kind ?? '',
         num: i + 1,
       };
     });
@@ -2790,81 +2865,25 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /**
-   * Deal each panel a placeholder squad, once. Re-dealt only if the roster or
-   * the board geometry changes, so a reserve that has been shuffled around
-   * its panel stays where it was put.
+   * Start new games with empty base and reserve panels.
+   *
+   * Panel history is still replayed below for compatibility with recorded
+   * deployment actions, but no placeholder squad is dealt into a fresh game.
    */
   private buildReserves(): void {
-    const roster = Object.entries(this.config?.units ?? {})
-      // The commander belongs on the board; losing it is how a side loses.
-      .filter(([, d]: [string, any]) => !d?.commander)
-      .slice(0, 5);
-    const stamp = `${this.radius}|${this.orientation}|${roster.map(([id]) => id).join(',')}`;
-    // Dealt once. `woundReserves()` and `absorbWithdrawn()` write to
-    // `this.reserves` on every rebuild, so this skip is also what carries a
-    // panel's dead and its units come home from one rebuild to the next.
-    //
-    // What keeps that honest across a restart is the room's `*ngIf` on
-    // `gameStarted`: `game_reset` puts the setup screen back and takes this
-    // whole component with it, so the next match opens on a new instance
-    // with an empty stamp. Deal a new match without unmounting the board and
-    // the panels come back holding the last one's casualties.
+    const stamp = `${this.radius}|${this.orientation}|empty`;
     if (stamp === this.reservesKey) return;
     this.reservesKey = stamp;
     this.reserves = {};
-    // A new deal has no dead to take back - and its uids repeat the last one's.
     this.fallen.clear();
-    if (!roster.length) return;
-
-    for (const [panel, hexes] of this.panelZones) {
-      const color: 'white' | 'black' = panel[0] === 'b' ? 'white' : 'black';
-      // Every third hex, spread out with room to shuffle - but black's panels
-      // are walked backwards. Reading order runs top to bottom, so taking the
-      // first spots from it deals the two sides different shapes: white's
-      // squad lands on its own wrap tip while black's lands at the far end of
-      // its base, ten hexes from anything. Black's panels are the point
-      // mirror of white's, so reversing deals the mirror image and both sides
-      // open with the same reach.
-      // The wrap's corridor is never dealt on. Each tip is a cul-de-sac with
-      // exactly one hex of its own panel leading in - every other neighbour
-      // is battlefield, which a panel unit may not cross - so a unit on
-      // either the tip or its doorway shuts the crossing for the whole
-      // panel: nothing reaches the base tip, or nothing lands past the
-      // reserve one. A reload re-deals that blockage as fast as it is
-      // shuffled away, which is why it is kept clear here rather than left
-      // to the player.
-      const corridor = this.wrapCorridor(color);
-      const order = (color === 'black' ? [...hexes].reverse() : [...hexes])
-        .filter(hex => !corridor.has(hex));
-      const spots = order.filter((_, i) => i % 3 === 0);
-      roster.forEach(([id, def]: [string, any], i) => {
-        const at = spots[i];
-        if (!at) return;
-        const hp = def?.hp ?? 1;
-        const uid = `r${panel}${i}`;
-        // A wound taken in the reserve outlives the deal it was dealt in, and
-        // nothing at 0 is dealt at all - that is what killed in a panel means.
-        const left = this.panelHp[uid] ?? hp;
-        if (left <= 0) return;
-        this.reserves[at] = { unit_id: id, color, hp: left, max_hp: hp, uid };
-      });
-    }
   }
 
   /**
    * What the panels have taken, over whoever is standing in them.
    *
-   * The deal applies this too - but the deal happens *once*. It is skipped
-   * whenever the roster and the geometry are unchanged, which is what lets a
-   * reserve shuffled around its panel stay where it was put, and that skip
-   * used to take the wounds with it: a blow into a panel was recorded,
-   * derived, handed to the board as `panelHp` - and then never drawn. A
-   * reserve looked untouched however often it was hit, until a reload dealt
-   * the panel again and the wound appeared out of nowhere.
-   *
-   * So it is applied here as well, on every rebuild, where the skip cannot
-   * reach it. Units that walked home are dealt with after this by
-   * `absorbWithdrawn()`, which is the authority on those.
+   * Recorded panel units get this applied on every rebuild. Units that walked
+   * home are dealt with after this by `absorbWithdrawn()`, which is the
+   * authority on those.
    *
    * Mending arrives the same way and is drawn the same way: `panelHp` closes
    * a **base's** wounds an HP a turn - a reserve keeps what it was given - so
@@ -3364,14 +3383,28 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * the board, the way he is never dealt into a panel. Both engines refuse it
    * too - see `homecoming_targets` and the browser engine's `move`.
    *
-   * ponytail: the owner has said certain turns and phases will close this.
-   * Until they are named it is open whenever a unit can reach it - the gate
-   * belongs here, one condition alongside `entryBind`.
+   * **When it is open**: any setup turn - the opening's three and each phase's
+   * own initialization - and all of overtime. Shut through both halves of a
+   * numbered phase's play. Overtime is the owner's exception and is not a
+   * setup turn: the toll is running and units are still fighting, so a walk
+   * home there is an ordinary move that happens to end off the board, and the
+   * three-a-turn count does not apply to it.
+   *
+   * **Who may go**: a unit standing in its own first three rows. A unit that
+   * has pushed up the board walks back down into its own ground before it can
+   * walk off it.
    */
   private addBaseEntry(cell: HexCell, key: string, budget: number | undefined): void {
     if (!this.entryBind) return;
     if (this.config?.units?.[cell.piece?.unit_id ?? '']?.commander) return;
+    if (!this.homecomingOpen) return;
     const color = cell.piece?.color ?? 'white';
+    if (!inHomeRows(color, Number(key.split(',')[1]), this.radius)) return;
+    // Three a turn while setting out, and the unit already on its way counts
+    // as one of them. Overtime has no count: the turn's own move allowance is
+    // the only cap a walk home needs there.
+    if (isSetupTurn(this.turnNumber)
+        && this.homecomingsSpent >= HOMECOMINGS_PER_SETUP_TURN) return;
     const refund = this.wrapCost(cell);
     const mov = budget ?? this.config?.units?.[cell.piece?.unit_id ?? '']?.move ?? 0;
     for (const [gate, arrow] of baseGatewayHexes(this.radius)) {
@@ -3513,6 +3546,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    */
   private addGateway(cell: HexCell, key: string, budget: number | undefined): void {
     if (!this.entryBind) return;
+    // Shut by the schedule: no target at all, the way a shut wrap offers none.
+    // What says so on screen is the cross over the three arrows.
+    if (!this.entryOpen) return;
 
     const color = cell.piece?.color ?? 'white';
     const mov = budget ?? this.config?.units?.[cell.piece?.unit_id ?? '']?.move ?? 0;
@@ -3537,7 +3573,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         // stepped over - you simply cannot stop on it.
         const standing = blocked[entry];
         if (standing && standing.color !== cell.piece?.color) continue;
-        if (!standing) {
+        // A crossing stops in its own first three rows and goes no further -
+        // the owner's rule. A limit on where the walk STOPS, not on where it
+        // goes: the onward flood below still runs THROUGH a fourth row, the
+        // same way it runs over a friend it cannot stop on.
+        if (!standing && inHomeRows(color, er, this.radius)) {
           if (spent < (this.moveCosts.get(entry) ?? Infinity)) {
             this.moveCosts.set(entry, spent);
           }
@@ -3553,6 +3593,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         for (const [hex, cost] of computeMoveCosts(
           onward, eq, er, this.config, this.radius, left,
         )) {
+          if (!inHomeRows(color, Number(hex.split(',')[1]), this.radius)) continue;
           const total = spent + cost;
           if (total < (this.moveCosts.get(hex) ?? Infinity)) this.moveCosts.set(hex, total);
           this.entryTargets.add(hex);
@@ -3697,6 +3738,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /**
+   * Any turn given to setting out - the opening, or a phase's initialization
+   * turn. Deliberately not the same question as `initializing`: the one-move-
+   * per-phase lock above is the opening's alone, but nobody attacks on either.
+   */
+  private get settingOut(): boolean {
+    return isSetupTurn(this.turnNumber);
+  }
+
+  /**
    * Whether this panel unit may still be walked this turn: one already among
    * the turn's movers may carry on spending what is left of its MOV, but a
    * fresh one cannot start once the allowance is used up - and through the
@@ -3704,12 +3754,21 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    *
    * Both panels carry the cap, all match, and each carries its own: three
    * out of the base and three out of the reserve, never three between them.
+   *
+   * **A phase's initialization turn raises the reserve's to five** - the same
+   * number `panelMoverAllowed` and `panel_allowance` raise it to, and the
+   * board must raise it too or the fourth and fifth are offered by neither
+   * engine's rule but refused by the screen. The base keeps its three:
+   * nothing in that allowance was about the base.
    */
   private panelCanMove(cell: HexCell): boolean {
     const uid = this.uidOf(cell);
     if (this.lockedUnits.has(uid)) return false;
-    const movers = BASE_PANELS.has(cell.panel) ? this.baseMovers : this.reserveMovers;
-    return movers.has(uid) || movers.size < PANEL_MOVERS_PER_TURN;
+    const base = BASE_PANELS.has(cell.panel);
+    const movers = base ? this.baseMovers : this.reserveMovers;
+    const cap = !base && isPhaseInitialization(this.turnNumber)
+      ? PHASE_INIT_ENTRIES : PANEL_MOVERS_PER_TURN;
+    return movers.has(uid) || movers.size < cap;
   }
 
   /**
@@ -3962,8 +4021,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // even answer - so neither is ever offered a target. What the battlefield
     // reaches, though, includes them both: a unit at the edge shows its range
     // running on into the panel beside it.
-    // Through the initialization nobody attacks at all.
-    if (!cell.panel && !this.initializing) {
+    // On any turn given to setting out, nobody attacks at all - the opening
+    // and a phase's initialization turn alike, which is what both engines
+    // refuse. Offering a target here would stage a blow they then reject.
+    if (!cell.panel && !this.settingOut) {
       const range: number = this.config?.units?.[cell.piece.unit_id]?.attackRange ?? 1;
       for (const other of this.cells) {
         if (!other.piece || other.piece.color === cell.piece.color) continue;
@@ -4068,8 +4129,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     this.entryTargets = held.entry;
     // The strike layer sits just outside whatever movement is left - and is
     // not drawn at all for a unit that cannot strike: a panel unit, or
-    // anybody at all through the initialization.
-    if (cell.panel || this.initializing) return;
+    // anybody at all on a turn given to setting out.
+    if (cell.panel || this.settingOut) return;
     // Bounded by what the board DRAWS, not by the battlefield: a unit at the
     // edge reaches into the panel beside it, and the overlay has to say so.
     // Left to its own bound the zone stops dead at the hexagon's rim, which

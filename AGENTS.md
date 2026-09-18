@@ -213,17 +213,10 @@ Decided so far:
   - **Right plane** = staged troops. Every couple of phases of the war, units here can be
     selected and deployed into the player's first row. Unlike the left plane, the right plane
     **can** be attacked, but only in very specific ways.
-  - **Placeholder squads sit in all four planes** (`buildReserves()` in
-    `game-board.component.ts`): five non-commander units from config per panel, white in the
-    bottom pair, black in the top. They are **client-side only** - the server's board is the
-    radius-N battlefield and `set_cell()` rejects anything outside it - and **confined to their
-    own panel**: `computeMoveCosts()` / `computeAttackZone()` take a `zone` set that replaces
-    the radius check, and attack targeting requires both hexes to share a panel, so nothing
-    reaches across the wall in either direction. Shuffling a unit inside its panel is local -
-    no server message, and a reload re-deals them - but it is neither free nor beyond recall:
-    it comes out of a move budget, and **Undo takes it back**. A unit that has walked but is
-    not finished carries a mark on its hex (`hasWalked()`), because it is neither untouched
-    nor spent and would otherwise look like the former.
+  - **Panels start empty for now**: new games deal no units into the four planes.
+    `buildReserves()` and `deal_panels()` leave the panels empty at game start. The panel
+    movement, combat, and history-replay code remains available for later deployment rules,
+    including units explicitly returned to a panel by a recorded action.
   - **The red plane is the base, the green one the reserve.** **Every panel unit, base and
     reserve alike, gets its own MOV per turn and no more** - spendable a few steps at a time,
     never an endless shuffle (`panelMoved` in `game-board.component.ts`, keyed by uid).
@@ -235,7 +228,9 @@ Decided so far:
     **Both panels carry the cap, all match**: three out of the base and three out of the
     reserve, never three between them. *The reserve used to carry it only through the
     initialization and shuffle freely after; the owner asked for the base's rule on both.*
-    Allowances reset each ply. Moving a panel unit is still not the turn's one board
+    **The reserve's three becomes five on a numbered phase's initialization turn**
+    (`PHASE_INIT_ENTRIES`), and the five stand instead of the three rather than beside them;
+    the base keeps its three. Allowances reset each ply. Moving a panel unit is still not the turn's one board
     action - it happens alongside it. Three is the owner's placeholder ("for now").
     **A panel unit that has been started this turn is marked**: a gold dot off the plate's
     corner (`hasWalked()` / `.walked-mark`) and the **plate itself tinted gold**
@@ -271,12 +266,8 @@ Decided so far:
     `undoPanelMove()`), staged board actions by the room; every entry is stamped, and
     `undoMove()` pops from whichever is newer - so Undo always takes back the thing just done
     rather than reaching past it. Taking a crossing back hands its price back with it.
-  - **Both sides are dealt the same opening, mirrored** (`buildReserves`). Panel hexes come in
-    reading order, top to bottom, so taking the first spots from it deals the two sides
-    *different* shapes - white's squad landed on its own wrap tip while black's landed at the
-    far end of its base, ten hexes from anything, and the opponent could never reach the wrap
-    at all. Black's panels are the point mirror of white's, so black's are walked **backwards**
-    and the squads come out as exact negations of each other.
+  - **Panel openings are currently empty.** When panel units are reintroduced, both sides must
+    be dealt the same mirrored opening rather than independently choosing shapes.
   - **Every label on the board counter-rotates** (`textTransform`), or it reads upside down on
     a board flipped for a black seat. That includes the wrap's `-x`, the base's `+x` and the
     mending `+1`; all three shipped without it and were upside down for whoever sat as black.
@@ -293,9 +284,10 @@ Decided so far:
     mirror, `(12,-1)` and `(-11,-1)`. `wrapTips()` / `addWrap()` derive both from the radius, so
     neither number is hardcoded.
   - **The turn indicator names the stage** (`stageLabel` in the room, `stageAt()` in
-    `phases.ts`): `YOUR TURN - PHASE 1 HALFTIME`. Eight stages - `Initialization`,
-    `Phase 1`, `Phase 1 Halftime`, ... , `Overtime` - because **a phase that breaks in the
-    middle is two stages**, the second taking the halftime's name, which is the same name
+    `phases.ts`): `YOUR TURN - PHASE 1 HALFTIME`. Eleven stages - `Initialization`,
+    `Phase 1 Initialization`, `Phase 1`, `Phase 1 Halftime`, ... , `Overtime` - because **a
+    phase that breaks in the middle is two stages** and **one that opens with an
+    initialization turn is three**, each taking its own name, which is the same name
     `turnHeading()` counts down to. The result replaces the stage once the three phases have
     settled one; overtime is both a stage and a verdict and reads the same either way. *It
     used to name overtime and nothing else, leaving the other seven unnamed.* Amber now, not
@@ -409,22 +401,20 @@ Decided so far:
       `boardState` and `applyTurnPassed` takes one when there is one. The networked server
       sends none and the board stands. Only a king *the toll itself felled* ends the game
       there - a pass has never looked at who is beaten and must not start.
-  - **The wrap runs on a window** (`isWrapOpen()` in `phases.ts`): open through the
-    initialization, through **the first half of each numbered phase**, and through overtime -
-    **shut from a phase's halftime to the end of it**. On the shipped schedule that is turns
-    1-8, 14-18, 24-28 and 34 on, shut for 9-13, 19-23 and 29-33. Written as *a phase with a
-    halftime is open until it, a phase without one is open throughout* (`beforeHalftime()`) -
-    the opening and overtime are exactly the two without - so it reads off the schedule and
-    moving a phase moves the windows with it. **The same predicate names the stage**, so the
-    crossing is shut exactly while the header says `Halftime` and the two can never disagree. Shut means **no target and no price**: `addWrap()` returns at
-    the top, so not even the struck-through `wrapDenied` figure is drawn, because a price is
-    an offer and there is nothing on offer. What says so instead is a **red cross over the
-    arrow** on the tip the crossing leaves from - each side's **base** tip, hexes **283** and
-    **259**, which is the one the owner reads as pointing up (`wrapOut` on the cell, set by
-    `wrapMarks()`; `.gateway-shut`). Struck out rather than removed: an arrow that vanished
-    for five turns and came back would read as the board losing a feature. The rest of the
-    panel walk is untouched - a base unit still shuffles inside its own base while the
-    crossing is shut.
+  - **The wrap runs on a window** (`isWrapOpen()` in `phases.ts`): open on **a numbered
+    phase's played first half and nothing else** - turns 5-9, 16-20 and 27-31. Not the
+    opening, not an initialization turn, and not overtime. See the window table in the
+    schedule section for all three arrows. Shut means **no target and no price**:
+    `addWrap()` returns at the top, so not even the struck-through `wrapDenied` figure is
+    drawn, because a price is an offer and there is nothing on offer. What says so instead is
+    a **red cross over the arrow** on the tip the crossing leaves from - each side's **base**
+    tip, hexes **283** and **259**, which is the one the owner reads as pointing up (`wrapOut`
+    on the cell, set by `wrapMarks()`; `.gateway-shut`). Struck out rather than removed: an
+    arrow that vanished for five turns and came back would read as the board losing a feature.
+    The rest of the panel walk is untouched - a base unit still shuffles inside its own base
+    while the crossing is shut. **The same cross now marks the other two arrows** on their own
+    windows, off `arrowShut()` rather than off the wrap's predicate - one arrow's cross drawn
+    from another arrow's window is exactly the bug that shape prevents.
   - **Three reserve hexes are the gateway onto the board** - hexes **490** `(3,9)`, **513**
     `(2,10)` and **536** `(1,11)` on white's side, mirrored for black: the three board-adjacent
     reserve hexes nearest that player's own edge (the run of board-adjacent reserve hexes
@@ -473,6 +463,12 @@ Decided so far:
     in reverse: reaching a board hex beside a mark is an ordinary walk, stepping through costs
     one more, and it carries on inside the base with whatever MOV is left. Only ever into
     **its own** base. It is the turn's board move, staged and undone like any other.
+    - **It runs on a window, and only out of your own first three rows** - see the window
+      table in the schedule section. Open on any setup turn (three units a turn) and through
+      all of overtime (uncounted); shut through both halves of a numbered phase's play, and
+      the three base arrows carry a red cross while it is. The mover must be standing in its
+      own first three rows: `inHomeRows()` / `in_home_rows()`, asked of where the unit
+      **stands**, not of the route to the doorway.
     - **The king never walks home** - the owner's rule, 17 Sep 2026. A commander belongs on
       the board, the way he is never dealt into a panel. Walked home, he was off the board,
       and under regicide a side with no commander on it has lost, so the walk lost the match
@@ -795,18 +791,72 @@ Decided so far:
 
   | phase | turns | |
   |---|---|---|
-  | Initialization | 1-3 | |
-  | Phase 1 | 4-13 | halftime after turn 8 |
-  | Phase 2 | 14-23 | halftime after turn 18 |
-  | Phase 3 | 24-33 | halftime after turn 28 |
-  | Overtime | 34+ | runs out the match; first hand-over is 67 (`OVERTIME_FIRST_PLY`) |
+  | Initialization | 1-3 | the opening |
+  | Phase 1 | 4 / 5-14 | turn 4 is its **initialization turn**; halftime after turn 9 |
+  | Phase 2 | 15 / 16-25 | initialization turn 15; halftime after turn 20 |
+  | Phase 3 | 26 / 27-36 | initialization turn 26; halftime after turn 31 |
+  | Overtime | 37+ | runs out the match; first hand-over is 73 (`OVERTIME_FIRST_PLY`) |
 
-  A halftime splits a ten-turn phase evenly. These are full turns, so the initialization is
-  six hand-overs and each phase is twenty. **The history header counts down to the next
-  change**, in full turns: `Turn 1 - 2 Until Phase 1`. A change lands at the *end* of the turn it is counted
-  to, so the turn it lands on has already moved on to the next one - turn 3 is the last of the
-  initialization and reads `Turn 3 - 5 Until Phase 1 Halftime`. Past the last change it just
-  says `Turn 44 - Overtime`.
+  A halftime splits a ten-turn phase evenly. These are full turns, so the opening is six
+  hand-overs and each phase is twenty-two.
+
+  **Each numbered phase opens with an initialization turn of its own, and its ten turns do
+  not count it.** Carried as `init: true` on the phase rather than as a phase of its own
+  (`phaseSpan()`): a separate entry would have to be excluded from `SCORING_PHASES` and from
+  every "which phase am I in" answer, and turn 4 *is* part of Phase 1. Two predicates come
+  off it and must not be confused - `isInitialization()` is **the opening alone**, because
+  the opening's one-move-per-phase lock hangs off it and handing that to a single turn would
+  stop a unit that moved in an unrelated earlier turn; `isSetupTurn()` is the opening plus
+  each phase's initialization turn, and covers only what the two genuinely share.
+
+  **The history header counts down to the next change**, in full turns:
+  `Turn 1 - 2 Until Phase 1 Initialization`. A change lands at the *end* of the turn it is
+  counted to, so the turn it lands on has already moved on to the next one - turn 3 is the
+  last of the opening and reads `Turn 3 - 1 Until Phase 1`. An initialization turn is two
+  changes, into it and out of it again. Past the last change it just says `Turn 44 - Overtime`.
+
+- **Three arrows a side, three windows, and no turn opens all three.** Every one is read off
+  the ply alone, so both engines and the board answer from the same predicate in `phases.ts`
+  (mirrored in `engine/phases.py`), and the board draws a **red cross** over any arrow that is
+  shut (`arrowKind` on the cell, `arrowShut()`, `.gateway-shut`):
+
+  | | predicate | open on |
+  |---|---|---|
+  | the wrap, out of a base | `isWrapOpen()` | a numbered phase's **played first half**: 5-9, 16-20, 27-31 |
+  | the three ways in, out of a reserve | `isEntryOpen()` | any setup turn, and each phase's **halftime half**: 1-4, 10-15, 21-26, 32-36 |
+  | the three ways home, into a base | `isHomecomingOpen()` | any setup turn, and **all of overtime**: 1-4, 15, 26, 37+ |
+
+  The wrap and the way in are near enough complements: a side spends a phase's first half
+  sending units out around the outside and its second half bringing them back in. *The wrap
+  used to be `beforeHalftime()` alone, which said yes for every phase with no break to fall
+  either side of - quietly including the opening and the whole of overtime. It is now spelled
+  out as three conditions because each one refuses a different turn.*
+
+- **A crossing lands in its own first three rows, and a walk home starts in them**
+  (`inHomeRows()` in `hex-rules.ts`, `in_home_rows()` in `engine/panels.py`; `HOME_ROWS = 3`).
+  The ground a side deploys onto now bounds both ends of a unit's journey off the board: a
+  unit coming out of a reserve may not stop past row 9 (white; the mirror for black), and a
+  unit that has pushed up the board walks back down into its own ground before it can walk
+  off it. A limit on where a walk **stops**, not on where it goes - the flood still routes
+  through a fourth row, the same way it steps over a friend it cannot stop on. The board's
+  `homeOf` tint reads the same helper, so the coloured ground and the rule cannot drift.
+
+  *Consequence worth knowing: at the deal those rows are where a side's army already stands,
+  so the opening offers white exactly one legal crossing - '1,9', six steps off. Reserves
+  backfill ground the line has vacated; they do not pour onto an empty board.*
+
+- **A phase's initialization turn has its own allowances.** One full turn, both sides, and on
+  it: **no ability fires and nobody attacks** (`isSetupTurn()`, shared with the opening -
+  `noAttackMessage()` says which of the two refused, since "the opening" on turn 15 points at
+  a phase that ended ten turns ago); **five units may be started out of the reserve** rather
+  than the usual three (`PHASE_INIT_ENTRIES`, and it stands *instead of* the per-panel three,
+  covering walks inside the reserve as well as crossings out of it - capping the walk at three
+  would leave two of the five unable to reach a gateway); and **three units may walk home**
+  (`HOMECOMINGS_PER_SETUP_TURN`, counted by `homecomingsAt()` / `homecomings_at()`). The base
+  keeps its three: nothing in the rule was about the base, and the wrap is shut on that turn
+  anyway. **Overtime is the exception to the count** - it is not a setup turn, the toll is
+  running and units still fight, so a walk home there is an ordinary move that happens to end
+  off the board and the turn's own move allowance is the only cap it needs.
 - **The initialization runs on its own rules.** Through the opening three turns:
   - **Nobody attacks at all** - not on the battlefield either. No targets are offered and no
     strike layer is drawn (`isInitialization()` in `services/phases.ts`, read by
@@ -814,9 +864,13 @@ Decided so far:
   - **No ability is CAST** - not a pool ability, not a path's skill or ultimate, not a unit's
     own - **but choosing is exactly what the opening is for.** Two gates, and the split
     matters: `canChooseAbilities()` (take a pair up, take a path, hand a pair back through
-    Reselect) is open through the opening; `canUseAbilities()` is that plus "not the opening",
-    and everything that spends an ability runs through it. The panels say which rule closed
-    them (`abilityBlockedNote`).
+    Reselect) is open through every setup turn; `canUseAbilities()` is that plus
+    "not `isSetupTurn()`", and everything that spends an ability runs through it. So a
+    numbered phase's initialization turn shuts casting for the same reason the opening does.
+    The panels say which rule closed them, and name the turn (`abilityBlockedNote`). The
+    offline engine refuses one too (`abilityFault()`): it need not know what a cast is
+    *worth* to know none should have arrived, which is the one ability rule it can keep with
+    the abilities still unsettled.
   - **Three full turns each** - white's hand-over and black's, so six hand-overs (see the
     schedule table: the turns there are full turns).
   - A side may move **three base units and three reserve units a turn, and one battlefield
@@ -1211,8 +1265,8 @@ could answer it. Everything below is **derived from the config and the move hist
 no panel table, no points column and no migration.
 
 - **`server/game/engine/panels.py`** is the model: the geometry (`gateway_hexes`,
-  `base_gateway_hexes`, `wrap_tips`, `wrap_corridor`), the opening deal (`deal_panels`, mirroring
-  `buildReserves` — five non-commander unit types per panel, uids `r{panel}{i}`), mending
+  `base_gateway_hexes`, `wrap_tips`, `wrap_corridor`), the currently empty opening deal
+  (`deal_panels`, mirrored by `buildReserves`), mending
   (`panel_hp`, `withdrawn_units`), and **`panel_occupancy`, which replays the history in order**:
   the deal, then every walk home, walk inside a panel and crossing, in the order they happened.
   It was two sets once — "ever crossed" and "ever walked home" — which was right only while a unit

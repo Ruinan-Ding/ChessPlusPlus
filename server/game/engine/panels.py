@@ -9,8 +9,8 @@ feature behind ``entryBind``.
 Nothing here is persisted, and no migration adds a panel table, because none is
 needed: **the panels are entirely derivable from what the server already has.**
 
-* The *deal* is deterministic - the same five unit types, on the same hexes,
-  with the same uids, for a given radius and config.
+* New games currently start with an empty *deal*. Recorded panel actions can
+  still repopulate the derived occupancy later.
 * The *geometry* - where a panel joins the board - is a pure function of radius.
 * Everything that happens to a panel unit afterwards is written into
   ``GameState.move_history``, which the server already stores verbatim.
@@ -276,52 +276,13 @@ def deal_panels(
     panel_hp: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
-    The opening panel squads, by hex key. Mirrors ``buildReserves``.
+    Return the initial panel occupancy.
 
-    Every panel - both bases and both reserves - is dealt one of each rostered
-    unit type. Black's panels are walked **backwards** so the two sides get
-    point-mirrored shapes with identical reach, and the wrap corridor is
-    excluded so a squad can never block its own crossing. Unit *i* lands on
-    every third free hex, which spreads the squad out instead of bunching it.
-
-    ``panel_hp`` is what the record says each unit has left, by uid; anything
-    already at zero is not dealt at all, because killed in a panel is killed.
-    Pass the result of :func:`recorded_panel_hp`.
-
-    The uid is ``r{panel}{i}`` - deterministic, which is what lets the client
-    re-deal after a reload and get the same units back. It is also why nothing
-    needs persisting: this function and the move history between them are the
-    whole of the panel state.
+    New games currently start with empty base and reserve panels. Panel
+    history is still replayed by :func:`panel_occupancy` so recorded
+    deployment actions remain understandable if that feature is re-enabled.
     """
-    wounded = panel_hp or {}
-    roster = panel_roster(config)
-    dealt: Dict[str, Dict[str, Any]] = {}
-    if not roster:
-        return dealt
-
-    for panel, hexes in panel_zones(radius, orientation).items():
-        color = color_of_panel(panel)
-        corridor = wrap_corridor(color, radius)
-        order = list(reversed(hexes)) if color == 'black' else list(hexes)
-        order = [hex_key for hex_key in order if hex_key not in corridor]
-        spots = order[::PANEL_SPACING]
-        for i, (unit_id, spec) in enumerate(roster):
-            if i >= len(spots):
-                break
-            full = spec.get('hp', 1)
-            uid = f"r{panel}{i}"
-            left = wounded.get(uid, full)
-            if left <= 0:
-                continue
-            dealt[spots[i]] = {
-                'unit_id': unit_id,
-                'color': color,
-                'hp': left,
-                'max_hp': full,
-                'uid': uid,
-                'panel': panel,
-            }
-    return dealt
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +533,29 @@ def is_base(panel: Optional[str]) -> bool:
     return panel in BASE_PANELS
 
 
+#: How deep a side's own ground runs from its own edge inwards - the "first
+#: three rows". Mirrors ``HOME_ROWS`` in hex-rules.ts.
+HOME_ROWS = 3
+
+
+def in_home_rows(color: str, r: int, radius: int) -> bool:
+    """
+    Whether row ``r`` is one of *color*'s own first three.
+
+    The ground a side deploys onto, and now the ground that bounds both ends of
+    a unit's journey off the board: a crossing out of the reserve may not land
+    beyond it, and a unit may only walk home from inside it.
+
+    White's edge is positive ``r`` and black's negative, so on radius 11 white
+    holds rows 9, 10 and 11 and black the mirror. Read off the radius rather
+    than off the placement, because this marks the ground a side *owns* - still
+    its ground on a config that leaves some of those hexes empty. Mirrors the
+    board's ``homeOf``, which tints exactly these rows.
+    """
+    edge = max(1, radius - (HOME_ROWS - 1))
+    return r >= edge if color == 'white' else r <= -edge
+
+
 # ---------------------------------------------------------------------------
 # Walking, and stepping out onto the board
 # ---------------------------------------------------------------------------
@@ -734,7 +718,14 @@ def entry_targets(
                 total = spent + cost
                 if total < out.get(hex_key, math.inf):
                     out[hex_key] = total
-    return out
+    # A crossing lands in its own first three rows and goes no further. The
+    # owner's rule, and a limit on where the walk STOPS, not on where it goes:
+    # the flood above may route through a fourth row and come back, the same
+    # way it may pass over a friend it cannot stop on.
+    return {
+        hex_key: cost for hex_key, cost in out.items()
+        if in_home_rows(color, parse_key(hex_key)[1], radius)
+    }
 
 
 def homecoming_targets(
@@ -779,6 +770,13 @@ def homecoming_targets(
     color = unit.get('color')
     unit_def = (config.get('units') or {}).get(unit.get('unit_id')) or {}
     if unit_def.get('commander'):
+        return {}
+    # Only from your own first three rows. The owner's rule, and the same bound
+    # a crossing lands inside: a unit that has pushed up the board has to walk
+    # back down into its own ground before it can walk off it. Asked of where
+    # the unit STANDS, not of where the walk passes - the doorways are in the
+    # base and the route to them runs through these rows anyway.
+    if not in_home_rows(color, fr, radius):
         return {}
     mov = unit_def.get('move', 0) if moves_left is None else moves_left
     try:
@@ -869,6 +867,33 @@ def walked_this_ply(history: Iterable[Dict[str, Any]], uid: str, ply: int) -> in
     return total
 
 
+def homecomings_at(
+    history: Iterable[Dict[str, Any]], ply: int, color: str,
+) -> frozenset:
+    """
+    The units of *color* walked home this ply. Mirrors ``homecomingsAt`` in
+    history-rules.ts.
+
+    Keyed by uid, from the record's own copy of the unit as it left the board -
+    the only place a withdrawn unit survives. A set rather than a count because
+    a unit walks home in one record and could not be counted twice anyway; the
+    set makes that explicit rather than lucky.
+    """
+    out = set()
+    for move in history or []:
+        if not isinstance(move, dict) or move.get('turn') != ply:
+            continue
+        if not move.get('withdrawn'):
+            continue
+        unit = move.get('unit') or {}
+        if unit.get('color') != color:
+            continue
+        uid = unit.get('uid')
+        if uid:
+            out.add(uid)
+    return frozenset(out)
+
+
 def panel_movers(
     history: Iterable[Dict[str, Any]], ply: int, color: str,
 ) -> Dict[str, set]:
@@ -937,14 +962,27 @@ def panel_allowance(
     None when it is locked out of the opening, or when its panel's three movers
     are used up and it is not one of them. Otherwise its move stat less what it
     has already walked, which may be 0.
+
+    **In a phase initialization the reserve's cap is five, not three.** The
+    owner's number, and it stands *instead of* the per-panel three rather than
+    beside it. It governs walking inside the reserve as well as crossing out of
+    it, because the two are the same allowance: capping the walk at three would
+    leave two of the five unable to reach a gateway to spend their crossing on.
+    The base keeps its three - nothing in the rule was about the base, and the
+    wrap is shut on that turn anyway.
     """
+    from .phases import PHASE_INIT_ENTRIES, is_phase_initialization
+
     moves = list(history or [])
     uid = unit.get('uid')
     if not uid or uid in locked_units(moves, ply):
         return None
     kind = 'base' if is_base(unit.get('panel')) else 'reserve'
     movers = panel_movers(moves, ply, unit.get('color'))[kind]
-    if uid not in movers and len(movers) >= PANEL_MOVERS_PER_TURN:
+    cap = PANEL_MOVERS_PER_TURN
+    if kind == 'reserve' and is_phase_initialization(ply):
+        cap = PHASE_INIT_ENTRIES
+    if uid not in movers and len(movers) >= cap:
         return None
     stat = ((config.get('units') or {}).get(unit.get('unit_id')) or {}).get('move', 0)
     try:
