@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable
 
-from .phases import hand_overs_by
+from .phases import turn_points_by
 
 
 def points_of(
@@ -46,10 +46,16 @@ def points_of(
     A turn "begun" counts from its first ply, so white has one to spend on the
     very first move of the match and black has none until its own turn starts -
     the same moment `beginTurnFor` handed the point out.
+
+    **How much a turn pays is the schedule's business**, not a literal here:
+    overtime's stretches pay 1, 3 and 5. :func:`phases.turn_points_by` is the
+    one place that knows, and the client's `beginTurnFor` - which hands the
+    same point out live, before this sum resets the tally - reads the same
+    table through `pointsPerTurnAt`.
     """
     units = (config or {}).get('units') or {}
     other = 'black' if color == 'white' else 'white'
-    points = hand_overs_by(color, ply)
+    points = turn_points_by(color, ply)
     for move in history or []:
         if not isinstance(move, dict):
             continue

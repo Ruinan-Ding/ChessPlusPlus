@@ -40,6 +40,8 @@ from .engine import load_config, build_initial_board, DEFAULT_CONFIG
 from .engine import economy, panels
 from .engine.board import HexBoard, parse_coord, hex_distance
 from .engine.game_logic import (
+    board_move_landings,
+    board_moves_at,
     defeated_sides,
     get_legal_moves_filtered,
     opening_moved_hexes,
@@ -47,7 +49,10 @@ from .engine.game_logic import (
     resolve_combat,
     resolve_panel_attack,
 )
-from .engine.phases import is_initialization
+from .engine.phases import (
+    HOMECOMINGS_PER_SETUP_TURN, board_moves_per_turn, is_entry_open,
+    is_homecoming_open, is_initialization, is_setup_turn, no_attack_message,
+)
 
 logger = logging.getLogger('game')
 
@@ -1691,25 +1696,70 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_MOVE', 'That piece is not yours')
                 return
 
-            # The opening's rules. The board enforced these in its click handler
-            # and nowhere else - neither engine had a phase schedule to know
-            # what the opening was - so a crafted message could attack on the
-            # first turn. Checked before the walk home, because the board locks
-            # a unit out before it offers it one.
-            if is_initialization(state.turn_number):
+            # The setup turns' rules. The board enforced these in its click
+            # handler and nowhere else - neither engine had a phase schedule to
+            # know what the opening was - so a crafted message could attack on
+            # the first turn. Checked before the walk home, because the board
+            # locks a unit out before it offers it one.
+            #
+            # Two predicates, deliberately. **Nobody attacks** on any turn given
+            # to setting out, the opening's three and each phase's own; **the
+            # one-move-per-phase lock** is the opening's alone, and handing it
+            # to a single initialization turn would stop a unit that had moved
+            # in some earlier turn of a phase it has nothing to do with.
+            if is_setup_turn(state.turn_number):
                 if data.get('attack'):
-                    await send_error(self, 'INVALID_MOVE', 'Nobody attacks in the opening')
+                    await send_error(
+                        self, 'INVALID_MOVE', no_attack_message(state.turn_number))
                     return
+                # Moving onto an enemy is an attack too, by another road.
+                landing = board.get(tq, tr)
+                if landing and landing.get('color') != my_color:
+                    await send_error(
+                        self, 'INVALID_MOVE', no_attack_message(state.turn_number))
+                    return
+            if is_initialization(state.turn_number):
                 if panels.coord_key(fq, fr) in opening_moved_hexes(
                         list(state.move_history), my_color):
                     await send_error(
                         self, 'INVALID_MOVE', 'That unit has had its move for the opening')
                     return
-                # Moving onto an enemy is an attack too, by another road.
-                landing = board.get(tq, tr)
-                if landing and landing.get('color') != my_color:
-                    await send_error(self, 'INVALID_MOVE', 'Nobody attacks in the opening')
-                    return
+
+            # **How many board moves this side still has.** One everywhere the
+            # schedule is running; two in Overtime 2 and three in Overtime 3
+            # (`board_moves_per_turn`). Counted off the record rather than
+            # inferred from "has the turn ended yet", because the moves arrive
+            # as separate messages and only the last of them ends it.
+            #
+            # Checked here for every board move, the walk home included: with
+            # an allowance above one, a client that sets `more` on all of them
+            # could otherwise play the whole game inside one hand-over.
+            moves_allowed = board_moves_per_turn(state.turn_number)
+            moves_used = board_moves_at(
+                list(state.move_history), state.turn_number, my_color)
+            if moves_used >= moves_allowed:
+                await send_error(
+                    self, 'INVALID_MOVE',
+                    f'That side has had all {moves_allowed} of its moves this turn')
+                return
+            # `more` is the client saying "this is not my last": hold the seat
+            # and let the next message in. Honoured only while a move is still
+            # to come after this one - a `more` on the last of the allowance
+            # ends the turn anyway, since there is nothing it could be holding
+            # the seat open for.
+            holding = bool(data.get('more')) and moves_used + 1 < moves_allowed
+            # **The allowance counts moves; the owner's rule counts units.**
+            # A side with three moves could otherwise play A, then B, then A
+            # again - each message legal on its own, judged from where the unit
+            # stands with a full MOV, so the unit covered twice its budget in
+            # one turn. A unit continuing a walk it began arrives as ONE
+            # message carrying the origin it really set out from, so a `from`
+            # that matches an earlier landing is always a second go.
+            if panels.coord_key(fq, fr) in board_move_landings(
+                    list(state.move_history), state.turn_number, my_color):
+                await send_error(
+                    self, 'INVALID_MOVE', 'That unit has already moved this turn')
+                return
 
             # Walking off the board into your own base. It ends the turn like
             # any other move, but its destination is a panel hex the board
@@ -1728,6 +1778,31 @@ class GameConsumer(AsyncWebsocketConsumer):
                 # a doorway that works.
                 if config.get('units', {}).get(piece['unit_id'], {}).get('commander'):
                     await send_error(self, 'INVALID_MOVE', 'The king never walks home')
+                    return
+                # The window, then the allowance. A phase's play shuts the base
+                # doorways entirely; a setup turn opens them for three units,
+                # and overtime opens them with no count at all - a walk home
+                # there is an ordinary move that happens to end off the board,
+                # and the turn's own move allowance is the only cap it needs.
+                if not is_homecoming_open(state.turn_number):
+                    await send_error(self, 'INVALID_MOVE', 'The way home is shut')
+                    return
+                if is_setup_turn(state.turn_number):
+                    gone = panels.homecomings_at(
+                        list(state.move_history), state.turn_number, my_color)
+                    if piece.get('uid') not in gone and len(gone) >= HOMECOMINGS_PER_SETUP_TURN:
+                        await send_error(
+                            self, 'INVALID_MOVE', 'That is all who may walk home this turn')
+                        return
+                # Said by name, before the generic refusal below can swallow
+                # it. `homecoming_targets` returns nothing at all for a unit
+                # standing too far up the board, and "cannot walk home there"
+                # would send the player looking for a doorway that works when
+                # the trouble is where the unit is standing. The same words the
+                # browser engine uses, so the two engines cannot disagree.
+                if not panels.in_home_rows(my_color, fr, radius):
+                    await send_error(
+                        self, 'INVALID_MOVE', 'Only your own first three rows walk home')
                     return
                 from_key = panels.coord_key(fq, fr)
                 to_key = panels.coord_key(tq, tr)
@@ -1758,10 +1833,28 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'withdrawn': True,
                     'unit': dict(leaving),
                 }
-                next_player = (state.player_black if mover == state.player_white
-                               else state.player_white)
-                if not await self._commit_turn(state, board, move_record, config, next_player):
-                    return
+                # **On a setup turn a walk home is deployment, not the turn's
+                # board action**, for the same reason a crossing is: three may
+                # go in one turn, and committing the turn on the first would
+                # hand the seat over with the other two unreachable - the
+                # allowance checked above would be a count that never counted.
+                # Overtime keeps it as the turn's action, which is what the
+                # window there is for: the toll is running and the turn's own
+                # move allowance is the only cap a walk home needs.
+                #
+                # `holding` covers the other way a walk home is not the turn's
+                # last act: in Overtime 2 a side may walk one home and still
+                # move another unit, and the first message must not hand over.
+                if is_setup_turn(state.turn_number) or holding:
+                    if not await self._commit_deployment(
+                            state, board.to_dict(), move_record, 'walk home'):
+                        return
+                else:
+                    next_player = (state.player_black if mover == state.player_white
+                                   else state.player_white)
+                    if not await self._commit_turn(
+                            state, board, move_record, config, next_player):
+                        return
                 logger.info(
                     f"Withdrawal in game {self.game_id}: {from_key}->{to_key} by {self.username}")
                 return
@@ -1828,7 +1921,16 @@ class GameConsumer(AsyncWebsocketConsumer):
             if combat['defender_hp'] is not None:
                 move_record['defender_hp'] = combat['defender_hp']
 
-            if not await self._commit_turn(state, board, move_record, config, next_player):
+            # Not the turn's last move: the same seat, the same ply, the same
+            # clock, and the next message plays the next unit. The turn ends on
+            # whichever move comes without `more` - or on the last one the
+            # allowance permits, whatever it claims.
+            if holding:
+                if not await self._commit_deployment(
+                        state, board.to_dict(), move_record, 'move'):
+                    return
+            elif not await self._commit_turn(
+                    state, board, move_record, config, next_player):
                 return
 
             logger.info(f"Move in game {self.game_id}: {from_coord}->{to_coord} by {self.username}")
@@ -1968,11 +2070,12 @@ class GameConsumer(AsyncWebsocketConsumer):
             orientation = board_cfg.get('orientation', 'edge-up')
             board = HexBoard.from_dict(radius, state.board_state)
 
-            # A blow into a panel is still a blow, and nobody strikes in the
-            # opening. The board never offered one there; nothing stopped a
-            # message from asking.
-            if is_initialization(state.turn_number):
-                await send_error(self, 'INVALID_MOVE', 'Nobody attacks in the opening')
+            # A blow into a panel is still a blow, and nobody strikes on a turn
+            # given to setting out. The board never offered one there; nothing
+            # stopped a message from asking.
+            if is_setup_turn(state.turn_number):
+                await send_error(
+                    self, 'INVALID_MOVE', no_attack_message(state.turn_number))
                 return
 
             outcome = resolve_panel_attack(
@@ -2052,11 +2155,19 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_MOVE', 'That unit is not yours')
                 return
 
+            # The reserve's three arrows are shut through a phase's played half
+            # and through overtime. Checked before the unit's own allowance, so
+            # a shut window is never reported as a spent one.
+            if not is_entry_open(state.turn_number):
+                await send_error(self, 'INVALID_MOVE', 'The way in is shut')
+                return
+
             # A crossing is a reserve unit's move, so it is held to the same
             # allowance as a walk inside the panel: not locked out of the
-            # opening, one of at most three reserve movers this turn, and only
-            # on what it has not already walked. Without this a unit shuffled
-            # to the gateway first crossed on a full MOV it had half spent.
+            # opening, one of at most three reserve movers this turn - five in a
+            # phase initialization - and only on what it has not already walked.
+            # Without this a unit shuffled to the gateway first crossed on a
+            # full MOV it had half spent.
             allowance = panels.panel_allowance(config, history, unit, state.turn_number)
             if allowance is None:
                 await send_error(self, 'INVALID_MOVE', 'That unit cannot move again this turn')

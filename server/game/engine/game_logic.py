@@ -325,6 +325,82 @@ def opening_moved_hexes(history: List[Dict[str, Any]], color: str) -> set:
     return out
 
 
+def board_moves_at(
+    history: List[Dict[str, Any]], ply: int, color: str,
+) -> int:
+    """
+    How many board moves of *color* this ply already holds. Mirrors
+    ``boardMovesAt`` in history-rules.ts.
+
+    What it is for: overtime's later stretches allow a side two or three moves
+    on the main board, so "has this side moved yet" stopped being a yes/no and
+    became a count - and the count has to come off the record, because the
+    moves arrive as separate messages and only the last of them ends the turn.
+
+    **A panel's move is not a board move.** A crossing (``entered``), a walk
+    inside a panel (``panelMove``) and a cast's damage (``panelEffect``) each
+    have an allowance of their own, and counting them here would spend the
+    board's.
+
+    **A walk home is one, except while setting out.** In overtime it *is* the
+    turn's board action, so it counts against this; on a setup turn three may
+    go as deployments and none of them is the turn's action.
+    """
+    from .phases import is_setup_turn
+
+    setup = is_setup_turn(ply)
+    moves = 0
+    for move in history or []:
+        if not isinstance(move, dict):
+            continue
+        if move.get('turn') != ply or move.get('color') != color:
+            continue
+        if move.get('panelMove') or move.get('entered') or move.get('panelEffect'):
+            continue
+        if move.get('withdrawn') and setup:
+            continue
+        moves += 1
+    return moves
+
+
+def board_move_landings(
+    history: List[Dict[str, Any]], ply: int, color: str,
+) -> set:
+    """
+    The hexes *color*'s board moves have already landed on this ply. Mirrors
+    ``boardMoveLandings`` in history-rules.ts.
+
+    **What stops a unit taking two of the turn's moves.** The allowance counts
+    moves, and the owner's rule counts *units*. Without this a side in Overtime
+    3 could move A, then B, then A again: each message is legal on its own,
+    judged from where the unit stands with a full MOV, so the unit travelled
+    twice its budget in one turn.
+
+    A unit continuing a walk it has already begun is not this: the room folds
+    those into one move and sends the origin it really set out from, so a
+    ``from`` matching an earlier landing is always a second go.
+    """
+    out = set()
+    for move in history or []:
+        if not isinstance(move, dict):
+            continue
+        if move.get('turn') != ply or move.get('color') != color:
+            continue
+        if move.get('panelMove') or move.get('entered') or move.get('panelEffect'):
+            continue
+        # A walk home lands off the board: nothing left to move again.
+        if move.get('withdrawn'):
+            continue
+        # Normalised the way ``opening_moved_hexes`` does: a hex arrives as
+        # whatever string the client wrote, and "0,9" must not miss "0, 9".
+        try:
+            q_str, _, r_str = str(move.get('to', '')).partition(',')
+            out.add(f"{int(q_str)},{int(r_str)}")
+        except ValueError:
+            continue
+    return out
+
+
 def overtime_toll(
     board: HexBoard,
     config: Dict[str, Any],
@@ -345,16 +421,23 @@ def overtime_toll(
 
     Only a commander **on the board** pays, which is the only place one ever
     stands: he is never dealt into a panel and never walks home.
+    **How much is the ply's business, not this function's.** Overtime runs in
+    three stretches and the toll climbs 1, 2, 3 through them, so the amount
+    comes from :func:`phases.overtime_toll_at` rather than a constant here.
+    Outside overtime it answers ``0``, which is also the "not yet" gate: a
+    separate ``ply < OVERTIME_FIRST_PLY`` check beside it would be a second
+    place holding the schedule, and the two could disagree.
     """
-    from .phases import OVERTIME_FIRST_PLY, OVERTIME_TOLL
+    from .phases import overtime_toll_at
 
-    if ply < OVERTIME_FIRST_PLY:
+    toll = overtime_toll_at(ply)
+    if not toll:
         return None
     units = config.get('units', {})
     for (q, r), cell in board.pieces_by_color(color).items():
         if not units.get(cell['unit_id'], {}).get('commander'):
             continue
-        felled = board.deal_damage(q, r, OVERTIME_TOLL)
+        felled = board.deal_damage(q, r, toll)
         return color if felled is not None else None
     return None
 

@@ -19,6 +19,7 @@ from game.engine.move_validator import (
     is_legal_move,
 )
 from game.engine.game_logic import (
+    board_moves_at,
     MIN_STRIKE_DAMAGE,
     defeated_sides,
     find_defeated,
@@ -818,7 +819,32 @@ class GameLogicTestCase(TestCase):
 # Panels
 # ---------------------------------------------------------------------------
 
-class PanelsTestCase(TestCase):
+class DealtPanels:
+    """
+    Deal the panel squads for the duration of a test.
+
+    A new game now opens with all four panels empty while the owner clears the
+    placeholder squads out (``panels.PANELS_DEALT``). Everything that *works* a
+    panel is still here and still has to be right for the day they come back -
+    the walk, the wrap, the crossing, the blow into a panel, the walk home, and
+    the windows and allowances that govern all of them - so these turn the deal
+    back on rather than going away. Turning them off instead would leave the
+    rules untested exactly while they are being changed.
+
+    Mix in before the test case: ``class Foo(DealtPanels, TestCase)``.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._dealt_was = panels.PANELS_DEALT
+        panels.PANELS_DEALT = True
+
+    def tearDown(self):
+        panels.PANELS_DEALT = self._dealt_was
+        super().tearDown()
+
+
+class PanelsTestCase(DealtPanels, TestCase):
     """
     The four off-battlefield panels, which the server has never known about.
 
@@ -1029,15 +1055,20 @@ class PanelsTestCase(TestCase):
         by_uid = {u['uid']: at for at, u in occupancy.items()}
 
         # The archer sits four steps from white's '3,9' gateway, so the hex
-        # just inside the board costs five.
+        # just inside the board costs five - but that hex is '3,8', row 8,
+        # outside white's own first three, and a crossing may not stop there.
+        # The one hex it can both reach and stop on is '1,9': five to step
+        # through onto its own shieldman at '2,9', which it passes over rather
+        # than stops on, and one more.
         targets = panels.entry_targets(
             config, radius, occupancy, board, by_uid['rbr4'])
-        self.assertEqual(targets['3,8'], 5)
-        # Everything offered is on the battlefield and empty.
+        self.assertEqual(targets, {'1,9': 6})
+        # Everything offered is on the battlefield, empty, and in its own rows.
         for key in targets:
             q, r = panels.parse_key(key)
             self.assertTrue(panels.on_battlefield(q, r, radius))
             self.assertNotIn(key, board)
+            self.assertTrue(panels.in_home_rows('white', r, radius))
 
         # The three units further back cannot reach a gateway and step through
         # on six MOV, so they are offered nothing at all.
@@ -1078,12 +1109,75 @@ class PanelsTestCase(TestCase):
         archer = by_uid['rbr4']
 
         open_ways = panels.entry_targets(config, radius, occupancy, board, archer)
-        self.assertIn('3,8', open_ways)
+        self.assertIn('1,9', open_ways)
 
+        # '2,9' is the doorway the only route runs through. White's own
+        # shieldman stands there and is stepped over; an enemy on the same hex
+        # walls it off, and the way round costs more than the archer has.
         blocked = dict(board)
-        blocked['3,8'] = {'unit_id': 'pawn', 'color': 'black'}
+        blocked['2,9'] = {'unit_id': 'pawn', 'color': 'black'}
         shut = panels.entry_targets(config, radius, occupancy, blocked, archer)
-        self.assertNotIn('3,8', shut)
+        self.assertNotIn('1,9', shut)
+
+    def test_a_crossing_stops_inside_its_own_first_three_rows(self):
+        """
+        The owner's rule: a unit coming out of a reserve lands in its own back
+        three rows and goes no further. A limit on where the walk STOPS, not
+        on where it goes - the flood may still route through a fourth row.
+        """
+        config = self._cfg()
+        radius = config['board']['radius']
+        occupancy = panels.panel_occupancy(config, radius, [])
+        board = build_initial_board(config).to_dict()
+        by_uid = {u['uid']: at for at, u in occupancy.items()}
+
+        for color, panel in (('white', 'br'), ('black', 'tl')):
+            for i in range(5):
+                uid = f"r{panel}{i}"
+                for key in panels.entry_targets(
+                        config, radius, occupancy, board, by_uid[uid]):
+                    _q, r = panels.parse_key(key)
+                    self.assertTrue(
+                        panels.in_home_rows(color, r, radius),
+                        f"{uid} was offered {key}, outside {color}'s own rows")
+
+    def test_a_walk_home_starts_inside_its_own_first_three_rows(self):
+        """
+        The other end of the same rule. A unit that has pushed up the board
+        walks back down into its own ground before it can walk off it.
+        """
+        config = self._cfg()
+        radius = config['board']['radius']
+        occupancy = panels.panel_occupancy(config, radius, [])
+        board = build_initial_board(config).to_dict()
+
+        # Row 11 is white's own, and the doorway is one step away.
+        self.assertTrue(
+            panels.homecoming_targets(config, radius, occupancy, board, '-11,11'))
+
+        # The same pawn one row further up is offered nothing, though the
+        # doorway is still well inside its MOV.
+        pushed = dict(board)
+        del pushed['-11,11']
+        pushed['-11,8'] = {'unit_id': 'pawn', 'color': 'white', 'hp': 20, 'max_hp': 20}
+        self.assertFalse(panels.in_home_rows('white', 8, radius))
+        self.assertEqual(
+            panels.homecoming_targets(config, radius, occupancy, pushed, '-11,8'), {})
+
+    def test_the_first_three_rows_are_each_side_s_own_and_mirror(self):
+        """Mirrors `inHomeRows` in hex-rules.ts - the board tints these too."""
+        self.assertEqual(panels.HOME_ROWS, 3)
+        for r in (9, 10, 11):
+            self.assertTrue(panels.in_home_rows('white', r, 11))
+            self.assertFalse(panels.in_home_rows('black', r, 11))
+        for r in range(-11, 12):
+            self.assertEqual(panels.in_home_rows('white', r, 11),
+                             panels.in_home_rows('black', -r, 11))
+        self.assertFalse(panels.in_home_rows('white', 8, 11))
+        # Clamped on a board too small for three rows a side, so the two
+        # never overlap however small it is.
+        self.assertTrue(panels.in_home_rows('white', 1, 2))
+        self.assertFalse(panels.in_home_rows('black', 1, 2))
 
     def test_the_way_home_is_walked_within_mov_not_teleported(self):
         """
@@ -1240,7 +1334,7 @@ class PanelMendingTestCase(TestCase):
         self.assertEqual(panels.withdrawn_units(history, 12)['w3,9']['hp'], 12)
 
 
-class PanelAttackTestCase(TestCase):
+class PanelAttackTestCase(DealtPanels, TestCase):
     """
     A board unit striking a unit that stands in a panel.
 
@@ -1411,30 +1505,159 @@ class PhaseScheduleTestCase(TestCase):
     """
 
     def test_overtime_starts_where_the_client_says(self):
-        # 3 + 10 + 10 + 10 turns, two plies each, then the next one.
-        self.assertEqual(phases.OVERTIME_FIRST_PLY, 67)
-        self.assertFalse(phases.is_overtime(66))
-        self.assertTrue(phases.is_overtime(67))
+        # 3 + 11 + 11 + 11 turns, two plies each, then the next one. Eleven,
+        # not ten: each numbered phase opens with an initialization turn that
+        # its ten do not count.
+        self.assertEqual(phases.OVERTIME_FIRST_PLY, 73)
+        self.assertFalse(phases.is_overtime(72))
+        self.assertTrue(phases.is_overtime(73))
         self.assertTrue(phases.is_overtime(10_000))
 
     def test_the_opening_is_three_full_turns(self):
         self.assertEqual([p for p in range(1, 12) if phases.is_initialization(p)],
                          [1, 2, 3, 4, 5, 6])
 
+    def test_each_numbered_phase_opens_with_one_initialization_turn(self):
+        """Turns 4, 15 and 26 - and none of them eats a turn of play."""
+        init_turns = [t for t in range(1, 40) if phases.is_phase_initialization(2 * t - 1)]
+        self.assertEqual(init_turns, [4, 15, 26])
+        # Both plies of it, so each side gets one hand-over to set out on.
+        self.assertTrue(phases.is_phase_initialization(7))
+        self.assertTrue(phases.is_phase_initialization(8))
+        # A setup turn is the opening's three plus these; the opening is not
+        # widened to include them.
+        self.assertEqual([t for t in range(1, 40) if phases.is_setup_turn(2 * t - 1)],
+                         [1, 2, 3, 4, 15, 26])
+        self.assertFalse(phases.is_initialization(7))
+
     def test_the_wrap_is_open_before_each_halftime(self):
-        """The client's own words: turns 1-8, 14-18, 24-28 and 34 on."""
+        """
+        The played first half of a numbered phase and nothing else: turns 5-9,
+        16-20 and 27-31. Not the opening, not an initialization turn, and not
+        overtime - `before_halftime` alone used to say yes to all three.
+        """
         open_turns = [t for t in range(1, 40) if phases.is_wrap_open(2 * t - 1)]
         self.assertEqual(
             open_turns,
-            list(range(1, 9)) + list(range(14, 19)) + list(range(24, 29)) + list(range(34, 40)))
+            list(range(5, 10)) + list(range(16, 21)) + list(range(27, 32)))
+
+    def test_the_reserve_and_the_base_doorways_keep_their_own_windows(self):
+        """
+        Three arrows, three schedules. Crossings run on the setup turns and
+        each phase's second half; walks home run on the setup turns and all of
+        overtime; the wrap runs on the first halves. No turn opens all three.
+        """
+        entry = [t for t in range(1, 40) if phases.is_entry_open(2 * t - 1)]
+        self.assertEqual(entry, [1, 2, 3, 4] + list(range(10, 16))
+                         + list(range(21, 27)) + list(range(32, 37)))
+        home = [t for t in range(1, 40) if phases.is_homecoming_open(2 * t - 1)]
+        self.assertEqual(home, [1, 2, 3, 4, 15, 26] + list(range(37, 40)))
+        for turn in range(1, 40):
+            ply = 2 * turn - 1
+            self.assertFalse(
+                phases.is_wrap_open(ply) and phases.is_entry_open(ply),
+                f'turn {turn} opens both the wrap and the way in')
 
     def test_the_stages_have_the_names_the_header_counts_down_to(self):
-        named = {t: phases.stage_at(2 * t - 1) for t in (1, 3, 4, 8, 9, 13, 14, 33, 34)}
+        named = {t: phases.stage_at(2 * t - 1)
+                 for t in (1, 3, 4, 5, 9, 10, 14, 15, 16, 26, 31, 36, 37)}
         self.assertEqual(named, {
             1: 'Initialization', 3: 'Initialization',
-            4: 'Phase 1', 8: 'Phase 1', 9: 'Phase 1 Halftime', 13: 'Phase 1 Halftime',
-            14: 'Phase 2', 33: 'Phase 3 Halftime', 34: 'Overtime',
+            4: 'Phase 1 Initialization', 5: 'Phase 1', 9: 'Phase 1',
+            10: 'Phase 1 Halftime', 14: 'Phase 1 Halftime',
+            15: 'Phase 2 Initialization', 16: 'Phase 2',
+            26: 'Phase 3 Initialization', 31: 'Phase 3',
+            36: 'Phase 3 Halftime', 37: 'Overtime 1',
         })
+        # Overtime is three stages, not one: the toll climbs through them.
+        self.assertEqual(
+            [phases.stage_at(2 * t - 1) for t in (44, 45, 49, 50)],
+            ['Overtime 1', 'Overtime 2', 'Overtime 2', 'Overtime 3'])
+
+    def test_overtime_runs_three_stretches_read_off_the_schedule(self):
+        """
+        Turns 37-44, 45-49 and 50, with the toll climbing 1, 2, 3 - so that a
+        match neither side can win on points or on the board still ends.
+
+        Counted forward from overtime's first turn rather than written down.
+        The client's ``OVERTIME_LAST_TURN`` used to be the literal 50, and when
+        the initialization turns pushed overtime from turn 34 to turn 37 the
+        literal stayed put and quietly cost overtime three of its turns.
+        """
+        self.assertEqual(phases.OVERTIME_FIRST_TURN, 37)
+        self.assertEqual(phases.OVERTIME_LAST_TURN, 50)
+        self.assertEqual(
+            phases.OVERTIME_LAST_TURN - phases.OVERTIME_FIRST_TURN + 1,
+            sum(stage['turns'] for stage in phases.OVERTIME_STAGES))
+        tolls = [phases.overtime_toll_at(2 * t - 1) for t in range(37, 51)]
+        self.assertEqual(tolls, [1] * 8 + [2] * 5 + [3])
+
+    def test_the_toll_is_nothing_before_overtime_and_never_stops_after(self):
+        """
+        ``0`` is the engines' gate as well as the amount: neither keeps a
+        ``ply < OVERTIME_FIRST_PLY`` of its own beside this, so there is one
+        question with one answer rather than two that can disagree.
+
+        Past the last turn it is still the heaviest toll. The match is black's
+        by then, but that verdict is read and not enforced, so a game played on
+        has to keep paying - ``None`` there would be a king who bleeds for
+        fourteen turns and then becomes immortal.
+        """
+        self.assertEqual([phases.overtime_toll_at(p) for p in (1, 7, 71, 72)],
+                         [0, 0, 0, 0])
+        self.assertEqual(phases.overtime_toll_at(73), 1)
+        # Both hand-overs of a turn share its stretch: they change at a turn
+        # boundary, so the two sides of turn 45 pay the same.
+        self.assertEqual(phases.overtime_toll_at(2 * 45 - 1), 2)
+        self.assertEqual(phases.overtime_toll_at(2 * 45), 2)
+        self.assertEqual(phases.overtime_toll_at(1000), 3)
+
+    def test_overtime_widens_the_turn_to_two_moves_then_three(self):
+        """
+        The owner's rule: two units on the main board in Overtime 2, three in
+        Overtime 3. One everywhere else, which is what "the turn's board
+        action" has always meant.
+        """
+        self.assertEqual([phases.board_moves_per_turn(2 * t - 1)
+                          for t in (1, 4, 20, 36, 37, 44, 45, 49, 50, 500)],
+                         [1, 1, 1, 1, 1, 1, 2, 2, 3, 3])
+
+    def test_board_moves_at_counts_what_the_client_counts(self):
+        """
+        Mirrors ``boardMovesAt`` in history-rules.ts. The count decides whether
+        the next message hands the turn over, so the exclusions are
+        load-bearing rather than tidy.
+        """
+        def move(**extra):
+            base = {'turn': 89, 'color': 'white', 'from': '0,0', 'to': '0,1'}
+            base.update(extra)
+            return base
+
+        history = [move(), move(**{'from': '5,5'}), move(color='black'),
+                   move(turn=90), move(turn=87)]
+        self.assertEqual(board_moves_at(history, 89, 'white'), 2)
+        self.assertEqual(board_moves_at(history, 89, 'black'), 1)
+        self.assertEqual(board_moves_at([], 89, 'white'), 0)
+
+        # A panel's own moves spend a panel's allowance, never the board's.
+        panelled = [move(entered=True), move(panelMove=True), move(panelEffect=True)]
+        self.assertEqual(board_moves_at(panelled, 89, 'white'), 0)
+
+        # A walk home is the turn's board action in overtime and a deployment
+        # while setting out - ply 7 being turn 4, Phase 1's initialization.
+        self.assertEqual(board_moves_at([move(withdrawn=True)], 89, 'white'), 1)
+        self.assertEqual(
+            board_moves_at([move(withdrawn=True, turn=7)], 7, 'white'), 0)
+
+    def test_a_setup_turn_says_which_one_it_is_when_it_refuses_a_blow(self):
+        self.assertEqual(phases.no_attack_message(1), 'Nobody attacks in the opening')
+        self.assertEqual(phases.no_attack_message(7),
+                         'Nobody attacks in a phase initialization')
+        # And nothing at all on a turn that refuses no blow. Asked the other
+        # way round it answered 'a phase initialization' for every playable
+        # turn of every phase, which is what a caller reading it as a general
+        # "why was this refused?" would have been handed.
+        self.assertEqual([phases.no_attack_message(p) for p in (9, 40, 80)], ['', '', ''])
 
     def test_white_plays_the_odd_plies(self):
         self.assertEqual([phases.side_of_ply(p) for p in (1, 2, 3, 4)],
@@ -1466,12 +1689,12 @@ class OvertimeTollTestCase(TestCase):
 
     def test_nothing_is_taken_before_overtime(self):
         board = self._board(10)
-        self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 66))
+        self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 72))
         self.assertEqual(board.get(0, 3)['hp'], 10)
 
     def test_the_side_that_played_pays_and_the_other_does_not(self):
         board = self._board(10)
-        self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 67))
+        self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 73))
         self.assertEqual(board.get(0, 3)['hp'], 9)
         self.assertEqual(board.get(0, -3)['hp'], 45)
         # Only the commander - the rest of the army is untouched.
@@ -1480,14 +1703,42 @@ class OvertimeTollTestCase(TestCase):
     def test_it_is_real_damage_that_defence_does_not_blunt(self):
         """The king's 15 defence would floor a blow; it does nothing to this."""
         board = self._board(2)
-        overtime_toll(board, self._cfg(), 'white', 67)
+        overtime_toll(board, self._cfg(), 'white', 73)
         self.assertEqual(board.get(0, 3)['hp'], 1)
 
     def test_a_king_on_his_last_point_dies_of_it(self):
         board = self._board(1)
-        self.assertEqual(overtime_toll(board, self._cfg(), 'white', 67), 'white')
+        self.assertEqual(overtime_toll(board, self._cfg(), 'white', 73), 'white')
         self.assertIsNone(board.get(0, 3))
         # Which is a regicide.
+        self.assertEqual(defeated_sides(board, self._cfg()), ['white'])
+
+    def test_the_toll_climbs_through_overtime_s_three_stretches(self):
+        """
+        1 in the first stretch, 2 in the second, 3 on the last turn - the same
+        table the client reads, taken here through the board itself.
+
+        A constant would have shipped a deathmatch that never ends: the whole
+        point of the escalation is that a king who reaches turn 50 on three or
+        less does not come out of it.
+        """
+        for ply, expected in ((73, 1), (2 * 44 - 1, 1), (2 * 45 - 1, 2),
+                              (2 * 49 - 1, 2), (2 * 50 - 1, 3)):
+            board = self._board(10)
+            overtime_toll(board, self._cfg(), 'white', ply)
+            self.assertEqual(board.get(0, 3)['hp'], 10 - expected,
+                             f'ply {ply} should have taken {expected}')
+
+    def test_the_last_turn_kills_a_king_the_first_stretch_would_not(self):
+        board = self._board(3)
+        # Turn 37 leaves him standing on 2 ...
+        self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 73))
+        self.assertEqual(board.get(0, 3)['hp'], 2)
+        # ... but turn 50 takes three, and three is all he had.
+        board = self._board(3)
+        self.assertEqual(
+            overtime_toll(board, self._cfg(), 'white', 2 * 50 - 1), 'white')
+        self.assertIsNone(board.get(0, 3))
         self.assertEqual(defeated_sides(board, self._cfg()), ['white'])
 
     def test_no_king_on_the_board_is_no_toll(self):
@@ -1497,7 +1748,7 @@ class OvertimeTollTestCase(TestCase):
         """
         board = self._board(1)
         board.remove(0, 3)
-        self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 67))
+        self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 73))
         self.assertEqual(board.get(1, 2)['hp'], 20)
 
     def test_the_king_is_never_offered_a_way_home(self):
@@ -1526,7 +1777,7 @@ def _panel_step(uid, unit_id, color, frm, to, turn, panel, cost=1, price=0):
     }
 
 
-class PanelMoveTestCase(TestCase):
+class PanelMoveTestCase(DealtPanels, TestCase):
     """
     Walking a unit inside its panel, and the wrap out of its base.
 
@@ -1594,13 +1845,68 @@ class PanelMoveTestCase(TestCase):
         self.assertIsNone(panels.panel_allowance(config, history, moved, 3))
         # But on the SAME ply it is simply one of the turn's movers.
         self.assertIsNotNone(panels.panel_allowance(config, history, moved, 1))
-        # Ply 7 is Phase 1: the lock is gone with the phase.
+        # Ply 7 is turn 4, Phase 1's initialization: past the opening, so
+        # the opening's lock is gone with the phase that owned it.
         self.assertEqual(panels.panel_allowance(config, history, moved, 7), 6)
+
+    def test_a_phase_initialization_starts_five_out_of_a_reserve(self):
+        """
+        The owner's number, and it stands INSTEAD of the per-panel three
+        rather than beside it. Ply 7 is turn 4 - Phase 1's initialization.
+        """
+        config, radius, board, at = self._setup()
+        occupancy = panels.panel_occupancy(config, radius, [])
+        reserve = [u for u in occupancy.values()
+                   if u['color'] == 'white' and not panels.is_base(u['panel'])]
+        self.assertGreaterEqual(len(reserve), 5)
+
+        def walked(units, ply):
+            return [{'panelMove': True, 'turn': ply, 'cost': 0,
+                     'from': '9,3', 'to': '9,4', 'panel': 'br',
+                     'unit': dict(u)} for u in units]
+
+        sixth = dict(reserve[0])
+        sixth['uid'] = 'not-one-of-them'
+        # Four started, and a fifth still may.
+        self.assertIsNotNone(
+            panels.panel_allowance(config, walked(reserve[:4], 7), sixth, 7))
+        # Five started, and a sixth may not.
+        self.assertIsNone(
+            panels.panel_allowance(config, walked(reserve[:5], 7), sixth, 7))
+        # One of the five walks on regardless: the cap is on how many are
+        # started, not on how far they go.
+        self.assertIsNotNone(
+            panels.panel_allowance(config, walked(reserve[:5], 7), dict(reserve[0]), 7))
+
+        # Off an initialization turn the reserve is back to three. Ply 9 is
+        # turn 5, Phase 1's first played turn.
+        self.assertIsNone(
+            panels.panel_allowance(config, walked(reserve[:3], 9), sixth, 9))
+
+    def test_homecomings_are_counted_by_uid_for_the_ply_and_the_side(self):
+        """Mirrors `homecomingsAt` in history-rules.ts."""
+        def walk_home(uid, color, turn):
+            return {'from': '-11,11', 'to': '-12,11', 'turn': turn,
+                    'withdrawn': True, 'moved': True,
+                    'unit': {'unit_id': 'pawn', 'color': color, 'uid': uid}}
+
+        history = [
+            walk_home('w1', 'white', 7),      # an earlier ply
+            walk_home('w2', 'white', 9),
+            walk_home('b1', 'black', 9),      # the other side's
+            {'panelMove': True, 'turn': 9,    # not a walk home at all
+             'unit': {'uid': 'r1', 'color': 'white'}},
+            {'turn': 9, 'withdrawn': True},   # no unit on the record
+        ]
+        self.assertEqual(panels.homecomings_at(history, 9, 'white'), frozenset({'w2'}))
+        self.assertEqual(panels.homecomings_at(history, 9, 'black'), frozenset({'b1'}))
+        self.assertEqual(panels.homecomings_at(history, 7, 'white'), frozenset({'w1'}))
+        self.assertEqual(panels.homecomings_at([], 9, 'white'), frozenset())
 
     def test_the_wrap_is_priced_at_the_units_value(self):
         config, radius, board, at = self._setup()
         tip = panels.wrap_tips('white', radius)['reserve']
-        # Ply 15 is turn 8, the last open turn of Phase 1.
+        # Ply 15 is turn 8: Phase 1's played first half, so the wrap is open.
         rich = panels.panel_move_targets(config, radius, [], board, at['rbl3'], 15, points=100)
         self.assertEqual(rich[tip], {'cost': 6, 'price': 12})     # a knight is worth 12
         # Every hex reached by making it carries the same price.
@@ -1612,8 +1918,8 @@ class PanelMoveTestCase(TestCase):
         tip = panels.wrap_tips('white', radius)['reserve']
         poor = panels.panel_move_targets(config, radius, [], board, at['rbl3'], 15, points=11)
         self.assertNotIn(tip, poor)
-        # Ply 17 is turn 9, Phase 1's halftime: shut however rich.
-        shut = panels.panel_move_targets(config, radius, [], board, at['rbl3'], 17, points=100)
+        # Ply 19 is turn 10, Phase 1's halftime: shut however rich.
+        shut = panels.panel_move_targets(config, radius, [], board, at['rbl3'], 19, points=100)
         self.assertNotIn(tip, shut)
         # Out of MOV before out of money: the archer cannot reach the tip at all.
         far = panels.panel_move_targets(config, radius, [], board, at['rbl4'], 15, points=100)
@@ -1696,6 +2002,31 @@ class PointsTestCase(TestCase):
                          [1, 1, 2, 2])
         self.assertEqual([economy.points_of('black', p, [], config) for p in (1, 2, 3, 4)],
                          [0, 1, 1, 2])
+
+    def test_overtime_pays_more_a_turn_as_it_closes(self):
+        """
+        1, 3 and 5 through overtime's three stretches - the purse climbing with
+        the toll, so the pressure to finish comes with the means to.
+
+        A flat ``hand_overs_by`` was right everywhere up to turn 44, which is
+        why the sums below straddle that boundary rather than sitting inside
+        one stretch.
+        """
+        config = self._cfg()
+        # 44 turns at one apiece, and the rate has not moved yet.
+        self.assertEqual(economy.points_of('white', 2 * 44 - 1, [], config), 44)
+        # Turn 45 pays three.
+        self.assertEqual(economy.points_of('white', 2 * 45 - 1, [], config), 47)
+        self.assertEqual(economy.points_of('white', 2 * 49 - 1, [], config), 59)
+        # The last turn pays five: 44 + 5x3 + 5.
+        self.assertEqual(economy.points_of('white', 2 * 50 - 1, [], config), 64)
+        # Black is paid at the start of its OWN turn, one hand-over behind.
+        self.assertEqual(economy.points_of('black', 2 * 45 - 1, [], config), 44)
+        self.assertEqual(economy.points_of('black', 2 * 45, [], config), 47)
+        # And the rates themselves, straight off the table.
+        self.assertEqual([phases.points_per_turn_at(2 * t - 1)
+                          for t in (1, 36, 37, 44, 45, 49, 50, 500)],
+                         [1, 1, 1, 1, 3, 3, 5, 5])
 
     def test_a_point_for_a_kill_and_the_defender_is_paid_for_a_counter_kill(self):
         config = self._cfg()

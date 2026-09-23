@@ -14,7 +14,9 @@
  */
 
 import { BASE_PANELS } from './hex-rules';
-import { isInitialization } from './phases';
+import {
+  PHASE_INIT_ENTRIES, isInitialization, isPhaseInitialization, isSetupTurn,
+} from './phases';
 
 /**
  * How many units of one panel may be started in a turn. An allowance each:
@@ -131,10 +133,103 @@ export function panelMoversAt(
  * the panel's movers, or the panel has an allowance left. Mirrors the mover
  * half of `panel_allowance`; the MOV half stays with the board, which is the
  * only place that knows what a one-turn boost lent the unit.
+ *
+ * **The reserve's allowance is five in a phase initialization**, and it stands
+ * instead of the three rather than beside it. It covers walking inside the
+ * reserve as well as crossing out of it, because they are the same allowance:
+ * capping the walk at three would leave two of the five unable to reach a
+ * gateway to spend their crossing on. The base keeps its three - nothing in
+ * the rule was about the base, and the wrap is shut on that turn anyway.
  */
 export function panelMoverAllowed(
   history: Move[] | undefined, ply: number, color: string, uid: string, panel?: string,
 ): boolean {
-  const movers = panelMoversAt(history, ply, color)[BASE_PANELS.has(panel ?? '') ? 'base' : 'reserve'];
-  return movers.has(uid) || movers.size < PANEL_MOVERS_PER_TURN;
+  const base = BASE_PANELS.has(panel ?? '');
+  const movers = panelMoversAt(history, ply, color)[base ? 'base' : 'reserve'];
+  const cap = !base && isPhaseInitialization(ply) ? PHASE_INIT_ENTRIES : PANEL_MOVERS_PER_TURN;
+  return movers.has(uid) || movers.size < cap;
+}
+
+/**
+ * The units of *color* walked home this ply. Mirrors `homecomings_at` in
+ * server/game/engine/panels.py.
+ *
+ * Keyed by uid, off the record's own copy of the unit as it left the board -
+ * the only place a withdrawn unit survives. A set rather than a count because
+ * a unit walks home in one record and could not be counted twice anyway; the
+ * set makes that explicit rather than lucky.
+ */
+/**
+ * How many board moves of `color` this ply already holds. Mirrors
+ * `board_moves_at` in server/game/engine/game_logic.py.
+ *
+ * What it is for: overtime's later stretches allow a side two or three moves
+ * on the main board, so "has this side moved yet" stopped being a yes/no and
+ * became a count - and the count has to come off the record, because the
+ * moves arrive as separate messages and only the last of them ends the turn.
+ *
+ * **A panel's move is not a board move.** A crossing (`entered`), a walk
+ * inside a panel (`panelMove`) and a cast's damage (`panelEffect`) each have
+ * an allowance of their own, and counting them here would spend the board's.
+ *
+ * **A walk home is one, except while setting out.** In overtime it *is* the
+ * turn's board action - that is what the window there is for - so it counts
+ * against this. On a setup turn three may go as deployments and none of them
+ * is the turn's action, so none of them counts. Same split both engines make.
+ */
+export function boardMovesAt(
+  history: Move[] | undefined, ply: number, color: string,
+): number {
+  const setup = isSetupTurn(ply);
+  let moves = 0;
+  for (const move of history ?? []) {
+    if (!move || move.turn !== ply || move.color !== color) continue;
+    if (move.panelMove || move.entered || move.panelEffect) continue;
+    if (move.withdrawn && setup) continue;
+    moves++;
+  }
+  return moves;
+}
+
+/**
+ * The hexes this side's board moves have already landed on this ply. Mirrors
+ * `board_move_landings` in server/game/engine/game_logic.py.
+ *
+ * **What stops a unit taking two of the turn's moves.** The allowance counts
+ * moves, and the owner's rule counts *units* - "you can move two units each
+ * turn". Without this a side in Overtime 3 could move A, then B, then A
+ * again: each message is legal on its own, judged from where the unit stands
+ * with a full MOV, so both engines took it and the unit travelled twice its
+ * budget in one turn.
+ *
+ * A unit continuing a walk it has already begun is not this: the room folds
+ * those into one move and sends the origin it really set out from, so a `from`
+ * that matches an earlier landing is always a unit coming back for a second
+ * go.
+ */
+export function boardMoveLandings(
+  history: Move[] | undefined, ply: number, color: string,
+): Set<string> {
+  const out = new Set<string>();
+  for (const move of history ?? []) {
+    if (!move || move.turn !== ply || move.color !== color) continue;
+    if (move.panelMove || move.entered || move.panelEffect) continue;
+    // A walk home lands off the board, so it leaves nothing to move again.
+    if (move.withdrawn) continue;
+    if (move.to) out.add(move.to);
+  }
+  return out;
+}
+
+export function homecomingsAt(
+  history: Move[] | undefined, ply: number, color: string,
+): Set<string> {
+  const out = new Set<string>();
+  for (const move of history ?? []) {
+    if (!move || move.turn !== ply || !move.withdrawn) continue;
+    const unit = move.unit ?? {};
+    if (unit.color !== color || !unit.uid) continue;
+    out.add(unit.uid);
+  }
+  return out;
 }

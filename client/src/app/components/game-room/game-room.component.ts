@@ -16,10 +16,11 @@ import {
   captureClaims, captureScore, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
 } from '../../services/hex-rules';
 import { buildPlayback } from '../../services/playback';
-import { openingMovedHexes } from '../../services/history-rules';
+import { homecomingsAt, openingMovedHexes } from '../../services/history-rules';
 import {
-  SCORING_PHASES, handOversBy, isInitialization, isOvertime,
-  phaseIndexAt, stageAt, turnHeading, turnOf,
+  OVERTIME_LAST_TURN, SCORING_PHASES, boardMovesPerTurn, handOversBy,
+  isInitialization, isOvertime, isPhaseInitialization, isSetupTurn, phaseIndexAt,
+  pointsPerTurnAt, stageAt, turnHeading, turnOf, turnPointsBy,
 } from '../../services/phases';
 import { AudioService } from '../../services/audio.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
@@ -142,13 +143,6 @@ interface Standing {
 const OVERTIME_MARGIN = { white: 3, black: 5 };
 
 /**
- * The last full turn of overtime. A match still undecided at the end of it
- * goes to black - so the verdict flips once the match is *past* turn 50, not
- * as it begins.
- */
-const OVERTIME_LAST_TURN = 50;
-
-/**
  * What a side is handed at the start of each phase to spend on abilities.
  * Five awards over a match - the opening, the three phases and overtime.
  * ponytail: the owner's placeholder - "for now, just set it to 100".
@@ -199,6 +193,21 @@ interface StagedAction {
   at?: number;
   /** What walking home into the base paid back, for Undo to take away again. */
   refund?: number;
+  /**
+   * A walk home that is a **deployment** rather than the turn's board action:
+   * three of them may happen on a setup turn, so none of them is the one move
+   * that ends it. Each goes out as its own message before whatever the turn
+   * did on the board, exactly as a crossing does.
+   *
+   * It is what keeps such a walk out of `lastBoardAction`, and so out of
+   * `pendingMove` - the getter the board's staging lock reads. Without the
+   * flag the first walk home took the turn's slot and locked every other unit
+   * behind it, which made the three-a-turn allowance unreachable through the
+   * UI however willing both engines were.
+   *
+   * Never set in overtime: a walk home there IS the turn's move.
+   */
+  homecoming?: boolean;
   killed?: string;
   /** What died there, so the board can draw its ghost under the skull. */
   killedUnit?: { unit_id: string; color: 'white' | 'black' };
@@ -1545,10 +1554,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const turn = turnOf(s.turnNumber);
     return (s.moveHistory ?? []).some(
       // A crossing is the reserve's move, a walk inside a panel never touches
-      // the board, and a cast is nobody's move. A walk home IS one: it ends
-      // the turn like any other.
+      // the board, and a cast is nobody's move.
+      //
+      // Nor is a walk home, any more. This once read "a walk home IS one: it
+      // ends the turn like any other" - true when it was written, and false
+      // from the moment a setup turn's walk home became a deployment that three
+      // units may take. Left in, the first one greyed every battlefield unit
+      // for the rest of the turn, which is the allowance it no longer spends.
+      // `openingMovedHexes` beside it already excluded them; the sibling was
+      // right first and this one was missed. The unit is still held to one
+      // action for the phase - that lock is `initMovedHexes`, not this.
       (m: any) => m.color === color && turnOf(m.turn) === turn
-        && !m.entered && !m.panelMove && !m.panelEffect);
+        && !m.entered && !m.panelMove && !m.panelEffect && !m.withdrawn);
   }
 
   /**
@@ -2128,7 +2145,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // Onto the staged stack like everything else, so it shows through a
     // staged step and Undo takes it back. A held-aside board was invisible
     // whenever anything else was staged, and Undo never cleared it.
-    const prev = this.stagedActions[this.stagedActions.length - 1];
+    const prev = this.lastBoardAction;
     const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index, unit.key);
     this.stagedActions.push({
       at: Date.now(),
@@ -3321,7 +3338,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const lead = white.match - black.match;
     if (lead > OVERTIME_MARGIN.black) return 'white';
     if (-lead > OVERTIME_MARGIN.white) return 'black';
-    // At the *end* of the last turn, so turn 50 itself is still played out.
+    // At the *end* of overtime's last turn, so that turn itself is still
+    // played out. `OVERTIME_LAST_TURN` used to be the literal 50 declared in
+    // this file; it is now read off the schedule with the rest of overtime,
+    // because the literal did not move when the initialization turns pushed
+    // overtime from turn 34 to turn 37 and it silently cost overtime three of
+    // its turns.
     return turnOf(this.gameState.snapshot.turnNumber) > OVERTIME_LAST_TURN
       ? 'black' : 'overtime';
   }
@@ -3432,7 +3454,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const snapshot = this.gameState.snapshot;
     const units = snapshot.config?.units ?? {};
     const other = color === 'white' ? 'black' : 'white';
-    let points = handOversBy(color, snapshot.turnNumber);
+    // One a turn through the schedule, and 1, 3, 5 through overtime's three
+    // stretches. `beginTurnFor` hands the same point out live as a side
+    // starts; this is the record's own sum, and the two must agree or the
+    // purse jumps every time a commit resets it.
+    let points = turnPointsBy(color, snapshot.turnNumber);
     for (const move of (snapshot.moveHistory ?? []) as any[]) {
       if (!move || move.panelEffect || move.entered) continue;
       if (move.panelMove) {
@@ -3497,7 +3523,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.abilityUsed = {};
     this.pickedThisTurn = [];
     this.swapArmed = null;
-    this.awardPoints(color, 1);
+    // What a turn pays is the schedule's business - overtime's stretches pay
+    // 1, 3 and 5. The snapshot has already moved on to the hand-over this side
+    // is about to play, which is the one being paid for. Its twin is
+    // `pointsFromHistory`, which re-derives the whole purse on every commit:
+    // a flat 1 here would be overwritten by the real sum a moment later and
+    // the purse would visibly jump.
+    this.awardPoints(color, pointsPerTurnAt(this.gameState.snapshot.turnNumber));
     const mine = this.gameState.myColor(this.username);
     const isMine = mine ? color === mine : color === 'white';
     // The glow is for the other player's turn: it lifts when whoever cast it
@@ -3731,10 +3763,20 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   get movementArrows(): Array<{ from: string; to: string }> {
     return this.stagedActions
-      .map((action, index) => ({
-        from: index > 0 ? this.stagedActions[index - 1].to : action.from,
-        to: action.to,
-      }))
+      .map((action, index) => {
+        // An action's `from` is where its unit began the TURN, so a walk taken
+        // in hops would draw every arrow from that first hex; the hop's own
+        // origin is where the hop before it ended.
+        //
+        // Only when it is the same walk, though - two actions belong to one
+        // unit exactly when they share an origin. A turn can stage several
+        // units now (three walks home and a move), and reading the arrow off
+        // whatever happened last drew a line from one unit's destination to
+        // another's.
+        const prev = index > 0 ? this.stagedActions[index - 1] : null;
+        const hop = prev && prev.from === action.from ? prev.to : action.from;
+        return { from: hop, to: action.to };
+      })
       // An ability staged before any step carries no hexes of its own, and
       // the step after it would otherwise inherit that empty origin.
       .filter(arrow => !!arrow.from && !!arrow.to && arrow.from !== arrow.to);
@@ -3768,9 +3810,66 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return this.stagedActions.flatMap(action => fallen(action.killed, action.killedUnit));
   }
 
+  /**
+   * The staged stack as the turn's board action sees it: everything except the
+   * walks home, which are deployments and no more the turn's move than a
+   * crossing is.
+   *
+   * The casts read their `from`/`to` forward from here too, so a walk home
+   * staged between two of them cannot be mistaken for the move they belong to.
+   */
+  private get lastBoardAction(): StagedAction | undefined {
+    for (let i = this.stagedActions.length - 1; i >= 0; i--) {
+      if (!this.stagedActions[i].homecoming) return this.stagedActions[i];
+    }
+    return undefined;
+  }
+
   /** Where the acting unit started, where it stands, and steps spent so far. */
+  /**
+   * The turn's board moves, one per unit, oldest first.
+   *
+   * `stagedActions` holds every step a turn took, and a unit that walks twice
+   * or walks and then swings pushes one entry per step - each carrying the
+   * hex it originally set out from, so the later entry supersedes the earlier
+   * rather than adding to it. Folding on `from` is what turns that log back
+   * into "which units moved": a run of entries sharing an origin is one unit,
+   * and its last entry is where that unit ended up and what it struck.
+   *
+   * Walks home staged while setting out are deployments and go out on their
+   * own (`homecoming`); casts are not board moves at all (`spend`).
+   *
+   * One entry everywhere the schedule is running. Two in Overtime 2 and three
+   * in Overtime 3 - which is the whole reason this exists rather than
+   * `pendingMove` alone, that being only ever the last of them.
+   */
+  get boardMoves(): StagedAction[] {
+    const out: StagedAction[] = [];
+    for (const step of this.stagedActions) {
+      if (step.spend || step.homecoming || !step.from) continue;
+      const last = out[out.length - 1];
+      if (last && last.from === step.from) out[out.length - 1] = step;
+      else out.push(step);
+    }
+    return out;
+  }
+
+  /**
+   * Where this turn's finished board moves have left their units - every one
+   * but the unit still mid-move, which may keep walking.
+   *
+   * **The allowance counts moves; the owner's rule counts units.** Without
+   * this the board offered a unit that had already had its move back to the
+   * player the moment another unit moved after it: each step was legal on its
+   * own, so both engines took it, and the unit covered twice its MOV in one
+   * turn. Found in a browser on 22 Sep 2026 - 357 specs had nothing to say.
+   */
+  get movedUnitHexes(): string[] {
+    return this.boardMoves.slice(0, -1).map(step => step.to);
+  }
+
   get pendingMove(): { from: string; to: string; used: number } | null {
-    const last = this.stagedActions[this.stagedActions.length - 1];
+    const last = this.lastBoardAction;
     // An ability cast with nothing else staged carries no move to commit.
     return last?.from ? { from: last.from, to: last.to, used: last.used } : null;
   }
@@ -3778,6 +3877,39 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /** A unit that has swung is done for the turn - no more walking. */
   get hasAttacked(): boolean {
     return this.stagedActions.some(a => a.attack !== null);
+  }
+
+  /**
+   * Whether anything may still be walked on the board this turn.
+   *
+   * A unit that has swung is done - "walk, then optionally swing" means the
+   * swing ends its move - so with one board move a turn this was simply
+   * `!hasAttacked`, and the board took it as `canMove`. Overtime 2 and 3 allow
+   * two and three, and a side that has struck with one unit may still walk the
+   * next: the blow ends that unit's move, not the turn.
+   */
+  get canMoveOnBoard(): boolean {
+    const moves = this.boardMoves;
+    if (moves.length < boardMovesPerTurn(this.gameState.snapshot.turnNumber)) return true;
+    // Every move spoken for: only the unit mid-move may keep walking, and only
+    // while it has not already struck.
+    return !moves[moves.length - 1]?.attack;
+  }
+
+  /**
+   * Whether the unit now standing on `hex` still has a blow in it.
+   *
+   * **One blow a turn used to be the whole answer.** The owner's rule for
+   * overtime is that each of the turn's moves may swing, so this is asked per
+   * unit: a unit that has struck is finished, one that has moved and not
+   * struck may, and one that has not moved at all needs a move to spare -
+   * because striking is a board action whether or not it walks first.
+   */
+  private canSwingFrom(hex: string): boolean {
+    const moves = this.boardMoves;
+    const mine = moves.find(m => m.to === hex);
+    if (mine) return !mine.attack;
+    return moves.length < boardMovesPerTurn(this.gameState.snapshot.turnNumber);
   }
   /** Which side the host takes in a solo game; the placeholder gets the other. */
   soloColor: 'white' | 'black' = 'white';
@@ -3845,7 +3977,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * committing and ending the turn are one and the same message.
    */
   onPlayerMove(event: { from: string; to: string; cost: number; refund?: number }): void {
-    if (this.hasAttacked) return;
+    if (!this.canMoveOnBoard) return;
+    // A unit gets one of the turn's moves, not two - see `movedUnitHexes`.
+    if (this.movedUnitHexes.includes(event.from)) return;
     // Walking home into the base pays the unit's worth back to whoever
     // brought it in - the same number the wrap charged to send one out.
     if (event.refund) {
@@ -3856,17 +3990,33 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     next[event.to] = next[event.from];
     delete next[event.from];
     // Steps accumulate across hops: a unit keeps walking on what is left of
-    // its move until it attacks or the turn ends.
+    // its move until it attacks or the turn ends. Only for the same unit,
+    // though - now that a walk home no longer locks the board, the action
+    // before this one may belong to somebody else entirely, and inheriting its
+    // origin would send the engine a move from a hex this unit never stood on.
     const prev = this.pendingMove;
+    const chain = prev && prev.to === event.from ? prev : null;
+    // A walk home while setting out is a deployment, not the turn's board
+    // action: three may go in one turn, so none of them is the move that ends
+    // it. Overtime is the exception the schedule already makes - the doorways
+    // are open with no count there, and a walk home is an ordinary move that
+    // happens to end off the board.
+    //
+    // Unless it finishes a walk this unit had already begun: that one is the
+    // turn's move reaching the base, and it has to go out as that move, from
+    // the hex the engine still has the unit on.
+    const homecoming = !!event.refund && !chain
+      && isSetupTurn(this.gameState.snapshot.turnNumber);
     this.stagedActions.push({
       at: Date.now(),
       board: next,
-      from: prev?.from ?? event.from,
+      from: chain?.from ?? event.from,
       to: event.to,
       // The board charges the walk it actually plotted, detours included.
-      used: (prev?.used ?? 0) + event.cost,
+      used: (chain?.used ?? 0) + event.cost,
       attack: null,
       ...(event.refund ? { refund: event.refund } : {}),
+      ...(homecoming ? { homecoming: true } : {}),
     });
     // Each step plays as it is staged, and never blocks the next one.
     this.playSteps([{ kind: 'move', from: event.from, to: event.to }]);
@@ -3883,7 +4033,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     from: string; to: string; attack: string;
     targetUnit?: Record<string, any>; panel?: string; counters?: boolean;
   }): void {
-    if (!this.canEndTurn || this.hasAttacked) return;
+    if (!this.canEndTurn || !this.canSwingFrom(event.to)) return;
+    if (this.movedUnitHexes.includes(event.from)) return;
     const config = this.gameState.snapshot.config;
     const board = { ...(this.stagedBoard ?? this.gameState.snapshot.boardState) };
     // A blow landing in a panel comes with the unit it lands on: no board
@@ -3944,7 +4095,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       }
     }
 
-    const prev = this.pendingMove;
+    // Only onto the move this blow CONTINUES. `prev` is the last board
+    // action whoever it belongs to, and once a turn can hold two or three,
+    // that is not always this unit: a side that moved A and then swung with
+    // B would have written B's blow onto A's origin, sending A's hex to B's
+    // target and losing A's move entirely. Same test `onPlayerMove` uses.
+    const last = this.pendingMove;
+    const prev = last && last.to === event.from ? last : null;
     this.stagedActions.push({
       at: Date.now(),
       board,
@@ -4297,7 +4454,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * change, so Undo takes both back together.
    */
   private stageHeal(unit: SelectedUnit, amount: number, spend: AbilitySpend): string | undefined {
-    const prev = this.stagedActions[this.stagedActions.length - 1];
+    const prev = this.lastBoardAction;
     const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
     const moved = this.hpChange(unit, amount, board);
     this.stagedActions.push({
@@ -4315,7 +4472,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   private stageSpend(spend: AbilitySpend): void {
-    const prev = this.stagedActions[this.stagedActions.length - 1];
+    const prev = this.lastBoardAction;
     this.stagedActions.push({
       at: Date.now(),
       board: this.stagedBoard ?? this.gameState.snapshot.boardState,
@@ -4438,6 +4595,20 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     for (const step of this.boardRef?.pendingPanelSteps ?? []) {
       this.wsService.sendMessage(step);
     }
+    // And the walks home taken while setting out, for exactly the same reason:
+    // three may go in a turn, so none of them is the turn's board action. Both
+    // engines answer each one as a deployment - same seat, same ply, same
+    // clock - and hand the turn over only on the message that follows.
+    //
+    // After the panel steps, because a unit that crossed and a unit that walked
+    // home can both want the same doorway, and the order these went in is the
+    // order they have to be judged in.
+    for (const step of this.stagedActions) {
+      if (!step.homecoming) continue;
+      this.wsService.sendMessage({
+        type: 'make_move', from: step.from, to: step.to, withdraw: true,
+      });
+    }
     // An ability that moved a unit's HP has to reach the engine too: no engine
     // holds an ability, so unless the change is sent the next state update
     // rolls it straight back off - a king healed off 1 HP died of overtime
@@ -4451,7 +4622,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // engine refused came back half-played with the casts already kept.
     const pending = this.pendingMove;
     const boardAction = pending
-      ? this.stagedActions.reduce((last, step, i) => (step.spend ? last : i), -1)
+      // A walk home is not it either, for the same reason it is not `pending`:
+      // it has already gone out as its own message above.
+      ? this.stagedActions.reduce(
+        (last, step, i) => (step.spend || step.homecoming ? last : i), -1)
       : Infinity;
     const before: any[] = [];
     const after: any[] = [];
@@ -4512,32 +4686,49 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       this.persistLocalUiState();
       return;
     }
-    // Both engines re-check the walk from where it started, so they need to
-    // be told about the extra steps or they reject the move outright.
-    const moveBonus = this.moveBonusFor(pending.to);
-    // ponytail: the local engine honours these; a server game does not, for
-    // the same reason it ignores moveBonus - abilities live on the client, so
-    // taking the client's word for a stat would be a free upgrade. Move
-    // abilities into the engine and both sides can read them off the board.
-    const bonuses = {
-      atk: this.bonusFor(pending.to, 'atk'),
-      def: this.bonusFor(pending.to, 'def'),
-      targetAtk: attack ? this.bonusFor(attack, 'atk') : 0,
-      targetDef: attack ? this.bonusFor(attack, 'def') : 0,
-    };
-    const boosted = Object.values(bonuses).some(v => v !== 0);
-    this.wsService.sendMessage({
-      type: 'make_move',
-      from: pending.from,
-      to: pending.to,
-      ...(attack ? { attack } : {}),
-      ...(moveBonus ? { moveBonus } : {}),
-      ...(boosted ? { bonuses } : {}),
-      // Walking off the board into a base. Both engines answer it: the
-      // browser one takes the walk on trust, and the server re-derives it -
-      // the real doorways, the MOV to reach them - from its own panel model.
-      ...(this.offBoard(pending.to) ? { withdraw: true } : {}),
-      ...casts,
+    // **Every board move the turn made, and only the last hands it over.**
+    // One message each, in the order they were played, with `more` on all but
+    // the last - both engines answer a held move as a deployment: the same
+    // seat, the same ply, the same clock, and the toll untaken until the end.
+    //
+    // The casts are split across the ends rather than piled on the last
+    // message: what was cast BEFORE the turn's board action has to land
+    // before the first unit moves, and a `effectsBefore` on the final message
+    // would land it after the others had already gone. With one move - every
+    // turn of the schedule proper - the two ends are the same message and
+    // this is exactly what it always sent.
+    const moves = this.boardMoves;
+    moves.forEach((step, i) => {
+      const swing = step.attack ?? undefined;
+      // Both engines re-check the walk from where it started, so they need to
+      // be told about the extra steps or they reject the move outright.
+      const moveBonus = this.moveBonusFor(step.to);
+      // ponytail: the local engine honours these; a server game does not, for
+      // the same reason it ignores moveBonus - abilities live on the client,
+      // so taking the client's word for a stat would be a free upgrade. Move
+      // abilities into the engine and both sides can read them off the board.
+      const bonuses = {
+        atk: this.bonusFor(step.to, 'atk'),
+        def: this.bonusFor(step.to, 'def'),
+        targetAtk: swing ? this.bonusFor(swing, 'atk') : 0,
+        targetDef: swing ? this.bonusFor(swing, 'def') : 0,
+      };
+      const boosted = Object.values(bonuses).some(v => v !== 0);
+      this.wsService.sendMessage({
+        type: 'make_move',
+        from: step.from,
+        to: step.to,
+        ...(swing ? { attack: swing } : {}),
+        ...(moveBonus ? { moveBonus } : {}),
+        ...(boosted ? { bonuses } : {}),
+        // Walking off the board into a base. Both engines answer it: the
+        // browser one takes the walk on trust, and the server re-derives it -
+        // the real doorways, the MOV to reach them - from its own panel model.
+        ...(this.offBoard(step.to) ? { withdraw: true } : {}),
+        ...(i < moves.length - 1 ? { more: true } : {}),
+        ...(i === 0 && casts.effectsBefore ? { effectsBefore: casts.effectsBefore } : {}),
+        ...(i === moves.length - 1 && casts.effects ? { effects: casts.effects } : {}),
+      });
     });
     this.persistLocalUiState();
     // The staged board stays up until move_made confirms it - see the handler.
@@ -4595,7 +4786,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   get abilityBlockedNote(): string {
     if (!this.isSinglePlayer) return ABILITIES_SOLO_ONLY;
-    return isInitialization(this.gameState.snapshot.turnNumber)
+    const ply = this.gameState.snapshot.turnNumber;
+    if (isPhaseInitialization(ply)) {
+      return `Unavailable: no abilities during the ${stageAt(ply).toLowerCase()}.`;
+    }
+    return isInitialization(ply)
       ? 'Unavailable: no abilities during the initialization.'
       : 'Unavailable: not your turn.';
   }
@@ -4625,13 +4820,54 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /**
    * Whether this side may *cast* right now. Choosing plus one rule more:
-   * nothing is cast in the opening - no pool ability, no path skill or
-   * ultimate, no unit ability. Everything that spends one runs through here,
-   * so this is the one place it has to be said.
+   * nothing is cast on a turn given to setting out - the opening's three and
+   * each numbered phase's own initialization. No pool ability, no path skill
+   * or ultimate, no unit ability. Everything that spends one runs through
+   * here, so this is the one place it has to be said.
+   *
+   * Choosing stays open on all of them, as it always has: a setup turn is
+   * when a side sets itself out, so it is exactly when choosing belongs.
    */
   canUseAbilities(side: 'mine' | 'opponent'): boolean {
     return this.canChooseAbilities(side)
-      && !isInitialization(this.gameState.snapshot.turnNumber);
+      && !isSetupTurn(this.gameState.snapshot.turnNumber);
+  }
+
+  /**
+   * How many of this side's units have walked home this ply, for the board's
+   * three-a-turn cap on a setup turn. Read off the record, like the opening's
+   * moved hexes beside it.
+   *
+   * Cached on the same key as its siblings - the history's identity and the
+   * turn - because the board binds it, so an uncached read would walk a
+   * history that only grows on every change-detection pass, one of which the
+   * mouse crossing a hex is enough to cause.
+   *
+   * **The staged ones count too**, and are added outside the cache: the record
+   * does not move while a turn is being staged, which is the whole reason the
+   * cache is keyed on it. Now that three may be staged before any of them is
+   * sent, the record alone would read 0 all the way to End Turn and the board
+   * would offer a fourth, a fifth and a sixth.
+   */
+  private homecomingsCache:
+    { history: unknown; turn: number; color: string; spent: number } | null = null;
+
+  get homecomingsSpent(): number {
+    const snapshot = this.gameState.snapshot;
+    const color = this.gameState.myColor(snapshot.currentTurn);
+    if (!color) return 0;
+    const history = snapshot.moveHistory;
+    const turn = snapshot.turnNumber;
+    const staged = this.stagedActions.reduce(
+      (n, action) => n + (action.homecoming ? 1 : 0), 0);
+    const cached = this.homecomingsCache;
+    if (cached && cached.history === history && cached.turn === turn
+        && cached.color === color) {
+      return cached.spent + staged;
+    }
+    const spent = homecomingsAt(history, turn, color).size;
+    this.homecomingsCache = { history, turn, color, spent };
+    return spent + staged;
   }
 
   /** Resign the current game. */

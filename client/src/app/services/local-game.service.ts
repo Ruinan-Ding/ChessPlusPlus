@@ -1,11 +1,17 @@
 import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 import { ConfigService } from './config.service';
-import { computeLegalMoves, hexDistanceKeys, isInsideBoard, strikeDamage } from './hex-rules';
 import {
-  lockedPanelUnits, openingMovedHexes, panelMoverAllowed,
+  computeLegalMoves, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
+} from './hex-rules';
+import {
+  boardMoveLandings, boardMovesAt, homecomingsAt, lockedPanelUnits, openingMovedHexes,
+  panelMoverAllowed,
 } from './history-rules';
-import { isInitialization, isWrapOpen, OVERTIME_FIRST_PLY, OVERTIME_TOLL } from './phases';
+import {
+  HOMECOMINGS_PER_SETUP_TURN, boardMovesPerTurn, overtimeTollAt, isEntryOpen,
+  isHomecomingOpen, isInitialization, isSetupTurn, isWrapOpen, noAttackMessage,
+} from './phases';
 
 /**
  * What overtime costs a commander at the end of each of its side's turns.
@@ -38,6 +44,14 @@ import { isInitialization, isWrapOpen, OVERTIME_FIRST_PLY, OVERTIME_TOLL } from 
  * that the config knows it, it is not already standing on the board, and it is
  * neither above the HP its config allows nor back from the dead.
  *
+ * **The three arrows' schedules and the first three rows** are checked here
+ * too, and for the same reason: a window is a question about the ply alone,
+ * and "is this hex in your own first three rows" is a question about the hex
+ * and the mover's colour. Neither needs a panel. So a crossing must land in
+ * its own rows and inside the entry window, a walk home must start in them and
+ * inside the homecoming window - three a turn while setting out, uncounted in
+ * overtime - and no ability fires on a setup turn at all.
+ *
  * It takes on trust what an ability is worth (a boost, a mend, a cast's HP)
  * and everything that wants a panel to work out: which panel a unit stands in,
  * what a walk inside one cost, and **whether a walk is a crossing at all** -
@@ -49,6 +63,19 @@ import { isInitialization, isWrapOpen, OVERTIME_FIRST_PLY, OVERTIME_TOLL } from 
  */
 
 const STORAGE_KEY = 'cpp.localGame.v1';
+
+/**
+ * Whether an ability figure was sent at all, and was not a plain zero.
+ *
+ * Missing is the only thing that reads as "no ability": the room sends a `0`
+ * and an all-zero `bonuses` on ordinary turns, so a zero cannot be a use, but
+ * nonsense is not nothing - `'x'` and `Infinity` both mean a figure arrived
+ * that the room had no business sending on a turn given to setting out.
+ */
+function sent(value: unknown): boolean {
+  return value !== undefined && value !== null && Number(value) !== 0;
+}
+
 /** Matches SINGLE_PLAYER_OPPONENT in server/game/consumers.py. */
 export const LOCAL_OPPONENT = 'Opponent';
 /** Stands in for the room UUID; there is no room to address. */
@@ -146,7 +173,7 @@ export class LocalGameService {
       case 'make_move':
         this.move(
           msg.from, msg.to, msg.attack, msg.moveBonus, msg.bonuses, msg.withdraw,
-          msg.effects, msg.effectsBefore);
+          msg.effects, msg.effectsBefore, msg.more);
         break;
 
       case 'enter_board':
@@ -304,6 +331,34 @@ export class LocalGameService {
   }
 
   /**
+   * Whether a message brought an ability onto a turn that forbids one.
+   *
+   * **No ability fires on a turn given to setting out** - the owner's rule for
+   * a phase initialization, and true of the opening for the same reason. This
+   * is the one ability rule the engine can keep without the abilities being
+   * settled: it does not need to know what a cast is *worth* to know that none
+   * should have arrived. What it is worth stays on trust, as everything about
+   * abilities does.
+   *
+   * A zero is not a use. The room sends `moveBonus: 0` and an all-zero
+   * `bonuses` on ordinary turns, and refusing those would refuse every move.
+   */
+  private abilityFault(
+    moveBonus?: number, bonuses?: any, effects?: any[], effectsBefore?: any[],
+  ): boolean {
+    const g = this.game!;
+    if (!isSetupTurn(g.turnNumber)) return false;
+    if (effects?.length || effectsBefore?.length) return true;
+    // **Sent at all, and not a zero.** `Number(x) || 0` read as a guard let
+    // `moveBonus: 'x'` through as though no ability had come: NaN is falsy, so
+    // nonsense was indistinguishable from nothing. Asked this way round the
+    // missing case is the only one that passes, so NaN and Infinity are both
+    // read as what they are - a bonus that arrived and is not zero.
+    if (sent(moveBonus)) return true;
+    return Object.values(bonuses ?? {}).some(sent);
+  }
+
+  /**
    * Walk a unit in from a panel. Deployment rather than the turn's action -
    * several may come through in a turn - so unlike a move this hands the turn
    * to nobody and counts no ply.
@@ -332,8 +387,25 @@ export class LocalGameService {
       this.emit({ type: 'invalid_move', message: wrong });
       return;
     }
-    // A crossing spends one of the reserve's three starts for the turn, and
-    // the opening gives a unit one move for the whole phase.
+    // The window first, so a shut one is never reported as a spent allowance.
+    // The reserve's three arrows run on the setup turns and on each phase's
+    // halftime half - the mirror image of the wrap, which runs on the halves
+    // between them.
+    if (!isEntryOpen(g.turnNumber)) {
+      this.emit({ type: 'invalid_move', message: 'The way in is shut' });
+      return;
+    }
+    // And it lands in its own first three rows. The one part of a crossing
+    // this engine can check for itself: where a unit may STOP is a question
+    // about the destination hex and the mover's colour, and needs neither the
+    // panel it came from nor the walk that got it to the gateway.
+    if (!inHomeRows(unit.color, tr, radius)) {
+      this.emit({ type: 'invalid_move', message: 'A crossing stops in your own first three rows' });
+      return;
+    }
+    // A crossing spends one of the reserve's three starts for the turn - five
+    // in a phase initialization - and the opening gives a unit one move for
+    // the whole phase.
     if (!panelMoverAllowed(g.moveHistory, g.turnNumber, unit.color, unit.uid)) {
       this.emit({ type: 'invalid_move', message: 'That reserve has started its units for the turn' });
       return;
@@ -470,10 +542,11 @@ export class LocalGameService {
       this.emit({ type: 'invalid_move', message: 'Nothing to attack there' });
       return;
     }
-    // Nobody attacks in the opening, a panel being no exception - the board
-    // never offered one there, and until now nothing else said no.
-    if (isInitialization(g.turnNumber)) {
-      this.emit({ type: 'invalid_move', message: 'Nobody attacks in the opening' });
+    // Nobody attacks on a turn given to setting out, a panel being no
+    // exception - the board never offered one there, and until now nothing
+    // else said no.
+    if (isSetupTurn(g.turnNumber)) {
+      this.emit({ type: 'invalid_move', message: noAttackMessage(g.turnNumber) });
       return;
     }
     // The defender is named by the message too, so it gets the same checks the
@@ -662,9 +735,21 @@ export class LocalGameService {
     /** The turn's casts after its board action, and before it - see `landEffects`. */
     effects?: any[],
     effectsBefore?: any[],
+    /**
+     * Whether another board move follows this one in the same turn. Overtime's
+     * later stretches allow two and three, and only the last hands the seat
+     * over - see `holding` below.
+     */
+    more?: boolean,
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
+    // Before `landEffects`, which would otherwise write the cast onto the
+    // board on its way to being refused.
+    if (this.abilityFault(moveBonus, bonuses, effects, effectsBefore)) {
+      this.emit({ type: 'invalid_move', message: 'No ability fires while a side is setting out' });
+      return;
+    }
 
     const start = { ...g.boardState };
     const before = this.landEffects(start, effectsBefore);
@@ -708,6 +793,34 @@ export class LocalGameService {
       this.emit({ type: 'invalid_move', message: 'The king never walks home' });
       return;
     }
+    // The rest of the walk home: when, from where, and how many. Checked
+    // before the general refusal for the same reason the king is - "Illegal
+    // move" would send the player hunting for a doorway that works.
+    if (withdraw && piece?.color === movingColor) {
+      // A phase's play shuts the base doorways; a setup turn opens them for
+      // three units, and overtime opens them with no count at all - there a
+      // walk home is an ordinary move that happens to end off the board, and
+      // the turn's own move allowance is the only cap it needs.
+      if (!isHomecomingOpen(g.turnNumber)) {
+        this.emit({ type: 'invalid_move', message: 'The way home is shut' });
+        return;
+      }
+      // Only out of your own first three rows: a unit that has pushed up the
+      // board walks back down into its own ground before it walks off it.
+      // Where it STANDS, which this engine knows - not the route to the
+      // doorway, which wants the panel model it has not got.
+      if (!inHomeRows(movingColor, r, radius)) {
+        this.emit({ type: 'invalid_move', message: 'Only your own first three rows walk home' });
+        return;
+      }
+      if (isSetupTurn(g.turnNumber)) {
+        const gone = homecomingsAt(g.moveHistory, g.turnNumber, movingColor);
+        if (!gone.has(piece?.uid) && gone.size >= HOMECOMINGS_PER_SETUP_TURN) {
+          this.emit({ type: 'invalid_move', message: 'That is all who may walk home this turn' });
+          return;
+        }
+      }
+    }
     if (!piece || piece.color !== movingColor || !Number.isInteger(q) || !Number.isInteger(r)
         || (withdraw
             ? !leaving
@@ -718,21 +831,57 @@ export class LocalGameService {
       return;
     }
 
-    // The opening's rules. The board's click handler enforced these and
+    // The setup turns' rules. The board's click handler enforced these and
     // nothing else did, so a crafted message could attack on the first turn or
     // walk one unit up the board three turns running. Mirrors the block in
     // `_handle_make_move`; a boost changes how FAR a unit goes, never how many
     // times it goes, so none of this waits on the abilities settling.
-    if (isInitialization(g.turnNumber)) {
+    //
+    // Two predicates, deliberately. Nobody attacks on any turn given to
+    // setting out; the one-move-per-phase lock is the opening's alone, and
+    // handing it to a single initialization turn would stop a unit that had
+    // moved in some earlier turn of a phase it has nothing to do with.
+    if (isSetupTurn(g.turnNumber)) {
       // Landing on an enemy is an attack too, by another road.
       if (attack || (relocating && start[to] && start[to].color !== movingColor)) {
-        this.emit({ type: 'invalid_move', message: 'Nobody attacks in the opening' });
+        this.emit({ type: 'invalid_move', message: noAttackMessage(g.turnNumber) });
         return;
       }
-      if (openingMovedHexes(g.moveHistory, movingColor).has(`${q},${r}`)) {
-        this.emit({ type: 'invalid_move', message: 'That unit has had its move for the opening' });
-        return;
-      }
+    }
+    if (isInitialization(g.turnNumber)
+        && openingMovedHexes(g.moveHistory, movingColor).has(`${q},${r}`)) {
+      this.emit({ type: 'invalid_move', message: 'That unit has had its move for the opening' });
+      return;
+    }
+
+    // **How many board moves this side still has.** One everywhere the
+    // schedule is running, two in Overtime 2 and three in Overtime 3. Counted
+    // off the record rather than inferred from "has the turn ended", because
+    // the moves arrive as separate messages and only the last ends it.
+    //
+    // A setup turn's walk home is not a board move and is checked above
+    // against its own three; this guard sits below that block so the two
+    // never both charge one walk.
+    const moveAllowance = boardMovesPerTurn(g.turnNumber);
+    const movesUsed = boardMovesAt(g.moveHistory, g.turnNumber, movingColor);
+    if (!(leaving && isSetupTurn(g.turnNumber)) && movesUsed >= moveAllowance) {
+      this.emit({
+        type: 'invalid_move',
+        message: `That side has had all ${moveAllowance} of its moves this turn`,
+      });
+      return;
+    }
+    // `more` is the caller saying "this is not my last". Honoured only while
+    // another move is still to come: a `more` on the last of the allowance
+    // ends the turn anyway, there being nothing left for it to hold the seat
+    // open for. Mirrors `holding` in `_handle_make_move`.
+    const holding = !!more && movesUsed + 1 < moveAllowance;
+    // The allowance counts moves; the owner's rule counts units. Without this
+    // a side with three could play A, then B, then A again - each message
+    // legal on its own, so the unit covered twice its MOV in one turn.
+    if (boardMoveLandings(g.moveHistory, g.turnNumber, movingColor).has(from)) {
+      this.emit({ type: 'invalid_move', message: 'That unit has already moved this turn' });
+      return;
     }
 
     const board = { ...start };
@@ -751,6 +900,22 @@ export class LocalGameService {
       // it is off the board, and what the base is rebuilt from on a reload.
       ...(leaving ? { withdrawn: true, unit: piece } : {}),
     };
+
+    // **On a setup turn a walk home is deployment, not the turn's board
+    // action**, exactly as a crossing is: three go in one turn, and handing
+    // the seat over on the first would leave the other two unreachable. Sent
+    // as a state update rather than `move_made` for the same reason the
+    // server sends one - the same seat, the same ply, the same clock. Nothing
+    // above can have staged an attack or a cast here, both being refused on a
+    // setup turn, so there is nothing else left to fold in. Mirrors the split
+    // in `_handle_make_move`; overtime keeps a walk home as the turn's action.
+    if (leaving && isSetupTurn(g.turnNumber)) {
+      g.boardState = board;
+      g.moveHistory = [...g.moveHistory, record];
+      this.persist();
+      this.emit({ type: 'game_state_update', ...this.snapshot() });
+      return;
+    }
 
     if (attack) {
       const target = board[attack];
@@ -791,6 +956,24 @@ export class LocalGameService {
           }
         }
       }
+    }
+
+    // Not the turn's last move: hold the seat. The same shape as a setup
+    // turn's walk home above, and the same reason the server has
+    // `_commit_deployment` - the ply, the seat and the clock all stay put, and
+    // the next message plays the next unit.
+    //
+    // **The toll is deliberately not taken here.** It is what the END of a
+    // turn costs, and one per move would bleed a king three points on an
+    // Overtime 3 turn - which is the stretch that allows three moves, so the
+    // mistake would land exactly where it hurts most. Nor does the ply move,
+    // so nothing else that counts turns double-counts either.
+    if (holding) {
+      g.boardState = board;
+      g.moveHistory = [...g.moveHistory, ...before.records, record];
+      this.persist();
+      this.emit({ type: 'game_state_update', ...this.snapshot() });
+      return;
     }
 
     const after = this.landEffects(board, effects).records;
@@ -848,11 +1031,13 @@ export class LocalGameService {
    */
   /**
    * Overtime's toll, taken at the very end of a turn: the side that just
-   * played loses an HP off its commander.
+   * played loses HP off its commander.
    *
-   * **Real damage, not a mark.** A king on 1 dies of it, which is the owner's
-   * rule - and it is what eventually settles a deathmatch neither side is
-   * winning on points. It lands after everything else the turn did, so a blow
+   * **Real damage, not a mark.** A king on the toll or less dies of it, which
+   * is the owner's rule - and it is what eventually settles a deathmatch
+   * neither side is winning on points. How much climbs 1, 2, 3 through
+   * overtime's three stretches, so a match that will not end has its ending
+   * brought forward rather than merely waited for. It lands after everything else the turn did, so a blow
    * struck this turn is resolved before the toll rather than after it, and a
    * king killed in the fight is already gone when this looks for one.
    *
@@ -863,21 +1048,28 @@ export class LocalGameService {
    * a pass has no other reason to look at whether anybody is beaten and must
    * not start doing so for a board that was already in that state.
    *
-   * ponytail: the browser engine's alone. The schedule that says where
-   * overtime starts lives in `phases.ts`, and porting it to Python would make
-   * a fourth thing to keep in step - see the config mirror this repo already
-   * carries. A networked game takes no toll.
+   * Not the browser engine's alone any more: `game_logic.overtime_toll` takes
+   * the same toll on a move, a pass and the clock's pass, which is why the
+   * board's mark is over HP that really moved in a networked room too. The
+   * schedule is the fourth mirror that made possible, and `phases.py` carries
+   * the warning about keeping it in step.
    */
   private overtimeToll(board: Record<string, any>): 'white' | 'black' | null {
     const g = this.game!;
-    // Still the ply just played: it is bumped after this.
-    if (g.turnNumber < OVERTIME_FIRST_PLY) return null;
+    // Still the ply just played: it is bumped after this. How much it costs is
+    // the ply's business - overtime runs in three stretches and the toll
+    // climbs 1, 2, 3 through them - and `overtimeTollAt` answers 0 outside
+    // overtime, so it is the "not yet" gate as well as the amount. A
+    // `turnNumber < OVERTIME_FIRST_PLY` test beside it would be a second
+    // place holding the schedule, and the two could come to disagree.
+    const toll = overtimeTollAt(g.turnNumber);
+    if (!toll) return null;
     const color = this.colorOf(g.currentTurn);
     const config = g.config;
     const at = Object.keys(board).find(key => board[key]?.color === color
       && config?.units?.[board[key].unit_id]?.commander);
     if (!at) return null;
-    const hp = (board[at].hp ?? 0) - OVERTIME_TOLL;
+    const hp = (board[at].hp ?? 0) - toll;
     if (hp > 0) {
       board[at] = { ...board[at], hp };
       return null;
@@ -906,6 +1098,13 @@ export class LocalGameService {
   private pass(effectsBefore?: any[]): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
+    // A pass is the other way a cast reaches the engine, so it is the other
+    // place a setup turn has to refuse one. The blow paths need no guard of
+    // their own: they refuse the whole message on a setup turn already.
+    if (this.abilityFault(0, null, undefined, effectsBefore)) {
+      this.emit({ type: 'invalid_move', message: 'No ability fires while a side is setting out' });
+      return;
+    }
     const passedBy = g.currentTurn;
     const color = this.colorOf(passedBy);
     // A passed turn is still a turn: overtime takes its toll on it, so the

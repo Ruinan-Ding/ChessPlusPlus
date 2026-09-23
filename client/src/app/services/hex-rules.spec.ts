@@ -1,6 +1,7 @@
 import {
   attackTiers, captureClaims, captureScore, captureZoneHexes, computeAttackZone,
-  computeLegalMoves, computeMoveCosts, strikeDamage, MIN_STRIKE_DAMAGE,
+  computeLegalMoves, computeMoveCosts, inHomeRows, strikeDamage, HOME_ROWS,
+  MIN_STRIKE_DAMAGE,
 } from './hex-rules';
 
 /**
@@ -255,5 +256,46 @@ describe('capture zones', () => {
     // Seven each, less the four hexes they share: their own two and the two
     // either side of the pair.
     expect(captureScore(claims, 'white')).toBe(10);
+  });
+});
+
+/**
+ * Each side's own first three rows. They bound both ends of a unit's journey
+ * off the board - a crossing may not stop beyond them, and a walk home may not
+ * start outside them - and they are the rows the board tints as a side's own,
+ * so the tint and the rule have to agree.
+ */
+describe('inHomeRows', () => {
+  it('gives each side the three rows nearest its own edge', () => {
+    expect(HOME_ROWS).toBe(3);
+    expect([9, 10, 11].every(r => inHomeRows('white', r, 11))).toBeTrue();
+    expect([-9, -10, -11].every(r => inHomeRows('black', r, 11))).toBeTrue();
+  });
+
+  it('stops one row short of the fourth', () => {
+    expect(inHomeRows('white', 8, 11)).toBeFalse();
+    expect(inHomeRows('black', -8, 11)).toBeFalse();
+    // And the middle of the board belongs to nobody.
+    expect(inHomeRows('white', 0, 11)).toBeFalse();
+    expect(inHomeRows('black', 0, 11)).toBeFalse();
+  });
+
+  it('never gives a side the other\'s ground', () => {
+    expect(inHomeRows('white', -11, 11)).toBeFalse();
+    expect(inHomeRows('black', 11, 11)).toBeFalse();
+  });
+
+  it('is a point mirror of itself', () => {
+    for (let r = -11; r <= 11; r++) {
+      expect(inHomeRows('white', r, 11)).toBe(inHomeRows('black', -r, 11));
+    }
+  });
+
+  it('holds on a board too small to have three rows a side', () => {
+    // Radius 2 would put the edge at row 0, which is both sides' at once.
+    // Clamped to 1, so the two never overlap however small the board.
+    expect(inHomeRows('white', 1, 2)).toBeTrue();
+    expect(inHomeRows('black', 1, 2)).toBeFalse();
+    expect(inHomeRows('white', 0, 2)).toBeFalse();
   });
 });

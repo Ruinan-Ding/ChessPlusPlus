@@ -31,6 +31,7 @@ has nobody to cheat. A server does.
 from __future__ import annotations
 
 import math
+import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # The phase schedule's own count of a side's turns. Mending needs it, and it
@@ -269,6 +270,22 @@ def panel_roster(config: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
     return roster[:PANEL_SQUAD]
 
 
+#: Whether a new game deals units into the panels.
+#:
+#: **Temporarily off.** The owner is clearing the placeholder squads out of the
+#: bases and reserves, so a new game opens with all four empty. Everything that
+#: *works* a panel is untouched and still tested - the walk, the wrap, the
+#: crossing, the blow, the walk home - because the panels come back, and a rule
+#: nobody exercises in the meantime is a rule that rots. See
+#: :func:`dealt_panels`, which is what the tests deal with.
+#:
+#: ``CPP_DEAL_PANELS=1`` turns the squads back on for one process. That is for
+#: the live e2e scripts, which drive a real server over a real socket and so
+#: cannot reach in and set this the way the unit tests do; a deployment leaves
+#: it unset and gets empty panels. It goes when the squads come back for good.
+PANELS_DEALT = os.environ.get('CPP_DEAL_PANELS') == '1'
+
+
 def deal_panels(
     config: Dict[str, Any],
     radius: int,
@@ -278,11 +295,73 @@ def deal_panels(
     """
     Return the initial panel occupancy.
 
-    New games currently start with empty base and reserve panels. Panel
-    history is still replayed by :func:`panel_occupancy` so recorded
-    deployment actions remain understandable if that feature is re-enabled.
+    New games currently start with empty base and reserve panels
+    (:data:`PANELS_DEALT`). Panel history is still replayed by
+    :func:`panel_occupancy` so recorded deployment actions remain
+    understandable when the feature is re-enabled.
+
+    **The emptiness is a decision, not arithmetic.** The deal itself is still
+    here, in :func:`dealt_panels`, so turning the squads back on is this one
+    flag rather than a function to write again from the client.
     """
-    return {}
+    if not PANELS_DEALT:
+        return {}
+    return dealt_panels(config, radius, orientation, panel_hp)
+
+
+def dealt_panels(
+    config: Dict[str, Any],
+    radius: int,
+    orientation: str = 'edge-up',
+    panel_hp: Optional[Dict[str, int]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    The opening panel squads, by hex key. Mirrors ``buildReserves``.
+
+    Every panel - both bases and both reserves - is dealt one of each rostered
+    unit type. Black's panels are walked **backwards** so the two sides get
+    point-mirrored shapes with identical reach, and the wrap corridor is
+    excluded so a squad can never block its own crossing. Unit *i* lands on
+    every third free hex, which spreads the squad out instead of bunching it.
+
+    ``panel_hp`` is what the record says each unit has left, by uid; anything
+    already at zero is not dealt at all, because killed in a panel is killed.
+    Pass the result of :func:`recorded_panel_hp`.
+
+    The uid is ``r{panel}{i}`` - deterministic, which is what lets the client
+    re-deal after a reload and get the same units back. It is also why nothing
+    needs persisting: this function and the move history between them are the
+    whole of the panel state.
+    """
+    wounded = panel_hp or {}
+    roster = panel_roster(config)
+    dealt: Dict[str, Dict[str, Any]] = {}
+    if not roster:
+        return dealt
+
+    for panel, hexes in panel_zones(radius, orientation).items():
+        color = color_of_panel(panel)
+        corridor = wrap_corridor(color, radius)
+        order = list(reversed(hexes)) if color == 'black' else list(hexes)
+        order = [hex_key for hex_key in order if hex_key not in corridor]
+        spots = order[::PANEL_SPACING]
+        for i, (unit_id, spec) in enumerate(roster):
+            if i >= len(spots):
+                break
+            full = spec.get('hp', 1)
+            uid = f"r{panel}{i}"
+            left = wounded.get(uid, full)
+            if left <= 0:
+                continue
+            dealt[spots[i]] = {
+                'unit_id': unit_id,
+                'color': color,
+                'hp': left,
+                'max_hp': full,
+                'uid': uid,
+                'panel': panel,
+            }
+    return dealt
 
 
 # ---------------------------------------------------------------------------

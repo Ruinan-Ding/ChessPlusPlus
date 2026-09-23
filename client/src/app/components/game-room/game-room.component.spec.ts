@@ -23,7 +23,9 @@ describe('GameRoomComponent ability panel', () => {
    * side on a particular balance sets what it has already spent.
    */
   const giveCp = (c: any, cp: number) => {
-    c.gameState.snapshot.turnNumber = 8;   // turn 4, the first of Phase 1
+    // Turn 5, Phase 1's first played turn. Not turn 4: that is the phase's own
+    // initialization, and nothing is cast on a turn given to setting out.
+    c.gameState.snapshot.turnNumber = 10;
     c.myCpSpent = 200 - cp;
   };
 
@@ -84,6 +86,40 @@ describe('GameRoomComponent ability panel', () => {
     ];
     expect(c.departedUids).toEqual(['rbr4']);
     expect(c.panelPositions).toEqual({});
+  });
+
+  it('pays overtime’s turns at the stretch’s rate, both ways round', () => {
+    // Two places hand out the turn point and they must agree: `beginTurnFor`
+    // pays it live as a side starts, and `pointsFromHistory` re-derives the
+    // whole purse from the record on every commit. A flat 1 in either one is
+    // invisible until overtime, where the rates part company - and then the
+    // purse jumps every time a commit overwrites the live tally.
+    const c = room();
+    c.gameState.snapshot.config = { units: {} };
+    c.gameState.snapshot.moveHistory = [];
+
+    // Turn 44 is the last of Overtime 1: 44 turns at one apiece.
+    c.gameState.snapshot.turnNumber = 2 * 44 - 1;
+    expect(c.pointsFromHistory('white')).toBe(44);
+    // Turn 45 is Overtime 2, which pays three.
+    c.gameState.snapshot.turnNumber = 2 * 45 - 1;
+    expect(c.pointsFromHistory('white')).toBe(47);
+    // The last turn pays five: 44 + 5x3 + 5.
+    c.gameState.snapshot.turnNumber = 2 * 50 - 1;
+    expect(c.pointsFromHistory('white')).toBe(64);
+
+    // And the live award reads the same table. The snapshot has already moved
+    // on to the hand-over the side is about to play, which is the one paid for.
+    const paid = (ply: number) => {
+      c.gameState.snapshot.turnNumber = ply;
+      c.myPoints = 0;
+      c.beginTurnFor('white');
+      return c.myPoints;
+    };
+    expect(paid(1)).toBe(1);
+    expect(paid(2 * 44 - 1)).toBe(1);
+    expect(paid(2 * 45 - 1)).toBe(3);
+    expect(paid(2 * 50 - 1)).toBe(5);
   });
 
   it('adds up points from the history exactly the way the server does', () => {
@@ -332,6 +368,168 @@ describe('GameRoomComponent ability panel', () => {
     c.stagedActions = [{ at: 1, board: {}, from: '0,0', to: '0,1', used: 1, attack: null }];
     (c as any).updateTurnClock();
     expect(sent.length).toBe(1);
+  });
+
+  it('folds a unit’s several steps into one board move, and keeps units apart', () => {
+    const c = room();
+    const step = (from: string, to: string, used: number, attack: string | null = null) =>
+      ({ at: 1, board: {}, from, to, used, attack });
+    // One unit walking twice pushes two entries, each carrying the hex it set
+    // out from - so the later supersedes the earlier rather than adding to it.
+    // Then it swings, which pushes a third entry on the same origin.
+    c.stagedActions = [
+      step('0,0', '0,1', 1),
+      step('0,0', '0,2', 2),
+      step('0,0', '0,2', 2, '0,3'),
+      // A different unit: its own origin, its own board move.
+      step('5,5', '5,6', 1),
+    ];
+    const moves = c.boardMoves;
+    expect(moves.length).toBe(2);
+    expect(moves[0].from).toBe('0,0');
+    expect(moves[0].to).toBe('0,2');
+    expect(moves[0].attack).toBe('0,3');
+    expect(moves[1].from).toBe('5,5');
+
+    // A cast and a setup turn's walk home are not board moves at all.
+    c.stagedActions = [
+      { at: 1, board: {}, from: '', to: '', used: 0, attack: null, spend: 3 },
+      step('1,1', '1,2', 1),
+      { ...step('2,2', '2,3', 1), homecoming: true },
+    ];
+    expect(c.boardMoves.length).toBe(1);
+    expect(c.boardMoves[0].from).toBe('1,1');
+  });
+
+  it('writes a blow onto the unit that struck it, not whoever moved last', () => {
+    // The bug this test exists for: `prev` was the last board action whoever
+    // it belonged to. Once a turn can hold two, a side that walks A and then
+    // swings with B wrote B’s blow onto A’s origin - sending A’s hex to B’s
+    // target and losing A’s move altogether.
+    const c = room();
+    c.gameState.snapshot.turnNumber = 2 * 45 - 1;   // Overtime 2: two moves
+    c.gameState.snapshot.config = { units: { pawn: { attackRange: 1, atk: 5, def: 0 } } };
+    c.gameState.snapshot.boardState = {
+      '0,0': { unit_id: 'pawn', color: 'white', hp: 9, max_hp: 9, uid: 'a' },
+      '5,5': { unit_id: 'pawn', color: 'white', hp: 9, max_hp: 9, uid: 'b' },
+      '5,6': { unit_id: 'pawn', color: 'black', hp: 9, max_hp: 9, uid: 'x' },
+    };
+    // A walks.
+    c.onPlayerMove({ from: '0,0', to: '0,1', cost: 1 });
+    // B strikes from where it stands, having not moved.
+    c.onPlayerAttack({ from: '5,5', to: '5,5', attack: '5,6' });
+
+    const moves = c.boardMoves;
+    expect(moves.length).toBe(2);
+    expect(moves[0].from).toBe('0,0');
+    expect(moves[0].to).toBe('0,1');
+    expect(moves[0].attack).toBeNull();
+    expect(moves[1].from).toBe('5,5');
+    expect(moves[1].attack).toBe('5,6');
+  });
+
+  it('gives each of the turn’s moves its own blow, and no unit two', () => {
+    const c = room();
+    c.gameState.snapshot.config = { units: { pawn: { attackRange: 1, atk: 5, def: 0 } } };
+    c.gameState.snapshot.boardState = {
+      '5,5': { unit_id: 'pawn', color: 'white', hp: 9, max_hp: 9, uid: 'b' },
+      '5,6': { unit_id: 'pawn', color: 'black', hp: 99, max_hp: 99, uid: 'x' },
+      '0,0': { unit_id: 'pawn', color: 'white', hp: 9, max_hp: 9, uid: 'a' },
+      '0,1': { unit_id: 'pawn', color: 'black', hp: 99, max_hp: 99, uid: 'y' },
+    };
+    // Overtime 1 allows one board move, so one blow and no more - which is
+    // every turn of the schedule proper too.
+    c.gameState.snapshot.turnNumber = 2 * 40 - 1;
+    c.onPlayerAttack({ from: '5,5', to: '5,5', attack: '5,6' });
+    expect(c.boardMoves.length).toBe(1);
+    c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '0,1' });
+    expect(c.boardMoves.length).toBe(1);
+
+    // Overtime 2 allows the second unit its own blow.
+    c.stagedActions = [];
+    c.gameState.snapshot.turnNumber = 2 * 45 - 1;
+    c.onPlayerAttack({ from: '5,5', to: '5,5', attack: '5,6' });
+    c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '0,1' });
+    expect(c.boardMoves.length).toBe(2);
+    // But never twice with the same unit: the swing ends that unit’s move.
+    c.onPlayerAttack({ from: '5,5', to: '5,5', attack: '5,6' });
+    expect(c.boardMoves.length).toBe(2);
+    expect(c.boardMoves.filter((m: any) => m.attack).length).toBe(2);
+  });
+
+  it('counts units, not moves: one unit never takes two', () => {
+    const c = room();
+    c.gameState.snapshot.turnNumber = 2 * 50 - 1;          // Overtime 3
+    c.gameState.snapshot.config = { units: { pawn: { move: 3, value: 4 } } };
+    c.gameState.snapshot.boardState = {
+      '0,0': { unit_id: 'pawn', color: 'white', hp: 9, max_hp: 9, uid: 'a' },
+      '5,5': { unit_id: 'pawn', color: 'white', hp: 9, max_hp: 9, uid: 'b' },
+    };
+    c.onPlayerMove({ from: '0,0', to: '0,1', cost: 1 });
+    c.onPlayerMove({ from: '5,5', to: '5,6', cost: 1 });
+    // A is finished the moment B moves, so its hex is in `movedUnitHexes` -
+    // the unit still mid-move (B) never is.
+    expect(c.movedUnitHexes).toEqual(['0,1']);
+
+    // A coming back for a second go is refused, though the stretch has a
+    // third move to give.
+    c.onPlayerMove({ from: '0,1', to: '0,2', cost: 1 });
+    expect(c.boardMoves.length).toBe(2);
+    expect(c.boardMoves.map((m: any) => m.from + '->' + m.to))
+      .toEqual(['0,0->0,1', '5,5->5,6']);
+
+    // B, still mid-move, may finish its own walk - and that folds into B's
+    // one move rather than spending another.
+    c.onPlayerMove({ from: '5,6', to: '5,7', cost: 1 });
+    expect(c.boardMoves.length).toBe(2);
+    expect(c.boardMoves[1].from).toBe('5,5');
+    expect(c.boardMoves[1].to).toBe('5,7');
+  });
+
+  it('sends every board move of a turn, and only the last hands it over', () => {
+    const c = room();
+    const sent: any[] = [];
+    c.wsService.sendMessage = (m: any) => sent.push(m);
+    // Ply 89 is turn 45 - Overtime 2, two board moves to a side.
+    c.gameState.snapshot.turnNumber = 2 * 45 - 1;
+    c.stagedActions = [
+      { at: 1, board: {}, from: '0,0', to: '0,1', used: 1, attack: null },
+      { at: 2, board: {}, from: '5,5', to: '5,6', used: 1, attack: '5,7' },
+    ];
+
+    c.endTurn();
+    const moves = sent.filter(m => m.type === 'make_move');
+    expect(moves.length).toBe(2);
+    // The first holds the seat; the second ends the turn. Both engines answer
+    // a held move as a deployment - same seat, same ply, toll untaken.
+    expect(moves[0].more).toBeTrue();
+    expect(moves[0].from).toBe('0,0');
+    expect(moves[1].more).toBeUndefined();
+    expect(moves[1].from).toBe('5,5');
+    // Each carries its own swing: the owner’s rule is that every one of the
+    // turn’s moves may strike, so a single attack folded onto the last
+    // message would drop the others.
+    expect(moves[1].attack).toBe('5,7');
+  });
+
+  it('still sends exactly one move where the schedule allows one', () => {
+    // Every turn of the schedule proper. The multi-move path has to collapse
+    // to precisely what it always sent, or 44 turns of every match change.
+    const c = room();
+    const sent: any[] = [];
+    c.wsService.sendMessage = (m: any) => sent.push(m);
+    c.gameState.snapshot.turnNumber = 9;
+    c.stagedActions = [
+      { at: 1, board: {}, from: '0,0', to: '0,1', used: 1, attack: null },
+      { at: 2, board: {}, from: '0,0', to: '0,2', used: 2, attack: null },
+    ];
+
+    c.endTurn();
+    const moves = sent.filter(m => m.type === 'make_move');
+    expect(moves.length).toBe(1);
+    expect(moves[0].more).toBeUndefined();
+    expect(moves[0].from).toBe('0,0');
+    expect(moves[0].to).toBe('0,2');
   });
 
   it('lets nobody act while a committed turn plays itself back', () => {
@@ -719,11 +917,16 @@ describe('GameRoomComponent ability panel', () => {
     // And handing a pair back with it.
     expect(c.canSwap('mine')).toBeTrue();
 
-    // Casting is not. Nothing spends an ability until Phase 1.
+    // Casting is not. Nothing spends an ability until Phase 1 plays.
     expect(c.canUseAbilities('mine')).toBeFalse();
     expect(c.canAfford('mine', TARGETED, 0)).toBeFalse();
 
-    c.gameState.snapshot.turnNumber = 8;   // turn 4, Phase 1
+    // Nor on Phase 1's own initialization turn, which is a setup turn too.
+    c.gameState.snapshot.turnNumber = 8;   // turn 4, Phase 1 Initialization
+    expect(c.canChooseAbilities('mine')).toBeTrue();
+    expect(c.canUseAbilities('mine')).toBeFalse();
+
+    c.gameState.snapshot.turnNumber = 10;  // turn 5, Phase 1's first played
     expect(c.canUseAbilities('mine')).toBeTrue();
   });
 
@@ -943,12 +1146,13 @@ describe('GameRoomComponent ability panel', () => {
     ];
 
     // Still inside Phase 1: nothing to bank.
-    c.gameState.snapshot.turnNumber = 20;   // turn 10
+    c.gameState.snapshot.turnNumber = 20;   // turn 10, its halftime half
     (c as any).bankEndedPhases();
     expect(c.phaseBank[1]).toBeUndefined();
 
-    // The first turn of Phase 2 is when Phase 1's board is still on screen.
-    c.gameState.snapshot.turnNumber = 27;   // turn 14
+    // Phase 2's initialization turn is the first on which Phase 1's board is
+    // still on screen and the phase itself is over.
+    c.gameState.snapshot.turnNumber = 29;   // turn 15
     (c as any).bankEndedPhases();
     expect(c.phaseBank[1]).toEqual({ white: 2, black: 0 });
 
@@ -1088,8 +1292,16 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canAfford('mine', 0, 0)).toBeFalse();
     expect(c.abilityBlockedNote).toBe('Unavailable: no abilities during the initialization.');
 
-    // Past the opening they come back, and the note goes back to the turn.
+    // A numbered phase's own initialization turn shuts them for the same
+    // reason, and says which turn refused rather than naming the opening -
+    // which by then ended several turns ago.
     c.gameState.snapshot.turnNumber = 8;
+    expect(c.canUseAbilities('mine')).toBeFalse();
+    expect(c.abilityBlockedNote)
+      .toBe('Unavailable: no abilities during the phase 1 initialization.');
+
+    // Past every setup turn they come back, and the note goes back to the turn.
+    c.gameState.snapshot.turnNumber = 10;
     expect(c.canUseAbilities('mine')).toBeTrue();
     expect(c.abilityBlockedNote).toBe('Unavailable: not your turn.');
   });
@@ -1109,13 +1321,13 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.showScore).toBeTrue();
 
     // Phase 1 counts it.
-    c.gameState.snapshot.turnNumber = 8;   // turn 4
+    c.gameState.snapshot.turnNumber = 10;   // turn 5
     (c as any).standingsCache = null;
     expect(c.phaseScore('mine').cap).toBe(7);
 
     // Overtime scores nothing at all - it is a deathmatch - so the header
     // stops drawing the numbers rather than freezing them on screen.
-    c.gameState.snapshot.turnNumber = 67;
+    c.gameState.snapshot.turnNumber = 73;
     expect(c.showScore).toBeFalse();
   });
 
@@ -1675,18 +1887,156 @@ describe('GameRoomComponent leaving', () => {
       expect(spent([{ color: 'white', turn: 1, to: '-5,8', moved: true }])).toBeTrue();
     });
 
-    it('is spent by a walk home, which ends the turn like any other move', () => {
-      expect(spent([{ color: 'white', turn: 1, to: '-12,11', withdrawn: true }])).toBeTrue();
-    });
-
     it('is not spent by a crossing, a panel walk or a cast', () => {
       expect(spent([{ color: 'white', turn: 1, to: '-5,8', entered: true }])).toBeFalse();
       expect(spent([{ color: 'white', turn: 1, to: 'bl-2', panelMove: true }])).toBeFalse();
       expect(spent([{ color: 'white', turn: 1, to: '', panelEffect: true }])).toBeFalse();
     });
 
+    /**
+     * This asserted the opposite, under the title "which ends the turn like any
+     * other move" - true of a walk home until a setup turn's became a
+     * deployment that three units may take. Were it still counted, the first
+     * one would grey every battlefield unit for the rest of the turn, taking an
+     * allowance it no longer spends.
+     */
+    it('is not spent by a walk home, which is a deployment while setting out', () => {
+      expect(spent([{ color: 'white', turn: 1, to: '-12,11', withdrawn: true }])).toBeFalse();
+    });
+
+    it('is still spent by a board move taken beside three walks home', () => {
+      expect(spent([
+        { color: 'white', turn: 1, to: '-12,11', withdrawn: true },
+        { color: 'white', turn: 1, to: '-11,11', withdrawn: true },
+        { color: 'white', turn: 1, to: '-10,11', withdrawn: true },
+        { color: 'white', turn: 1, to: '-5,8', moved: true },
+      ])).toBeTrue();
+    });
+
     it('is not spent by the other side', () => {
       expect(spent([{ color: 'black', turn: 1, to: '5,8', moved: true }])).toBeFalse();
+    });
+  });
+
+  /**
+   * Three units may walk home on a setup turn, and every layer said so except
+   * the one a player can click. A walk home was staged as the turn's board
+   * action, which locked every other unit behind it - so the allowance both
+   * engines had just been taught was unreachable, and the browser was the only
+   * thing that could see it.
+   *
+   * On a setup turn each one is a **deployment**: its own message, the seat
+   * kept, and no claim on the turn's move. In overtime it stays the turn's
+   * move, which is the schedule's own exception.
+   */
+  describe('walking home while setting out', () => {
+    /** A room mid-game with `board` standing and the clock on `ply`. */
+    const playing = (ply: number, board: Record<string, any>) => {
+      const kit = room('tok');
+      kit.c.gameStarted = true;
+      // Set by ngOnInit in a real room, which is not run here: it would join,
+      // and the point of these is the staging, not the socket.
+      kit.c.username = 'me';
+      kit.gameState.snapshot = {
+        turnNumber: ply, currentTurn: 'me', moveHistory: [], boardState: board,
+        config: { units: { pawn: { move: 3, value: 4 } } },
+      };
+      return kit;
+    };
+
+    /** Three of white's own, each a step from a doorway. */
+    const three = () => ({
+      '-12,11': { unit_id: 'pawn', color: 'white', hp: 4 },
+      '-11,11': { unit_id: 'pawn', color: 'white', hp: 4 },
+      '-10,11': { unit_id: 'pawn', color: 'white', hp: 4 },
+    });
+
+    /** Walk `from` home into the base, the way the board emits it. */
+    const walkHome = (c: any, from: string, to: string) =>
+      c.onPlayerMove({ from, to, cost: 2, refund: 4 });
+
+    it('leaves the turn\'s board action unclaimed, so the next unit is free', () => {
+      const { c } = playing(1, three());
+      walkHome(c, '-12,11', 'bl-0');
+      // The lock the board reads. Before this change the first walk home set
+      // it, and `drivable` refused every other unit for the rest of the turn.
+      expect(c.pendingMove).toBeNull();
+      expect(c.stagedActions.length).toBe(1);
+      expect(c.stagedActions[0].homecoming).toBeTrue();
+    });
+
+    it('counts the staged ones, so the board stops offering a fourth', () => {
+      const { c } = playing(1, three());
+      expect(c.homecomingsSpent).toBe(0);
+      walkHome(c, '-12,11', 'bl-0');
+      walkHome(c, '-11,11', 'bl-1');
+      walkHome(c, '-10,11', 'bl-2');
+      // Read off the record alone this was 0 until End Turn, because the record
+      // does not move while a turn is staged - and the board would have offered
+      // a fourth, a fifth and a sixth.
+      expect(c.homecomingsSpent).toBe(3);
+    });
+
+    it('sends all three as their own messages, then hands the turn over', () => {
+      const { c, sent } = playing(1, three());
+      walkHome(c, '-12,11', 'bl-0');
+      walkHome(c, '-11,11', 'bl-1');
+      walkHome(c, '-10,11', 'bl-2');
+      c.endTurn();
+      const walks = sent.filter((m: any) => m.type === 'make_move');
+      expect(walks.length).toBe(3);
+      expect(walks.every((m: any) => m.withdraw === true)).toBeTrue();
+      // Each from where its own unit stood - not from the first one's hex,
+      // which is what inheriting the previous action's origin used to do.
+      expect(walks.map((m: any) => m.from)).toEqual(['-12,11', '-11,11', '-10,11']);
+      // Nothing is left to be the turn's board action, and doing nothing else
+      // is a legal turn - so the hand-over is a pass.
+      expect(sent.some((m: any) => m.type === 'pass_turn')).toBeTrue();
+    });
+
+    it('takes one back with its refund, and frees the allowance again', () => {
+      const { c } = playing(1, three());
+      walkHome(c, '-12,11', 'bl-0');
+      const paid = c.myPoints;
+      walkHome(c, '-11,11', 'bl-1');
+      expect(c.homecomingsSpent).toBe(2);
+      c.undoMove();
+      expect(c.homecomingsSpent).toBe(1);
+      expect(c.myPoints).toBe(paid);
+    });
+
+    /**
+     * Overtime opens the doorways with no count, and a walk home there is an
+     * ordinary move that happens to end off the board - so it keeps the turn's
+     * slot and ends the turn, exactly as the server's own split has it.
+     */
+    it('is still the turn\'s own move in overtime', () => {
+      const { c, sent } = playing(73, three());
+      walkHome(c, '-12,11', 'bl-0');
+      expect(c.stagedActions[0].homecoming).toBeUndefined();
+      expect(c.pendingMove).toEqual({ from: '-12,11', to: 'bl-0', used: 2 });
+      c.endTurn();
+      const walks = sent.filter((m: any) => m.type === 'make_move');
+      expect(walks.length).toBe(1);
+      expect(walks[0].withdraw).toBeTrue();
+      expect(sent.some((m: any) => m.type === 'pass_turn')).toBeFalse();
+    });
+
+    /**
+     * A unit that steps and then carries on into the base has not made a
+     * deployment - that is the turn's move reaching the doorway, and it has to
+     * go out from the hex the engine still has the unit on.
+     */
+    it('is the turn\'s move when it finishes a walk already begun', () => {
+      const { c, sent } = playing(1, three());
+      c.onPlayerMove({ from: '-12,11', to: '-12,10', cost: 1 });
+      walkHome(c, '-12,10', 'bl-0');
+      expect(c.pendingMove).toEqual({ from: '-12,11', to: 'bl-0', used: 3 });
+      c.endTurn();
+      const walks = sent.filter((m: any) => m.type === 'make_move');
+      expect(walks.length).toBe(1);
+      expect(walks[0].from).toBe('-12,11');
+      expect(walks[0].withdraw).toBeTrue();
     });
   });
 });

@@ -15,11 +15,12 @@ import { CommonModule } from '@angular/common';
 import {
   attackTiers, captureClaims, captureZoneHexes, computeAttackZone, computeLegalMoves,
   computeMoveCosts, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
-  BASE_PANELS, HEX_DIRS,
+  BASE_PANELS, HEX_DIRS, PANELS_DEALT,
 } from '../../services/hex-rules';
 import { PANEL_MOVERS_PER_TURN } from '../../services/history-rules';
 import {
-  HOMECOMINGS_PER_SETUP_TURN, OVERTIME_FIRST_PLY, OVERTIME_TOLL, PHASE_INIT_ENTRIES,
+  HOMECOMINGS_PER_SETUP_TURN, boardMovesPerTurn, overtimeTollAt, overtimeTollOver,
+  PHASE_INIT_ENTRIES,
   isEntryOpen, isHomecomingOpen, isInitialization, isOvertime, isPhaseInitialization,
   isSetupTurn, isWrapOpen, sideOfPly,
 } from '../../services/phases';
@@ -1787,6 +1788,30 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   /** Steps the staged unit has left this turn, and which unit that is. */
   @Input() movesLeft: number | null = null;
   @Input() movesLeftFor: string | null = null;
+
+  /**
+   * How many units the staged turn has already moved on the main board.
+   *
+   * One is the whole of a turn everywhere the schedule is running, so this was
+   * "is anything staged at all" and `movesLeftFor` answered it. Overtime 2 and
+   * 3 allow two and three, and then the question is a count: another unit may
+   * be driven while this is short of `boardMovesPerTurn(turnNumber)`.
+   *
+   * Comes from the room (`boardMoves.length`) rather than being tallied here,
+   * because the room is what folds a unit's several steps back into one move -
+   * a walk and then a swing is one unit, not two.
+   */
+  @Input() boardMovesSpent = 0;
+
+  /**
+   * Where the turn's finished board moves have left their units - all but the
+   * one still mid-move, which is `movesLeftFor` and may keep walking.
+   *
+   * A unit standing on one of these has had its move. The allowance counts
+   * moves and the owner's rule counts *units*, and without this the lock let
+   * a unit come back for a second the moment another moved after it.
+   */
+  @Input() movedHexes: readonly string[] = [];
   /**
    * One-turn stat boosts by hex. Only `mov` matters here - it widens the
    * flood fill for a unit that has not taken its first step yet, after which
@@ -2871,11 +2896,72 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * deployment actions, but no placeholder squad is dealt into a fresh game.
    */
   private buildReserves(): void {
-    const stamp = `${this.radius}|${this.orientation}|empty`;
+    // **The emptiness is a decision, not arithmetic.** A new game opens with
+    // all four panels empty while the owner clears the placeholder squads out
+    // (`PANELS_DEALT`), but the deal itself stays here and stays tested - the
+    // panels come back, and everything that works one is still live code.
+    if (!PANELS_DEALT) {
+      const stamp = `${this.radius}|${this.orientation}|empty`;
+      if (stamp === this.reservesKey) return;
+      this.reservesKey = stamp;
+      this.reserves = {};
+      this.fallen.clear();
+      return;
+    }
+    const roster = Object.entries(this.config?.units ?? {})
+      // The commander belongs on the board; losing it is how a side loses.
+      .filter(([, d]: [string, any]) => !d?.commander)
+      .slice(0, 5);
+    const stamp = `${this.radius}|${this.orientation}|${roster.map(([id]) => id).join(',')}`;
+    // Dealt once. `woundReserves()` and `absorbWithdrawn()` write to
+    // `this.reserves` on every rebuild, so this skip is also what carries a
+    // panel's dead and its units come home from one rebuild to the next.
+    //
+    // What keeps that honest across a restart is the room's `*ngIf` on
+    // `gameStarted`: `game_reset` puts the setup screen back and takes this
+    // whole component with it, so the next match opens on a new instance
+    // with an empty stamp. Deal a new match without unmounting the board and
+    // the panels come back holding the last one's casualties.
     if (stamp === this.reservesKey) return;
     this.reservesKey = stamp;
     this.reserves = {};
+    // A new deal has no dead to take back - and its uids repeat the last one's.
     this.fallen.clear();
+    if (!roster.length) return;
+
+    for (const [panel, hexes] of this.panelZones) {
+      const color: 'white' | 'black' = panel[0] === 'b' ? 'white' : 'black';
+      // Every third hex, spread out with room to shuffle - but black's panels
+      // are walked backwards. Reading order runs top to bottom, so taking the
+      // first spots from it deals the two sides different shapes: white's
+      // squad lands on its own wrap tip while black's lands at the far end of
+      // its base, ten hexes from anything. Black's panels are the point
+      // mirror of white's, so reversing deals the mirror image and both sides
+      // open with the same reach.
+      // The wrap's corridor is never dealt on. Each tip is a cul-de-sac with
+      // exactly one hex of its own panel leading in - every other neighbour
+      // is battlefield, which a panel unit may not cross - so a unit on
+      // either the tip or its doorway shuts the crossing for the whole
+      // panel: nothing reaches the base tip, or nothing lands past the
+      // reserve one. A reload re-deals that blockage as fast as it is
+      // shuffled away, which is why it is kept clear here rather than left
+      // to the player.
+      const corridor = this.wrapCorridor(color);
+      const order = (color === 'black' ? [...hexes].reverse() : [...hexes])
+        .filter(hex => !corridor.has(hex));
+      const spots = order.filter((_, i) => i % 3 === 0);
+      roster.forEach(([id, def]: [string, any], i) => {
+        const at = spots[i];
+        if (!at) return;
+        const hp = def?.hp ?? 1;
+        const uid = `r${panel}${i}`;
+        // A wound taken in the reserve outlives the deal it was dealt in, and
+        // nothing at 0 is dealt at all - that is what killed in a panel means.
+        const left = this.panelHp[uid] ?? hp;
+        if (left <= 0) return;
+        this.reserves[at] = { unit_id: id, color, hp: left, max_hp: hp, uid };
+      });
+    }
   }
 
   /**
@@ -3192,16 +3278,20 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /**
-   * Overtime bleeds a point off a side at the end of each of its hand-overs.
+   * Overtime bleeds HP off a side at the end of each of its hand-overs.
    * The header already counts it; this is the same toll on the board, taken
    * by that side's king, so there is something to watch rather than a number
    * quietly dropping out of the score.
+   *
+   * The number on the mark is the *stretch's*, not a fixed `-1`: overtime runs
+   * in three and the toll climbs 1, 2, 3 through them, so the last turn of the
+   * match writes `-3`.
    *
    * Derived from the turn that just ended rather than announced by the room:
    * white plays the odd hand-overs, so which side paid is arithmetic.
    *
    * The HP behind it is real - `overtimeToll()` takes it, and a commander on
-   * 1 HP dies of it - so this is the mark over damage that has already
+   * that much HP dies of it - so this is the mark over damage that has already
    * landed, not a shake standing in for it.
    *
    * Behind `tollBind`. Both engines take the toll now - the server on a move,
@@ -3211,13 +3301,17 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    */
   private markOvertimeToll(previous: number, now: number): void {
     const ended = now - 1;
-    if (!this.tollBind || now <= previous || ended < OVERTIME_FIRST_PLY) return;
+    // 0 outside overtime, so this is the schedule's gate as well as the
+    // amount - one question, one answer, no second copy of where overtime
+    // starts to drift from the engines' copy.
+    const toll = overtimeTollAt(ended);
+    if (!this.tollBind || now <= previous || !toll) return;
     // Only the side that just paid wears one: the hand-over before this was
     // the other side's, and that toll has had its turn on screen. Dropped
     // before the king is looked for, so a side without one still clears it.
     //
-    // Everything, rather than every entry reading `-1`: a cast that dealt
-    // exactly 1 damage writes the same string into the same map, and picking
+    // Everything, rather than every entry reading the toll: a cast that dealt
+    // exactly as much writes the same string into the same map, and picking
     // marks out by their text cannot tell the two apart. A new ply is the end
     // of the last one's marks whatever they said.
     this.turnMarks.clear();
@@ -3232,10 +3326,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     const king = this.cells.find(cell => !cell.panel && cell.piece?.color === color
       && this.config?.units?.[cell.piece.unit_id]?.commander);
     if (king?.piece) {
-      this.oweMark(this.uidOf(king), '-1');
+      this.oweMark(this.uidOf(king), `-${toll}`);
       return;
     }
-    // No king standing *and he was on his last HP* means the toll has just
+    // No king standing *and he had no more than the toll left* means it has just
     // killed him - and that is the one `-1` most worth seeing, so it goes on
     // the hex he died on rather than being dropped. The same shape as a cast
     // that kills (see markKey): there is nobody left to hang the number on, so
@@ -3248,19 +3342,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // last rebuild that still held him was a rebuild of THAT ply. A king cut
     // down by an enemy blow vanished on some earlier ply and his record is
     // stamped with it, so `ply !== ended` throws him out. HP alone could not:
-    // a king already down to his last point when a blow finished him passes
-    // `hp <= OVERTIME_TOLL` just as the toll's victim does, and he would wear
-    // a toll he never paid - written over the top of the recap's real kill
-    // number on that same hex.
+    // a king already down to the toll or less when a blow finished him passes
+    // `hp <= toll` just as the toll's victim does, and he would wear a toll he
+    // never paid - written over the top of the recap's real kill number on
+    // that same hex.
     //
     // Without either test, ANY missing commander was marked, and under
     // `objective: 'elimination'` - where losing him does not end the match -
     // the same `-1` came back on every one of that side's overtime plies.
     const fell = this.kingHex.get(color);
-    if (!fell || fell.hp > OVERTIME_TOLL || fell.ply !== ended) return;
+    if (!fell || fell.hp > toll || fell.ply !== ended) return;
     // Paid once. Nothing will put him back, so nothing should mark him twice.
     this.kingHex.delete(color);
-    this.oweMark(fell.at, '-1');
+    this.oweMark(fell.at, `-${toll}`);
     // By hex, the mark has no unit to read its colour off, and `markTheirs`
     // would draw every dead king's toll in the opponent's colours.
     this.markColors.set(fell.at, color);
@@ -3929,8 +4023,16 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   get previewDim(): boolean {
     const key = this.hoveredHex ?? this.selectedHex;
     if (!key) return false;
-    if (this.movesLeftFor) return key !== this.movesLeftFor;
-    const piece = this.cellsByKey.get(key)?.piece;
+    const cell = this.cellsByKey.get(key);
+    // A unit the staged turn has not spoken for may still have a walk home in
+    // it while setting out, so it keeps its colours - being told it is dead to
+    // the turn when it can still be sent home is the lie this whole change
+    // exists to stop telling.
+    if (this.movesLeftFor && key !== this.movesLeftFor && !this.movesToSpare) {
+      return !(this.settingOut && cell && this.canWalkHome(cell));
+    }
+    if (this.movesLeftFor) return false;
+    const piece = cell?.piece;
     return !piece || piece.color !== this.activeColor || !this.canDriveNow();
   }
 
@@ -3986,6 +4088,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // Testing canDrive above this froze the panels the moment the turn's unit
     // swung, which is exactly what the branch below exists to prevent.
     const zone = cell.panel ? this.panelZones.get(cell.panel) : undefined;
+    // Set when the staging lock has refused this unit the turn's move but a
+    // setup turn's walk home is still open to it - see below.
+    let homeOnly = false;
     if (zone) {
       if (!this.controlAllSides && !this.isMyTurn) return;
       // Only so many of a panel's units move in a turn. A fourth one on a
@@ -3999,9 +4104,26 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       // the board, not the same unit again.
       if (this.initializing
           && (this.boardMoveSpent || this.initMoved.includes(key))) return;
-      // One unit acts per turn: once something is staged, nothing else may be
-      // driven, or the staged origin and the unit on screen part ways.
-      if (this.movesLeftFor && key !== this.movesLeftFor) return;
+      // A turn's board moves are counted, not assumed to be one: one
+      // everywhere the schedule runs, two in Overtime 2, three in Overtime 3.
+      // While one is still to come, any other unit may be driven; once they
+      // are spent, only the unit mid-move may keep going, or the staged origin
+      // and the unit on screen part ways.
+      // A unit that has already had one of the turn's moves is done, however
+      // many the stretch allows: the allowance counts moves, the rule counts
+      // units. Checked before the allowance, which would otherwise wave it
+      // through on the strength of a move meant for somebody else.
+      if (this.movedHexes.includes(key) && key !== this.movesLeftFor) return;
+      if (this.movesLeftFor && key !== this.movesLeftFor && !this.movesToSpare) {
+        // Except for a walk home while setting out. Three of them may go in a
+        // turn and none is the turn's board action - the room stages them as
+        // deployments and sends each as its own message, the way a crossing
+        // goes - so the turn's move being spoken for does not reach them. The
+        // unit is offered its own doorways and nothing else: anywhere else on
+        // the board would be a second board move.
+        if (!this.settingOut) return;
+        homeOnly = true;
+      }
     }
 
     const [sq, sr] = key.split(',').map(Number);
@@ -4011,9 +4133,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       this.occupancy, sq, sr, this.config, this.radius, budget, zone,
       this.passableCosts,
     );
+    // The flood fill is what `addBaseEntry` reads to price its doorways, so it
+    // has to run first and be taken away after rather than skipped.
+    const plain = homeOnly ? [...this.moveCosts.keys()] : null;
     if (BASE_PANELS.has(cell.panel)) this.addWrap(cell, key, budget);
     else if (cell.panel) this.addGateway(cell, key, budget);
     else this.addBaseEntry(cell, key, budget);
+    if (plain) for (const hex of plain) this.moveCosts.delete(hex);
     this.legalTargets = new Set(this.moveCosts.keys());
 
     // **Only the battlefield starts a fight.** Neither panel ever does - a
@@ -4261,8 +4387,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (hex.panel) return '';
     if (!this.config?.units?.[hex.piece.unit_id]?.commander) return '';
     const hp = hex.piece.hp ?? 0;
-    if (hp > OVERTIME_TOLL * DOOM_WARNING_TURNS) return '';
-    return hp <= OVERTIME_TOLL ? 'imminent' : 'early';
+    // *His* next toll, not the mover's. White pays at the end of an odd
+    // hand-over and black at the end of an even one, so a king whose side is
+    // not to move pays one ply later - which, on an even ply, is the next full
+    // turn and can be a stretch further along with a heavier toll.
+    const due = sideOfPly(this.turnNumber) === hex.piece.color
+      ? this.turnNumber : this.turnNumber + 1;
+    // Not `toll * DOOM_WARNING_TURNS`: the toll climbs 1, 2, 3 through
+    // overtime's three stretches, so what two more turns cost has to be summed
+    // over the turns he will actually live through. A king on 3 HP is two
+    // turns clear in the first stretch, on his last in the second, and already
+    // gone in the third - one multiplication answered that wrong twice.
+    if (hp > overtimeTollOver(due, DOOM_WARNING_TURNS)) return '';
+    return hp <= overtimeTollAt(due) ? 'imminent' : 'early';
   }
 
   /** Whether this king wears a skull at all - either stage of the warning. */
@@ -4342,8 +4479,55 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (hex.panel) return this.panelCanMove(hex) && this.budgetFor(hex) !== 0;
     if (this.initializing
         && (this.boardMoveSpent || this.initMoved.includes(hex.key))) return false;
-    if (this.movesLeftFor && hex.key !== this.movesLeftFor) return false;
+    // The turn's move being staged on somebody else still leaves a walk home
+    // open while setting out - three may go in a turn and none of them is that
+    // move. `refreshTargets` offers such a unit its doorways and nothing else,
+    // so it is drivable exactly when one of them is really open to it.
+    if (this.movedHexes.includes(hex.key) && hex.key !== this.movesLeftFor) return false;
+    if (this.movesLeftFor && hex.key !== this.movesLeftFor && !this.movesToSpare) {
+      return this.settingOut && this.canWalkHome(hex);
+    }
     return true;
+  }
+
+  /**
+   * Whether the staged turn still has a board move to give a unit that has not
+   * moved yet.
+   *
+   * The one thing that turned "there is exactly one board move in a turn" into
+   * a count. Read by every lock that used to test `movesLeftFor` alone, so a
+   * stretch that allows two or three opens all of them together rather than
+   * one at a time - which is how the walk home came to be reachable by every
+   * route except a player's.
+   */
+  private get movesToSpare(): boolean {
+    // Never fewer than the one `movesLeftFor` proves: a unit mid-move IS a
+    // board move spent, whatever the count says. Without the floor an unbound
+    // or stale `boardMovesSpent` of 0 reads as "nothing staged yet" and
+    // unlocks the whole board behind a turn that is already spoken for - the
+    // count and the lock are two answers to one question and must not be able
+    // to disagree.
+    const spent = Math.max(this.boardMovesSpent, this.movesLeftFor ? 1 : 0);
+    return spent < boardMovesPerTurn(this.turnNumber);
+  }
+
+  /**
+   * Whether a walk home is open to this unit at all: the doorway rules that
+   * `addBaseEntry` enforces, asked without plotting a path.
+   *
+   * Only the cheap ones - the schedule, the king, its own first three rows and
+   * the turn's three - because this is read for every unit on the board on
+   * every change-detection pass, and whether a doorway is reachable within its
+   * MOV needs the flood fill that `refreshTargets` runs for the one unit
+   * actually selected. A unit that can reach none is drivable with nowhere to
+   * go, which is the state the doc comment above already allows for.
+   */
+  private canWalkHome(hex: HexCell): boolean {
+    if (!this.entryBind || !this.homecomingOpen) return false;
+    if (this.config?.units?.[hex.piece?.unit_id ?? '']?.commander) return false;
+    const color = hex.piece?.color ?? 'white';
+    if (!inHomeRows(color, Number(hex.key.split(',')[1]), this.radius)) return false;
+    return this.homecomingsSpent < HOMECOMINGS_PER_SETUP_TURN;
   }
 
   /** Hand the game room what its Unit panel shows for the hex just clicked. */

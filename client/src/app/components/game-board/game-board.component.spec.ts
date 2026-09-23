@@ -1,7 +1,8 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { SimpleChange } from '@angular/core';
 import { GameBoardComponent } from './game-board.component';
-import { OVERTIME_FIRST_PLY } from '../../services/phases';
+import { HOMECOMINGS_PER_SETUP_TURN, OVERTIME_FIRST_PLY } from '../../services/phases';
+import { setPanelsDealt } from '../../services/hex-rules';
 
 /**
  * The reach preview and the stat glyphs are what the player reads off the
@@ -26,6 +27,14 @@ describe('GameBoardComponent reach preview', () => {
     '3,0': { unit_id: 'guard', color: 'black', hp: 9, max_hp: 9 },
     '-3,0': { unit_id: 'scout', color: 'white', hp: 6, max_hp: 6 },
   };
+
+  // A new game opens with all four panels empty while the owner clears the
+  // placeholder squads out. Everything below that works a panel - the walk,
+  // the wrap, the crossing, the blow into one, the walk home, and the windows
+  // and allowances over them - is still live code and still has to be right
+  // for the day the squads come back, so these deal a board to test it on.
+  beforeEach(() => setPanelsDealt(true));
+  afterEach(() => setPanelsDealt(false));
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({ imports: [GameBoardComponent] }).compileComponents();
@@ -65,11 +74,11 @@ describe('GameBoardComponent reach preview', () => {
     board.ngOnChanges({ turnNumber: new SimpleChange(19, 20, false) });
     expect(board.markOf(king())).toBe('');
 
-    // Hand-over 67 is overtime's first and white plays the odd ones, so it
+    // Hand-over 73 is overtime's first and white plays the odd ones, so it
     // is white's king that wears the toll for it. Owed as the ply turns over,
     // paid at the end of the turn's animation - so it is not on the king yet.
-    board.turnNumber = 68;
-    board.ngOnChanges({ turnNumber: new SimpleChange(67, 68, false) });
+    board.turnNumber = 74;
+    board.ngOnChanges({ turnNumber: new SimpleChange(73, 74, false) });
     expect(board.markOf(king())).toBe('');
     await (board as any).settleUpkeep();
     expect(board.markOf(king())).toBe('-1');
@@ -92,16 +101,16 @@ describe('GameBoardComponent reach preview', () => {
     expect(hp.compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     // Black's hand-over is black's to pay, and white's king is left alone.
-    board.turnNumber = 69;
-    board.ngOnChanges({ turnNumber: new SimpleChange(68, 69, false) });
+    board.turnNumber = 75;
+    board.ngOnChanges({ turnNumber: new SimpleChange(74, 75, false) });
     await (board as any).settleUpkeep();
     expect(board.markOf(king())).toBe('');
 
     // No engine but this browser's takes the toll, so a server game marks
     // nobody: a red -1 over a king whose HP never moves is a lie.
     board.tollBind = false;
-    board.turnNumber = 70;
-    board.ngOnChanges({ turnNumber: new SimpleChange(69, 70, false) });
+    board.turnNumber = 76;
+    board.ngOnChanges({ turnNumber: new SimpleChange(75, 76, false) });
     await (board as any).settleUpkeep();
     expect(board.markOf(cell('3,0'))).toBe('');
   });
@@ -123,22 +132,22 @@ describe('GameBoardComponent reach preview', () => {
       ...boardState, '0,0': { ...boardState['0,0'], hp: 1 },
     };
     board.boardState = dying;
-    board.turnNumber = 67;
+    board.turnNumber = 73;
     board.ngOnChanges({
       boardState: new SimpleChange(boardState, dying, false),
-      turnNumber: new SimpleChange(66, 67, false),
+      turnNumber: new SimpleChange(72, 73, false),
     });
-    expect((board as any).kingHex.get('white')).toEqual({ at: '0,0', hp: 1, ply: 67 });
+    expect((board as any).kingHex.get('white')).toEqual({ at: '0,0', hp: 1, ply: 73 });
 
-    // Ply 67 commits, the toll takes his last point, and he is off the board
+    // Ply 73 commits, the toll takes his last point, and he is off the board
     // by the time the ply turns over.
     const without: Record<string, any> = { ...dying };
     delete without['0,0'];
     board.boardState = without;
-    board.turnNumber = 68;
+    board.turnNumber = 74;
     board.ngOnChanges({
       boardState: new SimpleChange(dying, without, false),
-      turnNumber: new SimpleChange(67, 68, false),
+      turnNumber: new SimpleChange(73, 74, false),
     });
     await (board as any).settleUpkeep();
 
@@ -170,20 +179,20 @@ describe('GameBoardComponent reach preview', () => {
       ...boardState, '0,0': { ...boardState['0,0'], hp: 1 },
     };
     board.boardState = dying;
-    board.turnNumber = 66;
+    board.turnNumber = 72;
     board.ngOnChanges({
       boardState: new SimpleChange(boardState, dying, false),
-      turnNumber: new SimpleChange(65, 66, false),
+      turnNumber: new SimpleChange(71, 72, false),
     });
-    expect((board as any).kingHex.get('white')).toEqual({ at: '0,0', hp: 1, ply: 66 });
+    expect((board as any).kingHex.get('white')).toEqual({ at: '0,0', hp: 1, ply: 72 });
 
     const without: Record<string, any> = { ...dying };
     delete without['0,0'];
     board.boardState = without;
-    board.turnNumber = 68;
+    board.turnNumber = 74;
     board.ngOnChanges({
       boardState: new SimpleChange(dying, without, false),
-      turnNumber: new SimpleChange(67, 68, false),
+      turnNumber: new SimpleChange(73, 74, false),
     });
     await (board as any).settleUpkeep();
 
@@ -199,8 +208,8 @@ describe('GameBoardComponent reach preview', () => {
     (config.units as any).archer.commander = true;
     board.tollBind = true;
     const king = () => cell('0,0');
-    board.turnNumber = 68;
-    board.ngOnChanges({ turnNumber: new SimpleChange(67, 68, false) });
+    board.turnNumber = 74;
+    board.ngOnChanges({ turnNumber: new SimpleChange(73, 74, false) });
     expect(board.markOf(king())).toBe('');
 
     let markWhenDone = 'never fired';
@@ -228,8 +237,8 @@ describe('GameBoardComponent reach preview', () => {
     (config.units as any).archer.commander = true;
     board.tollBind = true;
     const done = new Promise<void>(resolve => board.playbackDone.subscribe(() => resolve()));
-    board.turnNumber = 68;
-    board.ngOnChanges({ turnNumber: new SimpleChange(67, 68, false) });
+    board.turnNumber = 74;
+    board.ngOnChanges({ turnNumber: new SimpleChange(73, 74, false) });
     expect(board.markOf(cell('0,0'))).toBe('');
     await new Promise(resolve => setTimeout(resolve, 0));
     // The commit takes its own beat first - the amber wash needs long enough
@@ -251,8 +260,8 @@ describe('GameBoardComponent reach preview', () => {
     board.playback = steps;
     board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
     // Now the commit's own state lands, in its own pass, owing the toll.
-    board.turnNumber = 68;
-    board.ngOnChanges({ turnNumber: new SimpleChange(67, 68, false) });
+    board.turnNumber = 74;
+    board.ngOnChanges({ turnNumber: new SimpleChange(73, 74, false) });
 
     const done = new Promise<void>(resolve => board.playbackDone.subscribe(() => resolve()));
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -498,6 +507,82 @@ describe('GameBoardComponent reach preview', () => {
     expect(board.attackTargets.size).toBe(0);
   });
 
+  it('drives a second unit where the stretch allows a second move', () => {
+    // Overtime 2 gives a side two board moves and Overtime 3 three, so the
+    // lock above stopped being "is anything staged" and became a count. Ply 89
+    // is turn 45; ply 99 is turn 50.
+    board.interactive = true;
+    board.controlAllSides = true;
+    board.turnColor = 'white';
+    board.movesLeftFor = '-3,0';
+    board.movesLeft = 1;
+    board.boardMovesSpent = 1;
+
+    // Overtime 1 still allows one, so the second unit is inspectable only.
+    fixture.componentRef.setInput('turnNumber', 2 * 40 - 1);
+    board.onHexClick(cell('0,0'));
+    expect(board.legalTargets.size).toBe(0);
+
+    // Overtime 2 has one still to come: the same click now drives.
+    fixture.componentRef.setInput('turnNumber', 2 * 45 - 1);
+    board.onHexClick(cell('0,0'));
+    expect(board.legalTargets.size).toBeGreaterThan(0);
+
+    // Spend it and the lock closes again - two is the whole allowance.
+    board.boardMovesSpent = 2;
+    board.onHexClick(cell('0,0'));
+    expect(board.legalTargets.size).toBe(0);
+
+    // Overtime 3 allows the third.
+    fixture.componentRef.setInput('turnNumber', 2 * 50 - 1);
+    board.onHexClick(cell('0,0'));
+    expect(board.legalTargets.size).toBeGreaterThan(0);
+  });
+
+  it('will not give a unit a second of the turn’s moves', () => {
+    // **Found in a browser on 22 Sep 2026, with 357 specs green.** The
+    // allowance counts moves and the owner's rule counts units: a side in
+    // Overtime 3 moved A, then B, then A again. Each step was legal on its
+    // own - judged from where the unit stood, with a full MOV - so both
+    // engines took it and A covered twice its budget in one turn.
+    board.interactive = true;
+    board.controlAllSides = true;
+    board.turnColor = 'white';
+    fixture.componentRef.setInput('turnNumber', 2 * 50 - 1);   // Overtime 3
+    board.boardMovesSpent = 2;
+    board.movesLeftFor = '-3,0';        // B, still mid-move
+    board.movesLeft = 1;
+    board.movedHexes = ['0,0'];         // A, finished, standing here now
+
+    board.onHexClick(cell('0,0'));
+    expect(board.legalTargets.size).toBe(0);
+    expect(board.drivable(cell('0,0'))).toBeFalse();
+
+    // The refusal is about THIS unit, not about the allowance: the stretch
+    // still has a third move to give, and `movesToSpare` says so.
+    expect(board.boardMovesSpent).toBeLessThan(3);
+    // And the unit mid-move may still finish its own walk.
+    board.movedHexes = ['0,0', '-3,0'];
+    expect(board.drivable(cell('-3,0'))).toBeTrue();
+  });
+
+  it('never reads an uncounted staged move as a free board', () => {
+    // `boardMovesSpent` and `movesLeftFor` are two answers to one question. If
+    // the count arrives as 0 while a unit is plainly mid-move - an unbound
+    // input, a stale pass - the floor in `movesToSpare` keeps the lock shut
+    // rather than opening the whole board behind a turn already spoken for.
+    board.interactive = true;
+    board.controlAllSides = true;
+    board.turnColor = 'white';
+    board.movesLeftFor = '-3,0';
+    board.movesLeft = 1;
+    board.boardMovesSpent = 0;
+    fixture.componentRef.setInput('turnNumber', 2 * 40 - 1);
+
+    board.onHexClick(cell('0,0'));
+    expect(board.legalTargets.size).toBe(0);
+  });
+
   it('keeps a reserve inside its own panel', () => {
     board.interactive = true;
     board.controlAllSides = true;
@@ -643,6 +728,9 @@ describe('GameBoardComponent reach preview', () => {
     const BASE = new Set(['bl', 'tr']);
     /** X of the arrow's tip - its first point is the head. */
     const arrowTipX = (hex: any) => Number(board.arrowPoints(hex).split(' ')[0].split(',')[0]);
+    /** The hexes whose arrow of `kind` is struck out right now, in board order. */
+    const crossed = (kind: 'entry' | 'home' | 'wrap') => board.cells
+      .filter(c => c.arrowKind === kind && board.arrowShut(c)).map(c => c.key);
     /** A base hex with a reserve on it, and the cell for it. */
     const baseCell = () => board.cells.find(
       c => c.panel === 'bl' && !!c.piece)!;
@@ -656,9 +744,10 @@ describe('GameBoardComponent reach preview', () => {
       // learned to derive the panels; the room binds it on in both now, and
       // these specs switch it on so they do not depend on which room it is.
       board.entryBind = true;
-      // The wrap runs on a window, and the file's default ply 20 is turn 10,
-      // which is past Phase 1's halftime and so shut. Ply 15 is turn 8 - the
-      // last open turn of that phase, and still well past the opening.
+      // Each of the three arrows runs on its own window. Ply 15 is turn 8,
+      // Phase 1's played first half: the **wrap** is open there, and the ways
+      // in and home are both shut. The specs that need one of those two set
+      // their own ply - see `ENTRY_PLY` and the walk-home group below.
       board.turnNumber = 15;
     });
 
@@ -780,6 +869,8 @@ describe('GameBoardComponent reach preview', () => {
     it('marks the reach that crossed onto the board apart from the panel walk', () => {
       // Stepping through the gap is a different move from shuffling about a
       // panel, and the two read as one thing while they shared the green.
+      // Ply 21 is turn 11, Phase 1's halftime half - when the way in is open.
+      board.turnNumber = 21;
       const gate = [...anyBoard().cellsByKey.values()]
         .find((c: any) => c.panel === 'br' && c.gateway)!;
       anyBoard().reserves = { [gate.key]: {
@@ -1208,6 +1299,40 @@ describe('GameBoardComponent reach preview', () => {
       expect(doomed(1)).toBeFalse();
     });
 
+    it("warns further out as overtime's toll climbs", () => {
+      (config.units as any).guard.commander = true;
+      board.tollBind = true;
+      const doom = (hp: number, ply: number) => {
+        fixture.componentRef.setInput('turnNumber', ply);
+        anyBoard().boardState = {
+          '0,0': { unit_id: 'guard', color: 'white', hp, max_hp: 9, uid: 'wking' },
+        };
+        anyBoard().buildCells();
+        return board.doomState(anyBoard().cellsByKey.get('0,0'));
+      };
+      // Turn 44 is the last of the first stretch. This turn costs him 1 and
+      // his next costs 2, so three HP is exactly two turns' worth and the
+      // skull is owed. `toll * DOOM_WARNING_TURNS` answered 2 here and said
+      // nothing - a king who dies at the end of turn 45 with no warning at all.
+      expect(doom(3, 2 * 44 - 1)).toBe('early');
+      expect(doom(4, 2 * 44 - 1)).toBe('');
+      expect(doom(1, 2 * 44 - 1)).toBe('imminent');
+
+      // The last turn of the match takes three, so three is imminent rather
+      // than two turns clear, and the warning reaches back to six.
+      expect(doom(3, 2 * 50 - 1)).toBe('imminent');
+      expect(doom(6, 2 * 50 - 1)).toBe('early');
+      expect(doom(7, 2 * 50 - 1)).toBe('');
+
+      // Read off HIS next toll, not the mover's. White pays at the end of an
+      // odd hand-over, so a white king asked on ply 88 - black's half of turn
+      // 44 - pays next at the end of turn 45, which is the stretch that takes
+      // two. Four HP is two of those and the skull is owed; reading the
+      // mover's ply instead answered 1 + 2 and said nothing at all.
+      expect(doom(4, 2 * 44)).toBe('early');
+      expect(doom(5, 2 * 44)).toBe('');
+    });
+
     it('names the panel a blow landed in, so the mending can tell base from reserve', () => {
       // The panel is the client's own and no engine holds one, so the click
       // is where it is known and the record is where it survives.
@@ -1243,7 +1368,7 @@ describe('GameBoardComponent reach preview', () => {
       expect(anyBoard().cellsByKey.get('-5,1').wrapOut).toBeTrue();
       expect(anyBoard().cellsByKey.get('4,1').wrapOut).toBeFalse();
       fixture.detectChanges();
-      expect(fixture.nativeElement.querySelectorAll('.gateway-shut').length).toBe(2);
+      expect(crossed('wrap').sort()).toEqual(['-5,1', '5,-1'].sort());
 
       // Back inside the window and it opens again, cross and all.
       fixture.componentRef.setInput('turnNumber', 15);
@@ -1251,7 +1376,33 @@ describe('GameBoardComponent reach preview', () => {
       board.onHexClick(anyBoard().cellsByKey.get('-5,1'));
       expect(board.legalTargets.has('4,1')).toBeTrue();
       fixture.detectChanges();
-      expect(fixture.nativeElement.querySelectorAll('.gateway-shut').length).toBe(0);
+      expect(crossed('wrap')).toEqual([]);
+    });
+
+    it('crosses out each of the three arrows on its own schedule', () => {
+      // Three arrows a side, three windows, and no turn opens all of them.
+      // Read off the drawn crosses rather than the predicates, because the
+      // bug this guards against is one arrow's cross being drawn off another
+      // arrow's window.
+      const shutOn = (ply: number) => {
+        fixture.componentRef.setInput('turnNumber', ply);
+        fixture.detectChanges();
+        return {
+          wrap: crossed('wrap').length, entry: crossed('entry').length,
+          home: crossed('home').length,
+        };
+      };
+
+      // Turn 8, Phase 1's played half: the wrap alone is open.
+      expect(shutOn(15)).toEqual({ wrap: 0, entry: 6, home: 6 });
+      // Turn 11, its halftime half: the ways in open and the wrap shuts.
+      expect(shutOn(21)).toEqual({ wrap: 2, entry: 0, home: 6 });
+      // Turn 4, Phase 1's own initialization: both ways open, wrap shut.
+      expect(shutOn(7)).toEqual({ wrap: 2, entry: 0, home: 0 });
+      // Turn 1, the opening: the same three answers.
+      expect(shutOn(1)).toEqual({ wrap: 2, entry: 0, home: 0 });
+      // Turn 37, overtime: only the way home is open.
+      expect(shutOn(73)).toEqual({ wrap: 2, entry: 6, home: 0 });
     });
 
     it('wraps the same way for black - hexes 259 and 236 on the real board', () => {
@@ -1392,6 +1543,10 @@ describe('GameBoardComponent reach preview', () => {
       /** A white scout on the board hex beside white's own mark. */
       const beside = '-11,11';
       const setUp = () => {
+        // The base's three doorways run on the setup turns and all of
+        // overtime. Ply 7 is turn 4, Phase 1's own initialization - the first
+        // turn past the opening on which a unit may walk home at all.
+        board.turnNumber = 7;
         board.radius = 11;
         board.ngOnChanges({ radius: new SimpleChange(4, 11, false) });
         board.interactive = true;
@@ -1427,6 +1582,58 @@ describe('GameBoardComponent reach preview', () => {
         // Coming home pays the unit's own worth, which is what the wrap
         // charged to send one out.
         expect([...board.refundTargets.values()].every(v => v === 7)).toBeTrue();
+      });
+
+      /**
+       * The turn's move being staged on somebody else does not reach a walk
+       * home while setting out: three may go in a turn, and none of them is
+       * that move. Until this, the first one took the turn's slot and the lock
+       * refused every other unit - so the allowance both engines enforce could
+       * not be reached by the only thing a player can click.
+       */
+      it('still walks home once the turn is staged on another unit', () => {
+        setUp();
+        // The room's staged move, on a unit that is not this one.
+        board.movesLeftFor = '0,0';
+        board.movesLeft = 2;
+
+        const cell = anyBoard().cellsByKey.get(beside);
+        expect(board.drivable(cell)).toBeTrue();
+        board.onHexClick(cell);
+        // The doorway is open...
+        expect(board.legalTargets.has('-12,11')).toBeTrue();
+        expect(board.refundTargets.size).toBeGreaterThan(0);
+        // ...and nothing else is: anywhere on the battlefield would be a
+        // second board move, which the turn has not got.
+        expect([...board.legalTargets]
+          .every(k => !!anyBoard().cellsByKey.get(k)?.panel)).toBeTrue();
+      });
+
+      it('and the lock still holds everywhere else', () => {
+        setUp();
+        // Ply 20 is Phase 1's halftime half: the doorways home are shut, so
+        // the staged turn is the whole of the answer and this unit has nothing.
+        board.turnNumber = 20;
+        board.ngOnChanges({ turnNumber: new SimpleChange(7, 20, false) });
+        board.movesLeftFor = '0,0';
+        board.movesLeft = 2;
+
+        const cell = anyBoard().cellsByKey.get(beside);
+        expect(board.drivable(cell)).toBeFalse();
+        board.onHexClick(cell);
+        expect(board.legalTargets.size).toBe(0);
+      });
+
+      it('stops at the turn\'s three, staged turn or not', () => {
+        setUp();
+        board.movesLeftFor = '0,0';
+        board.movesLeft = 2;
+        board.homecomingsSpent = HOMECOMINGS_PER_SETUP_TURN;
+
+        const cell = anyBoard().cellsByKey.get(beside);
+        expect(board.drivable(cell)).toBeFalse();
+        board.onHexClick(cell);
+        expect(board.legalTargets.size).toBe(0);
       });
 
       it('walks home within its MOV - it does not teleport in', () => {
@@ -2020,6 +2227,40 @@ describe('GameBoardComponent reach preview', () => {
       ['d', 'e', 'f'].forEach(uid => anyBoard().baseMovers.add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBeGreaterThan(0);
+    });
+
+    it('offers nobody a strike on a phase initialization turn either', () => {
+      // The opening and turn 4 refuse a blow for two different reasons, and
+      // the board used to ask only about the opening - so on turn 4 (ply 7) it
+      // offered a target and drew a strike layer for a blow both engines then
+      // threw back, stalling a networked turn on the error.
+      enterTurn(1, 7);
+      board.onHexClick(cell('0,0'));
+      expect(board.attackTargets.size).toBe(0);
+      board.onHexHover(cell('0,0'));
+      expect(board.previewAttacks.size).toBe(0);
+    });
+
+    it('lets five out of the reserve on a phase initialization turn', () => {
+      // The engines raise the reserve's allowance to five there. The board
+      // kept its own copy of the three and never heard about it, so the fourth
+      // and fifth were refused by the only thing the player can click.
+      enterTurn(1, 7);
+      const res = reserveCell();
+      ['a', 'b', 'c'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      board.onHexClick(res);
+      expect(board.legalTargets.size).toBeGreaterThan(0);
+
+      // The base keeps its three, though: nothing in that allowance was
+      // about the base.
+      ['d', 'e', 'f'].forEach(uid => anyBoard().baseMovers.add(uid));
+      board.onHexClick(baseCell());
+      expect(board.legalTargets.size).toBe(0);
+
+      // And five is still a cap.
+      ['d', 'e'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      board.onHexClick(res);
+      expect(board.legalTargets.size).toBe(0);
     });
 
     it('marks a panel unit that has been started this turn', () => {

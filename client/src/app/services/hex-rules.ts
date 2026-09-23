@@ -32,6 +32,51 @@ export const HEX_DIRS: [number, number][] = [
  */
 export const BASE_PANELS = new Set(['bl', 'tr']);
 
+/**
+ * Whether a new game deals squads into the panels. Mirrors `PANELS_DEALT` in
+ * `server/game/engine/panels.py`, and the two must be turned back on together
+ * or the two sides of a networked game disagree about who is standing where.
+ *
+ * **Temporarily off**: the owner is clearing the placeholder squads out, so a
+ * new game opens with all four panels empty. Everything that *works* a panel
+ * is untouched and still tested - the walk, the wrap, the crossing, the blow,
+ * the walk home, and the windows and allowances over all of them - because a
+ * rule nobody exercises while it is being changed is a rule that rots.
+ *
+ * Mutable so the specs can deal a board to test that machinery on; nothing in
+ * the app writes to it. `setPanelsDealt` is the only writer.
+ */
+export let PANELS_DEALT = false;
+
+/** Turn the deal on or off. For the specs - the app never calls this. */
+export function setPanelsDealt(on: boolean): void {
+  PANELS_DEALT = on;
+}
+
+/**
+ * How deep a side's own ground runs from its own edge inwards - the "first
+ * three rows". Mirrors `HOME_ROWS` in server/game/engine/panels.py.
+ */
+export const HOME_ROWS = 3;
+
+/**
+ * Whether row `r` is one of `color`'s own first three.
+ *
+ * The ground a side deploys onto, and the bound on both ends of a unit's
+ * journey off the board: a crossing out of the reserve may not land beyond it,
+ * and a unit may only walk home from inside it.
+ *
+ * White's edge is positive `r` and black's negative, so on radius 11 white
+ * holds rows 9, 10 and 11 and black the mirror. Read off the radius rather
+ * than off the placement, because this marks the ground a side *owns* - still
+ * its ground on a config that leaves some of those hexes empty, which is also
+ * why the board's `homeOf` tint reads the same answer from here.
+ */
+export function inHomeRows(color: string, r: number, radius: number): boolean {
+  const edge = Math.max(1, radius - (HOME_ROWS - 1));
+  return color === 'white' ? r >= edge : r <= -edge;
+}
+
 export function hexDistance(q: number, r: number): number {
   return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
 }

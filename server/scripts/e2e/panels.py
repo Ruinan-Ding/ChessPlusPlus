@@ -1,7 +1,13 @@
 """The panels in a networked match, between two real sockets, against a running server.
 
-    DJANGO_DEBUG=true venv/Scripts/daphne.exe core.asgi:application     # from server/
+    CPP_DEAL_PANELS=1 DJANGO_DEBUG=true venv/Scripts/daphne.exe core.asgi:application
     venv/Scripts/python.exe scripts/e2e/panels.py                        # in a second shell
+
+**CPP_DEAL_PANELS=1 is required.** A new game now opens with all four panels
+empty while the owner clears the placeholder squads out, and a script about the
+panels needs units standing in them. The unit tests set the flag in process;
+this one drives a real server over a real socket, so it has to be started with
+the squads dealt. Without it every crossing here has nothing to cross.
 
 Until the server learned to derive the panels, none of this could happen in a
 networked game at all: the room switched it off, because a server with no panel
@@ -20,8 +26,11 @@ ctx = {}
 print(f'Players {A} / {B}')
 
 # From the panel deal, which is derived rather than stored (engine/panels.py):
-# white's reserve archer, and the board hex one step through its gateway.
-ARCHER_AT, LANDS_ON = '7,7', '3,8'
+# white's reserve archer, and the one board hex it may cross to and stop on.
+# A crossing lands in its own first three rows, and at the deal those rows are
+# where white's army already stands - so '1,9' is the only one left, six steps
+# off and exactly the archer's MOV.
+ARCHER_AT, LANDS_ON = '7,7', '1,9'
 # White's pawn that starts beside its own base doorway.
 PAWN_AT, DOORWAY = '-11,11', '-12,11'
 
@@ -63,7 +72,7 @@ print('\n[crossing]')
 def crossing():
     white, black = ctx['white'], ctx['black']
 
-    black.send({'type': 'enter_board', 'from': '-7,-7', 'to': '-3,-8'})
+    black.send({'type': 'enter_board', 'from': '-7,-7', 'to': '-1,-9'})
     e = black.type('error')
     check('only the side to move may cross', e.get('code') == 'NOT_YOUR_TURN', e)
 
@@ -86,7 +95,7 @@ def crossing():
     check('the record carries what the panels are derived from',
           last.get('entered') is True and (last.get('unit') or {}).get('uid') == 'rbr4', last)
 
-    white.send({'type': 'enter_board', 'from': ARCHER_AT, 'to': '3,7'})
+    white.send({'type': 'enter_board', 'from': ARCHER_AT, 'to': '-1,9'})
     e = white.type('error')
     check('the same unit cannot cross twice', e.get('code') == 'INVALID_MOVE', e)
 
@@ -117,14 +126,23 @@ def walk_home():
     e = white.type('error')
     check("nobody walks home into the other side's base", e.get('code') == 'INVALID_MOVE', e)
 
+    # Turn 1 is a setup turn, so a walk home is deployment rather than the
+    # turn's board action: answered with a state update, and the seat, the ply
+    # and the clock all stay put. Three may go in the one turn because of it.
     white.send({'type': 'make_move', 'from': PAWN_AT, 'to': DOORWAY, 'withdraw': True})
-    mine, theirs = white.type('move_made'), black.type('move_made')
-    check('a unit walks home, and it is the turn', mine['turnNumber'] == 2, mine.get('turnNumber'))
+    mine, theirs = white.type('game_state_update'), black.type('game_state_update')
+    check('a walk home on a setup turn takes no hand-over', mine['turnNumber'] == 1,
+          mine.get('turnNumber'))
     check('it leaves the board for both players',
           PAWN_AT not in mine['boardState'] and PAWN_AT not in theirs['boardState'])
+    left = mine['moveHistory'][-1]
     check('the record keeps the unit that left',
-          mine['move'].get('withdrawn') is True and mine['move']['unit'].get('uid') == 'w-11,11',
-          mine['move'])
+          left.get('withdrawn') is True and left['unit'].get('uid') == 'w-11,11', left)
+
+    # Hand the turn over for what follows: the walk did not.
+    white.send({'type': 'pass_turn'})
+    p = black.type('turn_passed')
+    check('a pass hands the turn over', p.get('turnNumber') == 2, p)
 step('walk home', walk_home)
 
 
@@ -146,11 +164,13 @@ def shuffle_then_cross():
     check('the other player receives the walk', theirs['moveHistory'][-1].get('panelMove') is True)
     check('a walk does not take the turn', mine['turnNumber'] == 2)
 
-    black.send({'type': 'enter_board', 'from': '-6,-7', 'to': '-3,-8'})
+    # '-1,-9' is the point mirror of white's '1,9': the one hex inside black's
+    # own first three rows that the crossing can reach and stop on.
+    black.send({'type': 'enter_board', 'from': '-6,-7', 'to': '-1,-9'})
     crossed = black.type('game_state_update')
     check('the unit crosses from where the walk left it',
-          (crossed['boardState'].get('-3,-8') or {}).get('uid') == 'rtl4',
-          crossed['boardState'].get('-3,-8'))
+          (crossed['boardState'].get('-1,-9') or {}).get('uid') == 'rtl4',
+          crossed['boardState'].get('-1,-9'))
 step('shuffle then cross', shuffle_then_cross)
 
 

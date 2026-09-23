@@ -217,6 +217,20 @@ Decided so far:
     `buildReserves()` and `deal_panels()` leave the panels empty at game start. The panel
     movement, combat, and history-replay code remains available for later deployment rules,
     including units explicitly returned to a panel by a recorded action.
+    - **The emptiness is a decision, not arithmetic, and the deal is still here.**
+      `PANELS_DEALT` in `hex-rules.ts` and `engine/panels.py` is the one flag on each side,
+      and the deal it gates is `buildReserves()`'s own body and `dealt_panels()`. Turning the
+      squads back on is that flag, **both sides together** - one alone and the two halves of a
+      networked game disagree about who is standing where. It was briefly the whole of
+      `deal_panels`, which left 36 server tests and 15 client specs with no fixtures, and with
+      them every rule that *works* a panel: the walk, the wrap, the crossing, the blow into
+      one, the walk home, and the windows and allowances over all of them. A rule nobody
+      exercises while it is being changed is a rule that rots.
+    - **The tests deal their own.** `DealtPanels` (both server test modules) and
+      `setPanelsDealt(true)` in the board spec turn the squads on for the duration; the live
+      e2e scripts cannot reach into the process, so `scripts/e2e/panels.py` needs the server
+      started with `CPP_DEAL_PANELS=1`. Everything else runs against empty panels, which is
+      what a real game now deals.
   - **The red plane is the base, the green one the reserve.** **Every panel unit, base and
     reserve alike, gets its own MOV per turn and no more** - spendable a few steps at a time,
     never an endless shuffle (`panelMoved` in `game-board.component.ts`, keyed by uid).
@@ -310,8 +324,9 @@ Decided so far:
     - **Everything standing in a base mends 1 HP** (`BASE_HEAL_PER_TURN`), never past its
       `max_hp` - the squad dealt there at the start as much as a unit that walked home.
       **A reserve does not mend**: it is a staging area, not a hospital.
-    - **In overtime, the commander of the side that just played loses 1 HP**
-      (`OVERTIME_TOLL` in `local-game.service.ts`).
+    - **In overtime, the commander of the side that just played loses HP** - 1, 2 or 3,
+      depending which of overtime's three stretches the turn is in (`overtimeTollAt()` in
+      `phases.ts`).
 
     Each swells - or shrinks, for the toll - and carries its `+1` / `-1`. They are **owed**
     where they are noticed (the mending as the new board is absorbed, the toll as the ply
@@ -382,10 +397,10 @@ Decided so far:
     re-derives the mending - so the panel travels with the blow the same way the unit does,
     for the same reason: no engine holds either. Without it `panelHp` cannot tell a base's
     wound (which mends) from a reserve's (which does not).
-  - **Overtime's toll is real damage, and a commander on 1 HP dies of it** - `regicide`, the
-    game over, the board left on screen. *It used to be a mark and a shake with no HP behind
+  - **Overtime's toll is real damage, and a commander on the toll or less dies of it** -
+    `regicide`, the game over, the board left on screen. *It used to be a mark and a shake with no HP behind
     it; the owner asked for the death.* A king that the toll will kill **wears a waving skull
-    beside its face** for the whole turn (`doomedKing()`, `OVERTIME_TOLL` in `phases.ts`): the
+    beside its face** for the whole turn (`doomedKing()`, `overtimeTollAt()` in `phases.ts`): the
     toll is the *last* thing a turn does, so the king lives the turn out on its last HP and a
     heal - or the match ending first - still saves it. Both kings wear it, not only the side
     about to hand over. *The owner: "he wont die in this turn unless he takes damage from
@@ -394,9 +409,11 @@ Decided so far:
     hovered trade's `.kill-forecast` skull owns the middle and both can be true at once.
     **Overtime costs HP and nothing else** - the points bleed that used to run beside it is
     gone. *The owner: "loses just HP, if i said points i misspoke."*
-    - ponytail: **the browser engine's alone** (`overtimeToll()` in `local-game.service.ts`).
-      The schedule that says where overtime starts lives in `phases.ts`, and porting it to
-      Python would be a fourth thing to keep in step. A networked game takes no toll.
+    - **Both engines take it.** `game_logic.overtime_toll` takes the same toll on a move, a
+      pass and the clock's pass, which is what the schedule was ported to Python for - see
+      the fourth-mirror warning at the top of `phases.py`. *This used to read "the browser
+      engine's alone… a networked game takes no toll", and it was still saying so long after
+      the server had started taking one.*
     - A **passed turn still pays it**, so the browser engine's `turn_passed` now carries a
       `boardState` and `applyTurnPassed` takes one when there is one. The networked server
       sends none and the board stands. Only a king *the toll itself felled* ends the game
@@ -462,7 +479,34 @@ Decided so far:
   - **A unit on the battlefield walks home through them** (`addBaseEntry()`), the wrap's rule
     in reverse: reaching a board hex beside a mark is an ordinary walk, stepping through costs
     one more, and it carries on inside the base with whatever MOV is left. Only ever into
-    **its own** base. It is the turn's board move, staged and undone like any other.
+    **its own** base. Staged and undone like any other move.
+    - **On a setup turn it is deployment, not the turn's board action** - the same seat, the
+      same ply, the same clock, answered with a state update rather than `move_made`, exactly
+      as a crossing is (`_commit_deployment`). That is the only reason three a turn is
+      reachable at all: it used to commit the turn on the first walk, so the allowance was a
+      cap nothing could ever meet, and the tests for it had to wind the ply back between walks
+      to pretend otherwise. **Overtime keeps it as the turn's board action** - the toll is
+      running and units still fight there, so a walk home is an ordinary move that happens to
+      end off the board, and the turn's own move allowance is the only cap it needs.
+    - **The room stages it as a deployment too, or none of the above is reachable.** Both
+      engines accepting three is not enough: a walk home used to be staged as the turn's board
+      action, so the first one set `pendingMove`, the board's staging lock (`movesLeftFor`)
+      refused every other unit, and End Turn was the only way to commit it - one a turn,
+      whatever the engines allowed. A setup turn's walk home now carries `homecoming: true` on
+      the staged action, which keeps it out of `lastBoardAction` and so out of `pendingMove`,
+      and `endTurn()` sends each as its own `make_move ... withdraw` **before** the turn's
+      board action, beside the panel steps. Three walks home and the turn's own move is one
+      turn and four messages, and the engines hand over on the last of them. Consequences that
+      have to move together: `homecomingsSpent` counts the **staged** ones as well as the
+      recorded (the record does not move while a turn is staged, so the cap would read 0 all
+      the way to End Turn); `initBoardSpent` no longer counts a withdrawal (it once did, on
+      the reasoning that a walk home ends the turn, which is what changed); the board's lock
+      lets a unit that is not the staged one be offered **its doorways and nothing else**
+      (`homeOnly` in `refreshTargets`, `canWalkHome()` in `drivable`), since anywhere else
+      would be a second board move; and `movementArrows` reads each hop off the action before
+      it only when they share an origin, because a turn can now stage several units.
+      *Confirmed in a browser, 21 Sep 2026: three home plus a board move, four messages, one
+      hand-over, the fourth walk refused.*
     - **It runs on a window, and only out of your own first three rows** - see the window
       table in the schedule section. Open on any setup turn (three units a turn) and through
       all of overtime (uncounted); shut through both halves of a numbered phase's play, and
@@ -795,7 +839,9 @@ Decided so far:
   | Phase 1 | 4 / 5-14 | turn 4 is its **initialization turn**; halftime after turn 9 |
   | Phase 2 | 15 / 16-25 | initialization turn 15; halftime after turn 20 |
   | Phase 3 | 26 / 27-36 | initialization turn 26; halftime after turn 31 |
-  | Overtime | 37+ | runs out the match; first hand-over is 73 (`OVERTIME_FIRST_PLY`) |
+  | Overtime 1 | 37-44 | first hand-over is 73 (`OVERTIME_FIRST_PLY`); toll **-1**, purse **+1** a turn, **1** board move |
+  | Overtime 2 | 45-49 | toll **-2**, purse **+3** a turn, **2** board moves |
+  | Overtime 3 | 50 | the last turn; toll **-3**, purse **+5**, **3** board moves, and anything still standing is black's |
 
   A halftime splits a ten-turn phase evenly. These are full turns, so the opening is six
   hand-overs and each phase is twenty-two.
@@ -813,7 +859,8 @@ Decided so far:
   `Turn 1 - 2 Until Phase 1 Initialization`. A change lands at the *end* of the turn it is
   counted to, so the turn it lands on has already moved on to the next one - turn 3 is the
   last of the opening and reads `Turn 3 - 1 Until Phase 1`. An initialization turn is two
-  changes, into it and out of it again. Past the last change it just says `Turn 44 - Overtime`.
+  changes, into it and out of it again. Past the last change it says where you are, in the
+  **stage's** name rather than the phase's: `Turn 50 - Overtime 3`.
 
 - **Three arrows a side, three windows, and no turn opens all three.** Every one is read off
   the ply alone, so both engines and the board answer from the same predicate in `phases.ts`
@@ -857,6 +904,13 @@ Decided so far:
   anyway. **Overtime is the exception to the count** - it is not a setup turn, the toll is
   running and units still fight, so a walk home there is an ordinary move that happens to end
   off the board and the turn's own move allowance is the only cap it needs.
+  - **All three enforce each of these, the board included.** The board kept its own copy of
+    the mover rule (`panelCanMove`, its own `reserveMovers` set) and its own copy of the
+    no-attack rule, and neither heard about the initialization turn - so the fourth and fifth
+    crossings were refused by the only thing a player can click, and a strike was *offered* on
+    a turn both engines then refused it on, stalling a networked turn on the error banner. A
+    rule applied in one place and not its twin is this repo's oldest bug shape; when one of
+    these numbers moves, grep for every copy.
 - **The initialization runs on its own rules.** Through the opening three turns:
   - **Nobody attacks at all** - not on the battlefield either. No targets are offered and no
     strike layer is drawn (`isInitialization()` in `services/phases.ts`, read by
@@ -1001,21 +1055,85 @@ Decided so far:
   White must finish **more than 5** clear to take it outright; black only **more than 3**
   (`OVERTIME_MARGIN`) - black is allowed the wider gap because white moves first. Anything
   closer than that is overtime.
+  - **Overtime runs in three stretches and the toll climbs through them** (`OVERTIME_STAGES`
+    in `phases.ts`, mirrored in `phases.py`): turns **37-44 take -1**, **45-49 take -2**, and
+    the **last turn, 50, takes -3**. A match with both kings still standing at the end of it
+    **goes to black** - the same verdict `matchVerdict` already gave, now with an escalation
+    behind it that makes reaching it unlikely. *The owner: "overtime is broken into 3 parts,
+    overtime 1 takes -1 damage. on turn 45 it turns to overtime 2, taking -2 damage, and on
+    the very last turn -3 damage. and if both survives, black wins."*
+    - **Counted forward from overtime's first turn, not written down.** `OVERTIME_FIRST_TURN`
+      and `OVERTIME_LAST_TURN` are both read off the schedule, so a phase that moves carries
+      all of overtime with it. `OVERTIME_LAST_TURN` used to be the literal `50` declared in
+      `game-room.component.ts`, and when each numbered phase gained an initialization turn -
+      moving overtime's start from 34 to 37 - the literal stayed where it was and silently
+      cost overtime three of its fourteen turns. Nothing failed.
+    - **`overtimeTollAt()` answering `0` is the schedule gate as well as the amount.** Neither
+      engine keeps a `ply < OVERTIME_FIRST_PLY` test of its own beside it: one question with
+      one answer beats two that can come to disagree.
+    - **The skull sums the turns, it does not multiply one of them** (`overtimeTollOver()`).
+      With a climbing toll, "will he live through the next two" is no longer `toll * 2` - a
+      king on 3 HP is two turns clear in the first stretch, on his last in the second, and
+      already gone in the third. It reads **his** next toll, not the mover's: white pays at
+      the end of an odd hand-over and black at the end of an even one, so the side not to
+      move pays one ply later and can be a stretch further along.
+    - **Overtime widens the turn itself: two board moves in Overtime 2, three in
+      Overtime 3** (`boardMovesPerTurn()`, off `OVERTIME_STAGES`). *The owner: "on overtime 2,
+      you can move two units each turn on the main board. on overtime 3, you can move 3."*
+      **Each is a whole board action - a walk and, if it ends in reach, a swing** - so a
+      stretch that allows three allows three blows. The owner's call when asked.
+      - **This is the one rule that changes what a turn *is*,** so everything built on "there
+        is exactly one board move" had to be asked rather than assumed. Four places assumed it:
+        the board's lock (`movesLeftFor` alone meant "nothing else may be driven"), the room's
+        commit (one `make_move` built from `pendingMove`), `hasAttacked` (one blow a *turn*,
+        now one a *unit* - `canSwingFrom()`), and `onPlayerAttack`, which chained a blow onto
+        whatever moved last: a side that walked A and swung with B wrote B's blow onto A's
+        origin and lost A's move.
+      - **The moves go out as separate messages and only the last hands the turn over** - the
+        first carry `more: true` and both engines answer them through the deployment path
+        (`_commit_deployment`): same seat, same ply, same clock. The toll is deliberately not
+        taken on a held move; once per move would bleed a king three points on the very
+        stretch that allows three. Panel deployments still go first, then held moves, then the
+        one that ends the turn.
+      - **`more` is a claim, not a permission.** The server counts the ply's board moves off
+        the record (`board_moves_at`) and refuses any past the allowance, and a `more` on the
+        last one the allowance permits ends the turn anyway. A panel's move is not a board
+        move; a walk home is one in overtime and a deployment while setting out.
+      - **The allowance counts moves; the rule counts *units*.** A unit gets one of the
+        turn's moves, not two (`boardMoveLandings()` / `board_move_landings`, and
+        `movedUnitHexes` -> the board's `movedHexes`). Without it a side in Overtime 3 played
+        A, then B, then A again: each message is legal on its own, judged from where the unit
+        stands with a full MOV, so both engines took it and A covered **twice its budget in
+        one turn**. A unit continuing a walk it began is not this - the room folds those into
+        one move and sends the origin it really set out from, so a `from` matching an earlier
+        landing is always a second go. *Found by driving the screen on 22 Sep 2026 with 357
+        specs green; see PUNCHLIST 3.15.*
+      - **The board's lock keeps a floor** (`movesToSpare`): never fewer than the one
+        `movesLeftFor` proves. The count and the lock are two answers to one question, and an
+        unbound `boardMovesSpent` of 0 would read as "nothing staged" and unlock the whole
+        board behind a turn already spoken for.
+    - **Overtime is three stages, not one** (`stageAt()`), so the header reads `OVERTIME 1`,
+      `OVERTIME 2`, `OVERTIME 3`, and `MILESTONES` counts down to each - including the one
+      *into* overtime, which turn 36 announces as `Until Overtime 1`. The stretches are named
+      and the phase they sit in is not: `phaseAt()` still answers `Overtime` for all fourteen
+      turns, the same split a numbered phase already has from its halftime. A countdown to a
+      bare `Overtime` would name something `stageAt()` never says.
   - **Overtime scores nothing and costs no points.** It is a decider, and what it takes is a
     king's HP - see the toll. A per-turn points bleed (`overtimeTicks`) used to run beside it
     and was removed at the owner's word: *"loses just HP, if i said points i misspoke."*
   - **The toll is shown on the board as well as in the header**: the king of whoever just paid
-    takes a red **`-1`** over its icon and a hit pop (`markOvertimeToll()` in
+    takes a red **`-1`, `-2` or `-3`** over its icon - the stretch's own number - and a hit pop
+    (`markOvertimeToll()` in
     `game-board.component.ts`, derived from the turn that ended - white plays the odd
     hand-overs, so which side paid is arithmetic and needs no input from the room). The HP
     behind it is real - see the toll above - so this is the mark over damage that has already
     landed, not a shake standing in for it.
-    - **Solo only**, gated on `entryBind` like the toll it draws. A networked server takes no
-      HP off anybody, and a red `-1` over a king whose HP never moves is a lie.
+    - Gated on `tollBind`, like the toll it draws - which **both** engines now take, so the
+      mark is over HP that really moved in a networked room too.
     - The mark shares one map with the base's mending `+1` (`turnMarks` / `markOf()`): same
       mark, four colours, one fade timer (`MARK_FADE_MS`, on `PLAYBACK_SPEED` like every
       other beat).
-    - **A king the toll kills still wears his last `-1`**, on the hex he died on. By the time
+    - **A king the toll kills still wears his last mark**, on the hex he died on. By the time
       `markOvertimeToll()` runs the board has been rebuilt without him, so `kingHex` — written
       on every `buildCells()` — is the only record of where he stood. Same shape as a cast
       that kills (`markKey`). The side is carried in `markColors` because an empty hex belongs
@@ -1029,10 +1147,11 @@ Decided so far:
       a kill earlier in the turn tinted the next unit's own `+1` in the victim's colour.
     - **Only the toll's own kill, and the ply is the test that proves it.** `kingHex` records
       the hex, the HP *and* the ply he was last seen on; the mark is owed only when the HP was
-      down to `OVERTIME_TOLL` **and** that ply is the one that just ended. The toll takes him
+      down to the **stretch's own toll** (`overtimeTollAt(ended)`, which is 1, 2 or 3) **and**
+      that ply is the one that just ended. The toll takes him
       during the commit of that ply, so his last sighting is always that ply; a king cut down
       by a blow vanished earlier and is stamped with it. HP alone cannot separate them — a
-      king already on his last point when a blow finishes him passes the HP test exactly as
+      king already down to the toll or less when a blow finishes him passes the HP test as
       the toll's victim does. Without either guard any *missing* commander was marked, on top
       of the recap's real kill number, and under `objective: 'elimination'` the `-1` came back
       every overtime ply.
@@ -1576,7 +1695,19 @@ passive, for whichever unit is selected.
     each of the five phases** - the opening, the three phases and overtime - so a match hands
     out 500 in all.
   - **Points** buy the eight-ability pool, and stay the board's currency besides: the wrap
-    crossing charges them and coming home refunds them.
+    crossing charges them and coming home refunds them. A side banks **one at the start of
+    each of its own turns** - and **3 a turn through Overtime 2 and 5 on the last turn**
+    (`pointsPerTurnAt()`, off `OVERTIME_STAGES`). *The owner: "on overtime 2, we get +3 points
+    every turn. on the turn we get +5 points."* The toll takes and the purse gives, and they
+    climb together: the pressure to finish arrives with the means to.
+    - **Three places hand that point out and all three read the one table.** `beginTurnFor()`
+      pays it live as a side starts; `pointsFromHistory()` re-derives the whole purse from the
+      record on every commit; `economy.points_of()` is the server's copy, which the wrap is
+      priced against. A flat `1` in any of them is invisible for 44 turns and then makes the
+      purse jump every time a commit overwrites the live tally.
+    - Besides the turn: **+1 a kill** (and the defender is paid when a counter kills the
+      attacker), **+the unit's value** when it walks home, **-the price** of a wrap crossing.
+      A cast that kills pays nobody. All of it derived from the record, never a stored tally.
   - Everything goes through `purseFor()` / `chargeFor()` / `purseName()`, so a cost, a grant, a
     hint and an Undo all read the same currency off one place.
   - `cpOf(side)` is **derived** - `CP_PER_PHASE x phases so far, less `myCpSpent`` - rather
