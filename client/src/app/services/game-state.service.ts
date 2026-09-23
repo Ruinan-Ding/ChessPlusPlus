@@ -159,7 +159,9 @@ export class GameStateService {
       boardState: msg.boardState ?? prev.boardState,
       currentTurn: msg.currentTurn ?? prev.currentTurn,
       turnNumber: msg.turnNumber ?? prev.turnNumber,
-      moveHistory: [...prev.moveHistory, move],
+      // And the turn's casts on either side of it, where they happened. The
+      // browser engine's alone; a server sends none.
+      moveHistory: [...prev.moveHistory, ...(msg.effectsBefore ?? []), move, ...(msg.effects ?? [])],
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
     });
@@ -168,8 +170,8 @@ export class GameStateService {
   /**
    * Apply a `turn_passed` message - the turn moves on, and usually the board
    * does not. Usually: overtime's toll is taken at the end of a turn whether
-   * or not anybody moved, so the browser engine sends the board it left
-   * behind. The networked server sends none and the board stands.
+   * or not anybody moved, so both engines send the board they left behind. The
+   * server did not always; a message without one leaves the board standing.
    */
   applyTurnPassed(msg: any): void {
     const prev = this.snapshot;
@@ -178,6 +180,8 @@ export class GameStateService {
       boardState: msg.boardState ?? prev.boardState,
       currentTurn: msg.currentTurn ?? prev.currentTurn,
       turnNumber: msg.turnNumber ?? prev.turnNumber,
+      // What a passed turn cast into the panels. Browser engine only.
+      moveHistory: msg.effectsBefore ? [...prev.moveHistory, ...msg.effectsBefore] : prev.moveHistory,
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
     });

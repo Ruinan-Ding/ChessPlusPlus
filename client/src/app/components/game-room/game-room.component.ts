@@ -5,6 +5,7 @@ import { WebsocketService } from '../../services/websocket.service';
 import { Subject } from 'rxjs';
 import { takeUntil, take, filter } from 'rxjs/operators';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
+import { VolumeControlComponent } from '../volume-control/volume-control.component';
 import { ActivatedRoute, Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
@@ -12,12 +13,15 @@ import { GameStateService } from '../../services/game-state.service';
 import { AuthService } from '../../services/auth.service';
 import { AnimStep, FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap } from '../game-board/game-board.component';
 import {
-  captureClaims, captureScore, hexDistanceKeys, isInsideBoard, strikeDamage,
+  captureClaims, captureScore, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
 } from '../../services/hex-rules';
 import { buildPlayback } from '../../services/playback';
+import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
+import { homecomingsAt, openingMovedHexes } from '../../services/history-rules';
 import {
-  OVERTIME_FIRST_PLY, SCORING_PHASES, handOversBy, isInitialization, isOvertime,
-  phaseIndexAt, stageAt, turnHeading, turnOf,
+  OVERTIME_LAST_TURN, SCORING_PHASES, boardMovesPerTurn, handOversBy,
+  isInitialization, isOvertime, isPhaseInitialization, isSetupTurn, phaseIndexAt,
+  pointsPerTurnAt, stageAt, turnHeading, turnOf, turnPointsBy,
 } from '../../services/phases';
 import { AudioService } from '../../services/audio.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
@@ -27,20 +31,74 @@ interface GameOptions {
   turnTimeLimit?: number;
 }
 
-const LOCAL_UI_STATE_KEY = 'cpp.localGame.ui.v1';
+// v2: the ability fields inside are written by catalogue id rather than by
+// slot number. A v1 blob holds numbers where this expects strings, and a
+// number read as an id resolves to nothing - so the key is bumped and an old
+// save is ignored outright rather than quietly restoring the wrong abilities.
+// Only the UI layer resets; the position and history live under their own key.
+const LOCAL_UI_STATE_KEY = 'cpp.localGame.ui.v2';
+
+/** One ability as the config holds it. Everything but id/name/target is optional. */
+interface AbilityEntry {
+  id: string;
+  name: string;
+  description?: string;
+  target?: 'friendly' | 'enemy' | 'universal';
+  cost?: number;
+  cooldown?: number;
+  mov?: number; atk?: number; def?: number;
+  damage?: number; heal?: number; points?: number;
+  /** The owner's bench rather than a balanced ability - kept out of networked play. */
+  testing?: boolean;
+}
+
+/** A path as the config holds it: its three abilities named by id. */
+interface AbilityPath {
+  id: string; name: string; cost: number;
+  passive: string; skill: string; ultimate: string;
+}
+
+/** The same path with its abilities resolved to slots, which is how the room asks. */
+interface AbilityPathSlots {
+  id: string; name: string; cost: number;
+  passive: number; skill: number; ultimate: number;
+}
+
+interface AbilityCatalogue {
+  slots?: number;
+  pool?: string[];
+  paths?: AbilityPath[];
+  catalogue?: Record<string, AbilityEntry>;
+}
+
+/** What the room reads off a slot: the config's entry with its zeros filled in. */
+interface AbilityEffect {
+  id: string;
+  name: string;
+  target: 'friendly' | 'enemy' | 'universal';
+  mov: number; atk: number; def: number;
+  damage?: number; heal?: number; points?: number;
+  testing?: boolean;
+}
 
 interface LocalUiState {
   myPoints: number;
   opponentPoints: number;
   myCpSpent: number;
   opponentCpSpent: number;
-  unitCooldowns: number[];
-  opponentCooldowns: number[];
-  myCooldowns: number[];
-  myLoadout: number[];
-  opponentLoadout: number[];
-  myPath: number | null;
-  opponentPath: number | null;
+  // **Written by catalogue id, never by slot.** Inside the component these
+  // are slot numbers - the template, the glows and the cooldown arrays all
+  // work in positions - but a position only means anything next to the
+  // catalogue that produced it, and reordering the config would re-point
+  // every saved loadout, path and cooldown. The translation happens here and
+  // nowhere else (`persistLocalUiState` / `restoreLocalUiState`).
+  unitCooldowns: Record<string, number>;
+  opponentCooldowns: Record<string, number>;
+  myCooldowns: Record<string, number>;
+  myLoadout: string[];
+  opponentLoadout: string[];
+  myPath: string | null;
+  opponentPath: string | null;
   myUltimateUsed: boolean;
   opponentUltimateUsed: boolean;
   buffs: Record<string, UnitBuff>;
@@ -140,19 +198,27 @@ interface Standing {
 const OVERTIME_MARGIN = { white: 3, black: 5 };
 
 /**
- * The last full turn of overtime. A match still undecided at the end of it
- * goes to black - so the verdict flips once the match is *past* turn 50, not
- * as it begins.
+ * Why nothing in the ability panels can be picked, unlocked or cast in a
+ * networked room.
+ *
+ * Abilities are the one system still gated to solo, on purpose: the catalogue
+ * is a placeholder with testing levers in it (Rally hands out 300 points), and
+ * the owner chose to keep it client-side until the real one settles rather than
+ * freeze a placeholder into the protocol - PUNCHLIST 6.15. Every refusal used to
+ * say "not your turn", which in a networked room was false on your own turn and
+ * sent a player looking for a turn problem that was not there.
  */
-const OVERTIME_LAST_TURN = 50;
+const ABILITIES_SOLO_ONLY = 'Unavailable: abilities are single-player only for now.';
 
 /**
- * What a side is handed at the start of each phase to spend on abilities.
- * Five awards over a match - the opening, the three phases and overtime.
- * ponytail: the owner's placeholder - "for now, just set it to 100".
+ * An HP back per turn for every unit standing in a **base** - the squad dealt
+ * there at the start as much as a unit that walked home to mend. One rule for
+ * both: they stand in the same panel, and a wound closing itself for one of
+ * them while the identical wound stayed open on the unit beside it is the
+ * kind of thing a player reads as a bug, because it is.
+ *
+ * A reserve does not mend. It is a staging area, not a hospital.
  */
-const CP_PER_PHASE = 100;
-
 const BASE_HEAL_PER_TURN = 1;
 
 /** A unit that walked home, and the hex it stopped on. */
@@ -175,6 +241,21 @@ interface StagedAction {
   at?: number;
   /** What walking home into the base paid back, for Undo to take away again. */
   refund?: number;
+  /**
+   * A walk home that is a **deployment** rather than the turn's board action:
+   * three of them may happen on a setup turn, so none of them is the one move
+   * that ends it. Each goes out as its own message before whatever the turn
+   * did on the board, exactly as a crossing does.
+   *
+   * It is what keeps such a walk out of `lastBoardAction`, and so out of
+   * `pendingMove` - the getter the board's staging lock reads. Without the
+   * flag the first walk home took the turn's slot and locked every other unit
+   * behind it, which made the three-a-turn allowance unreachable through the
+   * UI however willing both engines were.
+   *
+   * Never set in overtime: a walk home there IS the turn's move.
+   */
+  homecoming?: boolean;
   killed?: string;
   /** What died there, so the board can draw its ghost under the skull. */
   killedUnit?: { unit_id: string; color: 'white' | 'black' };
@@ -187,6 +268,24 @@ interface StagedAction {
    */
   panelUnit?: Record<string, any>;
   panelUnitHp?: number;
+  /** Which panel it landed in - a base mends its wounded, a reserve does not. */
+  panelName?: string;
+  /** Whether the defender answered. A base never does, nor does anything out of reach. */
+  countered?: boolean;
+  /**
+   * Set when an ability moved the HP of a unit standing on the BOARD: the hex
+   * and what it has left. No engine holds an ability, so - exactly like the
+   * panel pair above - the change has to be sent as its own message or the
+   * next state update rolls it straight back. Healing a king off 1 HP and
+   * watching overtime kill it anyway was this: the staged board knew, and
+   * nothing else did.
+   */
+  hexHp?: number;
+  hexKey?: string;
+  /** Who it was, so the engine can find it if the walk has moved it since. */
+  hexUid?: string;
+  /** What to write over the unit as the cast plays: `+20`, `-14`. */
+  mark?: string;
   /** The panel end was the defender, not the attacker. */
   intoPanel?: boolean;
   /** Whether that panel unit strikes back - a reserve does, a base does not. */
@@ -227,7 +326,8 @@ function fallen(
 @Component({
   selector: 'app-game-room',
   standalone: true,
-  imports: [CommonModule, FormsModule, ConnectionStatusComponent, GameBoardComponent],
+  imports: [CommonModule, FormsModule, ConnectionStatusComponent, GameBoardComponent,
+    VolumeControlComponent],
   templateUrl: './game-room.component.html',
   styleUrls: ['./game-room.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -282,6 +382,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   private endModalTimer: ReturnType<typeof setTimeout> | null = null;
 
   private destroy$ = new Subject<void>();
+
+  /** Whether this page ever asked to join its room - see ngOnDestroy. */
+  private roomJoinSent = false;
 
   constructor(
     private wsService: WebsocketService,
@@ -376,8 +479,19 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (this.gameId === 'local') this.restoreLocalUiState();
       
       this.route.queryParams.pipe(take(1)).subscribe(queryParams => {
-        this.accessToken = queryParams['token'] || '';
-        
+        // The token arrives on the URL once and then lives in session
+        // storage. A bearer token in a query string is kept in browser
+        // history and leaves in the Referer of any outbound link; session
+        // storage is per-tab, dies with the tab, and is what carries the
+        // token across a reload now that the address bar no longer can.
+        const tokenKey = `cpp.roomToken.${this.gameId}`;
+        const tokenFromUrl = queryParams['token'] || '';
+        this.accessToken = tokenFromUrl || readStore('session', tokenKey) || '';
+        if (tokenFromUrl) {
+          writeStore('session', tokenKey, tokenFromUrl);
+          history.replaceState(history.state, '', window.location.pathname);
+        }
+
         if (!this.accessToken) {
           console.error('[GameRoom] No access token provided - unauthorized access attempt');
           this.router.navigate(['/lobby']);
@@ -395,11 +509,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         }
         
         const join = () => {
+          this.roomJoinSent = true;
           this.wsService.sendMessage({
             type: 'join_game_room',
             username: this.username,
             gameId: this.gameId,
-            token: this.accessToken
+            token: this.accessToken,
+            // The rejoin recreates the server's record of this player, and a
+            // record without the secret cannot vouch for the name back in the
+            // lobby - a reload mid-game used to cost the player their name.
+            secret: this.authService.getIdentitySecret(),
           });
           this.lobbyMessages = this.sharedDataService.getLobbyMessages();
         };
@@ -450,21 +569,65 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
     this.gameState.reset();
     
-    // Only send leave message if not already sent via leaveGameRoom().
-    // Never for a solo room: leave_game_room is what clears the saved game,
-    // and a browser Back is not the player throwing their position away.
+    // Only on an incidental exit, and never for a solo room: leave_game_room
+    // is what clears the saved game, and a browser Back is not the player
+    // throwing their position away.
     if (!isIntentionalNav && !this.wsService.isLocal()) {
-      this.wsService.sendMessage({
-        type: 'leave_game_room',
-        username: this.username,
-        gameId: this.gameId
-      });
+      // **The leave and the teardown are two different questions.** Only a
+      // room this page actually joined is left: opened without a token it
+      // goes straight back to the lobby, and the leave sat in the socket's
+      // queue, went out on the lobby's connection before anyone had joined
+      // it, and the lobby showed "Error: Can only leave as yourself".
+      if (this.roomJoinSent) {
+        this.wsService.sendMessage({
+          type: 'leave_game_room',
+          username: this.username,
+          gameId: this.gameId
+        });
+      }
+      // The socket comes down either way. It was opened for this room the
+      // moment the token checked out, so gating this on the join as well left
+      // a room socket open behind a page that had already gone.
       this.wsService.disconnect();
     }
 
     // Don't disconnect here when returning to the lobby - the lobby
     // component manages its own connection lifecycle
     
+  }
+
+  /** A slot list as catalogue ids, dropping any slot this config has lost. */
+  private idsOfSlots(slots: number[]): string[] {
+    const ids = this.abilityIds;
+    return slots.map(slot => ids[slot]).filter((id): id is string => !!id);
+  }
+
+  /** A per-slot array as a map by id - what survives a reordered catalogue. */
+  private cooldownsById(bySlot: number[]): Record<string, number> {
+    const ids = this.abilityIds;
+    const out: Record<string, number> = {};
+    bySlot.forEach((turns, slot) => {
+      if (turns && ids[slot]) out[ids[slot]] = turns;
+    });
+    return out;
+  }
+
+  /** And back: unknown ids are dropped, which is what a retired ability is. */
+  private slotsOfIds(ids: unknown): number[] {
+    if (!Array.isArray(ids)) return [];
+    return ids
+      .map(id => (typeof id === 'string' ? this.slotOfAbility(id) : -1))
+      .filter(slot => slot >= 0);
+  }
+
+  private cooldownsBySlot(byId: unknown): number[] {
+    const out = this.abilityIds.map(() => 0);
+    if (!byId || typeof byId !== 'object') return out;
+    for (const [id, turns] of Object.entries(byId as Record<string, unknown>)) {
+      const slot = this.slotOfAbility(id);
+      if (slot >= 0 && Number.isFinite(turns)) out[slot] = turns as number;
+    }
+    return out;
   }
 
   private persistLocalUiState(): void {
@@ -474,13 +637,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       opponentPoints: this.opponentPoints,
       myCpSpent: this.myCpSpent,
       opponentCpSpent: this.opponentCpSpent,
-      unitCooldowns: this.unitCooldowns,
-      opponentCooldowns: this.opponentCooldowns,
-      myCooldowns: this.myCooldowns,
-      myLoadout: this.myLoadout,
-      opponentLoadout: this.opponentLoadout,
-      myPath: this.myPath,
-      opponentPath: this.opponentPath,
+      unitCooldowns: this.cooldownsById(this.unitCooldowns),
+      opponentCooldowns: this.cooldownsById(this.opponentCooldowns),
+      myCooldowns: this.cooldownsById(this.myCooldowns),
+      myLoadout: this.idsOfSlots(this.myLoadout),
+      opponentLoadout: this.idsOfSlots(this.opponentLoadout),
+      myPath: this.myPath === null ? null : (this.abilityPaths[this.myPath]?.id ?? null),
+      opponentPath: this.opponentPath === null
+        ? null : (this.abilityPaths[this.opponentPath]?.id ?? null),
       myUltimateUsed: this.myUltimateUsed,
       opponentUltimateUsed: this.opponentUltimateUsed,
       buffs: this.buffs,
@@ -510,10 +674,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (Number.isFinite(state.opponentPoints)) this.opponentPoints = state.opponentPoints!;
       if (Number.isFinite(state.myCpSpent)) this.myCpSpent = state.myCpSpent!;
       if (Number.isFinite(state.opponentCpSpent)) this.opponentCpSpent = state.opponentCpSpent!;
-      if (Array.isArray(state.unitCooldowns)) this.unitCooldowns = state.unitCooldowns;
-      if (Array.isArray(state.opponentCooldowns)) this.opponentCooldowns = state.opponentCooldowns;
-      if (Array.isArray(state.myCooldowns)) this.myCooldowns = state.myCooldowns;
-      if (Array.isArray(state.myLoadout)) this.myLoadout = state.myLoadout;
+      if (state.unitCooldowns) this.unitCooldowns = this.cooldownsBySlot(state.unitCooldowns);
+      if (state.opponentCooldowns) {
+        this.opponentCooldowns = this.cooldownsBySlot(state.opponentCooldowns);
+      }
+      if (state.myCooldowns) this.myCooldowns = this.cooldownsBySlot(state.myCooldowns);
+      if (state.myLoadout) this.myLoadout = this.slotsOfIds(state.myLoadout);
       // Shape-checked like its neighbours: a stored value from an older
       // build indexes to undefined, and the arithmetic downstream turns that
       // into NaN on the panel rather than failing where it went wrong.
@@ -521,11 +687,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (debt && Number.isFinite(debt.mine) && Number.isFinite(debt.opponent)) {
         this.swapDebt = { mine: debt.mine, opponent: debt.opponent };
       }
-      if (Array.isArray(state.opponentLoadout)) this.opponentLoadout = state.opponentLoadout;
-      if (typeof state.myPath === 'number' || state.myPath === null) this.myPath = state.myPath;
-      if (typeof state.opponentPath === 'number' || state.opponentPath === null) {
-        this.opponentPath = state.opponentPath;
-      }
+      if (state.opponentLoadout) this.opponentLoadout = this.slotsOfIds(state.opponentLoadout);
+      // A path whose id this config no longer knows comes back as no path,
+      // which is the same answer a side that never took one gives.
+      const pathOf = (id: unknown) => {
+        if (typeof id !== 'string') return null;
+        const at = this.abilityPaths.findIndex(path => path.id === id);
+        return at >= 0 ? at : null;
+      };
+      if (state.myPath !== undefined) this.myPath = pathOf(state.myPath);
+      if (state.opponentPath !== undefined) this.opponentPath = pathOf(state.opponentPath);
       if (typeof state.myUltimateUsed === 'boolean') this.myUltimateUsed = state.myUltimateUsed;
       if (typeof state.opponentUltimateUsed === 'boolean') this.opponentUltimateUsed = state.opponentUltimateUsed;
       if (state.buffs && typeof state.buffs === 'object') this.buffs = state.buffs;
@@ -637,6 +808,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         const previousPassedTurn = this.gameState.snapshot.currentTurn;
         this.gameState.applyTurnPassed(actualMessage);
         this.beginTurnFor(actualMessage.color === 'white' ? 'black' : 'white');
+        this.reconcilePoints();
         this.playTurnSoundIfNeeded(previousPassedTurn);
         this.startTurnClock();
         this.persistLocalUiState();
@@ -671,6 +843,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         if (m.attacker_eliminated) this.awardPoints(other, 1);
         // The turn point belongs to whoever plays next, banked as they start.
         this.beginTurnFor(other);
+        // Then, in a networked room, the history's own sum over the top - which
+        // is also the only way a walk home by the OTHER player pays them back
+        // on this screen. See reconcilePoints.
+        this.reconcilePoints();
         this.playTurnSoundIfNeeded(previousMoveTurn);
         this.startTurnClock();
         this.persistLocalUiState();
@@ -707,9 +883,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // only when the host resets the room. `gameOver` is what the rest of
         // the component asks now that started no longer means playable.
         // Whatever the board was replaying is over, and nothing else will
-        // announce that it finished, so the curtain comes down here.
-        this.recapRunning = false;
-        this.glowReveal = [];
+        // announce that it finished, so the curtain comes down here - unless
+        // the recap has not played yet. A blow or a cast that WINS resolves
+        // synchronously inside endTurn, before the board has even been handed
+        // the turn to replay, so dropping the curtain here played the one turn
+        // most worth watching without it. The board answers playbackDone at
+        // the end of that run and it comes down there instead.
+        if (!this.playbackRunning) {
+          this.recapRunning = false;
+          this.glowReveal = [];
+        }
         this.gameState.applyGameOver(actualMessage);
         if (actualMessage.winner) {
           this.addSystemMessage(`Game over - ${actualMessage.winner} wins by ${actualMessage.endReason}!`);
@@ -735,6 +918,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       case 'game_state_update':
         // Full state refresh (e.g., on reconnect)
         this.gameState.applyFullState(actualMessage);
+        // A reload in a networked room used to start both purses at nothing:
+        // points were kept in this browser's memory and restored from disk only
+        // for a solo room. And a crossing or a walk by the other player arrives
+        // here, where nothing ever charged them for a wrap.
+        this.reconcilePoints();
         // No restoreLocalUiState() here. It reads points, CP, cooldowns,
         // loadouts and the staged turn back off disk, which is right exactly
         // once - at ngOnInit, where it already runs - and wrong every other
@@ -1411,10 +1599,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /** "+2 ATK, -1 MOV" for one effect, or '' when it moves no stat. */
   private effectSummary(effect: { mov: number; atk: number; def: number }): string {
     const parts: string[] = [];
-    const sign = (n: number) => `${n > 0 ? '+' : ''}${n}`;
-    if (effect.mov) parts.push(`${sign(effect.mov)} MOV`);
-    if (effect.atk) parts.push(`${sign(effect.atk)} ATK`);
-    if (effect.def) parts.push(`${sign(effect.def)} DEF`);
+    if (effect.mov) parts.push(`${this.signed(effect.mov)} MOV`);
+    if (effect.atk) parts.push(`${this.signed(effect.atk)} ATK`);
+    if (effect.def) parts.push(`${this.signed(effect.def)} DEF`);
     return parts.join(', ');
   }
 
@@ -1436,10 +1623,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * "you disabled all units during initialization". What lasts the phase is
    * the lock on the *unit* that moved (`initMovedHexes`), not the allowance.
    *
-   * Read off the move history rather than counted as it goes: a panel walk
-   * is client-side and never reaches the record, so every move in there is a
-   * battlefield move, and deriving it means a reload and the other player
-   * see the same thing.
+   * Read off the move history rather than counted as it goes, so a reload and
+   * the other player see the same thing.
+   *
+   * **Only a battlefield move spends it**, and the record has to be read for
+   * which kind it is. This once tested `!entered` alone, on the reasoning that
+   * "a panel walk is client-side and never reaches the record, so every move
+   * in there is a battlefield move" - true when it was written and false since
+   * stage 3 recorded panel walks. A player who shuffled one reserve unit in
+   * the opening was told they had spent their board move, and every
+   * battlefield unit went grey for the turn. The same four kinds are skipped
+   * here as in `openingMovedHexes`, and for the same reason; the sibling was
+   * fixed first and this one was missed.
    */
   get initBoardSpent(): boolean {
     const s = this.gameState.snapshot;
@@ -1448,8 +1643,19 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (!color) return false;
     const turn = turnOf(s.turnNumber);
     return (s.moveHistory ?? []).some(
-      // A crossing is a reserve's move, not the board move of the opening.
-      m => m.color === color && turnOf(m.turn) === turn && !m.entered);
+      // A crossing is the reserve's move, a walk inside a panel never touches
+      // the board, and a cast is nobody's move.
+      //
+      // Nor is a walk home, any more. This once read "a walk home IS one: it
+      // ends the turn like any other" - true when it was written, and false
+      // from the moment a setup turn's walk home became a deployment that three
+      // units may take. Left in, the first one greyed every battlefield unit
+      // for the rest of the turn, which is the allowance it no longer spends.
+      // `openingMovedHexes` beside it already excluded them; the sibling was
+      // right first and this one was missed. The unit is still held to one
+      // action for the phase - that lock is `initMovedHexes`, not this.
+      (m: any) => m.color === color && turnOf(m.turn) === turn
+        && !m.entered && !m.panelMove && !m.panelEffect && !m.withdrawn);
   }
 
   /**
@@ -1471,14 +1677,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (this.initMovedCache?.history === history && this.initMovedCache.turn === turn) {
       return this.initMovedCache.hexes;
     }
-    let hexes: string[] = [];
+    // A walk inside a panel is not a battlefield move either, and since those
+    // are recorded now its destination - a panel hex - would otherwise be
+    // listed here. `openingMovedHexes` excludes it, as `opening_moved_hexes`
+    // does on the server: one derivation, which the offline engine shares.
     const color = isInitialization(turn) ? this.gameState.myColor(s.currentTurn) : null;
-    if (color) {
-      hexes = (history ?? [])
-        .filter((m: any) => m.color === color && isInitialization(m.turn)
-          && !m.entered && !m.withdrawn)
-        .map((m: any) => m.to);
-    }
+    const hexes: string[] = color ? [...openingMovedHexes(history as any, color)] : [];
     this.initMovedCache = { history, turn, hexes };
     return hexes;
   }
@@ -1510,12 +1714,28 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   private withdrawnCache:
     { history: unknown; turn: number; units: WithdrawnUnit[] } | null = null;
 
+  /**
+   * What a unit in a base has mended since the turn its HP was last written
+   * down. Shared by the two derivations that feed a base - the units dealt
+   * there and the units that walked home - so they cannot drift apart.
+   *
+   * Counted in that side's OWN hand-overs, not in plies: a base mends at the
+   * end of its owner's turn, so a unit standing through a full turn takes one
+   * HP back and not the two a ply count would have given it. `now` is the ply
+   * about to be played, so the last one finished is `now - 1`.
+   */
+  private mendedSince(color: 'white' | 'black', since: number, now: number): number {
+    return Math.max(0, handOversBy(color, now - 1) - handOversBy(color, since))
+      * BASE_HEAL_PER_TURN;
+  }
+
   get withdrawnUnits(): WithdrawnUnit[] {
     const snapshot = this.gameState.snapshot;
     const history = snapshot.moveHistory;
     const turn = snapshot.turnNumber;
-    if (this.withdrawnCache?.history === history && this.withdrawnCache.turn === turn) {
-      return this.withdrawnCache.units;
+    const cached = this.withdrawnCache;
+    if (cached && cached.history === history && cached.turn === turn) {
+      return this.stageWithdrawn(cached.units);
     }
     // Keyed by uid, not by the hex it landed on: a unit shuffled off its
     // landing hex frees it for the next one home, and keying by hex would
@@ -1534,9 +1754,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         });
         continue;
       }
-      // A blow that landed in the base. Reserves are not in here - they are
-      // dealt from the roster and read `panelHp` instead.
-      if (!record.panelAttack || !record.intoPanel || !record.unit?.uid) continue;
+      // Something that set a panel unit's HP while it stood in the base - a
+      // blow, or an ability. Reserves are not in here: they are dealt from the
+      // roster and read `panelHp` instead.
+      if (!record.intoPanel || !record.unit?.uid || record.defenderHp === undefined) continue;
       const standing = base.get(record.unit.uid);
       if (standing) {
         standing.hp = record.defenderHp ?? 0;
@@ -1550,69 +1771,228 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // A unit sitting in the base mends: an HP for every turn since its last
       // word, never past what it started with. Derived rather than tallied,
       // so it reads the same after a reload as it did before one.
-      //
-      // Counted in that side's OWN hand-overs, not in plies: a base mends at
-      // the end of its owner's turn, so a unit standing through a full turn
-      // takes one HP back and not the two a ply count would have given it.
-      // `turn` is the ply about to be played, so the last one finished is
-      // `turn - 1`.
       const full = stood.unit.max_hp ?? stood.unit.hp ?? 0;
-      const turns = handOversBy(stood.unit.color, turn - 1)
-        - handOversBy(stood.unit.color, stood.turn);
-      const mended = stood.hp + Math.max(0, turns) * BASE_HEAL_PER_TURN;
+      const mended = stood.hp + this.mendedSince(stood.unit.color, stood.turn, turn);
       units.push({ at: stood.at, unit: { ...stood.unit, hp: Math.min(full, mended) } });
     }
     this.withdrawnCache = { history, turn, units };
-    return units;
+    return this.stageWithdrawn(units);
   }
 
   /**
-   * Reserves that have walked onto the battlefield, by uid. A panel keeps its
-   * dealt squad for the whole game, so without this a unit that crossed and
-   * was later killed would be drawn back in its old panel hex, alive and
-   * ready to cross again - the board it died on no longer names it.
+   * The turn in progress, laid over the base the record derives.
+   *
+   * The same overlay `panelHp` puts on the dealt squad, and it was missing
+   * here - which is the whole of the bug. A unit that walked home was drawn
+   * at its *committed* HP however much the turn had staged onto it: Mend a
+   * withdrawn unit at 9/16 and it still read 9. The committed result came out
+   * right, so this looked cosmetic, and it was not - a second cast in the
+   * same turn read that stale 9 off the board and staged from it, wiping out
+   * the first. Two mends in one turn were worth one.
+   *
+   * Applied outside the cache on purpose: the cache is keyed on the history
+   * and the ply, neither of which moves while a turn is being staged.
    */
-  private departedCache: { history: unknown; uids: string[] } | null = null;
-
-  get departedUids(): string[] {
-    const history = this.gameState.snapshot.moveHistory;
-    if (this.departedCache?.history === history) return this.departedCache.uids;
-    const uids: string[] = [];
-    for (const move of history ?? []) {
-      const record = move as any;
-      if (record.entered && record.unit?.uid) uids.push(record.unit.uid);
+  private stageWithdrawn(units: WithdrawnUnit[]): WithdrawnUnit[] {
+    const staged = this.stagedActions.filter(a => a.panelUnit);
+    if (!staged.length) return units;
+    const hp = new Map<string, number>();
+    for (const action of staged) {
+      // An action naming a panel unit without saying what it did to its HP
+      // says nothing about the base. `stagedActions` is restored wholesale
+      // from persisted UI state, so a stack written by an older build can
+      // carry one, and `undefined` here would read as a real HP downstream.
+      if (action.panelUnitHp === undefined) continue;
+      hp.set(action.panelUnit!['uid'], action.panelUnitHp);
     }
-    this.departedCache = { history, uids };
-    return uids;
+    // Nothing staged touches a unit in a base - the usual case, since most
+    // casts land on a reserve or on the battlefield. Hand back the SAME array
+    // rather than a copy: this feeds the board's `withdrawn` input, and a new
+    // identity on every read rebuilds all ~400 cells on every change-detection
+    // pass and trips checkNoChanges in dev. The cache exists for this.
+    if (!units.some(u => hp.has(u.unit['uid']))) return units;
+    // And the same array again while nothing has changed - which is the case
+    // that actually matters, since it is the one a staged cast on a base unit
+    // puts us in. Keyed on the CONTENT of the staged HP rather than on
+    // `stagedActions` itself: that array is push/pop-mutated in place, so its
+    // reference is the same before and after a cast is staged and would cache
+    // a stale answer. A turn stages a handful of actions, so the key is cheap.
+    let key = '';
+    for (const [uid, left] of hp) key += `${uid}:${left}|`;
+    const cached = this.stagedWithdrawnCache;
+    if (cached && cached.units === units && cached.key === key) return cached.out;
+    const out: WithdrawnUnit[] = [];
+    for (const unit of units) {
+      const left = hp.get(unit.unit['uid']);
+      if (left === undefined) { out.push(unit); continue; }
+      // Killed by something staged this turn: off the base, the same way the
+      // derivation drops one the record killed. Undo puts the action back and
+      // this rebuilds with it standing again.
+      if (left <= 0) continue;
+      out.push({ at: unit.at, unit: { ...unit.unit, hp: left } });
+    }
+    this.stagedWithdrawnCache = { units, key, out };
+    return out;
   }
 
-  private panelHpCache: { history: unknown; hp: Record<string, number> } | null = null;
+  /**
+   * The staged overlay's own identity, held so the board's `withdrawn` input
+   * does not change reference on every change-detection pass. Without it the
+   * getter hands back a new array each read, `ngOnChanges` sees `withdrawn`
+   * change every pass and rebuilds all ~400 cells, and dev-mode
+   * `checkNoChanges` re-reads the binding, gets a third reference and throws
+   * ExpressionChangedAfterItHasBeenChecked for the rest of the staged turn.
+   */
+  private stagedWithdrawnCache:
+    { units: WithdrawnUnit[]; key: string; out: WithdrawnUnit[] } | null = null;
 
   /**
-   * Every reserve unit that has been in a fight, against what it has left.
+   * Where the panels' units are, replayed from the history in the order things
+   * happened. Mirrors `panel_occupancy` on the server, which replays the same
+   * records the same way - the two have to agree on where a unit stands, or a
+   * crossing the board offers is one the server refuses.
+   *
+   * A unit's last word on where it is wins: a walk inside a panel or a walk
+   * home puts it on a panel hex, and a crossing takes it off the panels for as
+   * long as nothing brings it back.
+   */
+  private panelReplayCache:
+    { history: unknown; departed: string[]; positions: Record<string, string> } | null = null;
+
+  private get panelReplay(): { departed: string[]; positions: Record<string, string> } {
+    const history = this.gameState.snapshot.moveHistory;
+    const cached = this.panelReplayCache;
+    if (cached && cached.history === history) return cached;
+    const where = new Map<string, string | null>();
+    for (const move of (history ?? []) as any[]) {
+      const uid = move?.unit?.uid;
+      if (!uid) continue;
+      if (move.withdrawn || move.panelMove) where.set(uid, move.to);
+      else if (move.entered) where.set(uid, null);
+    }
+    const departed: string[] = [];
+    const positions: Record<string, string> = {};
+    for (const [uid, hex] of where) {
+      if (hex === null) departed.push(uid);
+      else positions[uid] = hex;
+    }
+    this.panelReplayCache = { history, departed, positions };
+    return this.panelReplayCache;
+  }
+
+  /**
+   * Units that have walked onto the battlefield and are still out there, by
+   * uid. A panel keeps its dealt squad for the whole game, so without this a
+   * unit that crossed and was later killed would be drawn back in its old panel
+   * hex, alive and ready to cross again.
+   *
+   * **Whose LAST move was a crossing** - not every unit that ever crossed. It
+   * used to be the second, and the board hides any panel unit named here, so a
+   * reserve unit that crossed and later walked home was put back in its base by
+   * the walk home and then filtered straight out again: it vanished.
+   */
+  get departedUids(): string[] {
+    return this.panelReplay.departed;
+  }
+
+  /**
+   * Where every panel unit that has ever been walked or brought home stands
+   * now, by uid, from the history. The board deals the squads where they
+   * began and places these units on top.
+   *
+   * This is what lets the other player see a shuffle at all - a walk inside a
+   * panel used to be kept in one browser's memory and nowhere else - and what
+   * keeps one across a reload, where it used to be re-dealt.
+   */
+  get panelPositions(): Record<string, string> {
+    return this.panelReplay.positions;
+  }
+
+  private panelHpCache:
+    { history: unknown; turn: number; hp: Record<string, number> } | null = null;
+
+  /**
+   * Every panel unit that has been in a fight, against what it has left -
+   * a base's mending included.
    *
    * Derived from the record rather than tallied: the panel is re-dealt from
    * the roster on every rebuild, so a wound written only into the deal would
    * heal itself on the next one - and this way it reads the same after a
    * reload. The staged wounds of the turn in progress go on top, so a swing
    * shows its cost before it is committed.
+   *
+   * **A base mends and a reserve does not**, so this reads the panel off the
+   * record rather than the unit: a blow in a base closes an HP a turn on the
+   * same arithmetic `withdrawnUnits` uses for a unit that walked home there,
+   * and a blow in a reserve stays open. Which is why the cache is keyed on
+   * the ply as well as on the history: nothing is recorded when a unit mends,
+   * so a turn passing is the whole of what changed.
    */
   get panelHp(): Record<string, number> {
     const history = this.gameState.snapshot.moveHistory;
-    if (this.panelHpCache?.history !== history) {
-      const hp: Record<string, number> = {};
+    const turn = this.gameState.snapshot.turnNumber;
+    const cached = this.panelHpCache;
+    if (!cached || cached.history !== history || cached.turn !== turn) {
+      // Each unit's last word on its own HP, and the turn it was said.
+      const wounds = new Map<string, {
+        left: number; turn: number; full: number;
+        color: 'white' | 'black'; mends: boolean;
+      }>();
       for (const move of (history ?? []) as any[]) {
-        if (!move?.panelAttack || !move.unit?.uid) continue;
-        hp[move.unit.uid] = move.defenderHp ?? 0;
+        // A blow or an ability - anything that wrote down what a panel unit
+        // has left. Both are the unit's last word on its own HP.
+        if (!move?.intoPanel || !move.unit?.uid || move.defenderHp === undefined) continue;
+        wounds.set(move.unit.uid, {
+          left: move.defenderHp ?? 0,
+          turn: move.turn,
+          full: move.unit.max_hp ?? move.unit.hp ?? 0,
+          color: move.unit.color as 'white' | 'black',
+          mends: BASE_PANELS.has(move.panel),
+        });
       }
-      this.panelHpCache = { history, hp };
+      const hp: Record<string, number> = {};
+      for (const [uid, wound] of wounds) {
+        // Nothing mends back from nothing: 0 is what killed in a panel means.
+        hp[uid] = wound.left <= 0 ? 0 : Math.min(wound.full, wound.left
+          + (wound.mends ? this.mendedSince(wound.color, wound.turn, turn) : 0));
+      }
+      this.panelHpCache = { history, turn, hp };
     }
-    const staged = this.stagedActions.filter(a => a.panelUnit);
-    if (!staged.length) return this.panelHpCache.hp;
-    const hp = { ...this.panelHpCache.hp };
-    for (const action of staged) hp[action.panelUnit!['uid']] = action.panelUnitHp!;
+    const settled = this.panelHpCache!.hp;
+    // The same tests `stageWithdrawn` makes, because these are the two
+    // derivations that feed a base and a rule either of them applies alone is
+    // a rule that does not hold.
+    //
+    // The `panelUnitHp` guard especially: this used to write the field through
+    // a non-null assertion, so an action naming a panel unit without saying
+    // what it did to its HP planted an own property holding `undefined`. It
+    // survived only because `woundReserves` happens to read it through `??`;
+    // anything using `in`, `Object.entries` or a truthiness check got a bogus
+    // entry for a unit nothing was staged against.
+    const staged: Array<[string, number]> = [];
+    let key = '';
+    for (const action of this.stagedActions) {
+      if (!action.panelUnit || action.panelUnitHp === undefined) continue;
+      staged.push([action.panelUnit['uid'], action.panelUnitHp]);
+      key += `${action.panelUnit['uid']}:${action.panelUnitHp}|`;
+    }
+    if (!staged.length) return settled;
+    // Content-keyed for the same reason as `stagedWithdrawnCache`: this feeds
+    // the board's `panelHp` input, and a fresh object on every read rebuilds
+    // the whole board on every change-detection pass.
+    const stagedCache = this.stagedPanelHpCache;
+    if (stagedCache && stagedCache.settled === settled && stagedCache.key === key) {
+      return stagedCache.hp;
+    }
+    const hp = { ...settled };
+    for (const [uid, left] of staged) hp[uid] = left;
+    this.stagedPanelHpCache = { settled, key, hp };
     return hp;
   }
+
+  /** The staged overlay's identity - see `stagedWithdrawnCache`. */
+  private stagedPanelHpCache:
+    { settled: Record<string, number>; key: string; hp: Record<string, number> } | null = null;
 
   /**
    * The CP a side has: what the phases have handed out so far, less what it
@@ -1622,7 +2002,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   cpOf(side: 'mine' | 'opponent'): number {
     const phases = phaseIndexAt(this.gameState.snapshot.turnNumber) + 1;
-    return CP_PER_PHASE * phases - (side === 'mine' ? this.myCpSpent : this.opponentCpSpent);
+    // rules.cpPerPhase, handed out five times over a match - the opening, the
+    // three phases and overtime.
+    return ruleOf(this.gameState.snapshot.config, 'cpPerPhase') * phases - (side === 'mine' ? this.myCpSpent : this.opponentCpSpent);
   }
 
   get myCp(): number { return this.cpOf('mine'); }
@@ -1748,7 +2130,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       return;
     }
 
-    if (!unit || unit.panel) {
+    // A panel is a unit like any other to an ability - the owner's rule:
+    // "abilities can apply to anything. though for example ATK ability on
+    // base unit is simply pointless but they can do it."
+    if (!unit) {
       this.clearAbilityFocus();
     } else if (this.abilityTargetMode(this.pendingAbility.index) === 'enemy') {
       if (unit.color !== this.casterColor(this.pendingAbility.side)) {
@@ -1765,33 +2150,103 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /** Local-only damage preview for the click-to-target offensive scaffold. */
+  /**
+   * Move a unit's HP by `delta`, wherever it happens to be standing.
+   *
+   * A unit on the battlefield keeps its HP on the board, so the change goes
+   * onto the staged copy. A unit in a panel is on no board at all - its HP
+   * exists only in the move history - so the change is staged the way a blow
+   * into a panel is, and goes out as its own message when the turn commits.
+   * Callers should not have to know which kind of hex they landed on.
+   */
+  private hpChange(unit: SelectedUnit, delta: number, board: Record<string, any>): {
+    board: Record<string, any>;
+    killed?: string;
+    killedUnit?: { unit_id: string; color: 'white' | 'black' };
+    panelUnit?: Record<string, any>;
+    panelUnitHp?: number;
+    panelName?: string;
+    hexHp?: number;
+    hexKey?: string;
+    hexUid?: string;
+    mark?: string;
+  } {
+    if (unit.panel) {
+      const full = unit.hpMax ?? unit.hp ?? 0;
+      const left = Math.max(0, Math.min(full, (unit.hp ?? 0) + delta));
+      return {
+        board,
+        panelName: unit.panel,
+        panelUnitHp: left,
+        ...this.hpMark(left - (unit.hp ?? 0)),
+        // The whole unit rides along: the record is the only place a panel
+        // unit survives, so a name for it is not enough.
+        panelUnit: {
+          unit_id: unit.unitId, color: unit.color, uid: unit.uid,
+          hp: unit.hp ?? 0, max_hp: full,
+        },
+        ...(left <= 0
+          ? { killed: unit.key, killedUnit: { unit_id: unit.unitId, color: unit.color } }
+          : {}),
+      };
+    }
+    const standing = board[unit.key];
+    if (!standing) return { board };
+    const full = standing.max_hp ?? standing.hp ?? 0;
+    const left = Math.max(0, Math.min(full, (standing.hp ?? 0) + delta));
+    const next = { ...board };
+    if (left <= 0) {
+      delete next[unit.key];
+      return {
+        board: next, killed: unit.key, hexKey: unit.key, hexUid: unit.uid, hexHp: 0,
+        killedUnit: { unit_id: standing.unit_id, color: standing.color },
+        ...this.hpMark(-(standing.hp ?? 0)),
+      };
+    }
+    next[unit.key] = { ...standing, hp: left };
+    return {
+      board: next, hexKey: unit.key, hexUid: unit.uid, hexHp: left,
+      ...this.hpMark(left - (standing.hp ?? 0)),
+    };
+  }
+
+  /**
+   * What a cast writes over the unit it landed on: the HP it actually moved,
+   * which is not always the HP it offered - a 20-point mend on a unit three
+   * short of full is a `+3`, and saying `+20` there would be a lie the HP bar
+   * immediately contradicts. Nothing moved is no mark.
+   */
+  private hpMark(moved: number): { mark?: string } {
+    return moved === 0 ? {} : { mark: this.signed(moved) };
+  }
+
+  /** A number that says which way it went: `+3`, `-14`. */
+  private signed(n: number): string {
+    return `${n > 0 ? '+' : ''}${n}`;
+  }
+
   private castOffensiveOn(unit: SelectedUnit): void {
     const armed = this.pendingAbility;
     if (!armed) return;
     const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
     const effect = this.abilityEffects[armed.index];
     const cost = this.abilityCosts[armed.index] ?? 0;
-    const next = { ...board };
-    const target = board[unit.key];
-    if (!target || target.color === this.casterColor(armed.side)) return;
-    const damaged = { ...target, hp: target.hp - (effect.damage ?? 0) };
-    if (damaged.hp <= 0) delete next[unit.key];
-    else next[unit.key] = damaged;
+    if (unit.color === this.casterColor(armed.side)) return;
+    if (!unit.panel && !board[unit.key]) return;
+    const hit = this.hpChange(unit, -(effect.damage ?? 0), board);
     // Onto the staged stack like everything else, so it shows through a
     // staged step and Undo takes it back. A held-aside board was invisible
     // whenever anything else was staged, and Undo never cleared it.
-    const prev = this.stagedActions[this.stagedActions.length - 1];
+    const prev = this.lastBoardAction;
     const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index, unit.key);
     this.stagedActions.push({
       at: Date.now(),
-      board: next,
       from: prev?.from ?? '',
       to: prev?.to ?? '',
       used: prev?.used ?? 0,
       attack: null,
-      killed: damaged.hp <= 0 ? unit.key : undefined,
-      killedUnit: damaged.hp <= 0 ? { unit_id: target.unit_id, color: target.color } : undefined,
       spend,
+      ...hit,
     });
     // A sapped stat is a boost with the sign flipped, and the mark rides in
     // the same entry: a separate debuff map expired a ply before the penalty
@@ -1802,7 +2257,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     };
     this.playSteps([{
       kind: 'ability', from: unit.key, to: unit.key,
-      index: armed.index, side: armed.side, hostile: true,
+      index: armed.index, side: armed.side, hostile: true, uid: unit.uid,
+      ...(hit.mark ? { mark: hit.mark } : {}),
     }]);
     this.chargeFor(armed.side, armed.index, cost);
     armed.cooldowns[armed.index] = 3;
@@ -1810,7 +2266,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.pendingAbility = null;
     this.clearAbilityFocus();
     this.persistLocalUiState();
-    this.addSystemMessage(`${effect.name} hit ${target.unit_id} for ${effect.damage ?? 0} damage (scaffold).`);
+    this.addSystemMessage(`${effect.name} hit ${unit.unitId} for ${effect.damage ?? 0} damage (scaffold).`);
     this.cdr.markForCheck();
   }
 
@@ -1896,7 +2352,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   pathBlocker(side: 'mine' | 'opponent', index: number): string {
     if (this.canUnlockPath(side, index)) return '';
     if (this.pathOf(side) !== null) return 'You have already taken a path.';
-    if (!this.canChooseAbilities(side)) return 'Unavailable: not your turn.';
+    if (!this.canChooseAbilities(side)) return this.choiceRefusal;
     return `Unavailable: costs ${this.abilityPaths[index].cost} CP, `
       + `you have ${this.cpOf(side)}.`;
   }
@@ -2086,7 +2542,37 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const pair = this.pairOf(index);
     const next = this.loadout(side).filter(i => !pair.includes(i));
     if (side === 'mine') this.myLoadout = next; else this.opponentLoadout = next;
-    this.swapDebt[side] += pair.length;
+    // A pick taken back in the turn it was made costs nothing.
+    //
+    // Swapping is meant to be paid for - it is not a way to hand yourself a
+    // ready ability mid-match - but changing your mind about a pick you have
+    // not used yet is not swapping. Charging for it is what made the four-slot
+    // cap order-sensitive: Mend arrives paired with Rally, so a damage pair
+    // only fitted if it was the SECOND pick, and picking anything else first
+    // left Reselect as the only way back - at three turns of cooldown on
+    // whatever came in to replace it.
+    //
+    // **The whole pair**, picked this turn and neither half cast.
+    //
+    // `canReset` only looks at the index that was clicked, and a click gives
+    // the whole pair back - so testing that one alone left a way through: cast
+    // Mend, hand the pair back through its untouched partner Rally, and pick a
+    // fresh pair cold in the same turn. Cast once, re-armed for free, every
+    // turn, which is exactly what the debt exists to stop.
+    //
+    // `abilityGlow` and not the cooldown row, which was the first thing I
+    // reached for and is the wrong record: it holds what was cast AND what
+    // merely arrived cold-started, since a pick refilling a `swapDebt` slot
+    // comes in on three turns. Reading it meant a replacement pair could never
+    // be taken back for free however untouched it was, so the order-sensitivity
+    // this whole change set out to remove survived for anyone who had swapped
+    // once already. `markUsed` writes the glow on every cast and it is cleared
+    // when that side is up again, so within a turn it is exactly "what I have
+    // cast".
+    const mindChanged = pair.every(i =>
+      this.pickedThisTurn.some(p => p.side === side && p.index === i)
+      && !this.abilityGlow[side].includes(i));
+    if (!mindChanged) this.swapDebt[side] += pair.length;
     this.swapArmed = null;
     // Taken up and given back inside one turn is not a pick: the glow comes
     // down with it, and the recap has nothing left to replay for it.
@@ -2153,12 +2639,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const e = this.abilityEffects[index];
     if (!e) return '';
     const parts: string[] = [];
-    if (e.mov) parts.push(`${e.mov > 0 ? '+' : ''}${e.mov} MOV`);
-    if (e.atk) parts.push(`${e.atk > 0 ? '+' : ''}${e.atk} ATK`);
-    if (e.def) parts.push(`${e.def > 0 ? '+' : ''}${e.def} DEF`);
+    if (e.mov) parts.push(`${this.signed(e.mov)} MOV`);
+    if (e.atk) parts.push(`${this.signed(e.atk)} ATK`);
+    if (e.def) parts.push(`${this.signed(e.def)} DEF`);
     if (e.damage) parts.push(`${e.damage} damage`);
+    // HP given back, which nothing here used to read: Mend moves no stat and
+    // deals no damage, so the one ability the owner added for testing
+    // described itself as "no effect yet".
+    if (e.heal) parts.push(`${this.signed(e.heal)} HP`);
     if (e.points) {
-      parts.push(`${e.points > 0 ? '+' : ''}${e.points} point${Math.abs(e.points) === 1 ? '' : 's'}`);
+      parts.push(`${this.signed(e.points)} point${Math.abs(e.points) === 1 ? '' : 's'}`);
     }
     const effect = parts.join(', ') || 'no effect yet';
     const need = this.vetNeeded(index);
@@ -2172,12 +2662,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (e.target === 'universal') {
       return `${effect} - used from here, it needs no target`;
     }
-    const lasts = e.target === 'enemy' ? '' : ' for one turn';
+    // A heal is HP, which stays; only a stat boost wears off.
+    const boost = e.target !== 'enemy' && !!(e.mov || e.atk || e.def);
+    const lasts = boost ? ' for one turn' : '';
     const how = forOwnUnit
       ? 'applies to this unit'
       : e.target === 'enemy'
         ? 'click the ability, then click an enemy'
-        : 'click, then click the unit to boost';
+        : `click, then click the unit to ${!boost && e.heal ? 'heal' : 'boost'}`;
     return `${effect}${lasts} - ${how}${need ? ` (needs ${star})` : ''}`;
   }
 
@@ -2218,7 +2710,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // displayUnit follows the cursor, so a reserve the pointer crossed on the
     // way to the button must not be what the points are spent on.
     return this.isSinglePlayer && !!focus && !this.isPassive(focus.index) && !!unit &&
-      !unit.panel && this.isPicked('mine', focus.index) &&
+      this.isPicked('mine', focus.index) &&
       unit.color === this.casterColor('mine') &&
       this.vetUnlocked(focus.index) &&
       this.canAfford('mine', focus.index, focus.cooldowns[focus.index] ?? 0);
@@ -2238,10 +2730,17 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       [unit.uid]: this.stack(unit.uid, effect, this.casterColor('mine')),
     };
     this.abilityUsed = { ...this.abilityUsed, [unit.uid]: true };
+    // A heal moves HP rather than a stat, and HP lives somewhere different
+    // for a unit in a panel - see hpChange. Staged before the beat is played,
+    // so the beat can carry the `+20` it wrote.
+    const mark = effect.heal ? this.stageHeal(unit, effect.heal, spend) : undefined;
+    if (!effect.heal) this.stageSpend(spend);
     // A unit's own ability shines on the unit and nowhere else.
-    this.playSteps([{ kind: 'ability', from: unit.key, to: unit.key }]);
+    this.playSteps([{
+      kind: 'ability', from: unit.key, to: unit.key, uid: unit.uid,
+      ...(mark ? { mark } : {}),
+    }]);
     this.markUsed('mine', focus.index);
-    this.stageSpend(spend);
     this.addSystemMessage(`${effect.name} applied to ${unit.name}.`);
     this.persistLocalUiState();
     this.unitAbilityFocus = null;
@@ -2441,7 +2940,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (!this.isPicked(f.side, f.index)) {
         // Whose turn it is comes first: otherwise a full-slots message stands
         // in for every reason a pick is refused.
-        if (!this.canChooseAbilities(f.side)) return 'Unavailable: not your turn.';
+        if (!this.canChooseAbilities(f.side)) return this.choiceRefusal;
         return this.loadout(f.side).length + 2 <= this.abilitySlots
           ? 'Not carried - pick it first.'
           : 'All four slots are taken.';
@@ -2449,7 +2948,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     }
     const cooldown = f.cooldowns[f.index] ?? 0;
     if (cooldown > 0) return `On cooldown: ${cooldown} more turn${cooldown > 1 ? 's' : ''}.`;
-    if (!this.canUseAbilities(f.side)) return 'Unavailable: not your turn.';
+    // The panel-wide note, which already tells the opening apart from the turn:
+    // casting is refused through the initialization, and saying "not your turn"
+    // there was as wrong as saying it in a networked room.
+    if (!this.canUseAbilities(f.side)) return this.abilityBlockedNote;
     const cost = this.abilityCosts[f.index] ?? 0;
     return `Unavailable: costs ${cost} ${this.purseName(f.index, cost)}, `
       + `you have ${this.purseFor(f.side, f.index)}.`;
@@ -2613,17 +3115,22 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index, unit.key);
       this.chargeFor(armed.side, armed.index, cost);
       armed.cooldowns[armed.index] = 3;
-      this.playSteps([{
-        kind: 'ability', from: unit.key, to: unit.key,
-        index: armed.index, side: armed.side,
-      }]);
       this.buffs = {
         ...this.buffs,
         [unit.uid]: this.stack(unit.uid, e, this.casterColor(armed.side)),
       };
       this.abilityUsed = { ...this.abilityUsed, [unit.uid]: true };
       this.markUsed(armed.side, armed.index);
-      this.stageSpend(spend);
+      // A heal is HP, not a stat, so it goes wherever this unit keeps its HP -
+      // the staged board, or the panel overlay for a unit standing in one.
+      // Staged before the beat, so the beat carries the `+20` it wrote.
+      const mark = e.heal ? this.stageHeal(unit, e.heal, spend) : undefined;
+      if (!e.heal) this.stageSpend(spend);
+      this.playSteps([{
+        kind: 'ability', from: unit.key, to: unit.key,
+        index: armed.index, side: armed.side, uid: unit.uid,
+        ...(mark ? { mark } : {}),
+      }]);
     }
     this.pendingAbility = null;
     this.clearAbilityFocus();
@@ -2677,15 +3184,35 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Whether stepping out of the reserve is offered. Same shape as the boost
-   * gate above and for the same reason: the panels are the client's own, so
-   * the only engine that can take a unit out of one is this browser's. A
-   * server game would reject the move outright - it has no panel to look the
-   * unit up in - so the gap is drawn there and does not open.
-   * ponytail: one predicate, to lift the day reserves live in the engine.
+   * Whether the panels are in play: crossing out of a reserve, walking home
+   * into a base, striking a unit that stands in a panel.
+   *
+   * Always, now. This was `isSinglePlayer`, because the panels were the
+   * client's own and a server game rejected the move outright with no panel
+   * to look the unit up in. The server derives the panels itself these days
+   * (engine/panels.py) and answers all three messages - validating what the
+   * browser engine takes on trust - so the day this comment used to wait for
+   * has come. Kept as a named gate rather than a bare `true` in the template,
+   * so the history of why it was ever off stays next to the switch.
    */
   get entryBind(): boolean {
-    return this.isSinglePlayer;
+    return true;
+  }
+
+  /**
+   * Whether overtime's toll is in play - the `-1` on a king and the skull
+   * that warns of it.
+   *
+   * Always, now. It was solo-only while the server took no toll, because
+   * drawing one in a networked game promised a death that never came. The
+   * server takes it at the end of every turn - a move, a pass, and the clock's
+   * pass - so the warning is true in both. Kept apart from `entryBind` anyway:
+   * the two were one switch once, and splitting them is what let the panels go
+   * live before the toll did. Joined again, the next thing that is solo-only
+   * for a while would drag the other back off with it.
+   */
+  get tollBind(): boolean {
+    return true;
   }
 
   /** The boosts the board may act on - none of them in a server game. */
@@ -2882,24 +3409,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * What overtime has bled off a side: a point for each turn it ends, charged
-   * **white first** and alternating from there.
-   *
-   * Deliberately not whose turn it was. On the shipped schedule overtime
-   * opens on turn 34, which is black's - white plays the odd numbers - so
-   * following the board would charge black first. The owner's rule is that
-   * white is charged first, which is the same way round as every other tie
-   * here: white moves first, so white pays for it.
-   *
-   * Counted rather than tallied, so it reads the same after a reload.
-   */
-  private overtimeTicks(color: 'white' | 'black'): number {
-    const played = this.gameState.snapshot.turnNumber - OVERTIME_FIRST_PLY;
-    if (played <= 0) return 0;
-    return color === 'white' ? Math.ceil(played / 2) : Math.floor(played / 2);
-  }
-
-  /**
    * What the match comes to once the third phase is in: white's score against
    * black's, and what that settles.
    *
@@ -2921,7 +3430,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const lead = white.match - black.match;
     if (lead > OVERTIME_MARGIN.black) return 'white';
     if (-lead > OVERTIME_MARGIN.white) return 'black';
-    // At the *end* of the last turn, so turn 50 itself is still played out.
+    // At the *end* of overtime's last turn, so that turn itself is still
+    // played out. `OVERTIME_LAST_TURN` used to be the literal 50 declared in
+    // this file; it is now read off the schedule with the rest of overtime,
+    // because the literal did not move when the initialization turns pushed
+    // overtime from turn 34 to turn 37 and it silently cost overtime three of
+    // its turns.
     return turnOf(this.gameState.snapshot.turnNumber) > OVERTIME_LAST_TURN
       ? 'black' : 'overtime';
   }
@@ -2981,11 +3495,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         .filter(index => this.phaseBank[index])
         .map(index => this.phaseBank[index][color]);
       // The three phases are what the match is summed from. The opening banks
-      // nothing, and overtime is not a phase but a decider: it takes points
-      // away rather than adding a score of its own.
+      // nothing, and overtime scores nothing at all: it is a decider, and what
+      // it costs is a king's HP rather than a side's points. *The owner:
+      // "loses just HP, if i said points i misspoke."*
       const running = SCORING_PHASES.includes(phase) ? total : 0;
-      const match = banked.reduce((sum, value) => sum + value, 0)
-        + running - this.overtimeTicks(color);
+      const match = banked.reduce((sum, value) => sum + value, 0) + running;
       return { cap, death, total, banked, match, leading: false };
     };
     const white = build('white');
@@ -3017,6 +3531,65 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return this.standings()[side];
   }
 
+  /**
+   * What a side has to spend, added up from the history. Mirrors `points_of`
+   * in server/game/engine/economy.py, and has to: the server prices the wrap
+   * against this sum, so a purse that disagrees offers a crossing the server
+   * then refuses.
+   *
+   * A point for every turn begun, one for a kill (a counter-attack that kills
+   * the attacker pays the defender's side), the unit's value back for walking
+   * home, and the unit's value spent on the wrap. A cast that kills pays
+   * nothing - only a turn's own action ever did.
+   */
+  pointsFromHistory(color: 'white' | 'black'): number {
+    const snapshot = this.gameState.snapshot;
+    const units = snapshot.config?.units ?? {};
+    const other = color === 'white' ? 'black' : 'white';
+    // One a turn through the schedule, and 1, 3, 5 through overtime's three
+    // stretches. `beginTurnFor` hands the same point out live as a side
+    // starts; this is the record's own sum, and the two must agree or the
+    // purse jumps every time a commit resets it.
+    let points = turnPointsBy(color, snapshot.turnNumber);
+    for (const move of (snapshot.moveHistory ?? []) as any[]) {
+      if (!move || move.panelEffect || move.entered) continue;
+      if (move.panelMove) {
+        if (move.unit?.color === color) points -= Math.trunc(Number(move.price) || 0);
+        continue;
+      }
+      if (move.withdrawn) {
+        if (move.color === color) points += Number(units[move.unit_id]?.value) || 0;
+        continue;
+      }
+      if (move.defender_eliminated && move.color === color) points += 1;
+      if (move.attacker_eliminated && move.color === other) points += 1;
+    }
+    return points;
+  }
+
+  /**
+   * In a networked room, set both purses from the history.
+   *
+   * Points were a running tally in each browser: kept in memory, saved to disk
+   * and restored only for a solo room - so a reload in a networked one started
+   * both at nothing - and able to disagree between the two screens, because
+   * this room only ever charged or refunded its OWN player's wrap and walk
+   * home. Everything that earns or spends a point is on the record now, so
+   * each committed event resets the tally to the record's sum; between them
+   * the tally still moves, so a wrap staged this turn shows its price at once.
+   *
+   * Not in a solo room. Pool abilities are bought with points there, and
+   * abilities are not recorded - resetting to the record would give back
+   * every point spent on one.
+   */
+  private reconcilePoints(): void {
+    if (this.isSinglePlayer) return;
+    const mine = (this.gameState.myColor(this.username) || 'white') as 'white' | 'black';
+    const theirs = mine === 'white' ? 'black' : 'white';
+    this.myPoints = this.pointsFromHistory(mine);
+    this.opponentPoints = this.pointsFromHistory(theirs);
+  }
+
   private awardPoints(color: string, amount: number): void {
     const mine = this.gameState.myColor(this.username);
     const toMe = mine ? color === mine : color === 'white';
@@ -3042,7 +3615,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.abilityUsed = {};
     this.pickedThisTurn = [];
     this.swapArmed = null;
-    this.awardPoints(color, 1);
+    // What a turn pays is the schedule's business - overtime's stretches pay
+    // 1, 3 and 5. The snapshot has already moved on to the hand-over this side
+    // is about to play, which is the one being paid for. Its twin is
+    // `pointsFromHistory`, which re-derives the whole purse on every commit:
+    // a flat 1 here would be overwritten by the real sum a moment later and
+    // the purse would visibly jump.
+    this.awardPoints(color, pointsPerTurnAt(this.gameState.snapshot.turnNumber));
     const mine = this.gameState.myColor(this.username);
     const isMine = mine ? color === mine : color === 'white';
     // The glow is for the other player's turn: it lifts when whoever cast it
@@ -3105,59 +3684,115 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /** Hover preview - takes precedence over the selection while it lasts. */
   hoveredUnit: SelectedUnit | null = null;
 
-  /** What each ability costs in points. Placeholder until abilities exist. */
-  // Pool, then each path's passive (free with the path), skill and ultimate.
-  // Slot 7 (Rally) is free on purpose - see abilityEffects.
-  abilityCosts = [3, 5, 1, 4, 3, 2, 4, 0, 0, 4, 8, 0, 5, 8, 0, 3, 8];
+  /**
+   * The ability catalogue as the config holds it - the game's, if one is
+   * running, and the shipped default otherwise. The room draws its panels in
+   * a room with no snapshot yet, and falling back to `DEFAULT_GAME_CONFIG`
+   * keeps the catalogue in ONE place rather than leaving a second copy
+   * hard-coded here for the empty case.
+   */
+  private get abilityConfig(): AbilityCatalogue {
+    return ((this.gameState.snapshot.config as any)?.abilities
+      ?? (DEFAULT_GAME_CONFIG as any).abilities) as AbilityCatalogue;
+  }
 
   /**
-   * What each slot does. Arbitrary numbers - this is the proof of concept
-   * that an ability can be clicked, aimed at a unit and change its stats for
-   * a turn. Slot 5 is the passive: it is not cast, so its numbers are what
-   * the unit carries once it has the rank for it.
+   * Everything derived from the catalogue, worked out once per config.
+   *
+   * The template reads `abilityEffects`, `abilityCosts` and `abilityPaths` on
+   * every change-detection pass, and a getter that rebuilt seventeen entries
+   * each time would allocate through the whole match - the same reason
+   * `homecomingsSpent` and `standings` carry caches. Keyed on the config's
+   * identity, which is replaced wholesale and never edited, so the key is all
+   * the invalidation needed.
    */
-  readonly abilityEffects = [
-    // Slots 0-7 are the pool a side picks four of; between them they can put
-    // a unit into every state the board draws: lifted, dragged, wounded.
-    { name: 'Dash', target: 'friendly' as const, mov: 2, atk: 0, def: 0 },
-    { name: 'Focus', target: 'friendly' as const, mov: 0, atk: 2, def: 0 },
-    { name: 'Bulwark', target: 'friendly' as const, mov: 0, atk: 0, def: 3 },
-    { name: 'Sap', target: 'enemy' as const, mov: -2, atk: -2, def: -2, damage: 6 },
-    { name: 'Arc Bolt', target: 'enemy' as const, mov: 0, atk: 0, def: 0, damage: 8 },
-    { name: 'Mire', target: 'enemy' as const, mov: -3, atk: 0, def: 0 },
-    { name: 'Temper', target: 'friendly' as const, mov: 0, atk: 1, def: 1 },
-    // ponytail: the owner's testing lever - free, and hands out 300 points,
-    // so any priced rule (a wrap crossing, a path, an ultimate) can be tried
-    // without playing thirty turns to afford it. Put it back to 2 / 1 point
-    // when the real numbers land.
-    { name: 'Rally', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 300 },
-    // 8-16: three paths of three. A side unlocks one path and gets its
-    // passive (global, on every unit it owns), its skill and its ultimate.
-    // A passive carries its path's name: the path IS its passive, and the
-    // owner asked for them back in step after a spell apart.
-    { name: 'Bastion', target: 'friendly' as const, mov: 0, atk: 0, def: 1 },
-    { name: 'Anchor', target: 'friendly' as const, mov: 0, atk: 0, def: 4 },
-    { name: 'Fortress', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 4 },
+  private catalogueCache: {
+    config: AbilityCatalogue | null;
+    ids: string[];
+    effects: AbilityEffect[];
+    costs: number[];
+    paths: AbilityPathSlots[];
+  } | null = null;
 
-    { name: 'Onslaught', target: 'friendly' as const, mov: 0, atk: 1, def: 0 },
-    { name: 'Cleave', target: 'enemy' as const, mov: 0, atk: 0, def: 0, damage: 10 },
-    { name: 'Ruin', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 5 },
+  private get catalogue() {
+    const config = this.abilityConfig;
+    if (this.catalogueCache?.config === config) return this.catalogueCache;
+    const ids = [
+      ...(config?.pool ?? []),
+      ...(config?.paths ?? []).flatMap(path => [path.passive, path.skill, path.ultimate]),
+    ];
+    const entries = config?.catalogue ?? {};
+    const effects: AbilityEffect[] = ids.map(id => {
+      const a = entries[id] ?? ({ id, name: id } as AbilityEntry);
+      return {
+        id, name: a.name ?? id,
+        target: (a.target ?? 'friendly') as 'friendly' | 'enemy' | 'universal',
+        // Filled in at 0 where the config leaves them out: a config omits what
+        // an ability does not do, and every reader here expects a number.
+        // `undefined` would have reached a stat line as `NaN`.
+        mov: a.mov ?? 0, atk: a.atk ?? 0, def: a.def ?? 0,
+        ...(a.damage !== undefined ? { damage: a.damage } : {}),
+        ...(a.heal !== undefined ? { heal: a.heal } : {}),
+        ...(a.points !== undefined ? { points: a.points } : {}),
+        ...(a.testing ? { testing: true } : {}),
+      };
+    });
+    const slotOf = (id: string) => ids.indexOf(id);
+    this.catalogueCache = {
+      config,
+      ids,
+      effects,
+      costs: ids.map(id => entries[id]?.cost ?? 0),
+      // Ids in the config, slots in here: `isPathSlot`, `purseFor` and the
+      // template all ask in slot numbers, so the translation happens once.
+      paths: (config?.paths ?? []).map(path => ({
+        id: path.id, name: path.name, cost: path.cost,
+        passive: slotOf(path.passive),
+        skill: slotOf(path.skill),
+        ultimate: slotOf(path.ultimate),
+      })),
+    };
+    return this.catalogueCache;
+  }
 
-    { name: 'Tempo', target: 'friendly' as const, mov: 1, atk: 0, def: 0 },
-    { name: 'Surge', target: 'friendly' as const, mov: 3, atk: 0, def: 0 },
-    { name: 'Blitz', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 3 },
-  ];
+  /**
+   * Catalogue ids in slot order: the pool first, then each path's passive,
+   * skill and ultimate.
+   *
+   * **The one place a position and an id meet.** Everything inside the
+   * component still works in slot numbers - the template, the glows, the
+   * cooldown arrays - and everything that OUTLIVES the component is written
+   * by id (`persistLocalUiState`). Reordering the config therefore moves the
+   * slots and leaves a saved loadout pointing at the same abilities, which is
+   * the half of PUNCHLIST 6.15 that could land without the numbers settling.
+   */
+  get abilityIds(): string[] { return this.catalogue.ids; }
+
+  /** The slot a catalogue id sits in, or -1 if this config has no such id. */
+  slotOfAbility(id: string): number {
+    return this.abilityIds.indexOf(id);
+  }
+
+  /** What each ability costs, in whichever purse `isPathSlot` says buys it. */
+  get abilityCosts(): number[] { return this.catalogue.costs; }
+
+  /**
+   * What each slot does, read off the config in slot order.
+   *
+   * `mov`/`atk`/`def` are filled in at 0 where the config leaves them out: a
+   * config omits what an ability does not do, and every reader here expects a
+   * number. `undefined` would have shown up as `NaN` in a stat line rather
+   * than as nothing happening.
+   */
+  get abilityEffects(): AbilityEffect[] { return this.catalogue.effects; }
+
 
   /**
    * The three ways a side can go, named for the passive each one grants. One
    * per match: unlocking costs CP, and what it buys - a global passive, a
    * skill and an ultimate - is that path's alone.
    */
-  readonly abilityPaths = [
-    { name: 'Bastion', cost: 6, passive: 8, skill: 9, ultimate: 10 },
-    { name: 'Onslaught', cost: 7, passive: 11, skill: 12, ultimate: 13 },
-    { name: 'Tempo', cost: 5, passive: 14, skill: 15, ultimate: 16 },
-  ];
+  get abilityPaths(): AbilityPathSlots[] { return this.catalogue.paths; }
 
   /** Which path each side took, or null while the choice is still open. */
   myPath: number | null = null;
@@ -3184,8 +3819,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * Indices of the pool a side picks from, and how many it may hold. Picked
    * in pairs (see `pairOf`), so four slots is two picks.
    */
-  readonly abilityPool = [0, 1, 2, 3, 4, 5, 6, 7];
-  readonly abilitySlots = 4;
+  get abilityPool(): number[] {
+    // The pool leads the slot order, so its slots are its own positions.
+    return (this.abilityConfig?.pool ?? []).map((_, i) => i);
+  }
+
+  get abilitySlots(): number { return this.abilityConfig?.slots ?? 0; }
   /**
    * The four each side is carrying, in the order they were picked. Empty
    * until then: nothing is chosen for you, the picks happen in the game.
@@ -3271,10 +3910,20 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   get movementArrows(): Array<{ from: string; to: string }> {
     return this.stagedActions
-      .map((action, index) => ({
-        from: index > 0 ? this.stagedActions[index - 1].to : action.from,
-        to: action.to,
-      }))
+      .map((action, index) => {
+        // An action's `from` is where its unit began the TURN, so a walk taken
+        // in hops would draw every arrow from that first hex; the hop's own
+        // origin is where the hop before it ended.
+        //
+        // Only when it is the same walk, though - two actions belong to one
+        // unit exactly when they share an origin. A turn can stage several
+        // units now (three walks home and a move), and reading the arrow off
+        // whatever happened last drew a line from one unit's destination to
+        // another's.
+        const prev = index > 0 ? this.stagedActions[index - 1] : null;
+        const hop = prev && prev.from === action.from ? prev.to : action.from;
+        return { from: hop, to: action.to };
+      })
       // An ability staged before any step carries no hexes of its own, and
       // the step after it would otherwise inherit that empty origin.
       .filter(arrow => !!arrow.from && !!arrow.to && arrow.from !== arrow.to);
@@ -3308,9 +3957,66 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return this.stagedActions.flatMap(action => fallen(action.killed, action.killedUnit));
   }
 
+  /**
+   * The staged stack as the turn's board action sees it: everything except the
+   * walks home, which are deployments and no more the turn's move than a
+   * crossing is.
+   *
+   * The casts read their `from`/`to` forward from here too, so a walk home
+   * staged between two of them cannot be mistaken for the move they belong to.
+   */
+  private get lastBoardAction(): StagedAction | undefined {
+    for (let i = this.stagedActions.length - 1; i >= 0; i--) {
+      if (!this.stagedActions[i].homecoming) return this.stagedActions[i];
+    }
+    return undefined;
+  }
+
   /** Where the acting unit started, where it stands, and steps spent so far. */
+  /**
+   * The turn's board moves, one per unit, oldest first.
+   *
+   * `stagedActions` holds every step a turn took, and a unit that walks twice
+   * or walks and then swings pushes one entry per step - each carrying the
+   * hex it originally set out from, so the later entry supersedes the earlier
+   * rather than adding to it. Folding on `from` is what turns that log back
+   * into "which units moved": a run of entries sharing an origin is one unit,
+   * and its last entry is where that unit ended up and what it struck.
+   *
+   * Walks home staged while setting out are deployments and go out on their
+   * own (`homecoming`); casts are not board moves at all (`spend`).
+   *
+   * One entry everywhere the schedule is running. Two in Overtime 2 and three
+   * in Overtime 3 - which is the whole reason this exists rather than
+   * `pendingMove` alone, that being only ever the last of them.
+   */
+  get boardMoves(): StagedAction[] {
+    const out: StagedAction[] = [];
+    for (const step of this.stagedActions) {
+      if (step.spend || step.homecoming || !step.from) continue;
+      const last = out[out.length - 1];
+      if (last && last.from === step.from) out[out.length - 1] = step;
+      else out.push(step);
+    }
+    return out;
+  }
+
+  /**
+   * Where this turn's finished board moves have left their units - every one
+   * but the unit still mid-move, which may keep walking.
+   *
+   * **The allowance counts moves; the owner's rule counts units.** Without
+   * this the board offered a unit that had already had its move back to the
+   * player the moment another unit moved after it: each step was legal on its
+   * own, so both engines took it, and the unit covered twice its MOV in one
+   * turn. Found in a browser on 22 Sep 2026 - 357 specs had nothing to say.
+   */
+  get movedUnitHexes(): string[] {
+    return this.boardMoves.slice(0, -1).map(step => step.to);
+  }
+
   get pendingMove(): { from: string; to: string; used: number } | null {
-    const last = this.stagedActions[this.stagedActions.length - 1];
+    const last = this.lastBoardAction;
     // An ability cast with nothing else staged carries no move to commit.
     return last?.from ? { from: last.from, to: last.to, used: last.used } : null;
   }
@@ -3318,6 +4024,39 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /** A unit that has swung is done for the turn - no more walking. */
   get hasAttacked(): boolean {
     return this.stagedActions.some(a => a.attack !== null);
+  }
+
+  /**
+   * Whether anything may still be walked on the board this turn.
+   *
+   * A unit that has swung is done - "walk, then optionally swing" means the
+   * swing ends its move - so with one board move a turn this was simply
+   * `!hasAttacked`, and the board took it as `canMove`. Overtime 2 and 3 allow
+   * two and three, and a side that has struck with one unit may still walk the
+   * next: the blow ends that unit's move, not the turn.
+   */
+  get canMoveOnBoard(): boolean {
+    const moves = this.boardMoves;
+    if (moves.length < boardMovesPerTurn(this.gameState.snapshot.turnNumber)) return true;
+    // Every move spoken for: only the unit mid-move may keep walking, and only
+    // while it has not already struck.
+    return !moves[moves.length - 1]?.attack;
+  }
+
+  /**
+   * Whether the unit now standing on `hex` still has a blow in it.
+   *
+   * **One blow a turn used to be the whole answer.** The owner's rule for
+   * overtime is that each of the turn's moves may swing, so this is asked per
+   * unit: a unit that has struck is finished, one that has moved and not
+   * struck may, and one that has not moved at all needs a move to spare -
+   * because striking is a board action whether or not it walks first.
+   */
+  private canSwingFrom(hex: string): boolean {
+    const moves = this.boardMoves;
+    const mine = moves.find(m => m.to === hex);
+    if (mine) return !mine.attack;
+    return moves.length < boardMovesPerTurn(this.gameState.snapshot.turnNumber);
   }
   /** Which side the host takes in a solo game; the placeholder gets the other. */
   soloColor: 'white' | 'black' = 'white';
@@ -3385,7 +4124,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * committing and ending the turn are one and the same message.
    */
   onPlayerMove(event: { from: string; to: string; cost: number; refund?: number }): void {
-    if (this.hasAttacked) return;
+    if (!this.canMoveOnBoard) return;
+    // A unit gets one of the turn's moves, not two - see `movedUnitHexes`.
+    if (this.movedUnitHexes.includes(event.from)) return;
     // Walking home into the base pays the unit's worth back to whoever
     // brought it in - the same number the wrap charged to send one out.
     if (event.refund) {
@@ -3396,17 +4137,33 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     next[event.to] = next[event.from];
     delete next[event.from];
     // Steps accumulate across hops: a unit keeps walking on what is left of
-    // its move until it attacks or the turn ends.
+    // its move until it attacks or the turn ends. Only for the same unit,
+    // though - now that a walk home no longer locks the board, the action
+    // before this one may belong to somebody else entirely, and inheriting its
+    // origin would send the engine a move from a hex this unit never stood on.
     const prev = this.pendingMove;
+    const chain = prev && prev.to === event.from ? prev : null;
+    // A walk home while setting out is a deployment, not the turn's board
+    // action: three may go in one turn, so none of them is the move that ends
+    // it. Overtime is the exception the schedule already makes - the doorways
+    // are open with no count there, and a walk home is an ordinary move that
+    // happens to end off the board.
+    //
+    // Unless it finishes a walk this unit had already begun: that one is the
+    // turn's move reaching the base, and it has to go out as that move, from
+    // the hex the engine still has the unit on.
+    const homecoming = !!event.refund && !chain
+      && isSetupTurn(this.gameState.snapshot.turnNumber);
     this.stagedActions.push({
       at: Date.now(),
       board: next,
-      from: prev?.from ?? event.from,
+      from: chain?.from ?? event.from,
       to: event.to,
       // The board charges the walk it actually plotted, detours included.
-      used: (prev?.used ?? 0) + event.cost,
+      used: (chain?.used ?? 0) + event.cost,
       attack: null,
       ...(event.refund ? { refund: event.refund } : {}),
+      ...(homecoming ? { homecoming: true } : {}),
     });
     // Each step plays as it is staged, and never blocks the next one.
     this.playSteps([{ kind: 'move', from: event.from, to: event.to }]);
@@ -3421,9 +4178,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   onPlayerAttack(event: {
     from: string; to: string; attack: string;
-    targetUnit?: Record<string, any>; counters?: boolean;
+    targetUnit?: Record<string, any>; panel?: string; counters?: boolean;
   }): void {
-    if (!this.canEndTurn || this.hasAttacked) return;
+    if (!this.canEndTurn || !this.canSwingFrom(event.to)) return;
+    if (this.movedUnitHexes.includes(event.from)) return;
     const config = this.gameState.snapshot.config;
     const board = { ...(this.stagedBoard ?? this.gameState.snapshot.boardState) };
     // A blow landing in a panel comes with the unit it lands on: no board
@@ -3447,6 +4205,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // At most one of the two dies: a defender that falls never counters.
     let killed: string | undefined;
     let killedUnit: { unit_id: string; color: 'white' | 'black' } | undefined;
+    // Whether it answered at all, which is three separate refusals: it died,
+    // it is in a base, or we struck it from outside its own reach. Recorded
+    // rather than re-guessed, because every replay of this turn needs it.
+    let answered = false;
 
     if (hurt.hp <= 0) {
       // A panel unit that falls is simply not dealt again - 0 is what says
@@ -3463,6 +4225,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // blow shows a counter it never takes.
       const theirRange = config?.units?.[target.unit_id]?.attackRange ?? 1;
       if ((!intoPanel || event.counters) && distance <= theirRange) {
+        answered = true;
         const counter = strikeDamage(
           target.unit_id, attacker.unit_id, distance, config,
           this.bonusFor(event.attack, 'atk'), this.bonusFor(event.to, 'def'));
@@ -3479,7 +4242,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       }
     }
 
-    const prev = this.pendingMove;
+    // Only onto the move this blow CONTINUES. `prev` is the last board
+    // action whoever it belongs to, and once a turn can hold two or three,
+    // that is not always this unit: a side that moved A and then swung with
+    // B would have written B's blow onto A's origin, sending A's hex to B's
+    // target and losing A's move entirely. Same test `onPlayerMove` uses.
+    const last = this.pendingMove;
+    const prev = last && last.to === event.from ? last : null;
     this.stagedActions.push({
       at: Date.now(),
       board,
@@ -3489,19 +4258,26 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       attack: event.attack,
       killed,
       killedUnit,
+      countered: answered,
       // Set only for a swing out of a panel - what tells the commit to send
       // it as its own message rather than folding it into the turn's move.
       ...(intoPanel
-        ? { panelUnit: target, panelUnitHp, intoPanel: true, counters: !!event.counters }
+        ? {
+            panelUnit: target, panelUnitHp, intoPanel: true,
+            panelName: event.panel, counters: !!event.counters,
+          }
         : {}),
     });
-    // The blow, then the answer - unless that blow was the end of them.
-    this.playSteps(killed === event.attack
-      ? [{ kind: 'attack', from: event.to, to: event.attack }]
-      : [
+    // The blow, and the answer only if there was one. Played unconditionally
+    // before, so a base absorbed a blow and appeared to hit back for nothing,
+    // and so did a unit struck from three hexes away by an archer it could
+    // not have reached.
+    this.playSteps(answered
+      ? [
           { kind: 'attack', from: event.to, to: event.attack },
           { kind: 'counter', from: event.attack, to: event.to },
-        ]);
+        ]
+      : [{ kind: 'attack', from: event.to, to: event.attack }]);
     this.persistLocalUiState();
     this.cdr.markForCheck();
   }
@@ -3600,7 +4376,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // turn needs nothing from us. Staged work is worth one attempt at
       // committing before that lands - the two are checked against the same
       // turn number, so the loser is rejected rather than applied twice.
-      if (this.canEndTurn && (this.isSinglePlayer || this.pendingMove)) this.endTurn();
+      //
+      // **Solo never commits on the clock.** There is no server to race and
+      // nobody waiting, and the turn's end is where overtime takes its toll -
+      // so a clock that ended the turn for you killed a king on its last HP
+      // while you were still deciding how to save it. The owner's rule is
+      // that he plays that turn out: "he wont die in this turn unless he
+      // takes damage from someone." Here the clock paces and beeps; ending
+      // the turn stays a click.
+      if (!this.isSinglePlayer && this.canEndTurn && this.pendingMove) this.endTurn();
     }
     this.cdr.markForCheck();
   }
@@ -3613,7 +4397,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   playback: AnimStep[] = [];
   /** Something to take back: a staged board action, or a panel walk. */
   get canUndo(): boolean {
-    return !!this.pendingMove || !!this.boardRef?.lastPanelMove;
+    // Anything staged, not just a move: a cast on its own carries no move to
+    // commit, and the button used to grey out over it while R still worked.
+    // Nothing once the turn has gone, though - see undoMove.
+    return !this.turnSubmitted
+      && (this.stagedActions.length > 0 || !!this.boardRef?.lastPanelMove);
+  }
+
+  /** End Turn has sent this turn and the engine has not answered yet. */
+  private get turnSubmitted(): boolean {
+    return this.submittedTurn === this.gameState.snapshot.turnNumber;
   }
 
   /** The board, for the walks it keeps its own stack of. */
@@ -3670,7 +4463,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   private playSteps(steps: AnimStep[]): void {
-    if (!steps.length) return;
+    // An empty list is allowed, and only the turn commit ever sends one: the
+    // board holds a beat for it so the commit is seen, then answers. Everything
+    // else here stages exactly one beat and is never empty.
     this.playback = steps;
     this.playbackRunning = true;
     this.playbackStarted = Date.now();
@@ -3708,7 +4503,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.castingBrief = !!step.brief;
     if (step.kind === 'move') this.playMoveSound();
     else if (step.kind === 'ability') this.playAbilitySound();
-    else this.playAttackSound();
+    // The commit's own beat is silent - playEndTurnSound has already sounded
+    // for it, and anything else here would read as a blow that never landed.
+    else if (step.kind !== 'commit') this.playAttackSound();
     this.cdr.markForCheck();
   }
 
@@ -3749,6 +4546,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /** Take back the last staged action - a step, the attack, or a cast. */
   undoMove(): void {
+    // The turn is already with the engine. Its answer clears the staged stack
+    // either way - so taking something off it now changes nothing the engine
+    // sees, and shows a board that is not the one being played.
+    if (this.turnSubmitted) return;
     // Two stacks: board actions staged here, panel walks kept by the board.
     // Undo takes back whichever happened last, so it always takes back the
     // thing just done rather than reaching past it.
@@ -3773,6 +4574,19 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // board back without those left the ability half-spent for the rest of
     // the game.
     if (undone?.spend) this.refund(undone.spend);
+    // The detail may still be open on what that gave back. Opened while it was
+    // cooling down, nothing was armed - and the note, which reads the cooldown
+    // live, said "Ready" over a click that did nothing. Arm it the way opening
+    // it would have.
+    const focus = this.abilityFocus;
+    if (focus && !this.pendingAbility && this.abilityTargetMode(focus.index) !== 'universal'
+        && this.abilityCanActivate(focus.side, focus.index, focus.cooldowns[focus.index] ?? 0)) {
+      this.pendingAbility = focus;
+    }
+    // Including the number it wrote over the target. Nothing else takes a
+    // mark down early, so without this the HP goes back and a green `+20`
+    // hangs over it for the rest of its fade.
+    this.boardRef?.clearMarks();
     this.persistLocalUiState();
     this.cdr.markForCheck();
   }
@@ -3782,8 +4596,30 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * what it spent - otherwise Undo has nothing to pop and the points are
    * gone for good.
    */
+  /**
+   * A cast that moved a unit's HP: the spend rides on the same entry as the
+   * change, so Undo takes both back together.
+   */
+  private stageHeal(unit: SelectedUnit, amount: number, spend: AbilitySpend): string | undefined {
+    const prev = this.lastBoardAction;
+    const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
+    const moved = this.hpChange(unit, amount, board);
+    this.stagedActions.push({
+      at: Date.now(),
+      from: prev?.from ?? '',
+      to: prev?.to ?? '',
+      used: prev?.used ?? 0,
+      attack: null,
+      spend,
+      ...moved,
+    });
+    // What to write over the unit as the cast plays. Handed back rather than
+    // read off the stack, because the beat is played by the caller.
+    return moved.mark;
+  }
+
   private stageSpend(spend: AbilitySpend): void {
-    const prev = this.stagedActions[this.stagedActions.length - 1];
+    const prev = this.lastBoardAction;
     this.stagedActions.push({
       at: Date.now(),
       board: this.stagedBoard ?? this.gameState.snapshot.boardState,
@@ -3852,7 +4688,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // A double-click, or the clock firing into a click, sends a second
     // make_move for the same turn. The server rejects the late one as
     // GAME_OVER, and that error clears a turn already staged behind it.
-    if (this.submittedTurn === this.gameState.snapshot.turnNumber) return;
+    if (this.turnSubmitted) return;
     // Cleared again if the engine rejects what this sends, so a refusal costs
     // the staged turn but not the chance to play another one.
     this.submittedTurn = this.gameState.snapshot.turnNumber;
@@ -3882,9 +4718,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         index: step.index!,
         kind: (step.kind === 'pick' ? 'pick' : 'used') as 'pick' | 'used',
       }));
-    // Only lock if there is something to watch: a turn that did nothing plays
-    // nothing, so nothing would ever arrive to unlock it again.
-    this.recapRunning = recap.length > 0;
+    // Every commit is watched, whether or not it moved anything. A turn that
+    // walked nowhere still mends, still bleeds in overtime, and is still the
+    // moment the turn changes hands - the owner's rule is that it plays. The
+    // board runs the recap even when it is empty (holding a beat for the
+    // curtain) and answers with playbackDone, so this always comes back down.
+    this.recapRunning = true;
     this.playSteps(recap);
     this.persistLocalUiState();
     this.playEndTurnSound();
@@ -3895,16 +4734,68 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.pendingAbility = null;
     this.unitAbilityFocus = null;
     this.cdr.markForCheck();
-    // Crossings are their own thing: several may come through in a turn, and
-    // none of them is the turn's board action, so each goes as its own
-    // message before whatever the turn did on the board.
-    for (const entry of this.boardRef?.pendingEntries ?? []) {
-      this.wsService.sendMessage({ type: 'enter_board', ...entry });
+    // The panels' moves are their own thing: several may happen in a turn and
+    // none of them is the turn's board action, so each goes as its own message
+    // before whatever the turn did on the board - walks and crossings alike,
+    // in the order they happened, because a crossing judged before the walk
+    // that brought the unit to its gateway finds nobody standing there.
+    for (const step of this.boardRef?.pendingPanelSteps ?? []) {
+      this.wsService.sendMessage(step);
     }
+    // And the walks home taken while setting out, for exactly the same reason:
+    // three may go in a turn, so none of them is the turn's board action. Both
+    // engines answer each one as a deployment - same seat, same ply, same
+    // clock - and hand the turn over only on the message that follows.
+    //
+    // After the panel steps, because a unit that crossed and a unit that walked
+    // home can both want the same doorway, and the order these went in is the
+    // order they have to be judged in.
+    for (const step of this.stagedActions) {
+      if (!step.homecoming) continue;
+      this.wsService.sendMessage({
+        type: 'make_move', from: step.from, to: step.to, withdraw: true,
+      });
+    }
+    // An ability that moved a unit's HP has to reach the engine too: no engine
+    // holds an ability, so unless the change is sent the next state update
+    // rolls it straight back off - a king healed off 1 HP died of overtime
+    // anyway. Both kinds, because a unit keeps its HP in one of two places: a
+    // panel unit's lives in the move history (`unit` + `panel`), a board
+    // unit's on the board (`at` + `uid`).
+    //
+    // Inside the one message that ends the turn, split around its board
+    // action - see landEffects in the browser engine. Sent as messages of
+    // their own, a cast after the blow was struck over again, and a move the
+    // engine refused came back half-played with the casts already kept.
     const pending = this.pendingMove;
+    const boardAction = pending
+      // A walk home is not it either, for the same reason it is not `pending`:
+      // it has already gone out as its own message above.
+      ? this.stagedActions.reduce(
+        (last, step, i) => (step.spend || step.homecoming ? last : i), -1)
+      : Infinity;
+    const before: any[] = [];
+    const after: any[] = [];
+    this.stagedActions.forEach((step, i) => {
+      if (step.attack !== null) return;
+      const effect = step.panelUnit
+        ? { unit: step.panelUnit, hp: step.panelUnitHp, panel: step.panelName }
+        // The uid as well as the hex: a unit can be walked after the cast
+        // lands on it, so the hex named here is where the client has it, not
+        // where the engine does. The uid is what survives that.
+        : step.hexKey && step.hexHp !== undefined && step.mark
+          ? { at: step.hexKey, uid: step.hexUid, hp: step.hexHp }
+          : null;
+      if (!effect) return;
+      (i > boardAction ? after : before).push(effect);
+    });
+    const casts = {
+      ...(before.length ? { effectsBefore: before } : {}),
+      ...(after.length ? { effects: after } : {}),
+    };
     if (!pending) {
       // Doing nothing is a legal turn.
-      this.wsService.sendMessage({ type: 'pass_turn' });
+      this.wsService.sendMessage({ type: 'pass_turn', ...casts });
       return;
     }
     const attack = this.stagedActions.find(a => a.attack !== null)?.attack;
@@ -3919,6 +4810,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       this.wsService.sendMessage({
         type: 'panel_attack',
         from: swung.from, to: swung.to, attack: swung.attack, unit: swung.panelUnit,
+        // Which panel took the blow. The engine keeps it on the record and
+        // nothing else: it is what tells the mending a base from a reserve
+        // after a reload, when the board that knew is long gone.
+        panel: swung.panelName,
         ...(this.moveBonusFor(swung.to) ? { moveBonus: this.moveBonusFor(swung.to) } : {}),
         // The same bonuses `make_move` carries, for the same reason: the
         // engine re-resolves the blow and would otherwise disagree with the
@@ -3933,36 +4828,54 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // Whether the panel answers is the panel's rule, and the client owns
         // panels - the engine has no idea which one a unit is standing in.
         counters: swung.counters !== false,
+        ...casts,
       });
       this.persistLocalUiState();
       return;
     }
-    // Both engines re-check the walk from where it started, so they need to
-    // be told about the extra steps or they reject the move outright.
-    const moveBonus = this.moveBonusFor(pending.to);
-    // ponytail: the local engine honours these; a server game does not, for
-    // the same reason it ignores moveBonus - abilities live on the client, so
-    // taking the client's word for a stat would be a free upgrade. Move
-    // abilities into the engine and both sides can read them off the board.
-    const bonuses = {
-      atk: this.bonusFor(pending.to, 'atk'),
-      def: this.bonusFor(pending.to, 'def'),
-      targetAtk: attack ? this.bonusFor(attack, 'atk') : 0,
-      targetDef: attack ? this.bonusFor(attack, 'def') : 0,
-    };
-    const boosted = Object.values(bonuses).some(v => v !== 0);
-    this.wsService.sendMessage({
-      type: 'make_move',
-      from: pending.from,
-      to: pending.to,
-      ...(attack ? { attack } : {}),
-      ...(moveBonus ? { moveBonus } : {}),
-      ...(boosted ? { bonuses } : {}),
-      // Walking off the board into a base: the panel is the client's, so no
-      // engine re-derives the walk - it takes the unit off the board and
-      // keeps the record. Only the browser engine answers it, which is why
-      // the board only offers it there (`entryBind`).
-      ...(this.offBoard(pending.to) ? { withdraw: true } : {}),
+    // **Every board move the turn made, and only the last hands it over.**
+    // One message each, in the order they were played, with `more` on all but
+    // the last - both engines answer a held move as a deployment: the same
+    // seat, the same ply, the same clock, and the toll untaken until the end.
+    //
+    // The casts are split across the ends rather than piled on the last
+    // message: what was cast BEFORE the turn's board action has to land
+    // before the first unit moves, and a `effectsBefore` on the final message
+    // would land it after the others had already gone. With one move - every
+    // turn of the schedule proper - the two ends are the same message and
+    // this is exactly what it always sent.
+    const moves = this.boardMoves;
+    moves.forEach((step, i) => {
+      const swing = step.attack ?? undefined;
+      // Both engines re-check the walk from where it started, so they need to
+      // be told about the extra steps or they reject the move outright.
+      const moveBonus = this.moveBonusFor(step.to);
+      // ponytail: the local engine honours these; a server game does not, for
+      // the same reason it ignores moveBonus - abilities live on the client,
+      // so taking the client's word for a stat would be a free upgrade. Move
+      // abilities into the engine and both sides can read them off the board.
+      const bonuses = {
+        atk: this.bonusFor(step.to, 'atk'),
+        def: this.bonusFor(step.to, 'def'),
+        targetAtk: swing ? this.bonusFor(swing, 'atk') : 0,
+        targetDef: swing ? this.bonusFor(swing, 'def') : 0,
+      };
+      const boosted = Object.values(bonuses).some(v => v !== 0);
+      this.wsService.sendMessage({
+        type: 'make_move',
+        from: step.from,
+        to: step.to,
+        ...(swing ? { attack: swing } : {}),
+        ...(moveBonus ? { moveBonus } : {}),
+        ...(boosted ? { bonuses } : {}),
+        // Walking off the board into a base. Both engines answer it: the
+        // browser one takes the walk on trust, and the server re-derives it -
+        // the real doorways, the MOV to reach them - from its own panel model.
+        ...(this.offBoard(step.to) ? { withdraw: true } : {}),
+        ...(i < moves.length - 1 ? { more: true } : {}),
+        ...(i === 0 && casts.effectsBefore ? { effectsBefore: casts.effectsBefore } : {}),
+        ...(i === moves.length - 1 && casts.effects ? { effects: casts.effects } : {}),
+      });
     });
     this.persistLocalUiState();
     // The staged board stays up until move_made confirms it - see the handler.
@@ -4012,11 +4925,29 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * Each abilities box is live only on its own side's turn, and an opponent's
    * box is never live unless you are driving both sides (solo play).
    */
-  /** Why a panel is closed - the opening shuts them all, whoever's turn it is. */
+  /**
+   * Why a panel is closed. A networked room shuts them all for good, the
+   * opening shuts them all whoever's turn it is, and otherwise it is the turn.
+   * In that order: the room is the most basic reason, and naming the opening in
+   * a room where nothing could ever be cast would point at the wrong thing.
+   */
   get abilityBlockedNote(): string {
-    return isInitialization(this.gameState.snapshot.turnNumber)
+    if (!this.isSinglePlayer) return ABILITIES_SOLO_ONLY;
+    const ply = this.gameState.snapshot.turnNumber;
+    if (isPhaseInitialization(ply)) {
+      return `Unavailable: no abilities during the ${stageAt(ply).toLowerCase()}.`;
+    }
+    return isInitialization(ply)
       ? 'Unavailable: no abilities during the initialization.'
       : 'Unavailable: not your turn.';
+  }
+
+  /**
+   * Why a side cannot pick or unlock right now. Choosing is open through the
+   * opening - only casting is shut there - so this never names it.
+   */
+  private get choiceRefusal(): string {
+    return this.isSinglePlayer ? 'Unavailable: not your turn.' : ABILITIES_SOLO_ONLY;
   }
 
   /**
@@ -4036,13 +4967,54 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /**
    * Whether this side may *cast* right now. Choosing plus one rule more:
-   * nothing is cast in the opening - no pool ability, no path skill or
-   * ultimate, no unit ability. Everything that spends one runs through here,
-   * so this is the one place it has to be said.
+   * nothing is cast on a turn given to setting out - the opening's three and
+   * each numbered phase's own initialization. No pool ability, no path skill
+   * or ultimate, no unit ability. Everything that spends one runs through
+   * here, so this is the one place it has to be said.
+   *
+   * Choosing stays open on all of them, as it always has: a setup turn is
+   * when a side sets itself out, so it is exactly when choosing belongs.
    */
   canUseAbilities(side: 'mine' | 'opponent'): boolean {
     return this.canChooseAbilities(side)
-      && !isInitialization(this.gameState.snapshot.turnNumber);
+      && !isSetupTurn(this.gameState.snapshot.turnNumber);
+  }
+
+  /**
+   * How many of this side's units have walked home this ply, for the board's
+   * three-a-turn cap on a setup turn. Read off the record, like the opening's
+   * moved hexes beside it.
+   *
+   * Cached on the same key as its siblings - the history's identity and the
+   * turn - because the board binds it, so an uncached read would walk a
+   * history that only grows on every change-detection pass, one of which the
+   * mouse crossing a hex is enough to cause.
+   *
+   * **The staged ones count too**, and are added outside the cache: the record
+   * does not move while a turn is being staged, which is the whole reason the
+   * cache is keyed on it. Now that three may be staged before any of them is
+   * sent, the record alone would read 0 all the way to End Turn and the board
+   * would offer a fourth, a fifth and a sixth.
+   */
+  private homecomingsCache:
+    { history: unknown; turn: number; color: string; spent: number } | null = null;
+
+  get homecomingsSpent(): number {
+    const snapshot = this.gameState.snapshot;
+    const color = this.gameState.myColor(snapshot.currentTurn);
+    if (!color) return 0;
+    const history = snapshot.moveHistory;
+    const turn = snapshot.turnNumber;
+    const staged = this.stagedActions.reduce(
+      (n, action) => n + (action.homecoming ? 1 : 0), 0);
+    const cached = this.homecomingsCache;
+    if (cached && cached.history === history && cached.turn === turn
+        && cached.color === color) {
+      return cached.spent + staged;
+    }
+    const spent = homecomingsAt(history, turn, color).size;
+    this.homecomingsCache = { history, turn, color, spent };
+    return spent + staged;
   }
 
   /** Resign the current game. */

@@ -110,6 +110,13 @@ export interface RulesDef {
   maxTurns: number;
   /** Per-turn time limit in seconds (0 = unlimited). */
   turnTimeLimit: number;
+  /**
+   * The least a blow that lands may deal, once defence is off it. 1 (the
+   * default) means armour blunts a hit but never turns it aside; 0 lets it
+   * absorb one whole, which leaves whole matchups unable to hurt each other.
+   * An attacker with no attack stat deals 0 either way.
+   */
+  minStrikeDamage?: number;
   /** Allow custom / future rule flags. */
   [key: string]: unknown;
 }

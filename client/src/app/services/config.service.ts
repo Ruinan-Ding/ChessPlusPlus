@@ -17,7 +17,13 @@ import { BehaviorSubject, Observable } from 'rxjs';
  * onto an occupied hex (ally or enemy).
  */
 
-const DEFAULT_GAME_CONFIG = {
+/**
+ * The shipped config. Exported for the one consumer that needs it before a
+ * game exists: the room draws its ability panels in a room with no snapshot
+ * yet, and falling back to this keeps the catalogue in ONE place rather than
+ * leaving a second copy hard-coded on the component.
+ */
+export const DEFAULT_GAME_CONFIG = {
   version: '1.0',
   board: {
     radius: 11,              // 12 cells per hexagon edge
@@ -69,7 +75,174 @@ const DEFAULT_GAME_CONFIG = {
       move: 6
     }
   },
-  abilities: {},
+  /**
+   * The ability catalogue, and how a side gets at it. Mirrors
+   * `DEFAULT_CONFIG['abilities']` in config_loader.py, byte for byte.
+   *
+   * Keyed by a **stable id** throughout - never by position - because a
+   * side's saved loadout, path and cooldowns are written by id, and a
+   * reordered list would re-point every one of them. `cost` is in whichever
+   * purse the ability draws on: points for a pool ability, CP for a path's.
+   *
+   * A path shares its id with its own passive on purpose: the path IS its
+   * passive. Different namespaces - `paths` is a list, `catalogue` a map.
+   */
+  abilities: {
+    slots: 4,
+    pool: ['dash', 'focus', 'bulwark', 'sap', 'arc-bolt', 'mire', 'mend', 'rally'],
+    paths: [
+      {
+        id: 'bastion',
+        name: 'Bastion',
+        cost: 6,
+        passive: 'bastion',
+        skill: 'anchor',
+        ultimate: 'fortress'
+      },
+      {
+        id: 'onslaught',
+        name: 'Onslaught',
+        cost: 7,
+        passive: 'onslaught',
+        skill: 'cleave',
+        ultimate: 'ruin'
+      },
+      {
+        id: 'tempo',
+        name: 'Tempo',
+        cost: 5,
+        passive: 'tempo',
+        skill: 'surge',
+        ultimate: 'blitz'
+      }
+    ],
+    catalogue: {
+      dash: {
+        id: 'dash',
+        name: 'Dash',
+        target: 'friendly',
+        cost: 3,
+        mov: 2
+      },
+      focus: {
+        id: 'focus',
+        name: 'Focus',
+        target: 'friendly',
+        cost: 5,
+        atk: 2
+      },
+      bulwark: {
+        id: 'bulwark',
+        name: 'Bulwark',
+        target: 'friendly',
+        cost: 1,
+        def: 3
+      },
+      sap: {
+        id: 'sap',
+        name: 'Sap',
+        target: 'enemy',
+        cost: 4,
+        mov: -2,
+        atk: -2,
+        def: -2,
+        damage: 6
+      },
+      'arc-bolt': {
+        id: 'arc-bolt',
+        name: 'Arc Bolt',
+        target: 'enemy',
+        cost: 3,
+        damage: 8
+      },
+      mire: {
+        id: 'mire',
+        name: 'Mire',
+        target: 'enemy',
+        cost: 2,
+        mov: -3
+      },
+      mend: {
+        id: 'mend',
+        name: 'Mend',
+        target: 'friendly',
+        cost: 0,
+        heal: 20,
+        testing: true
+      },
+      rally: {
+        id: 'rally',
+        name: 'Rally',
+        target: 'universal',
+        cost: 0,
+        points: 300,
+        testing: true
+      },
+      bastion: {
+        id: 'bastion',
+        name: 'Bastion',
+        target: 'friendly',
+        cost: 0,
+        def: 1
+      },
+      anchor: {
+        id: 'anchor',
+        name: 'Anchor',
+        target: 'friendly',
+        cost: 4,
+        def: 4
+      },
+      fortress: {
+        id: 'fortress',
+        name: 'Fortress',
+        target: 'universal',
+        cost: 8,
+        points: 4
+      },
+      onslaught: {
+        id: 'onslaught',
+        name: 'Onslaught',
+        target: 'friendly',
+        cost: 0,
+        atk: 1
+      },
+      cleave: {
+        id: 'cleave',
+        name: 'Cleave',
+        target: 'enemy',
+        cost: 5,
+        damage: 10
+      },
+      ruin: {
+        id: 'ruin',
+        name: 'Ruin',
+        target: 'universal',
+        cost: 8,
+        points: 5
+      },
+      tempo: {
+        id: 'tempo',
+        name: 'Tempo',
+        target: 'friendly',
+        cost: 0,
+        mov: 1
+      },
+      surge: {
+        id: 'surge',
+        name: 'Surge',
+        target: 'friendly',
+        cost: 3,
+        mov: 3
+      },
+      blitz: {
+        id: 'blitz',
+        name: 'Blitz',
+        target: 'universal',
+        cost: 8,
+        points: 3
+      }
+    }
+  },
   setup: {
     // Three rows on each side of the radius-11 board, spaced so nothing
     // sits shoulder to shoulder. White's edge row is r=+11; black is the point
@@ -142,11 +315,43 @@ const DEFAULT_GAME_CONFIG = {
     turnTimeLimit: 0,
     // Fraction of damage lost per ring beyond the first.
     rangeFalloff: 0.25,
+    // The least a blow that lands may deal, once defence is off it. Must match
+    // DEFAULT_CONFIG in config_loader.py byte for byte.
+    minStrikeDamage: 1,
     // A side loses when its commander dies; 'elimination' (no units left) is
     // the other supported objective.
-    objective: 'regicide'
+    objective: 'regicide',
+    // How many units each panel - the base and the reserve, separately - may
+    // start in one turn.
+    panelMoversPerTurn: 3,
+    // How many a side may bring out of its reserve in a phase initialization.
+    // Stands instead of panelMoversPerTurn for the reserve on that turn.
+    phaseInitEntries: 5,
+    // How many units a side may walk home in one setup turn.
+    homecomingsPerSetupTurn: 3,
+    // The CP each side is handed at the start of every phase.
+    cpPerPhase: 100
   }
 };
+
+/**
+ * The rules a config may leave out and be read at their default. Each is a
+ * whole number >= 0. Mirrors COUNTED_RULES in config_loader.py.
+ */
+export const COUNTED_RULES = [
+  'panelMoversPerTurn', 'phaseInitEntries', 'homecomingsPerSetupTurn', 'cpPerPhase',
+] as const;
+export type CountedRule = typeof COUNTED_RULES[number];
+
+/**
+ * One of *config*'s counted rules, or the default's when it has none. A
+ * room's config is normalised before it is played; the fallback is for the
+ * callers handed no config at all. Mirrors rule_of() in config_loader.py.
+ */
+export function ruleOf(config: any, key: CountedRule): number {
+  const value = config?.rules?.[key];
+  return typeof value === 'number' ? value : DEFAULT_GAME_CONFIG.rules[key];
+}
 
 @Injectable({
   providedIn: 'root'
@@ -192,6 +397,15 @@ export class ConfigService {
     }
     if (config && config.rules === undefined) config.rules = {};
     const rules = config?.rules;
+    // Absent means the current default, not whatever floor happened to be in
+    // force when the config was written - _normalise_config says the same, and
+    // for the same reason: nothing here can tell a snapshot frozen before the
+    // floor existed from a custom config authored today that simply did not
+    // mention it, and filling in the old 0 would hand every new custom config
+    // the dead matchups the floor exists to remove.
+    if (rules && typeof rules === 'object' && rules.minStrikeDamage === undefined) {
+      rules.minStrikeDamage = DEFAULT_GAME_CONFIG.rules['minStrikeDamage'];
+    }
     if (rules && typeof rules === 'object' && rules.objective === undefined) {
       const setup = config.setup;
       const commanded = ['white', 'black'].every(side => {
@@ -200,6 +414,13 @@ export class ConfigService {
           && Object.values<any>(placement).some(u => config.units?.[u]?.commander);
       });
       rules.objective = commanded ? 'regicide' : 'elimination';
+    }
+    // These were constants before they were config, so absent means the
+    // number every game was played under.
+    if (rules && typeof rules === 'object') {
+      for (const key of COUNTED_RULES) {
+        if (rules[key] === undefined) rules[key] = DEFAULT_GAME_CONFIG.rules[key];
+      }
     }
   }
 
@@ -277,6 +498,30 @@ export class ConfigService {
         errors.push('rules.rangeFalloff must be a number between 0 and 1');
       }
 
+      // Checked because a negative floor corrupts the board rather than merely
+      // unbalancing it: strikeDamage would return a negative number and the
+      // engine subtracts it, so a blow would heal whatever it hit.
+      // _validate_config says the same, so the setup screen and the server
+      // reject the same configs.
+      // The raw value, with no `?? 0` in front of it. Coalescing here let an
+      // explicit `null` through as 0 while the server - whose normaliser also
+      // only fills an ABSENT key - kept the None and refused it, so a config
+      // the setup screen called valid failed to start the room with an error
+      // the screen had said would not happen. normaliseConfig has already
+      // supplied a missing one, so anything left that is not a whole number
+      // was written that way on purpose.
+      const floor = config.rules.minStrikeDamage;
+      if (!Number.isInteger(floor) || floor < 0) {
+        errors.push('rules.minStrikeDamage must be an integer >= 0');
+      }
+
+      for (const key of COUNTED_RULES) {
+        const count = config.rules[key];
+        if (!Number.isInteger(count) || count < 0) {
+          errors.push(`rules.${key} must be an integer >= 0`);
+        }
+      }
+
       // The objective decides how a game is lost, so a config that cannot
       // satisfy it is unplayable rather than merely odd: under regicide a
       // side with no commander has already lost before the first move.
@@ -298,9 +543,44 @@ export class ConfigService {
       }
     }
 
-    // Abilities (optional - just needs to be an object if present)
-    if (config.abilities !== undefined && typeof config.abilities !== 'object') {
-      errors.push('"abilities" must be an object');
+    // Abilities. Optional, but if present the ids have to join up: the pool
+    // and every path name abilities out of the catalogue, and a name with
+    // nothing behind it reaches the room as a blank slot rather than an
+    // error. **Only the client reads abilities**, so this is the only place
+    // that can catch it - the server's `_validate_config` deliberately does
+    // not, the engine never touching them (see the `config-sync` skill).
+    if (config.abilities !== undefined) {
+      if (typeof config.abilities !== 'object' || config.abilities === null) {
+        errors.push('"abilities" must be an object');
+      } else {
+        const abilities = config.abilities;
+        const catalogue = abilities.catalogue ?? {};
+        const known = (id: unknown) => typeof id === 'string' && !!catalogue[id];
+        if (abilities.pool !== undefined && !Array.isArray(abilities.pool)) {
+          errors.push('"abilities.pool" must be an array of catalogue ids');
+        } else {
+          for (const id of abilities.pool ?? []) {
+            if (!known(id)) errors.push(`"abilities.pool" names unknown ability "${id}"`);
+          }
+        }
+        if (abilities.paths !== undefined && !Array.isArray(abilities.paths)) {
+          errors.push('"abilities.paths" must be an array');
+        } else {
+          for (const path of abilities.paths ?? []) {
+            for (const slot of ['passive', 'skill', 'ultimate'] as const) {
+              if (!known(path?.[slot])) {
+                errors.push(
+                  `"abilities.paths" entry "${path?.id}" names unknown ${slot} "${path?.[slot]}"`);
+              }
+            }
+          }
+        }
+        for (const [id, ability] of Object.entries<any>(catalogue)) {
+          if (ability?.id !== id) {
+            errors.push(`"abilities.catalogue.${id}" must carry its own id`);
+          }
+        }
+      }
     }
 
     return errors.length > 0 ? { valid: false, errors } : { valid: true };

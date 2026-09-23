@@ -16,6 +16,7 @@ from datetime import timedelta
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.db import transaction
 from django.utils import timezone
 
 from typing import Optional, Any, Dict, cast, Union
@@ -32,15 +33,26 @@ from .validators import (
     validate_chat_message
 )
 from .utils import (
-    send_json_response, send_error, broadcast_to_group,
+    send_json_response, send_error, broadcast_to_group, expire_stale_challenges,
     get_challenge_expiration_time, structured_log, get_idempotency, set_idempotency
 )
 from .engine import load_config, build_initial_board, DEFAULT_CONFIG
+from .engine.config_loader import rule_of
+from .engine import economy, panels
 from .engine.board import HexBoard, parse_coord, hex_distance
 from .engine.game_logic import (
+    board_move_landings,
+    board_moves_at,
     defeated_sides,
     get_legal_moves_filtered,
+    opening_moved_hexes,
+    overtime_toll,
     resolve_combat,
+    resolve_panel_attack,
+)
+from .engine.phases import (
+    board_moves_per_turn, is_entry_open,
+    is_homecoming_open, is_initialization, is_setup_turn, no_attack_message,
 )
 
 logger = logging.getLogger('game')
@@ -70,6 +82,51 @@ STALE_AFTER = timedelta(seconds=45)
 # row every time_limit seconds for the life of the process.
 IDLE_PASS_LIMIT = 6
 
+
+def _ending_name(config: Dict[str, Any]) -> str:
+    """
+    What a side losing by the match's objective is called. The objective names
+    the ending: a regicide leaves most of the army standing, so calling it an
+    elimination reads as a bug.
+    """
+    objective = (config or {}).get('rules', {}).get('objective', 'regicide')
+    return 'regicide' if objective == 'regicide' else 'elimination'
+
+
+def _settle_pass(state) -> tuple:
+    """
+    What a passed turn does to the board and to the match.
+
+    Returns ``(board_state, winner, end_reason)``. Shared by the pass a player
+    asks for and the pass a clock makes when time runs out, which were written
+    out twice and would otherwise each need the toll added.
+
+    **A passed turn is still a turn**, so overtime takes its toll on it and the
+    board can change though nobody moved. Neither pass used to touch the board
+    or ask who was beaten, and before the toll neither needed to - a king on
+    1 HP could simply pass his way past it.
+
+    **Only the side the toll touched is judged.** A pass does not change who
+    stands where, so nobody else can have lost on it. The felled side is checked
+    against its objective, and nothing else is: under `elimination` a king the
+    toll kills loses nothing while his army stands.
+    """
+    config = state.config_snapshot or {}
+    radius = config.get('board', {}).get('radius', DEFAULT_CONFIG['board']['radius'])
+    mover_color = 'white' if state.current_turn == state.player_white else 'black'
+    board = HexBoard.from_dict(radius, state.board_state)
+
+    felled = overtime_toll(board, config, mover_color, state.turn_number)
+    winner, end_reason = '', ''
+    if felled and felled in defeated_sides(board, config):
+        winner = state.player_black if felled == 'white' else state.player_white
+        end_reason = _ending_name(config)
+    else:
+        max_turns = config.get('rules', {}).get('maxTurns', 0)
+        if max_turns > 0 and state.turn_number >= max_turns:
+            end_reason = 'draw_max_turns'
+    return board.to_dict(), winner, end_reason
+
 # Global dictionary to track pending disconnect-grace-period tasks.
 # Key: (game_id, username), Value: asyncio.Task
 _pending_disconnect_timers: dict = {}
@@ -82,9 +139,28 @@ RATE_LIMIT_WINDOW_SECONDS = 10
 RATE_LIMIT_MAX_MESSAGES = 30  # ~3/sec sustained, generous burst allowance
 
 
+# How long a room's access token stays good. Refreshed on every successful
+# join (see _handle_join_game_room), so this is how long an *unused* invite
+# lasts - not a ceiling on how long a game may run.
+GAME_TOKEN_LIFETIME = timedelta(minutes=10)
+
+
 def _extract_secret(data: Dict[str, Any]) -> str:
     """Pull the client-asserted identity secret out of an incoming message."""
     return str(data.get('secret') or '').strip()[:64]
+
+
+def _guest_name() -> str:
+    """A free-for-the-taking name, for somebody whose own was not."""
+    return f"Guest{''.join(random.choices(string.digits, k=6))}"
+
+
+def _same_secret(stored: str, offered: str) -> bool:
+    """Constant-time compare for the two strings that gate access here: a
+    room's access token and a browser's identity secret. Encoded rather than
+    compared as str because compare_digest rejects non-ASCII text, and both
+    of these arrive off the wire."""
+    return secrets.compare_digest(str(stored).encode(), str(offered).encode())
 
 
 class GameConsumer(AsyncWebsocketConsumer):
@@ -169,8 +245,13 @@ class GameConsumer(AsyncWebsocketConsumer):
             # Check if the player is in-game - if so, don't delete their connection
             # They're just transitioning from lobby to game room
             player_conn = await self._get_player_connection(self.username)
-            if player_conn and player_conn.status == 'in-game':
-                logger.info(f"User {self.username} is in-game, not deleting PlayerConnection")
+            # In-game: they are mid-transition to a room, not leaving. Or the
+            # row has moved on to another channel, which makes this the close
+            # of a socket the player has already replaced - see
+            # _cleanup_game_room_connection for what that costs.
+            if player_conn and (player_conn.status == 'in-game'
+                                or player_conn.channel_name != self.channel_name):
+                logger.info(f"User {self.username} is elsewhere, not deleting PlayerConnection")
                 return
             
             await self._delete_player_connection(self.username, channel_name=self.channel_name)
@@ -189,6 +270,20 @@ class GameConsumer(AsyncWebsocketConsumer):
         try:
             game = await self._get_game_by_id(self.game_id)
             if not game:
+                return
+
+            # A socket this player has already replaced. Its close can land
+            # long after the fact - a half-open connection is only torn down
+            # when the OS or a proxy finally gives up on it - and by then the
+            # row, the ready flag and the seat all belong to the newer
+            # session. _delete_player_connection below has always known this
+            # (hence its channel_name guard); nothing above it did, so a late
+            # close cleared a live player's ready tick, told the room they had
+            # dropped, and armed a forfeit against somebody sitting right
+            # there.
+            if await self._reclaimed_by_newer_socket(self.username, self.channel_name):
+                logger.info(
+                    f"Ignoring stale disconnect for {self.username} in game {self.game_id}")
                 return
 
             # Dropping out always clears your ready flag - the room must not be
@@ -277,6 +372,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'heartbeat': self._handle_heartbeat,
                 # Gameplay handlers (in-game)
                 'make_move': self._handle_make_move,
+                'enter_board': self._handle_enter_board,
+                'panel_move': self._handle_panel_move,
+                'panel_attack': self._handle_panel_attack,
                 'pass_turn': self._handle_pass_turn,
                 'resign': self._handle_resign,
                 'offer_draw': self._handle_offer_draw,
@@ -313,6 +411,22 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.error(f"Error processing message: {e}", exc_info=True)
             await send_error(self, 'INTERNAL_ERROR', 'An error occurred processing your message')
     
+    async def _require_seat(self, game_id: str):
+        """The room this player actually holds a seat in, or None.
+
+        Every handler that takes a `gameId` off the wire needs this: proving
+        "I am who I say I am" says nothing about whether the room named is
+        one of mine. Sends the error itself, so callers just return on None.
+        """
+        game = await self._get_game_by_id(game_id)
+        if not game:
+            await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
+            return None
+        if self.username not in (game.host, game.opponent):
+            await send_error(self, 'NOT_IN_GAME', 'You are not in this game')
+            return None
+        return game
+
     # ==================== Message Handlers ====================
     
     async def _handle_join_lobby(self, data):
@@ -326,23 +440,50 @@ class GameConsumer(AsyncWebsocketConsumer):
             validate_username(username)
 
             existing_connection = await self._get_player_connection(username)
+            takeover = False
             if existing_connection and existing_connection.channel_name != self.channel_name:
                 # ponytail: single seam for identity verification - replace this
                 # comparison with real credential checking if accounts are added later.
-                secret_ok = bool(existing_connection.secret) and existing_connection.secret == client_secret
-                if data.get('rejoining', False) and secret_ok:
-                    logger.info(f"User {username} rejoining lobby with new channel")
+                secret_ok = bool(existing_connection.secret) and _same_secret(existing_connection.secret, client_secret)
+                # A row nobody has heartbeated for STALE_AFTER is almost
+                # certainly abandoned: a server that dies runs no disconnects,
+                # so every player's row outlives it, and the sweep that clears
+                # them runs a moment later in _get_all_online_users. Left to
+                # that sweep alone, the first player back after a restart was
+                # renamed to a guest and lost their seat with the name (6.18).
+                #
+                # **Almost certainly is not certainly, so the secret still
+                # decides.** A sleeping laptop misses three heartbeats too, and
+                # the name is what holds a seat - freeing the row outright
+                # would hand a live player's name, and the game they are sat
+                # in, to whoever asked for it next. Staleness widens WHEN the
+                # owner may take their row back; it never widens WHO. A row
+                # carrying no secret has nothing to check and nothing to
+                # protect, so age alone is enough for that one.
+                stale = existing_connection.last_activity < timezone.now() - STALE_AFTER
+                if (secret_ok and (data.get('rejoining', False) or stale)) \
+                        or (stale and not existing_connection.secret):
+                    logger.info(f"User {username} taking back their lobby row (stale: {stale})")
+                    takeover = True
                 else:
                     if data.get('rejoining', False):
                         logger.warning(f"Rejected rejoin claim for '{username}': secret mismatch")
                     # Generate a random username instead of rejecting
-                    random_suffix = ''.join(random.choices(string.digits, k=6))
-                    username = f"Guest{random_suffix}"
+                    username = _guest_name()
                     username_was_taken = True
                     logger.info(f"Username '{original_username}' was taken, assigned '{username}' instead")
 
+            # The claim decides it, not the read above. Between the two, a
+            # second client that also saw the name free could write it - and
+            # update_or_create on the primary key handed it the first client's
+            # row, channel name and identity secret with it.
+            if not await self._claim_player_connection(username, self.channel_name, client_secret, takeover=takeover):
+                username = _guest_name()
+                username_was_taken = True
+                logger.info(f"Username '{original_username}' was claimed mid-join, assigned '{username}' instead")
+                await self._claim_player_connection(username, self.channel_name, client_secret)
+
             self.username = username
-            await self._create_or_update_player_connection(username, self.channel_name, 'online', secret=client_secret)
             
             if username_was_taken:
                 await send_json_response(self, {
@@ -394,6 +535,12 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def _handle_chat_message(self, data):
         """Handle chat message in lobby (or from game room to lobby)"""
         try:
+            if not self.username:
+                # Otherwise a socket that connected and never joined talks to
+                # the whole lobby as `null`.
+                await send_error(self, 'NOT_IN_LOBBY', 'Join the lobby before chatting')
+                return
+
             validate_required_fields(data, ['content'])
             validate_chat_message(data['content'])
             
@@ -421,16 +568,19 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Cannot change username for another user')
                 return
 
-            existing = await self._get_player_connection(new_username)
-            if existing:
-                await send_error(self, 'USERNAME_TAKEN', f'Username "{new_username}" is already taken')
-                return
+            # Claim first, release second. The read-then-write this replaces
+            # could be raced into a takeover, and deleting the old row up front
+            # meant a rename that lost that race left the player with no row at
+            # all. A claim that fails now costs them nothing. A rename to the
+            # name already held touches neither: releasing it would drop the
+            # row that was just claimed, and the client is still waiting to be
+            # told the change went through.
+            if new_username != old_username:
+                if not await self._claim_player_connection(new_username, self.channel_name, client_secret):
+                    await send_error(self, 'USERNAME_TAKEN', f'Username "{new_username}" is already taken')
+                    return
+                await self._delete_player_connection(old_username, channel_name=self.channel_name)
 
-            # Update in database - first delete old, then create new to avoid duplicates
-            # This is more reliable than updating in place
-            await self._delete_player_connection(old_username, channel_name=self.channel_name)
-            await self._create_or_update_player_connection(new_username, self.channel_name, 'online', secret=client_secret)
-            
             self.username = new_username
             
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
@@ -488,6 +638,14 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_OPPONENT', 'Cannot challenge yourself')
                 return
             
+            # Before deciding who is busy: an invite whose responder simply
+            # closed their tab used to stay 'pending' for the life of the
+            # database, leaving both of them 'invited' - refused as busy for
+            # every future invite - and CHALLENGE_EXISTS refusing this pair
+            # specifically, forever. expires_at was written at creation and
+            # read by nothing the server runs.
+            await self._expire_stale_challenges()
+
             # Validate both users exist and are online (batch query for efficiency)
             connections = await self._get_player_connections_batch([challenger, opponent])
             challenger_conn = connections.get(challenger)
@@ -529,16 +687,27 @@ class GameConsumer(AsyncWebsocketConsumer):
                     structured_log('info', 'challenge_idempotent_hit', key=idem_key, challenger=challenger, opponent=opponent)
                     return
 
-            challenge = await self._create_challenge(challenger, opponent)
+            # Both players marked invited in one statement, and only if neither
+            # already is. The checks above read the statuses and this used to
+            # write them after the invite was made, so two players inviting each
+            # other at once both read "online" in between and both invites went
+            # out. The read stays for its clearer refusals; this is the guard.
+            if not await self._claim_invite_pair(challenger, opponent):
+                await send_error(self, 'OPPONENT_BUSY', f'{opponent} is currently handling an invite')
+                return
+
+            try:
+                challenge = await self._create_challenge(challenger, opponent)
+            except Exception:
+                # No invite to expire means nothing would ever release them.
+                await self._update_player_status(challenger, 'online')
+                await self._update_player_status(opponent, 'online')
+                raise
             if idem_key:
                 try:
                     set_idempotency(idem_key, {'invite_id': challenge.challenge_id}, timeout=60)
                 except Exception:
                     structured_log('warning', 'idempotency_set_failed', key=idem_key)
-            
-            # Set both players' status to 'invited' so third parties can't invite them
-            await self._update_player_status(challenger, 'invited')
-            await self._update_player_status(opponent, 'invited')
             
             await self._send_user_list()
             
@@ -697,22 +866,36 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return
             
             expected_token = game.host_token if username == game.host else game.opponent_token
-            if not expected_token or token != expected_token:
+            if not expected_token or not _same_secret(expected_token, token):
                 await send_error(self, 'INVALID_TOKEN', 'Invalid or missing access token')
                 return
-            
+
             if game.token_expires_at and timezone.now() > game.token_expires_at:
                 await send_error(self, 'TOKEN_EXPIRED', 'Access token has expired')
                 return
-            
+
+            # Getting this far proves the seat is theirs, so the clock starts
+            # over. The client rejoins on every socket reopen, so a token
+            # frozen at room creation meant any blip past the ten-minute mark
+            # answered TOKEN_EXPIRED, bounced the player to the lobby, and let
+            # the disconnect grace timer forfeit a match still being played.
+            await self._refresh_game_token(game_id)
+
             self.game_id = game_id
 
             # Cancel any pending disconnect-forfeit grace timer
             had_pending_grace = (game_id, username) in _pending_disconnect_timers
             self._cancel_disconnect_timer(game_id, username)
 
-            # The game room may arrive on a fresh WebSocket, so refresh the stored channel
-            await self._create_or_update_player_connection(username, self.channel_name, 'in-game')
+            # The game room may arrive on a fresh WebSocket, so refresh the stored
+            # channel - and the identity secret with it. Leaving the room deletes
+            # this row, so a rejoin is what recreates it, and recreated without a
+            # secret the player came back to the lobby unable to prove their own
+            # name and was handed a guest's. The token above has just proved the
+            # seat, so the secret offered alongside it is theirs. A client that
+            # sends none keeps whatever the row already holds.
+            await self._create_or_update_player_connection(
+                username, self.channel_name, 'in-game', secret=_extract_secret(data) or None)
             
             # Add to the game room group, but keep lobby group membership for lobby chat
             self.room_name = game_id
@@ -823,12 +1006,20 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def _handle_game_room_message(self, data):
         """Handle game room chat message"""
         try:
+            if not self.username or not self.game_id:
+                # group_send never asked whether the sender is in the group, so
+                # without this a socket opened on a known room id could talk
+                # into that room having shown no token at all. game_id is only
+                # set by _handle_join_game_room, after the token check.
+                await send_error(self, 'NOT_IN_GAME_ROOM', 'You are not in a game room')
+                return
+
             validate_required_fields(data, ['content'])
             validate_chat_message(data['content'])
-            
+
             # Send directly to game room group (not wrapped in broadcast_message)
             await self.channel_layer.group_send(
-                self.room_group_name,
+                f'game_{self.game_id}',
                 {
                     'type': 'game_room_message',
                     'username': self.username,
@@ -851,14 +1042,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Can only ready yourself')
                 return
             
-            game = await self._get_game_by_id(game_id)
-            if not game:
-                await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
+            if not await self._require_seat(game_id):
                 return
-            
+
             await self._set_ready_status(game_id, username, True)
-            
-            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+
+            await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
                 'type': 'player_ready',
                 'username': username
             })
@@ -879,15 +1068,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'Can only unready yourself')
                 return
             
-            game = await self._get_game_by_id(game_id)
-            if not game:
-                await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
+            if not await self._require_seat(game_id):
                 return
-            
+
             await self._set_ready_status(game_id, username, False)
 
             silent = data.get('silent', False)
-            await broadcast_to_group(self.channel_layer, self.room_group_name, {
+            await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
                 'type': 'player_unready',
                 'username': username,
                 'silent': silent
@@ -1065,7 +1252,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             
             game_id = data.get('gameId', '').strip()
             accepted = data.get('accepted', False)
-            
+
+            if not await self._require_seat(game_id):
+                return
+
             if game_id not in _pending_reveal_requests:
                 await send_error(self, 'NO_PENDING_REQUEST', 'No pending reveal mode request')
                 return
@@ -1261,19 +1451,18 @@ class GameConsumer(AsyncWebsocketConsumer):
                 my_color = 'white' if mover == state.player_white else 'black'
                 # A timeout is a pass, so it ends the game on the same terms
                 # a deliberate pass does - otherwise two idle players run past
-                # maxTurns forever and the draw never arrives.
-                end_reason = ''
-                max_turns = (state.config_snapshot or {}).get('rules', {}).get('maxTurns', 0)
-                if max_turns > 0 and state.turn_number >= max_turns:
-                    end_reason = 'draw_max_turns'
+                # maxTurns forever and the draw never arrives. The same terms
+                # include overtime's toll: a king on his last HP must not be
+                # able to sit out the clock instead of paying it.
+                board_state, winner, end_reason = _settle_pass(state)
                 turn_started_dt = timezone.now()
                 applied = await self._update_game_state(
                     game_id=game_id,
-                    board_state=state.board_state,
+                    board_state=board_state,
                     current_turn=next_player if not end_reason else state.current_turn,
                     turn_number=state.turn_number + 1,
                     move_history=list(state.move_history),
-                    winner='',
+                    winner=winner,
                     end_reason=end_reason,
                     expected_turn_number=state.turn_number,
                     turn_started_at=turn_started_dt,
@@ -1284,13 +1473,14 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'type': 'turn_passed',
                     'passedBy': mover,
                     'color': my_color,
+                    'boardState': board_state,
                     'currentTurn': next_player if not end_reason else '',
                     'turnNumber': state.turn_number + 1,
                     'turnStartedAt': turn_started_dt.isoformat(),
                     'timedOut': True,
                 })
                 if end_reason:
-                    await self._broadcast_game_over(game_id, '', end_reason)
+                    await self._broadcast_game_over(game_id, winner, end_reason)
                     return
                 # Only keep the clock running while somebody is still there to
                 # watch it: an abandoned room would otherwise re-arm itself
@@ -1349,10 +1539,21 @@ class GameConsumer(AsyncWebsocketConsumer):
         Cancelled by _handle_join_game_room if the player rejoins in time.
         """
         self._cancel_disconnect_timer(game_id, username)
+        dropped_channel = self.channel_name
 
         async def _grace_task():
             try:
                 await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
+                # Cancelling is the usual way this timer stops, but it only
+                # covers a rejoin that lands after the timer exists. A join
+                # racing the arming above cancels nothing, and forfeits a
+                # player who is back at the board. The row is the seat: back
+                # in a room on a different socket is back.
+                if await self._reclaimed_by_newer_socket(
+                        username, dropped_channel, status='in-game'):
+                    logger.info(
+                        f"Grace timer for {username} in {game_id} stood down - reconnected")
+                    return
                 game = await self._get_game_by_id(game_id)
                 if not game or game.status == 'closed':
                     return
@@ -1496,6 +1697,170 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_MOVE', 'That piece is not yours')
                 return
 
+            # The setup turns' rules. The board enforced these in its click
+            # handler and nowhere else - neither engine had a phase schedule to
+            # know what the opening was - so a crafted message could attack on
+            # the first turn. Checked before the walk home, because the board
+            # locks a unit out before it offers it one.
+            #
+            # Two predicates, deliberately. **Nobody attacks** on any turn given
+            # to setting out, the opening's three and each phase's own; **the
+            # one-move-per-phase lock** is the opening's alone, and handing it
+            # to a single initialization turn would stop a unit that had moved
+            # in some earlier turn of a phase it has nothing to do with.
+            if is_setup_turn(state.turn_number):
+                if data.get('attack'):
+                    await send_error(
+                        self, 'INVALID_MOVE', no_attack_message(state.turn_number))
+                    return
+                # Moving onto an enemy is an attack too, by another road.
+                landing = board.get(tq, tr)
+                if landing and landing.get('color') != my_color:
+                    await send_error(
+                        self, 'INVALID_MOVE', no_attack_message(state.turn_number))
+                    return
+            if is_initialization(state.turn_number):
+                if panels.coord_key(fq, fr) in opening_moved_hexes(
+                        list(state.move_history), my_color):
+                    await send_error(
+                        self, 'INVALID_MOVE', 'That unit has had its move for the opening')
+                    return
+
+            # **How many board moves this side still has.** One everywhere the
+            # schedule is running; two in Overtime 2 and three in Overtime 3
+            # (`board_moves_per_turn`). Counted off the record rather than
+            # inferred from "has the turn ended yet", because the moves arrive
+            # as separate messages and only the last of them ends it.
+            #
+            # Checked here for every board move, the walk home included: with
+            # an allowance above one, a client that sets `more` on all of them
+            # could otherwise play the whole game inside one hand-over.
+            moves_allowed = board_moves_per_turn(state.turn_number)
+            moves_used = board_moves_at(
+                list(state.move_history), state.turn_number, my_color)
+            if moves_used >= moves_allowed:
+                await send_error(
+                    self, 'INVALID_MOVE',
+                    f'That side has had all {moves_allowed} of its moves this turn')
+                return
+            # `more` is the client saying "this is not my last": hold the seat
+            # and let the next message in. Honoured only while a move is still
+            # to come after this one - a `more` on the last of the allowance
+            # ends the turn anyway, since there is nothing it could be holding
+            # the seat open for.
+            holding = bool(data.get('more')) and moves_used + 1 < moves_allowed
+            # **The allowance counts moves; the owner's rule counts units.**
+            # A side with three moves could otherwise play A, then B, then A
+            # again - each message legal on its own, judged from where the unit
+            # stands with a full MOV, so the unit covered twice its budget in
+            # one turn. A unit continuing a walk it began arrives as ONE
+            # message carrying the origin it really set out from, so a `from`
+            # that matches an earlier landing is always a second go.
+            if panels.coord_key(fq, fr) in board_move_landings(
+                    list(state.move_history), state.turn_number, my_color):
+                await send_error(
+                    self, 'INVALID_MOVE', 'That unit has already moved this turn')
+                return
+
+            # Walking off the board into your own base. It ends the turn like
+            # any other move, but its destination is a panel hex the board
+            # cannot hold, so it is checked against the panels rather than the
+            # legal-move flood - and against the real doorways and the walk to
+            # them, not the browser engine's rule of "any off-board hex whose q
+            # has the right sign", which would let a unit land in the wrong
+            # panel, or come home from anywhere on the board for free.
+            if data.get('withdraw'):
+                if data.get('attack'):
+                    await send_error(
+                        self, 'INVALID_MOVE', 'A unit cannot strike and walk home in one turn')
+                    return
+                # Said by name: `homecoming_targets` offers him nowhere, and
+                # "cannot walk home there" would send the player looking for
+                # a doorway that works.
+                if config.get('units', {}).get(piece['unit_id'], {}).get('commander'):
+                    await send_error(self, 'INVALID_MOVE', 'The king never walks home')
+                    return
+                # The window, then the allowance. A phase's play shuts the base
+                # doorways entirely; a setup turn opens them for three units,
+                # and overtime opens them with no count at all - a walk home
+                # there is an ordinary move that happens to end off the board,
+                # and the turn's own move allowance is the only cap it needs.
+                if not is_homecoming_open(state.turn_number):
+                    await send_error(self, 'INVALID_MOVE', 'The way home is shut')
+                    return
+                if is_setup_turn(state.turn_number):
+                    gone = panels.homecomings_at(
+                        list(state.move_history), state.turn_number, my_color)
+                    if piece.get('uid') not in gone and len(gone) >= rule_of(
+                            config, 'homecomingsPerSetupTurn'):
+                        await send_error(
+                            self, 'INVALID_MOVE', 'That is all who may walk home this turn')
+                        return
+                # Said by name, before the generic refusal below can swallow
+                # it. `homecoming_targets` returns nothing at all for a unit
+                # standing too far up the board, and "cannot walk home there"
+                # would send the player looking for a doorway that works when
+                # the trouble is where the unit is standing. The same words the
+                # browser engine uses, so the two engines cannot disagree.
+                if not panels.in_home_rows(my_color, fr, radius):
+                    await send_error(
+                        self, 'INVALID_MOVE', 'Only your own first three rows walk home')
+                    return
+                from_key = panels.coord_key(fq, fr)
+                to_key = panels.coord_key(tq, tr)
+                orientation = config.get('board', {}).get('orientation', 'edge-up')
+                occupancy = panels.panel_occupancy(
+                    config, radius, list(state.move_history), orientation)
+                home = panels.homecoming_targets(
+                    config, radius, occupancy, board.to_dict(), from_key, orientation)
+                if to_key not in home:
+                    await send_error(self, 'INVALID_MOVE', 'That unit cannot walk home there')
+                    return
+
+                leaving = board.remove(fq, fr)
+                move_record = {
+                    'from': from_key,
+                    'to': to_key,
+                    'unit_id': leaving['unit_id'],
+                    'color': leaving['color'],
+                    'turn': state.turn_number,
+                    'captured': None,
+                    'attacked': False,
+                    'damage_dealt': 0,
+                    'defender_eliminated': False,
+                    'moved': True,
+                    # The unit as it stood when it left, HP and uid and all:
+                    # once it is off the board this record is the only place it
+                    # survives, and what the base is rebuilt from on a reload.
+                    'withdrawn': True,
+                    'unit': dict(leaving),
+                }
+                # **On a setup turn a walk home is deployment, not the turn's
+                # board action**, for the same reason a crossing is: three may
+                # go in one turn, and committing the turn on the first would
+                # hand the seat over with the other two unreachable - the
+                # allowance checked above would be a count that never counted.
+                # Overtime keeps it as the turn's action, which is what the
+                # window there is for: the toll is running and the turn's own
+                # move allowance is the only cap a walk home needs.
+                #
+                # `holding` covers the other way a walk home is not the turn's
+                # last act: in Overtime 2 a side may walk one home and still
+                # move another unit, and the first message must not hand over.
+                if is_setup_turn(state.turn_number) or holding:
+                    if not await self._commit_deployment(
+                            state, board.to_dict(), move_record, 'walk home'):
+                        return
+                else:
+                    next_player = (state.player_black if mover == state.player_white
+                                   else state.player_white)
+                    if not await self._commit_turn(
+                            state, board, move_record, config, next_player):
+                        return
+                logger.info(
+                    f"Withdrawal in game {self.game_id}: {from_key}->{to_key} by {self.username}")
+                return
+
             # A turn is "walk, then optionally swing": `to` is where the unit
             # ends up (possibly where it already stands) and `attack` names a
             # hex it strikes from there.
@@ -1558,71 +1923,17 @@ class GameConsumer(AsyncWebsocketConsumer):
             if combat['defender_hp'] is not None:
                 move_record['defender_hp'] = combat['defender_hp']
 
-            new_history = list(state.move_history) + [move_record]
-
-            winner = ''
-            end_reason = ''
-            # Who lost is a property of the board, not of who moved: a
-            # counter-attack can kill the attacker's commander on their own turn.
-            defeated_all = defeated_sides(board, config)
-            if len(defeated_all) == 2:
-                # A counter-attack can kill the attacker's commander on the
-                # attacker's own turn: nobody won that.
-                end_reason = 'draw_mutual'
-                logger.info(f"Game {self.game_id} drawn: both sides fell in one exchange")
-            elif defeated_all:
-                defeated = defeated_all[0]
-                loser = state.player_white if defeated == 'white' else state.player_black
-                winner = state.player_black if defeated == 'white' else state.player_white
-                # The objective names the ending: a regicide leaves most of the
-                # army standing, so calling it an elimination reads as a bug.
-                end_reason = ('regicide'
-                              if config.get('rules', {}).get('objective', 'regicide') == 'regicide'
-                              else 'elimination')
-                logger.info(f"Game {self.game_id} decided: {loser} lost ({defeated})")
-
-            max_turns = config.get('rules', {}).get('maxTurns', 0)
-            if not end_reason and max_turns > 0 and state.turn_number >= max_turns:
-                end_reason = 'draw_max_turns'
-
-            # Persist updated state - conditional on the game still being at
-            # state.turn_number and unfinished, so a turn timer that already
-            # ended the game while this move was in flight can't be clobbered.
-            next_turn_number = state.turn_number + 1
-            turn_started_dt = timezone.now()
-            applied = await self._update_game_state(
-                game_id=self.game_id,
-                board_state=board.to_dict(),
-                current_turn=next_player if not end_reason else state.current_turn,
-                turn_number=next_turn_number,
-                move_history=new_history,
-                winner=winner,
-                end_reason=end_reason,
-                expected_turn_number=state.turn_number,
-                turn_started_at=turn_started_dt,
-            )
-            if not applied:
-                await send_error(self, 'GAME_OVER', 'This game already ended before your move was processed')
+            # Not the turn's last move: the same seat, the same ply, the same
+            # clock, and the next message plays the next unit. The turn ends on
+            # whichever move comes without `more` - or on the last one the
+            # allowance permits, whatever it claims.
+            if holding:
+                if not await self._commit_deployment(
+                        state, board.to_dict(), move_record, 'move'):
+                    return
+            elif not await self._commit_turn(
+                    state, board, move_record, config, next_player):
                 return
-
-            await broadcast_to_group(self.channel_layer, self.room_group_name, {
-                'type': 'move_made',
-                'move': move_record,
-                'boardState': board.to_dict(),
-                'currentTurn': next_player if not end_reason else '',
-                'turnNumber': next_turn_number,
-                'turnStartedAt': turn_started_dt.isoformat(),
-            })
-
-            if end_reason:
-                await self._broadcast_game_over(self.game_id, winner, end_reason)
-            else:
-                time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
-                if time_limit > 0:
-                    await self._start_turn_timer(
-                        self.game_id, time_limit,
-                        turn_number=next_turn_number, current_turn=next_player,
-                    )
 
             logger.info(f"Move in game {self.game_id}: {from_coord}->{to_coord} by {self.username}")
         except ValidationError as e:
@@ -1630,6 +1941,440 @@ class GameConsumer(AsyncWebsocketConsumer):
         except Exception as e:
             logger.error(f"Error in _handle_make_move: {e}", exc_info=True)
             await send_error(self, 'INTERNAL_ERROR', 'Failed to process move')
+
+    async def _commit_turn(self, state, board, move_record, config, next_player) -> bool:
+        """
+        End the mover's turn: *move_record* has been applied to *board*.
+
+        Shared by every message that is the turn's board action - a move, a
+        blow into a panel - so there is one place that decides who has lost,
+        one turn limit, one optimistic write and one hand-over. They were
+        written out in full inside `_handle_make_move`, and a second copy for
+        the panel blow is exactly the drift this repo keeps paying for.
+
+        Returns False, having told the client, if a concurrent write won - a
+        turn timer that ended the game while this move was in flight.
+        """
+        new_history = list(state.move_history) + [move_record]
+
+        # Overtime's toll, as the last thing the turn does to the board: after
+        # the walk, the blow and the counter, before anyone is judged beaten -
+        # so a king the toll kills loses the match in the message that killed
+        # him. Only the side that just played pays.
+        mover_color = 'white' if state.current_turn == state.player_white else 'black'
+        overtime_toll(board, config, mover_color, state.turn_number)
+
+        winner = ''
+        end_reason = ''
+        # Who lost is a property of the board, not of who moved: a
+        # counter-attack can kill the attacker's commander on their own turn.
+        defeated_all = defeated_sides(board, config)
+        if len(defeated_all) == 2:
+            # A counter-attack can kill the attacker's commander on the
+            # attacker's own turn: nobody won that.
+            end_reason = 'draw_mutual'
+            logger.info(f"Game {self.game_id} drawn: both sides fell in one exchange")
+        elif defeated_all:
+            defeated = defeated_all[0]
+            loser = state.player_white if defeated == 'white' else state.player_black
+            winner = state.player_black if defeated == 'white' else state.player_white
+            end_reason = _ending_name(config)
+            logger.info(f"Game {self.game_id} decided: {loser} lost ({defeated})")
+
+        max_turns = config.get('rules', {}).get('maxTurns', 0)
+        if not end_reason and max_turns > 0 and state.turn_number >= max_turns:
+            end_reason = 'draw_max_turns'
+
+        # Persist updated state - conditional on the game still being at
+        # state.turn_number and unfinished, so a turn timer that already
+        # ended the game while this move was in flight can't be clobbered.
+        next_turn_number = state.turn_number + 1
+        turn_started_dt = timezone.now()
+        applied = await self._update_game_state(
+            game_id=self.game_id,
+            board_state=board.to_dict(),
+            current_turn=next_player if not end_reason else state.current_turn,
+            turn_number=next_turn_number,
+            move_history=new_history,
+            winner=winner,
+            end_reason=end_reason,
+            expected_turn_number=state.turn_number,
+            turn_started_at=turn_started_dt,
+        )
+        if not applied:
+            await send_error(self, 'GAME_OVER', 'This game already ended before your move was processed')
+            return False
+
+        await broadcast_to_group(self.channel_layer, self.room_group_name, {
+            'type': 'move_made',
+            'move': move_record,
+            'boardState': board.to_dict(),
+            'currentTurn': next_player if not end_reason else '',
+            'turnNumber': next_turn_number,
+            'turnStartedAt': turn_started_dt.isoformat(),
+        })
+
+        if end_reason:
+            await self._broadcast_game_over(self.game_id, winner, end_reason)
+        else:
+            time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
+            if time_limit > 0:
+                await self._start_turn_timer(
+                    self.game_id, time_limit,
+                    turn_number=next_turn_number, current_turn=next_player,
+                )
+        return True
+
+    async def _handle_panel_attack(self, data):
+        """
+        A board unit walks, optionally, and strikes a unit standing in a panel.
+
+        Unlike a crossing this IS the turn's board action - there is no
+        `make_move` behind it to carry the walk - so it ends the turn.
+
+        The client sends `unit`, `panel` and `counters` because the browser
+        engine needs all three. None of them is read here: the defender, the
+        panel it stands in, and whether that panel answers are derived by
+        `resolve_panel_attack` from the config and the move history. A
+        `counters: false` off the wire is precisely how a client would turn off
+        the counter-attack against its own blows, and the browser engine would
+        let it.
+        """
+        try:
+            validate_required_fields(data, ['from', 'attack'])
+
+            if not self.game_id or not self.username:
+                await send_error(self, 'NOT_IN_GAME', 'You are not in an active game')
+                return
+
+            state = await self._get_game_state(self.game_id)
+            if not state:
+                await send_error(self, 'GAME_NOT_STARTED', 'Game state not found')
+                return
+            if state.is_finished:
+                await send_error(self, 'GAME_OVER', 'This game has already ended')
+                return
+            if state.current_turn != self.username:
+                await send_error(self, 'NOT_YOUR_TURN', 'It is not your turn')
+                return
+
+            mover = state.current_turn
+            my_color = 'white' if mover == state.player_white else 'black'
+            from_key = str(data['from'])
+            # A standing strike names no walk; the browser engine defaults `to`
+            # to `from` in the same way.
+            to_key = str(data.get('to') or data['from'])
+            attack_key = str(data['attack'])
+
+            config = state.config_snapshot
+            board_cfg = config.get('board', {})
+            radius = board_cfg.get('radius', DEFAULT_CONFIG['board']['radius'])
+            orientation = board_cfg.get('orientation', 'edge-up')
+            board = HexBoard.from_dict(radius, state.board_state)
+
+            # A blow into a panel is still a blow, and nobody strikes on a turn
+            # given to setting out. The board never offered one there; nothing
+            # stopped a message from asking.
+            if is_setup_turn(state.turn_number):
+                await send_error(
+                    self, 'INVALID_MOVE', no_attack_message(state.turn_number))
+                return
+
+            outcome = resolve_panel_attack(
+                board, config, list(state.move_history),
+                from_key, to_key, attack_key, my_color, state.turn_number, orientation)
+            if 'error' in outcome:
+                await send_error(self, 'INVALID_MOVE', outcome['error'])
+                return
+
+            next_player = state.player_black if mover == state.player_white else state.player_white
+            if not await self._commit_turn(state, board, outcome['record'], config, next_player):
+                return
+
+            logger.info(
+                f"Panel blow in game {self.game_id}: {from_key}->{to_key} x {attack_key} "
+                f"by {self.username} (answered={outcome['counters']})")
+        except ValidationError as e:
+            await send_error(self, e.code, e.message)
+        except Exception as e:
+            logger.error(f"Error in _handle_panel_attack: {e}", exc_info=True)
+            await send_error(self, 'INTERNAL_ERROR', 'Failed to process panel attack')
+
+    async def _handle_enter_board(self, data):
+        """
+        Step a reserve unit through the gap onto the battlefield.
+
+        **A crossing is not the turn's board action.** Several may come through
+        in one turn, each as its own message, before whatever the turn does on
+        the board - so this hands nothing over: no ply bump, no change of turn,
+        no turn timer restart. It puts the unit on the board and writes the
+        record, and that is all. The browser engine answers the same message
+        with a full state snapshot for the same reason, and the client is built
+        around that.
+
+        **Nothing about the unit is taken from the wire.** The client sends one,
+        because the browser engine needs it, but the panels are derivable from
+        the config and the move history (`engine/panels.py`) and the server
+        derives them instead. That is the whole difference between this handler
+        and the browser engine, which says of this very message that it takes
+        the unit, the hex and the HP on trust because it "has nobody to cheat".
+        A server does.
+        """
+        try:
+            validate_required_fields(data, ['from', 'to'])
+
+            if not self.game_id or not self.username:
+                await send_error(self, 'NOT_IN_GAME', 'You are not in an active game')
+                return
+
+            state = await self._get_game_state(self.game_id)
+            if not state:
+                await send_error(self, 'GAME_NOT_STARTED', 'Game state not found')
+                return
+            if state.is_finished:
+                await send_error(self, 'GAME_OVER', 'This game has already ended')
+                return
+            if state.current_turn != self.username:
+                await send_error(self, 'NOT_YOUR_TURN', 'It is not your turn')
+                return
+
+            from_key = str(data['from'])
+            to_key = str(data['to'])
+            config = state.config_snapshot
+            board_cfg = config.get('board', {})
+            radius = board_cfg.get('radius', DEFAULT_CONFIG['board']['radius'])
+            orientation = board_cfg.get('orientation', 'edge-up')
+            my_color = 'white' if self.username == state.player_white else 'black'
+
+            history = list(state.move_history)
+            occupancy = panels.panel_occupancy(
+                config, radius, history, orientation, ply=state.turn_number)
+            unit = occupancy.get(from_key)
+            if not unit:
+                await send_error(self, 'INVALID_MOVE', 'Nothing is standing there')
+                return
+            if unit.get('color') != my_color:
+                await send_error(self, 'INVALID_MOVE', 'That unit is not yours')
+                return
+
+            # The reserve's three arrows are shut through a phase's played half
+            # and through overtime. Checked before the unit's own allowance, so
+            # a shut window is never reported as a spent one.
+            if not is_entry_open(state.turn_number):
+                await send_error(self, 'INVALID_MOVE', 'The way in is shut')
+                return
+
+            # A crossing is a reserve unit's move, so it is held to the same
+            # allowance as a walk inside the panel: not locked out of the
+            # opening, one of at most three reserve movers this turn - five in a
+            # phase initialization - and only on what it has not already walked.
+            # Without this a unit shuffled to the gateway first crossed on a
+            # full MOV it had half spent.
+            allowance = panels.panel_allowance(config, history, unit, state.turn_number)
+            if allowance is None:
+                await send_error(self, 'INVALID_MOVE', 'That unit cannot move again this turn')
+                return
+
+            board_state = dict(state.board_state)
+            targets = panels.entry_targets(
+                config, radius, occupancy, board_state, from_key, orientation,
+                moves_left=allowance)
+            if to_key not in targets:
+                await send_error(self, 'INVALID_MOVE', 'Nothing may enter there')
+                return
+
+            # The unit the SERVER derived, not the one the wire offered.
+            entering = {
+                'unit_id': unit['unit_id'],
+                'color': unit['color'],
+                'hp': unit['hp'],
+                'max_hp': unit['max_hp'],
+                'uid': unit['uid'],
+            }
+            board = HexBoard.from_dict(radius, board_state)
+            eq, er = panels.parse_key(to_key)
+            board.set_cell(eq, er, entering)
+
+            move_record = {
+                'from': from_key,
+                'to': to_key,
+                'unit_id': entering['unit_id'],
+                'color': entering['color'],
+                'turn': state.turn_number,
+                'captured': None,
+                'attacked': False,
+                'damage_dealt': 0,
+                'defender_eliminated': False,
+                'moved': True,
+                # What the client's panel derivations read, and the reason the
+                # record has to survive verbatim: `entered` takes the unit out
+                # of its panel for good, and `unit` carries the uid saying
+                # which one. Drop either and the panel re-deals it at home,
+                # alive and ready to cross again.
+                'entered': True,
+                'unit': entering,
+            }
+            if not await self._commit_deployment(state, board.to_dict(), move_record, 'crossing'):
+                return
+            logger.info(
+                f"Crossing in game {self.game_id}: {from_key}->{to_key} by {self.username}")
+        except ValidationError as e:
+            await send_error(self, e.code, e.message)
+        except Exception as e:
+            logger.error(f"Error in _handle_enter_board: {e}", exc_info=True)
+            await send_error(self, 'INTERNAL_ERROR', 'Failed to process crossing')
+
+    async def _commit_deployment(self, state, board_state, move_record, what) -> bool:
+        """
+        Record a panel unit's move that is NOT the turn's board action - a
+        crossing out of a reserve, or a walk inside a panel - and tell the room.
+
+        **Deployment hands nothing over**: the same seat, the same ply, the same
+        clock. Several may come through in one turn, each as its own message,
+        before whatever the turn does on the board. Answered with a full
+        snapshot, the way the browser engine answers them - `move_made` would
+        hand the room a turn that has not happened.
+
+        Shared by both, for the same reason `_commit_turn` is shared by every
+        turn-ending action: two copies of one rule drift. Returns False, having
+        told the client, if a concurrent write won.
+        """
+        new_history = list(state.move_history) + [move_record]
+        applied = await self._update_game_state(
+            game_id=self.game_id,
+            board_state=board_state,
+            current_turn=state.current_turn,
+            turn_number=state.turn_number,
+            move_history=new_history,
+            winner=state.winner,
+            end_reason=state.end_reason,
+            expected_turn_number=state.turn_number,
+            turn_started_at=state.turn_started_at,
+        )
+        if not applied:
+            await send_error(
+                self, 'GAME_OVER', f'This game already ended before your {what} was processed')
+            return False
+
+        await broadcast_to_group(self.channel_layer, self.room_group_name, {
+            'type': 'game_state_update',
+            'gameId': self.game_id,
+            'boardState': board_state,
+            'currentTurn': state.current_turn,
+            'turnNumber': state.turn_number,
+            'moveHistory': new_history,
+            'playerWhite': state.player_white,
+            'playerBlack': state.player_black,
+            'winner': state.winner,
+            'endReason': state.end_reason,
+            'config': state.config_snapshot,
+            'turnStartedAt': (state.turn_started_at or timezone.now()).isoformat(),
+            'drawOfferedBy': '',
+        })
+        return True
+
+    async def _handle_panel_move(self, data):
+        """
+        Walk a unit inside its own panel - or, from a base, over the wrap into
+        its reserve.
+
+        This never reached any engine. The board moved the unit in its own memory
+        and sent nothing, so the server's idea of where a panel unit stood was
+        wrong from the first shuffle, and a crossing made from the unit's new hex
+        was refused as "nothing is standing there". Recorded now, and replayed
+        in order by `panel_occupancy`, so the server and both screens agree -
+        and so the position survives a reload, where it used to be re-dealt.
+
+        Like a crossing it is deployment, not the turn's action. The walk's MOV
+        and the wrap's price are derived here, not read off the message: the
+        server works out what the walk cost from where the unit really stands,
+        and what the side really has to spend from the history.
+        """
+        try:
+            validate_required_fields(data, ['from', 'to'])
+
+            if not self.game_id or not self.username:
+                await send_error(self, 'NOT_IN_GAME', 'You are not in an active game')
+                return
+
+            state = await self._get_game_state(self.game_id)
+            if not state:
+                await send_error(self, 'GAME_NOT_STARTED', 'Game state not found')
+                return
+            if state.is_finished:
+                await send_error(self, 'GAME_OVER', 'This game has already ended')
+                return
+            if state.current_turn != self.username:
+                await send_error(self, 'NOT_YOUR_TURN', 'It is not your turn')
+                return
+
+            from_key = str(data['from'])
+            to_key = str(data['to'])
+            config = state.config_snapshot
+            board_cfg = config.get('board', {})
+            radius = board_cfg.get('radius', DEFAULT_CONFIG['board']['radius'])
+            orientation = board_cfg.get('orientation', 'edge-up')
+            my_color = 'white' if self.username == state.player_white else 'black'
+            ply = state.turn_number
+            history = list(state.move_history)
+
+            occupancy = panels.panel_occupancy(config, radius, history, orientation, ply=ply)
+            unit = occupancy.get(from_key)
+            if not unit:
+                await send_error(self, 'INVALID_MOVE', 'Nothing is standing there')
+                return
+            if unit.get('color') != my_color:
+                await send_error(self, 'INVALID_MOVE', 'That unit is not yours')
+                return
+
+            points = economy.points_of(my_color, ply, history, config)
+            targets = panels.panel_move_targets(
+                config, radius, history, dict(state.board_state), from_key, ply, points,
+                orientation)
+            step = targets.get(to_key)
+            if not step:
+                await send_error(self, 'INVALID_MOVE', 'That unit cannot walk there')
+                return
+
+            move_record = {
+                'from': from_key,
+                'to': to_key,
+                'unit_id': unit['unit_id'],
+                'color': unit['color'],
+                'turn': ply,
+                'captured': None,
+                'attacked': False,
+                'damage_dealt': 0,
+                'defender_eliminated': False,
+                'moved': True,
+                # What the panels are replayed from. `panel` is where the walk
+                # BEGAN, which is what decides whose mover it spends - the wrap
+                # starts in the base. `cost` is what the next step this turn has
+                # left to spend; `price` is what the side paid for the wrap.
+                'panelMove': True,
+                'panel': unit.get('panel'),
+                'cost': step['cost'],
+                'price': step['price'],
+                'unit': {
+                    'unit_id': unit['unit_id'],
+                    'color': unit['color'],
+                    'hp': unit.get('hp'),
+                    'max_hp': unit.get('max_hp'),
+                    'uid': unit.get('uid'),
+                },
+            }
+            # Nothing on the board moves: both ends are panel hexes.
+            if not await self._commit_deployment(
+                    state, dict(state.board_state), move_record, 'panel move'):
+                return
+            logger.info(
+                f"Panel move in game {self.game_id}: {from_key}->{to_key} by {self.username}"
+                f" (cost={step['cost']}, price={step['price']})")
+        except ValidationError as e:
+            await send_error(self, e.code, e.message)
+        except Exception as e:
+            logger.error(f"Error in _handle_panel_move: {e}", exc_info=True)
+            await send_error(self, 'INTERNAL_ERROR', 'Failed to process panel move')
 
     async def _handle_pass_turn(self, data):
         """Hand the turn over without moving anything - a unit turn is optional."""
@@ -1655,20 +2400,18 @@ class GameConsumer(AsyncWebsocketConsumer):
             next_player = state.player_black if mover == state.player_white else state.player_white
 
             config = state.config_snapshot
-            end_reason = ''
-            max_turns = config.get('rules', {}).get('maxTurns', 0)
-            if max_turns > 0 and state.turn_number >= max_turns:
-                end_reason = 'draw_max_turns'
+            # The toll, and whether it ended the match - see _settle_pass.
+            board_state, winner, end_reason = _settle_pass(state)
 
             next_turn_number = state.turn_number + 1
             turn_started_dt = timezone.now()
             applied = await self._update_game_state(
                 game_id=self.game_id,
-                board_state=state.board_state,
+                board_state=board_state,
                 current_turn=next_player if not end_reason else state.current_turn,
                 turn_number=next_turn_number,
                 move_history=list(state.move_history),
-                winner='',
+                winner=winner,
                 end_reason=end_reason,
                 expected_turn_number=state.turn_number,
                 turn_started_at=turn_started_dt,
@@ -1681,13 +2424,16 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'type': 'turn_passed',
                 'passedBy': mover,
                 'color': my_color,
+                # The board the toll left. `applyTurnPassed` already takes one;
+                # its own comment said "the networked server sends none".
+                'boardState': board_state,
                 'currentTurn': next_player if not end_reason else '',
                 'turnNumber': next_turn_number,
                 'turnStartedAt': turn_started_dt.isoformat(),
             })
 
             if end_reason:
-                await self._broadcast_game_over(self.game_id, '', end_reason)
+                await self._broadcast_game_over(self.game_id, winner, end_reason)
             else:
                 time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
                 if time_limit > 0:
@@ -1839,6 +2585,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self._update_player_activity(self.username)
                 structured_log('debug', 'heartbeat_received', username=self.username)
 
+            # A socket sitting in a room is a seat in use. The token was only
+            # refreshed on join, so a match played for ten minutes without a
+            # reload answered TOKEN_EXPIRED to the first rejoin after a dropped
+            # connection - and the grace timer forfeited it.
+            if self.game_id:
+                await self._keep_game_token_alive(self.game_id)
+
             await send_json_response(self, {
                 'type': 'heartbeat_ack',
                 'timestamp': timezone.now().isoformat()
@@ -1884,6 +2637,36 @@ class GameConsumer(AsyncWebsocketConsumer):
         return connection
     
     @database_sync_to_async
+    def _claim_player_connection(self, username, channel_name, secret, takeover=False):
+        """Take `username` for this channel. True if it is ours afterwards.
+
+        One statement, so there is no window to race: the check-then-write
+        this replaces let two clients that both saw the name free both write
+        it, and `update_or_create` on the primary key then handed the second
+        the first's row - channel name and identity secret with it.
+
+        `takeover` is the rejoin path, where the caller has already matched
+        the stored secret and replacing the row is the whole point.
+        """
+        fields = {
+            'channel_name': channel_name,
+            'status': 'online',
+            'secret': secret,
+            'last_activity': timezone.now(),
+        }
+        if takeover:
+            PlayerConnection.objects.update_or_create(  # type: ignore
+                username=username, defaults=fields)
+            return True
+        connection, created = PlayerConnection.objects.get_or_create(  # type: ignore
+            username=username, defaults=fields)
+        if not created and connection.channel_name == channel_name:
+            # The same socket saying hello twice. Already ours; refresh it.
+            PlayerConnection.objects.filter(username=username).update(**fields)  # type: ignore
+            return True
+        return created
+
+    @database_sync_to_async
     def _update_player_status(self, username, status):
         """Update a player's status"""
         rows_updated = PlayerConnection.objects.filter(username=username).update(  # type: ignore
@@ -1904,6 +2687,25 @@ class GameConsumer(AsyncWebsocketConsumer):
             qs = qs.filter(channel_name=channel_name)
         qs.delete()
     
+    @database_sync_to_async
+    def _reclaimed_by_newer_socket(self, username, channel_name, status=None):
+        """True when this username's row belongs to some *other* channel now.
+
+        The row is the seat - _handle_join_lobby and _handle_join_game_room
+        both write their own channel name into it - so a disconnect whose
+        channel no longer matches is a socket the player has already
+        replaced, arriving late.
+
+        `status` narrows which kind of replacement counts. 'in-game' asks
+        specifically whether they are back at a board, because turning up in
+        the lobby instead is not a reason to spare their opponent a forfeit.
+        """
+        rows = PlayerConnection.objects.filter(  # type: ignore
+            username=username).exclude(channel_name=channel_name)
+        if status is not None:
+            rows = rows.filter(status=status)
+        return rows.exists()
+
     @database_sync_to_async
     def _any_player_connected(self, usernames):
         """True while at least one of *usernames* is still heartbeating.
@@ -1940,6 +2742,15 @@ class GameConsumer(AsyncWebsocketConsumer):
             return None
     
     @database_sync_to_async
+    def _expire_stale_challenges(self):
+        """Async wrapper for the shared sweep - see utils.expire_stale_challenges.
+
+        The 30 seconds in get_challenge_expiration_time is the backstop for a
+        responder who is no longer there to run the client's own countdown.
+        """
+        return expire_stale_challenges()
+
+    @database_sync_to_async
     def _create_challenge(self, challenger, responder):
         """Create a new game challenge"""
         challenge = GameChallenge.objects.create(  # type: ignore
@@ -1965,7 +2776,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         """Create a new game room with access tokens"""
         host_token = secrets.token_hex(32)
         opponent_token = secrets.token_hex(32)
-        token_expires = timezone.now() + timedelta(minutes=10)
+        token_expires = timezone.now() + GAME_TOKEN_LIFETIME
         
         game = GameRoom.objects.create(  # type: ignore
             game_id=game_id,
@@ -1986,6 +2797,46 @@ class GameConsumer(AsyncWebsocketConsumer):
         except GameRoom.DoesNotExist:  # type: ignore
             return None
     
+    @database_sync_to_async
+    def _refresh_game_token(self, game_id):
+        """Restart the access token's clock, from now.
+
+        The expiry is there so an invite nobody used goes stale, not so a
+        player is locked out of the room they are sitting in - see the call
+        site in _handle_join_game_room for what that cost.
+        """
+        GameRoom.objects.filter(game_id=game_id).update(  # type: ignore
+            token_expires_at=timezone.now() + GAME_TOKEN_LIFETIME)
+
+    @database_sync_to_async
+    def _keep_game_token_alive(self, game_id):
+        """Restart the token's clock from a heartbeat, once half of it has run.
+
+        Heartbeats arrive every fifteen seconds, and the clock only needs
+        moving every few minutes. The condition is in the query, so this is one
+        statement whether it writes or not.
+        """
+        now = timezone.now()
+        GameRoom.objects.filter(  # type: ignore
+            game_id=game_id, token_expires_at__lt=now + GAME_TOKEN_LIFETIME / 2,
+        ).update(token_expires_at=now + GAME_TOKEN_LIFETIME)
+
+    @database_sync_to_async
+    def _claim_invite_pair(self, challenger, opponent):
+        """Mark both players invited, in one statement, if neither is busy.
+
+        All or nothing: a pair where one of them is already taken is rolled
+        back rather than left half-claimed.
+        """
+        with transaction.atomic():
+            claimed = PlayerConnection.objects.filter(  # type: ignore
+                username__in=[challenger, opponent],
+            ).exclude(status__in=['in-game', 'invited']).update(
+                status='invited', last_activity=timezone.now())
+            if claimed != 2:
+                transaction.set_rollback(True)
+        return claimed == 2
+
     @database_sync_to_async
     def _update_game_status(self, game_id, status):
         """Update game status"""
@@ -2058,9 +2909,21 @@ class GameConsumer(AsyncWebsocketConsumer):
     
     @database_sync_to_async
     def _all_players_ready(self, game_id):
-        """Check if all players in a game are ready"""
-        statuses = PlayerReadyStatus.objects.filter(game_id=game_id)  # type: ignore
-        return statuses.exists() and all(s.is_ready for s in statuses)
+        """True only when BOTH seats have readied.
+
+        `all()` over whatever rows exist answers a different question: a
+        disconnect deletes the leaver's row (see _cleanup_game_room_connection),
+        so the last row standing was the host's own and the check passed with
+        nobody left to play against.
+        """
+        try:
+            game = GameRoom.objects.get(game_id=game_id)  # type: ignore
+        except GameRoom.DoesNotExist:  # type: ignore
+            return False
+        seats = {name for name in (game.host, game.opponent) if name}
+        ready = set(PlayerReadyStatus.objects.filter(  # type: ignore
+            game_id=game_id, is_ready=True).values_list('username', flat=True))
+        return bool(seats) and seats <= ready
     
     @database_sync_to_async
     def _get_ready_statuses(self, game_id):

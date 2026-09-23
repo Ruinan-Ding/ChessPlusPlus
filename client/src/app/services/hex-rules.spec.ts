@@ -1,6 +1,7 @@
 import {
   attackTiers, captureClaims, captureScore, captureZoneHexes, computeAttackZone,
-  computeLegalMoves, computeMoveCosts, strikeDamage,
+  computeLegalMoves, computeMoveCosts, inHomeRows, strikeDamage, HOME_ROWS,
+  MIN_STRIKE_DAMAGE,
 } from './hex-rules';
 
 /**
@@ -77,8 +78,41 @@ describe('strikeDamage', () => {
     expect(strikeDamage('archer', 'guard', 2, config)).toBe(9);
   });
 
-  it('floors at zero - armour absorbs, it never heals', () => {
-    expect(strikeDamage('guard', 'wall', 1, config)).toBe(0);
+  it('floors at MIN_STRIKE_DAMAGE - armour blunts, it never turns aside', () => {
+    // 14 attack into 30 defence is -16, and it used to floor at 0: the pair
+    // could trade blows all game and neither would ever move. A blow that
+    // lands takes something off.
+    expect(strikeDamage('guard', 'wall', 1, config)).toBe(MIN_STRIKE_DAMAGE);
+  });
+
+  it('takes the floor from the config, so it cannot drift from the server', () => {
+    // The dial lives in `rules.minStrikeDamage` rather than in a constant on
+    // each side: a client flooring at 1 against a server flooring at 0
+    // disagrees about who is still standing. Same config object that already
+    // carries rangeFalloff.
+    const withFloor = (min: number) => ({ ...config, rules: { ...config.rules, minStrikeDamage: min } });
+    // 14 attack into 30 defence.
+    expect(strikeDamage('guard', 'wall', 1, withFloor(1))).toBe(1);
+    // 0 is the old rule - armour absorbs the hit whole - and still reachable.
+    expect(strikeDamage('guard', 'wall', 1, withFloor(0))).toBe(0);
+    // A dial, not a flag.
+    expect(strikeDamage('guard', 'wall', 1, withFloor(5))).toBe(5);
+    // But never more than the attacker could deal unblunted: the floor lifts a
+    // hit armour absorbed, it is not a damage source of its own. Unclamped, a
+    // big floor would override attack, defence and falloff all at once. The
+    // guard's attack is 14, so 14 is the cap.
+    expect(strikeDamage('guard', 'wall', 1, withFloor(9999))).toBe(14);
+    // A config that names no floor falls back to the shipped default.
+    expect(strikeDamage('guard', 'wall', 1, config)).toBe(MIN_STRIKE_DAMAGE);
+  });
+
+  it('leaves an attack of nothing at nothing', () => {
+    // The floor lifts a blow that was blunted, not one that was never thrown.
+    const unarmed = {
+      ...config,
+      units: { ...config.units, guard: { ...config.units.guard, attack: 0 } },
+    };
+    expect(strikeDamage('guard', 'wall', 1, unarmed)).toBe(0);
   });
 
   it('adds a boost to the scaled ring, which is where the hex shows it', () => {
@@ -87,8 +121,8 @@ describe('strikeDamage', () => {
     expect(strikeDamage('archer', 'guard', 2, config, 2)).toBe(11);
     // A defence boost comes off after the scaling, like the panel's "12/10".
     expect(strikeDamage('archer', 'guard', 1, config, 0, 4)).toBe(12);
-    // Armour still cannot heal.
-    expect(strikeDamage('guard', 'wall', 1, config, 0, 5)).toBe(0);
+    // Armour still cannot heal, and a boost cannot push it past the floor.
+    expect(strikeDamage('guard', 'wall', 1, config, 0, 5)).toBe(MIN_STRIKE_DAMAGE);
   });
 
   it('lists one damage figure per ring for the hex glyph', () => {
@@ -222,5 +256,46 @@ describe('capture zones', () => {
     // Seven each, less the four hexes they share: their own two and the two
     // either side of the pair.
     expect(captureScore(claims, 'white')).toBe(10);
+  });
+});
+
+/**
+ * Each side's own first three rows. They bound both ends of a unit's journey
+ * off the board - a crossing may not stop beyond them, and a walk home may not
+ * start outside them - and they are the rows the board tints as a side's own,
+ * so the tint and the rule have to agree.
+ */
+describe('inHomeRows', () => {
+  it('gives each side the three rows nearest its own edge', () => {
+    expect(HOME_ROWS).toBe(3);
+    expect([9, 10, 11].every(r => inHomeRows('white', r, 11))).toBeTrue();
+    expect([-9, -10, -11].every(r => inHomeRows('black', r, 11))).toBeTrue();
+  });
+
+  it('stops one row short of the fourth', () => {
+    expect(inHomeRows('white', 8, 11)).toBeFalse();
+    expect(inHomeRows('black', -8, 11)).toBeFalse();
+    // And the middle of the board belongs to nobody.
+    expect(inHomeRows('white', 0, 11)).toBeFalse();
+    expect(inHomeRows('black', 0, 11)).toBeFalse();
+  });
+
+  it('never gives a side the other\'s ground', () => {
+    expect(inHomeRows('white', -11, 11)).toBeFalse();
+    expect(inHomeRows('black', 11, 11)).toBeFalse();
+  });
+
+  it('is a point mirror of itself', () => {
+    for (let r = -11; r <= 11; r++) {
+      expect(inHomeRows('white', r, 11)).toBe(inHomeRows('black', -r, 11));
+    }
+  });
+
+  it('holds on a board too small to have three rows a side', () => {
+    // Radius 2 would put the edge at row 0, which is both sides' at once.
+    // Clamped to 1, so the two never overlap however small the board.
+    expect(inHomeRows('white', 1, 2)).toBeTrue();
+    expect(inHomeRows('black', 1, 2)).toBeFalse();
+    expect(inHomeRows('white', 0, 2)).toBeFalse();
   });
 });

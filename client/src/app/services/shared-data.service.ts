@@ -1,6 +1,12 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 
+/**
+ * How much lobby chat a tab keeps. Nobody scrolls back further, and without
+ * a cap the array grows for as long as the tab is open.
+ */
+const MAX_LOBBY_MESSAGES = 500;
+
 export type UserStatus = 'online' | 'invited' | 'configuring' | 'in-game';
 export type MessageType = 'system' | 'user';
 
@@ -39,7 +45,7 @@ export class SharedDataService {
   
   addLobbyMessage(message: ChatMessage): void {
     const currentMessages = this.lobbyMessagesSubject.value;
-    this.lobbyMessagesSubject.next([...currentMessages, message]);
+    this.lobbyMessagesSubject.next([...currentMessages, message].slice(-MAX_LOBBY_MESSAGES));
   }
   
   // Methods to update users

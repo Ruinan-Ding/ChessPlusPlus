@@ -15,14 +15,18 @@ const LOCAL_GAME_TYPES = new Set([
   // the browser engine answers it; no server has a restart protocol yet,
   // which is why the button offers it in solo alone.
   'reset_game',
-  // Walking a reserve onto the board. The browser engine is the only one that
-  // answers it - no server has a panel to take a unit out of - and the board
-  // only offers the crossing in a solo game (`entryBind`) for that reason.
+  // Walking a reserve onto the board. Both engines answer it: the server
+  // derives the panels from the config and the move history.
   'enter_board',
-  // A reserve swinging at the battlefield from inside its panel. Same reason
-  // as above: the attacker is the client's, so only the browser engine can
-  // resolve it.
+  // A blow struck into a panel. Both engines answer it; the server works out
+  // the defender, its panel and whether it answers rather than reading them.
   'panel_attack',
+  // A walk inside a panel, or the wrap out of a base. It used to reach no
+  // engine at all - the board moved the unit in its own memory - so the other
+  // player never saw a shuffle and the server refused a crossing from where
+  // the shuffle left the unit.
+  'panel_move',
+
   'game_room_message',
 ]);
 
@@ -51,8 +55,8 @@ export class WebsocketService {
   // typing a username never drags the connection dialog back up.
   private offline = false;
   
-  private maxReconnectAttempts = 5;
-  private reconnectInterval = 3000; // 3 seconds
+  private maxReconnectAttempts = WEBSOCKET_CONFIG.MAX_RECONNECT_ATTEMPTS;
+  private reconnectInterval = WEBSOCKET_CONFIG.RECONNECT_INTERVAL_MS;
   private reconnectTimeout: any = null;
   /**
    * Give up on a handshake that never resolves. Chrome throttles repeated
@@ -196,10 +200,16 @@ export class WebsocketService {
     this.socket = null;
 
     try {
-      const { protocol, hostname } = window.location;
+      const { protocol, hostname, port, host } = window.location;
       const wsProtocol = protocol === 'https:' ? 'wss' : 'ws';
-      const backendPort = WEBSOCKET_CONFIG.BACKEND_PORT;
-      const wsUrl = `${wsProtocol}://${hostname}:${backendPort}/ws/game/${roomName}/`;
+      // The server that served the page is the server that answers the
+      // socket - except under `ng serve`, which proxies nothing and has to be
+      // pointed at daphne by hand. Pinning the backend port unconditionally
+      // dialled :8000 on a deployment sitting behind TLS on 443.
+      const wsHost = port === WEBSOCKET_CONFIG.DEV_SERVER_PORT
+        ? `${hostname}:${WEBSOCKET_CONFIG.BACKEND_PORT}`
+        : host;
+      const wsUrl = `${wsProtocol}://${wsHost}/ws/game/${roomName}/`;
       console.log(`[WebSocket] Attempting to connect to: ${wsUrl}`);
       this.socket = new WebSocket(wsUrl);
 
@@ -342,9 +352,13 @@ export class WebsocketService {
       
       console.log(`Attempting to reconnect (${currentAttempts + 1}/${this.maxReconnectAttempts})...`);
       
+      // Jittered upward: without it every client a server restart knocked off
+      // comes back in the same three-second lockstep and lands together. The
+      // interval is the floor, so the wait is never shorter than configured.
+      const delay = Math.round(this.reconnectInterval * (1 + 0.5 * Math.random()));
       this.reconnectTimeout = setTimeout(() => {
         this.createSocket(this.currentRoomName);
-      }, this.reconnectInterval);
+      }, delay);
     } else {
       console.log('Max reconnect attempts reached. Connection failed.');
       this.reconnectingSubject.next(false);

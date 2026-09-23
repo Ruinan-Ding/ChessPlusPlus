@@ -28,6 +28,13 @@
       gap: 12px;
     }
 
+    .title-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 0 0 auto;
+    }
+
     .turn-indicator {
       flex: 1 1 auto;
       margin: 0 20px;
@@ -423,11 +430,20 @@
   }
 
   // Left column: the four match panels, plain stacked rectangles.
+  //
+  // The basis gives way on a narrow window. Both rails used to be fixed, so
+  // 260 + 320 + two 20px gaps came off the top whatever the window was: in a
+  // 940px one the board was left about 300px, the whole SVG scaled to roughly
+  // a quarter to fit it, and a 22px end-of-turn mark landed on screen at 6px.
+  // The marks were drawn correctly the whole time and were simply too small
+  // to read. clamp() hands the board back ~160px of that at narrow widths and
+  // still opens out to the full rail once there is room - the board is scaled
+  // to fit, so every pixel the rails give back is board.
   .match-panels {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    flex: 0 0 260px;
+    flex: 0 0 clamp(190px, 18vw, 260px);
     min-height: 0;
     overflow-y: auto;
   }
@@ -1173,12 +1189,13 @@
   }
 
   // Right column: Game and Lobby share one tabbed rail so they aren't both
-  // claiming screen width at once. Fixed rail, not a proportional share.
+  // claiming screen width at once. Gives way the same way .match-panels does,
+  // and for the same reason - see the note there.
   .side-rail {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    flex: 0 0 320px;
+    flex: 0 0 clamp(230px, 22vw, 320px);
     min-height: 0;
   }
 

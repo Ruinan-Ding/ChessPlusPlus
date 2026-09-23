@@ -2,6 +2,7 @@ import { Injectable } from '@angular/core';
 import { BehaviorSubject, Subscription } from 'rxjs';
 import { SharedDataService, ChatMessage } from './shared-data.service';
 import { WebsocketService } from './websocket.service';
+import { readStore } from './storage';
 
 
 @Injectable({
@@ -74,7 +75,7 @@ export class LobbyService {
       this.messagesSub.unsubscribe();
       this.messagesSub = null;
     }
-    this.wsService.sendMessage({ type: 'leave_lobby', username: localStorage.getItem('username') || '' });
+    this.wsService.sendMessage({ type: 'leave_lobby', username: readStore('local', 'username') || '' });
     this.wsService.disconnect();
   }
 }

@@ -6,8 +6,21 @@ export interface PlayableAction {
   to: string;
   attack: string | null;
   killed?: string;
+  /** Who was killed there, when something was. */
+  killedUnit?: { color: 'white' | 'black' };
+  /**
+   * Whether the defender actually answered. Not derivable from the rest: a
+   * base never counters however alive it is, and neither does anything the
+   * attacker stood outside the reach of.
+   */
+  countered?: boolean;
   /** Present when the action was an ability cast rather than a move. */
-  spend?: { index: number; row?: string; hex?: string; side?: 'mine' | 'opponent' };
+  spend?: {
+    index: number; row?: string; hex?: string; uid?: string;
+    side?: 'mine' | 'opponent';
+  };
+  /** What the cast did to the target's HP: `+20`, `-14`. Drawn over it. */
+  mark?: string;
 }
 
 /**
@@ -41,13 +54,25 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
         : { index: action.spend.index, ...(action.spend.side ? { side: action.spend.side } : {}) };
       // Every cast gets its beat, hex or no hex - a universal one is the
       // button alone, and the board simply holds for it.
-      steps.push({ kind: 'ability', from: target, to: target, ...slot, brief: collapseMoves });
+      steps.push({
+        kind: 'ability', from: target, to: target, ...slot,
+        brief: collapseMoves, ...(action.mark ? { mark: action.mark } : {}),
+        // Whose mark it is. The recap plays against the board the turn ended
+        // on, so the hex is not enough to say who the cast landed on.
+        ...(action.spend.uid ? { uid: action.spend.uid } : {}),
+        // And, for a kill, whose it was: nobody is left to read it off.
+        ...(action.killedUnit ? { color: action.killedUnit.color } : {}),
+      });
       continue;
     }
     if (action.attack) {
       steps.push({ kind: 'attack', from: action.to, to: action.attack });
-      // The defender answers unless this blow killed it - see onPlayerAttack.
-      if (action.killed !== action.attack) {
+      // Only if it answered. `killed` alone used to stand in for that, which
+      // played a counter beat for every blow a base absorbed and every one
+      // struck from outside the defender's reach - see onPlayerAttack. The
+      // fallback is for a turn staged before this was recorded and restored
+      // off disk afterwards.
+      if (action.countered ?? (action.killed !== action.attack)) {
         steps.push({ kind: 'counter', from: action.attack, to: action.to });
       }
       standing = action.to;

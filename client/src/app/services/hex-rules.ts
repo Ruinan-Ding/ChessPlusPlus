@@ -20,6 +20,63 @@ export const HEX_DIRS: [number, number][] = [
 ];
 
 /** Rings from the origin to (q, r) - the hex metric, in one place. */
+/**
+ * The two panels that are a **base** - each player's left plane, bottom-left
+ * for white and top-right for black. The other pair is the reserve.
+ *
+ * The two are told apart for what is allowed *out* of them (the wrap leaves a
+ * base, the battlefield is entered from a reserve) and for what happens *in*
+ * them: **a base mends its wounded and a reserve does not.** Which is why
+ * this lives here rather than in the board that draws them - the room derives
+ * the mending and has to answer the same question.
+ */
+export const BASE_PANELS = new Set(['bl', 'tr']);
+
+/**
+ * Whether a new game deals squads into the panels. Mirrors `PANELS_DEALT` in
+ * `server/game/engine/panels.py`, and the two must be turned back on together
+ * or the two sides of a networked game disagree about who is standing where.
+ *
+ * **Temporarily off**: the owner is clearing the placeholder squads out, so a
+ * new game opens with all four panels empty. Everything that *works* a panel
+ * is untouched and still tested - the walk, the wrap, the crossing, the blow,
+ * the walk home, and the windows and allowances over all of them - because a
+ * rule nobody exercises while it is being changed is a rule that rots.
+ *
+ * Mutable so the specs can deal a board to test that machinery on; nothing in
+ * the app writes to it. `setPanelsDealt` is the only writer.
+ */
+export let PANELS_DEALT = false;
+
+/** Turn the deal on or off. For the specs - the app never calls this. */
+export function setPanelsDealt(on: boolean): void {
+  PANELS_DEALT = on;
+}
+
+/**
+ * How deep a side's own ground runs from its own edge inwards - the "first
+ * three rows". Mirrors `HOME_ROWS` in server/game/engine/panels.py.
+ */
+export const HOME_ROWS = 3;
+
+/**
+ * Whether row `r` is one of `color`'s own first three.
+ *
+ * The ground a side deploys onto, and the bound on both ends of a unit's
+ * journey off the board: a crossing out of the reserve may not land beyond it,
+ * and a unit may only walk home from inside it.
+ *
+ * White's edge is positive `r` and black's negative, so on radius 11 white
+ * holds rows 9, 10 and 11 and black the mirror. Read off the radius rather
+ * than off the placement, because this marks the ground a side *owns* - still
+ * its ground on a config that leaves some of those hexes empty, which is also
+ * why the board's `homeOf` tint reads the same answer from here.
+ */
+export function inHomeRows(color: string, r: number, radius: number): boolean {
+  const edge = Math.max(1, radius - (HOME_ROWS - 1));
+  return color === 'white' ? r >= edge : r <= -edge;
+}
+
 export function hexDistance(q: number, r: number): number {
   return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
 }
@@ -280,12 +337,36 @@ export function hexDistanceKeys(a: string, b: string): number {
 }
 
 /**
+ * Fallback for a config that names no floor at all. `normaliseConfig` fills
+ * `rules.minStrikeDamage` in from `DEFAULT_GAME_CONFIG`, so this is only
+ * reached by a caller that hand-built a config object without going through
+ * the config service - several specs do exactly that.
+ */
+export const MIN_STRIKE_DAMAGE = 1;
+
+/**
  * Damage one unit lands on another: ring-scaled attack less the defender's
- * defence, floored at 0. Mirrors strike_damage() in game_logic.py.
+ * defence, floored at `rules.minStrikeDamage`. Mirrors strike_damage() in
+ * game_logic.py.
+ *
+ * At the default of 1 a blow that lands always takes something off. It used
+ * to floor at 0, and the owner's report was *"some shit simply doesn't seem
+ * to take any hit"* - which was the formula working exactly as written: a
+ * pawn (14 attack) against a shieldman (18 defence) came to -4 and floored to
+ * nothing, so the pair could trade blows all game and neither would ever
+ * move. Set the dial to 0 to have that back.
  *
  * A one-turn ability boost rides on top of the scaled numbers rather than the
  * raw stat, because that is where the hex and the unit panel show it: a +2 on
  * a unit whose second ring reads 19 makes that ring 21, not 21 less falloff.
+ *
+ * An attack of nothing is still nothing: the floor lifts a blow that was
+ * blunted, not one that was never thrown. Without that guard a unit with no
+ * attack stat at all would chip away a point a turn.
+ *
+ * Read off the config rather than a constant so the browser and the server
+ * cannot drift - this is the same config object `rangedDamage` takes
+ * `rangeFalloff` from, and `strike_damage()` reads the same field.
  */
 export function strikeDamage(
   attackerId: string, defenderId: string, distance: number, config: any,
@@ -294,5 +375,12 @@ export function strikeDamage(
   const attacker = config?.units?.[attackerId] ?? {};
   const defender = config?.units?.[defenderId] ?? {};
   const attack = rangedDamage(attacker.attack ?? 1, distance, config) + atkBonus;
-  return Math.max(0, attack - ((defender.defense ?? 0) + defBonus));
+  if (attack <= 0) return 0;
+  // Never more than the attacker could deal unblunted. The floor lifts a hit
+  // that armour absorbed; it is not a damage source of its own, and without
+  // this clamp a large `minStrikeDamage` would override the attack stat
+  // outright - every blow dealing the floor regardless of attack, defence or
+  // ring falloff, which makes all three dead config.
+  const floor = config?.rules?.minStrikeDamage ?? MIN_STRIKE_DAMAGE;
+  return Math.min(attack, Math.max(floor, attack - ((defender.defense ?? 0) + defBonus)));
 }

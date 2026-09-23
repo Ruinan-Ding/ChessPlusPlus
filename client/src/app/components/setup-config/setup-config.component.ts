@@ -7,6 +7,10 @@ import { WebsocketService } from '../../services/websocket.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
+// Reading storage directly throws in private browsing and with site data
+// blocked - and the first two reads below sit in ngOnInit, where that takes
+// the whole screen down rather than losing one remembered value.
+import { readStore, removeStore } from '../../services/storage';
 
 @Component({
   selector: 'app-setup-config',
@@ -34,12 +38,12 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit(): void {
-    this.username = localStorage.getItem('username') || '';
+    this.username = readStore('local', 'username') || '';
     // The lobby already set our status to 'configuring' before navigating here
 
     // If opened from a game room, remember it so Save can push the config
     // to the server (onBack() still owns clearing this from localStorage).
-    this.gameId = localStorage.getItem('returnToGameRoom');
+    this.gameId = readStore('local', 'returnToGameRoom');
 
     this.jsonConfig = this.configService.getDefaultConfig();
     this.savedConfig = this.jsonConfig;
@@ -112,8 +116,8 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   }
 
   onBack(): void {
-    const returnToGameRoom = localStorage.getItem('returnToGameRoom');
-    const gameRoomToken = localStorage.getItem('gameRoomToken');
+    const returnToGameRoom = readStore('local', 'returnToGameRoom');
+    const gameRoomToken = readStore('local', 'gameRoomToken');
     
     let targetRoute: string[];
     let queryParams: { token?: string } = {};
@@ -124,8 +128,8 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
       if (gameRoomToken) {
         queryParams = { token: gameRoomToken };
       }
-      localStorage.removeItem('returnToGameRoom');
-      localStorage.removeItem('gameRoomToken');
+      removeStore('local', 'returnToGameRoom');
+      removeStore('local', 'gameRoomToken');
       
       this.wsService.sendMessage({
         type: 'set_status',

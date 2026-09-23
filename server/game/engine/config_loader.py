@@ -142,7 +142,178 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "defense": 10
         }
     },
-    "abilities": {},
+    # The ability catalogue, and how a side gets at it. Keyed by a STABLE id
+    # throughout - never by position - because a side's saved loadout, path and
+    # cooldowns are written by id, and a reordered list would re-point every
+    # one of them. `cost` is in whichever purse the ability draws on: points
+    # for a pool ability, CP for a path's (see `isPathSlot` in the room).
+    #
+    # A path shares its id with its own passive on purpose: the path IS its
+    # passive. They live in different namespaces - `paths` is a list, the
+    # catalogue is a map - and nothing looks one up in the other.
+    #
+    # `testing: True` marks the owner's bench rather than a balanced ability,
+    # and is what keeps Rally's 300 points out of networked play.
+    #
+    # **The engine still does not read any of this.** It is here so that
+    # tuning an ability is a config edit rather than a code change, which is
+    # the half of PUNCHLIST 6.15 that could land without the numbers settling.
+    "abilities": {
+        "slots": 4,
+        "pool": ["dash", "focus", "bulwark", "sap", "arc-bolt", "mire", "mend", "rally"],
+        "paths": [
+            {
+                "id": "bastion",
+                "name": "Bastion",
+                "cost": 6,
+                "passive": "bastion",
+                "skill": "anchor",
+                "ultimate": "fortress"
+            },
+            {
+                "id": "onslaught",
+                "name": "Onslaught",
+                "cost": 7,
+                "passive": "onslaught",
+                "skill": "cleave",
+                "ultimate": "ruin"
+            },
+            {
+                "id": "tempo",
+                "name": "Tempo",
+                "cost": 5,
+                "passive": "tempo",
+                "skill": "surge",
+                "ultimate": "blitz"
+            }
+        ],
+        "catalogue": {
+            "dash": {
+                "id": "dash",
+                "name": "Dash",
+                "target": "friendly",
+                "cost": 3,
+                "mov": 2
+            },
+            "focus": {
+                "id": "focus",
+                "name": "Focus",
+                "target": "friendly",
+                "cost": 5,
+                "atk": 2
+            },
+            "bulwark": {
+                "id": "bulwark",
+                "name": "Bulwark",
+                "target": "friendly",
+                "cost": 1,
+                "def": 3
+            },
+            "sap": {
+                "id": "sap",
+                "name": "Sap",
+                "target": "enemy",
+                "cost": 4,
+                "mov": -2,
+                "atk": -2,
+                "def": -2,
+                "damage": 6
+            },
+            "arc-bolt": {
+                "id": "arc-bolt",
+                "name": "Arc Bolt",
+                "target": "enemy",
+                "cost": 3,
+                "damage": 8
+            },
+            "mire": {
+                "id": "mire",
+                "name": "Mire",
+                "target": "enemy",
+                "cost": 2,
+                "mov": -3
+            },
+            "mend": {
+                "id": "mend",
+                "name": "Mend",
+                "target": "friendly",
+                "cost": 0,
+                "heal": 20,
+                "testing": True
+            },
+            "rally": {
+                "id": "rally",
+                "name": "Rally",
+                "target": "universal",
+                "cost": 0,
+                "points": 300,
+                "testing": True
+            },
+            "bastion": {
+                "id": "bastion",
+                "name": "Bastion",
+                "target": "friendly",
+                "cost": 0,
+                "def": 1
+            },
+            "anchor": {
+                "id": "anchor",
+                "name": "Anchor",
+                "target": "friendly",
+                "cost": 4,
+                "def": 4
+            },
+            "fortress": {
+                "id": "fortress",
+                "name": "Fortress",
+                "target": "universal",
+                "cost": 8,
+                "points": 4
+            },
+            "onslaught": {
+                "id": "onslaught",
+                "name": "Onslaught",
+                "target": "friendly",
+                "cost": 0,
+                "atk": 1
+            },
+            "cleave": {
+                "id": "cleave",
+                "name": "Cleave",
+                "target": "enemy",
+                "cost": 5,
+                "damage": 10
+            },
+            "ruin": {
+                "id": "ruin",
+                "name": "Ruin",
+                "target": "universal",
+                "cost": 8,
+                "points": 5
+            },
+            "tempo": {
+                "id": "tempo",
+                "name": "Tempo",
+                "target": "friendly",
+                "cost": 0,
+                "mov": 1
+            },
+            "surge": {
+                "id": "surge",
+                "name": "Surge",
+                "target": "friendly",
+                "cost": 3,
+                "mov": 3
+            },
+            "blitz": {
+                "id": "blitz",
+                "name": "Blitz",
+                "target": "universal",
+                "cost": 8,
+                "points": 3
+            }
+        }
+    },
     "setup": {
         # Three rows on each side of the radius-11 board, spaced so nothing
         # sits shoulder to shoulder. White's edge row is r=+11; black is the point
@@ -214,13 +385,44 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "rules": {
         # Fraction of damage lost per ring beyond the first.
         "rangeFalloff": 0.25,
+        # The least a blow that lands may deal, once defence is off it.
+        "minStrikeDamage": 1,
         "maxTurns": 0,
         "turnTimeLimit": 0,
         # A side loses when its commander dies; 'elimination' (no units left)
         # is the other supported objective.
-        "objective": "regicide"
+        "objective": "regicide",
+        # How many units each panel - the base and the reserve, separately -
+        # may start in one turn.
+        "panelMoversPerTurn": 3,
+        # How many a side may bring out of its reserve in a phase
+        # initialization. Stands instead of panelMoversPerTurn for the reserve
+        # on that turn, not beside it.
+        "phaseInitEntries": 5,
+        # How many units a side may walk home in one setup turn.
+        "homecomingsPerSetupTurn": 3,
+        # The CP each side is handed at the start of every phase.
+        "cpPerPhase": 100
     }
 }
+
+#: The rules a config may leave out and be read at their default. Each is a
+#: whole number >= 0, filled in by _normalise_config and read by rule_of.
+COUNTED_RULES = (
+    'panelMoversPerTurn', 'phaseInitEntries', 'homecomingsPerSetupTurn', 'cpPerPhase')
+
+
+def rule_of(config: Optional[Dict[str, Any]], key: str) -> Any:
+    """
+    One of *config*'s rules, or the default's when the config has none.
+
+    A room's config has been normalised by the time it is played, so the
+    fallback is for the callers that are handed no config at all.
+    """
+    rules = (config or {}).get('rules')
+    if isinstance(rules, dict) and key in rules:
+        return rules[key]
+    return DEFAULT_CONFIG['rules'][key]
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +448,18 @@ def _normalise_config(config: Dict[str, Any]) -> None:
     rules = config.get('rules')
     if rules is None and 'rules' not in config:
         rules = config['rules'] = {}
+    # Absent means the current default, not the rule that happened to be in
+    # force when the config was written.
+    #
+    # The tempting alternative - fill in 0, the old floor, so a room frozen
+    # before this existed keeps the combat it was played under - cannot tell a
+    # historical snapshot from a custom config authored today that simply did
+    # not mention the field. It would hand every new custom config the dead
+    # matchups this floor exists to remove, silently. An in-progress dev room
+    # settling its remaining blows one point differently is the cheaper of the
+    # two surprises. Read from DEFAULT_CONFIG so there is one literal.
+    if isinstance(rules, dict) and 'minStrikeDamage' not in rules:
+        rules['minStrikeDamage'] = DEFAULT_CONFIG['rules']['minStrikeDamage']
     if isinstance(rules, dict) and 'objective' not in rules:
         setup = config.get('setup') if isinstance(config.get('setup'), dict) else {}
         commanded = all(
@@ -254,6 +468,11 @@ def _normalise_config(config: Dict[str, Any]) -> None:
             for side in ('white', 'black')
         )
         rules['objective'] = 'regicide' if commanded else 'elimination'
+    # These were constants before they were config, so absent means the
+    # number every game was played under.
+    if isinstance(rules, dict):
+        for key in COUNTED_RULES:
+            rules.setdefault(key, DEFAULT_CONFIG['rules'][key])
 
 
 def _validate_config(config: Dict[str, Any]) -> List[str]:
@@ -304,6 +523,18 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
     falloff = rules.get('rangeFalloff', 0)
     if not isinstance(falloff, (int, float)) or isinstance(falloff, bool) or not 0 <= falloff <= 1:
         errors.append(f"rules.rangeFalloff must be a number 0-1, got {falloff}")
+
+    # Checked because a negative floor corrupts the board rather than merely
+    # unbalancing it: strike_damage would return a negative number and
+    # HexBoard.deal_damage subtracts it, so a blow would heal whatever it hit.
+    floor = rules.get('minStrikeDamage', 0)
+    if not isinstance(floor, int) or isinstance(floor, bool) or floor < 0:
+        errors.append(f"rules.minStrikeDamage must be an integer >= 0, got {floor}")
+
+    for key in COUNTED_RULES:
+        count = rules.get(key, 0)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            errors.append(f"rules.{key} must be an integer >= 0, got {count}")
 
     if 'setup' not in config:
         errors.append("Missing 'setup'")

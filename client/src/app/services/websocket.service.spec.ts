@@ -42,6 +42,11 @@ describe('WebsocketService reconnect escalation', () => {
     realWebSocket = (window as any).WebSocket;
     StalledSocket.instances = [];
     (window as any).WebSocket = StalledSocket;
+    // The reconnect wait is jittered upward from the configured interval.
+    // Pinning the roll to zero puts it back on exactly that interval, so the
+    // tick arithmetic in runAttempts stays honest; the spread has its own
+    // spec below.
+    spyOn(Math, 'random').and.returnValue(0);
     jasmine.clock().install();
 
     TestBed.configureTestingModule({
@@ -108,6 +113,28 @@ describe('WebsocketService reconnect escalation', () => {
     expect(service.isOffline()).toBeFalse();
   });
 
+  it('answers every solo-only message locally, with the server up', () => {
+    // A solo game keeps the socket. Only the types in LOCAL_GAME_TYPES are
+    // answered by the browser engine; anything else is posted to a server
+    // that has never heard of it and logs "Unknown message type". A cast
+    // rides inside the message that ends its turn, so those carry it here.
+    const engine: any[] = [];
+    (service as any).localGame = true;
+    (service as any).local = { send: (m: any) => engine.push(m) };
+    service.connect('game-1');
+    expect(service.isOffline()).toBeFalse();
+
+    const solo = [
+      'make_move', 'pass_turn', 'enter_board', 'panel_attack',
+    ];
+    for (const type of solo) service.sendMessage({ type });
+    expect(engine.map(m => m.type)).toEqual(solo);
+
+    // And the lobby's own traffic is still the server's, socket or no socket.
+    service.sendMessage({ type: 'chat_message', content: 'hi' });
+    expect(engine.length).toBe(solo.length);
+  });
+
   it('leaves a handshake already in flight alone', () => {
     // login, the lobby and the game room all ask for a connection. Tearing
     // down the socket each time is how a connection stays forever pending.
@@ -143,6 +170,29 @@ describe('WebsocketService reconnect escalation', () => {
     expect(queue.some(m => m.type === 'heartbeat')).toBeFalse();
     // The oldest go first, so what survives is what the player did last.
     expect(queue[queue.length - 1].content).toBe('m49');
+  });
+
+  it('dials the origin that served the page, not a pinned backend port', () => {
+    // Karma serves on its own port, which is not the dev server's - so this
+    // is the deployed shape: a page behind TLS on 443 whose socket used to be
+    // sent to :8000, where nothing is listening.
+    service.connect('lobby');
+
+    const { host, protocol } = window.location;
+    const scheme = protocol === 'https:' ? 'wss' : 'ws';
+    expect(StalledSocket.instances[0].url).toBe(`${scheme}://${host}/ws/game/lobby/`);
+  });
+
+  it('spreads the reconnect wait instead of retrying in lockstep', () => {
+    (Math.random as jasmine.Spy).and.returnValue(1);
+    service.connect('lobby');
+
+    jasmine.clock().tick(3000);   // the handshake gives up
+    jasmine.clock().tick(3000);   // the un-jittered wait would fire here
+    expect(StalledSocket.instances.length).toBe(1);
+
+    jasmine.clock().tick(1500);   // the rest of the jittered wait
+    expect(StalledSocket.instances.length).toBe(2);
   });
 
   it('keeps after the server while a local game runs - solo is not offline', () => {
