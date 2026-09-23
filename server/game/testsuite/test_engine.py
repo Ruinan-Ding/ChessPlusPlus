@@ -233,6 +233,28 @@ class ConfigLoaderTestCase(TestCase):
             DEFAULT_CONFIG['rules']['minStrikeDamage'],
         )
 
+    def test_the_counted_rules_default_when_absent_and_refuse_a_negative(self):
+        """
+        They were constants before they were config, so a config that predates
+        them loads at the numbers every game was played under.
+        """
+        import copy
+        from game.engine.config_loader import COUNTED_RULES, DEFAULT_CONFIG
+        raw = copy.deepcopy(DEFAULT_CONFIG)
+        for key in COUNTED_RULES:
+            del raw['rules'][key]
+        loaded = load_config(raw)
+        self.assertEqual(
+            {k: loaded['rules'][k] for k in COUNTED_RULES},
+            {'panelMoversPerTurn': 3, 'phaseInitEntries': 5,
+             'homecomingsPerSetupTurn': 3, 'cpPerPhase': 100})
+        for key in COUNTED_RULES:
+            for value in (-1, 1.5, True, None):
+                bad = copy.deepcopy(DEFAULT_CONFIG)
+                bad['rules'][key] = value
+                with self.assertRaises(ValueError, msg=f'{key}={value!r}'):
+                    load_config(bad)
+
     def test_a_negative_damage_floor_is_rejected(self):
         """
         Checked because it corrupts the board rather than merely unbalancing
@@ -1836,6 +1858,23 @@ class PanelMoveTestCase(DealtPanels, TestCase):
         crossed = history + [{'entered': True, 'turn': 1,
                               'unit': {'uid': 'rbr4', 'color': 'white'}}]
         self.assertEqual(len(panels.panel_movers(crossed, 1, 'white')['reserve']), 4)
+
+    def test_the_movers_allowance_is_read_off_the_config(self):
+        # rules.panelMoversPerTurn, and rules.phaseInitEntries for the reserve
+        # in a phase initialization: tuning either is a config edit.
+        config, radius, board, at = self._setup()
+        config = {**config, 'rules': {**config['rules'],
+                                      'panelMoversPerTurn': 2, 'phaseInitEntries': 1}}
+        two = [_panel_step(uid, 'x', 'white', at[uid], at[uid], 1, 'br')
+               for uid in ('rbr0', 'rbr1')]
+        by_uid = {u['uid']: u for u in
+                  panels.panel_occupancy(config, radius, two, ply=1).values()}
+        self.assertIsNone(panels.panel_allowance(config, two, by_uid['rbr3'], 1))
+        one = [_panel_step('rbr0', 'x', 'white', at['rbr0'], at['rbr0'], 7, 'br')]
+        by_uid = {u['uid']: u for u in
+                  panels.panel_occupancy(config, radius, one, ply=7).values()}
+        self.assertIsNone(panels.panel_allowance(config, one, by_uid['rbr3'], 7))
+        self.assertIsNotNone(panels.panel_allowance(config, one, by_uid['rbr0'], 7))
 
     def test_through_the_opening_a_unit_moves_once_for_the_whole_phase(self):
         config, radius, board, at = self._setup()

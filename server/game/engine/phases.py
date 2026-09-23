@@ -47,12 +47,9 @@ PHASES: List[Dict] = [
     {'name': 'Overtime', 'turns': math.inf, 'halftime': False, 'init': False},
 ]
 
-#: How many units a side may bring out of its reserve in a phase
-#: initialization, and how many it may walk home in any setup turn. During a
-#: phase initialization the first stands *instead of* the per-panel allowance,
-#: not beside it: five for the side, counted for the side as a whole.
-PHASE_INIT_ENTRIES = 5
-HOMECOMINGS_PER_SETUP_TURN = 3
+# How many units a side may bring out of its reserve in a phase
+# initialization, and walk home in a setup turn, are config:
+# rules.phaseInitEntries and rules.homecomingsPerSetupTurn.
 
 
 def phase_span(phase: Dict) -> float:

@@ -320,9 +320,38 @@ export const DEFAULT_GAME_CONFIG = {
     minStrikeDamage: 1,
     // A side loses when its commander dies; 'elimination' (no units left) is
     // the other supported objective.
-    objective: 'regicide'
+    objective: 'regicide',
+    // How many units each panel - the base and the reserve, separately - may
+    // start in one turn.
+    panelMoversPerTurn: 3,
+    // How many a side may bring out of its reserve in a phase initialization.
+    // Stands instead of panelMoversPerTurn for the reserve on that turn.
+    phaseInitEntries: 5,
+    // How many units a side may walk home in one setup turn.
+    homecomingsPerSetupTurn: 3,
+    // The CP each side is handed at the start of every phase.
+    cpPerPhase: 100
   }
 };
+
+/**
+ * The rules a config may leave out and be read at their default. Each is a
+ * whole number >= 0. Mirrors COUNTED_RULES in config_loader.py.
+ */
+export const COUNTED_RULES = [
+  'panelMoversPerTurn', 'phaseInitEntries', 'homecomingsPerSetupTurn', 'cpPerPhase',
+] as const;
+export type CountedRule = typeof COUNTED_RULES[number];
+
+/**
+ * One of *config*'s counted rules, or the default's when it has none. A
+ * room's config is normalised before it is played; the fallback is for the
+ * callers handed no config at all. Mirrors rule_of() in config_loader.py.
+ */
+export function ruleOf(config: any, key: CountedRule): number {
+  const value = config?.rules?.[key];
+  return typeof value === 'number' ? value : DEFAULT_GAME_CONFIG.rules[key];
+}
 
 @Injectable({
   providedIn: 'root'
@@ -385,6 +414,13 @@ export class ConfigService {
           && Object.values<any>(placement).some(u => config.units?.[u]?.commander);
       });
       rules.objective = commanded ? 'regicide' : 'elimination';
+    }
+    // These were constants before they were config, so absent means the
+    // number every game was played under.
+    if (rules && typeof rules === 'object') {
+      for (const key of COUNTED_RULES) {
+        if (rules[key] === undefined) rules[key] = DEFAULT_GAME_CONFIG.rules[key];
+      }
     }
   }
 
@@ -477,6 +513,13 @@ export class ConfigService {
       const floor = config.rules.minStrikeDamage;
       if (!Number.isInteger(floor) || floor < 0) {
         errors.push('rules.minStrikeDamage must be an integer >= 0');
+      }
+
+      for (const key of COUNTED_RULES) {
+        const count = config.rules[key];
+        if (!Number.isInteger(count) || count < 0) {
+          errors.push(`rules.${key} must be an integer >= 0`);
+        }
       }
 
       // The objective decides how a game is lost, so a config that cannot

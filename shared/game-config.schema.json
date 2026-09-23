@@ -307,6 +307,26 @@
             "elimination"
           ],
           "description": "Win condition. 'regicide' (the default): a side loses when it has no commander left. 'elimination': a side loses when it has no units left at all."
+        },
+        "panelMoversPerTurn": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many units each panel may start in one turn, counted for the base and the reserve separately. Default 3."
+        },
+        "phaseInitEntries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many units a side may bring out of its reserve in a phase initialization. Stands instead of panelMoversPerTurn for the reserve on that turn. Default 5."
+        },
+        "homecomingsPerSetupTurn": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many units a side may walk home in one setup turn. Overtime has no count; the turn's board-move allowance caps it there. Default 3."
+        },
+        "cpPerPhase": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "CP handed to each side at the start of every phase, to buy abilities with. Default 100."
         }
       },
       "additionalProperties": false

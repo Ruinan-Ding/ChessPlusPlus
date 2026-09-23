@@ -2042,6 +2042,28 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
+    async def test_the_walks_home_are_read_off_the_rooms_config(self):
+        # rules.homecomingsPerSetupTurn: a room that says one stops the second.
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await self._wind_to(game, 7)
+            state = await GameState.objects.aget(game_id=game.game_id)
+            config = dict(state.config_snapshot)
+            config['rules'] = {**config['rules'], 'homecomingsPerSetupTurn': 1}
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                config_snapshot=config)
+            replies = []
+            for frm, to in (('-11,11', '-12,11'), ('-11,10', '-12,10')):
+                await white.send_json_to({
+                    'type': 'make_move', 'from': frm, 'to': to, 'withdraw': True,
+                })
+                replies.append(await _receive_until(white, ('game_state_update', 'error')))
+            self.assertEqual(replies[0]['type'], 'game_state_update')
+            self.assertEqual(replies[1].get('message'), 'That is all who may walk home this turn')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
     async def test_three_walk_home_in_a_setup_turn_and_no_more(self):
         """
         The owner's three, all inside the one turn.

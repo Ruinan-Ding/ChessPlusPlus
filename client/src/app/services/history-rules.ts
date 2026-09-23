@@ -13,19 +13,9 @@
  * there; these keep a solo game honest about the same rules.
  */
 
+import { ruleOf } from './config.service';
 import { BASE_PANELS } from './hex-rules';
-import {
-  PHASE_INIT_ENTRIES, isInitialization, isPhaseInitialization, isSetupTurn,
-} from './phases';
-
-/**
- * How many units of one panel may be started in a turn. An allowance each:
- * three out of the base and three out of the reserve, all match.
- * ponytail: the owner's placeholder - "3 of these (for now)". A constant
- * because that is all it is; it moves to config when the real number lands.
- * Mirrors PANEL_MOVERS_PER_TURN in server/game/engine/panels.py.
- */
-export const PANEL_MOVERS_PER_TURN = 3;
+import { isInitialization, isPhaseInitialization, isSetupTurn } from './phases';
 
 /**
  * A move record, as loosely as the history actually holds one: what a record
@@ -143,10 +133,12 @@ export function panelMoversAt(
  */
 export function panelMoverAllowed(
   history: Move[] | undefined, ply: number, color: string, uid: string, panel?: string,
+  config?: any,
 ): boolean {
   const base = BASE_PANELS.has(panel ?? '');
   const movers = panelMoversAt(history, ply, color)[base ? 'base' : 'reserve'];
-  const cap = !base && isPhaseInitialization(ply) ? PHASE_INIT_ENTRIES : PANEL_MOVERS_PER_TURN;
+  const cap = ruleOf(config, !base && isPhaseInitialization(ply)
+    ? 'phaseInitEntries' : 'panelMoversPerTurn');
   return movers.has(uid) || movers.size < cap;
 }
 

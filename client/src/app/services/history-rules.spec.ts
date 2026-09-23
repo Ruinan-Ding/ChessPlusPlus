@@ -1,8 +1,8 @@
 import {
-  PANEL_MOVERS_PER_TURN, boardMovesAt, homecomingsAt, lockedPanelUnits,
+  boardMovesAt, homecomingsAt, lockedPanelUnits,
   openingMovedHexes, panelMoverAllowed, panelMoversAt,
 } from './history-rules';
-import { PHASE_INIT_ENTRIES } from './phases';
+import { ruleOf } from './config.service';
 
 /**
  * These read the opening's lock and the panels' allowance off the record, and
@@ -99,7 +99,7 @@ describe('history-rules', () => {
     const three = [0, 1, 2].map(i => panelStep(`b${i}`, 'white', 1));
 
     it('turns a fourth unit of the same panel away', () => {
-      expect(PANEL_MOVERS_PER_TURN).toBe(3);
+      expect(ruleOf(undefined, 'panelMoversPerTurn')).toBe(3);
       expect(panelMoverAllowed(three, 1, 'white', 'b9', 'bl')).toBeFalse();
     });
 
@@ -119,7 +119,7 @@ describe('history-rules', () => {
       // `panelStep` walks inside the BASE by default; these are the reserve's.
       const five = [0, 1, 2, 3, 4].map(
         i => panelStep(`r${i}`, 'white', 7, { panel: 'br' }));
-      expect(PHASE_INIT_ENTRIES).toBe(5);
+      expect(ruleOf(undefined, 'phaseInitEntries')).toBe(5);
       expect(panelMoverAllowed(five.slice(0, 4), 7, 'white', 'r9', 'br')).toBeTrue();
       expect(panelMoverAllowed(five, 7, 'white', 'r9', 'br')).toBeFalse();
       // One of the five may still walk on.
@@ -135,6 +135,17 @@ describe('history-rules', () => {
       const fourReserve = [0, 1, 2, 3].map(
         i => panelStep(`r${i}`, 'white', 9, { panel: 'br' }));
       expect(panelMoverAllowed(fourReserve.slice(0, 3), 9, 'white', 'r9', 'br')).toBeFalse();
+    });
+
+    it("reads both allowances off the game's config", () => {
+      // Tuning them is a config edit: a room that says two stops the third.
+      const config = { rules: { panelMoversPerTurn: 2, phaseInitEntries: 1 } };
+      const two = [0, 1].map(i => panelStep(`b${i}`, 'white', 1));
+      expect(panelMoverAllowed(two, 1, 'white', 'b9', 'bl')).toBeTrue();
+      expect(panelMoverAllowed(two, 1, 'white', 'b9', 'bl', config)).toBeFalse();
+      const one = [panelStep('r0', 'white', 7, { panel: 'br' })];
+      expect(panelMoverAllowed(one, 7, 'white', 'r9', 'br')).toBeTrue();
+      expect(panelMoverAllowed(one, 7, 'white', 'r9', 'br', config)).toBeFalse();
     });
   });
 

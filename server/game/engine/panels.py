@@ -67,12 +67,6 @@ PANEL_SQUAD = 5
 #: rather than bunched at one end. The client's `i % 3 === 0`.
 PANEL_SPACING = 3
 
-#: How many of a panel's units may be walked in a turn: three out of the base
-#: and three out of the reserve, never three between them. A unit already
-#: walked this turn may keep spending what is left of its MOV. Mirrors
-#: PANEL_MOVERS_PER_TURN in client/src/app/services/history-rules.ts.
-PANEL_MOVERS_PER_TURN = 3
-
 Coord = Tuple[int, int]
 
 
@@ -1050,7 +1044,8 @@ def panel_allowance(
     The base keeps its three - nothing in the rule was about the base, and the
     wrap is shut on that turn anyway.
     """
-    from .phases import PHASE_INIT_ENTRIES, is_phase_initialization
+    from .config_loader import rule_of
+    from .phases import is_phase_initialization
 
     moves = list(history or [])
     uid = unit.get('uid')
@@ -1058,9 +1053,12 @@ def panel_allowance(
         return None
     kind = 'base' if is_base(unit.get('panel')) else 'reserve'
     movers = panel_movers(moves, ply, unit.get('color'))[kind]
-    cap = PANEL_MOVERS_PER_TURN
+    # Three out of the base and three out of the reserve, never three between
+    # them - rules.panelMoversPerTurn, or rules.phaseInitEntries for the
+    # reserve in a phase initialization.
+    cap = rule_of(config, 'panelMoversPerTurn')
     if kind == 'reserve' and is_phase_initialization(ply):
-        cap = PHASE_INIT_ENTRIES
+        cap = rule_of(config, 'phaseInitEntries')
     if uid not in movers and len(movers) >= cap:
         return None
     stat = ((config.get('units') or {}).get(unit.get('unit_id')) or {}).get('move', 0)

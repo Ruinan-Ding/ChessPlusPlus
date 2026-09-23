@@ -37,6 +37,7 @@ from .utils import (
     get_challenge_expiration_time, structured_log, get_idempotency, set_idempotency
 )
 from .engine import load_config, build_initial_board, DEFAULT_CONFIG
+from .engine.config_loader import rule_of
 from .engine import economy, panels
 from .engine.board import HexBoard, parse_coord, hex_distance
 from .engine.game_logic import (
@@ -50,7 +51,7 @@ from .engine.game_logic import (
     resolve_panel_attack,
 )
 from .engine.phases import (
-    HOMECOMINGS_PER_SETUP_TURN, board_moves_per_turn, is_entry_open,
+    board_moves_per_turn, is_entry_open,
     is_homecoming_open, is_initialization, is_setup_turn, no_attack_message,
 )
 
@@ -1790,7 +1791,8 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if is_setup_turn(state.turn_number):
                     gone = panels.homecomings_at(
                         list(state.move_history), state.turn_number, my_color)
-                    if piece.get('uid') not in gone and len(gone) >= HOMECOMINGS_PER_SETUP_TURN:
+                    if piece.get('uid') not in gone and len(gone) >= rule_of(
+                            config, 'homecomingsPerSetupTurn'):
                         await send_error(
                             self, 'INVALID_MOVE', 'That is all who may walk home this turn')
                         return

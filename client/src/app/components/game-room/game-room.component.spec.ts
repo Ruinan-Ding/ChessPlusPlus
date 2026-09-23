@@ -917,6 +917,17 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.abilityNote('mine')).toBe('The game has not started yet.');
   });
 
+  it("hands out the config's CP each phase", () => {
+    // rules.cpPerPhase - 100 unless the room says otherwise. Turn 10 is in
+    // Phase 1, the second award.
+    const c = room();
+    c.gameState.snapshot.turnNumber = 10;
+    c.myCpSpent = 0;
+    expect(c.cpOf('mine')).toBe(200);
+    c.gameState.snapshot.config = { rules: { cpPerPhase: 30 } };
+    expect(c.cpOf('mine')).toBe(60);
+  });
+
   it('shows a path in full before it is taken, and takes it only on confirm', () => {
     const c = room();
     c.focusPath('mine', 0);

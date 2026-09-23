@@ -71,6 +71,14 @@ Any change to config shape touches all three or validation rejects live configs:
 | `server/game/engine/config_loader.py` | `DEFAULT_CONFIG` + `_validate_config()` |
 | `client/src/app/services/config.service.ts` | `DEFAULT_GAME_CONFIG` (line ~28) + `validateGameRules()` |
 
+The whole-number rules a config may leave out (`panelMoversPerTurn`, `phaseInitEntries`,
+`homecomingsPerSetupTurn`, `cpPerPhase`) are listed once per side in `COUNTED_RULES`, filled in
+at their defaults by both normalisers, and read through `ruleOf(config, key)` /
+`rule_of(config, key)` - never as a module constant, because one server process plays every
+room and each room may carry its own config. The overtime schedule (`OVERTIME_STAGES` in
+`phases.ts` / `phases.py`) is still code, for that reason: it is read by functions that take
+only a ply, and making it per-room means handing them the room's schedule.
+
 **3. Movement is a single `move` stat per unit** (an adjacent-hex step budget), not a pattern
 list. `move_validator.get_legal_moves()` floods outward through the six hex neighbours, through
 empty hexes only — a unit can never move through or onto an occupied hex, ally or enemy. No
@@ -237,13 +245,13 @@ Decided so far:
     **No panel unit attacks**, base or reserve: they walk and nothing else. A **reserve unit
     still counters when it is hit** - *specified, not built*, because nothing can reach into a
     panel yet and the engines have no reserve to resolve a counter for. Only **three units of
-    a panel may be moved in a turn** (`PANEL_MOVERS_PER_TURN`, `baseMovers` / `reserveMovers`
+    a panel may be moved in a turn** (`rules.panelMoversPerTurn`, `baseMovers` / `reserveMovers`
     - a set per panel, so one panel's walks are not counted against the other's cap).
     **Both panels carry the cap, all match**: three out of the base and three out of the
     reserve, never three between them. *The reserve used to carry it only through the
     initialization and shuffle freely after; the owner asked for the base's rule on both.*
     **The reserve's three becomes five on a numbered phase's initialization turn**
-    (`PHASE_INIT_ENTRIES`), and the five stand instead of the three rather than beside them;
+    (`rules.phaseInitEntries`), and the five stand instead of the three rather than beside them;
     the base keeps its three. Allowances reset each ply. Moving a panel unit is still not the turn's one board
     action - it happens alongside it. Three is the owner's placeholder ("for now").
     **A panel unit that has been started this turn is marked**: a gold dot off the plate's
@@ -896,10 +904,10 @@ Decided so far:
   it: **no ability fires and nobody attacks** (`isSetupTurn()`, shared with the opening -
   `noAttackMessage()` says which of the two refused, since "the opening" on turn 15 points at
   a phase that ended ten turns ago); **five units may be started out of the reserve** rather
-  than the usual three (`PHASE_INIT_ENTRIES`, and it stands *instead of* the per-panel three,
+  than the usual three (`rules.phaseInitEntries`, and it stands *instead of* the per-panel three,
   covering walks inside the reserve as well as crossings out of it - capping the walk at three
   would leave two of the five unable to reach a gateway); and **three units may walk home**
-  (`HOMECOMINGS_PER_SETUP_TURN`, counted by `homecomingsAt()` / `homecomings_at()`). The base
+  (`rules.homecomingsPerSetupTurn`, counted by `homecomingsAt()` / `homecomings_at()`). The base
   keeps its three: nothing in the rule was about the base, and the wrap is shut on that turn
   anyway. **Overtime is the exception to the count** - it is not a setup turn, the toll is
   running and units still fight, so a walk home there is an ordinary move that happens to end
@@ -1691,7 +1699,7 @@ passive, for whichever unit is selected.
   rather than of the slot number, so moving a path's slots cannot quietly change what they
   cost):
   - **CP** buys the *special* abilities - the three paths and everything inside them: passive,
-    skill, ultimate. `CP_PER_PHASE` (100, the owner's placeholder) is awarded **at the start of
+    skill, ultimate. `rules.cpPerPhase` (100, the owner's placeholder) is awarded **at the start of
     each of the five phases** - the opening, the three phases and overtime - so a match hands
     out 500 in all.
   - **Points** buy the eight-ability pool, and stay the board's currency besides: the wrap
@@ -1710,7 +1718,7 @@ passive, for whichever unit is selected.
       A cast that kills pays nobody. All of it derived from the record, never a stored tally.
   - Everything goes through `purseFor()` / `chargeFor()` / `purseName()`, so a cost, a grant, a
     hint and an Undo all read the same currency off one place.
-  - `cpOf(side)` is **derived** - `CP_PER_PHASE x phases so far, less `myCpSpent`` - rather
+  - `cpOf(side)` is **derived** - `rules.cpPerPhase x phases so far, less `myCpSpent`` - rather
     than tallied, so a reload cannot collect a phase's award twice. Only what has been spent is
     persisted. Spend through `spendCp()`; a negative amount hands some back (Undo does).
   - **The Abilities panel head names whichever currency is in play**

@@ -169,16 +169,9 @@ export function noAttackMessage(ply: number): string {
   return '';
 }
 
-/**
- * How many units a side may bring out of its reserve in a phase
- * initialization, and how many it may walk home in any setup turn.
- *
- * The owner's numbers. During a phase initialization these stand *instead of*
- * the per-panel allowance, not beside it: five out of the reserve for the
- * side, counted for the side as a whole.
- */
-export const PHASE_INIT_ENTRIES = 5;
-export const HOMECOMINGS_PER_SETUP_TURN = 3;
+// How many units a side may bring out of its reserve in a phase
+// initialization, and walk home in a setup turn, are config:
+// rules.phaseInitEntries and rules.homecomingsPerSetupTurn (see ruleOf).
 
 /**
  * Overtime's three stretches, and what each takes off a commander at the end

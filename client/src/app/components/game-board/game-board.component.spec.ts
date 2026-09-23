@@ -1,7 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { SimpleChange } from '@angular/core';
 import { GameBoardComponent } from './game-board.component';
-import { HOMECOMINGS_PER_SETUP_TURN, OVERTIME_FIRST_PLY } from '../../services/phases';
+import { OVERTIME_FIRST_PLY } from '../../services/phases';
 import { setPanelsDealt } from '../../services/hex-rules';
 
 /**
@@ -1026,6 +1026,10 @@ describe('GameBoardComponent reach preview', () => {
       anyBoard().panelMoved.clear();
       ['a', 'b', 'c'].forEach(uid => anyBoard().baseMovers.add(uid));
       expect(board.isPanelSpent(cell)).toBeTrue();
+      // Three is rules.panelMoversPerTurn, not the board's own number.
+      board.config = { ...config, rules: { ...(config as any).rules, panelMoversPerTurn: 4 } };
+      expect(board.isPanelSpent(cell)).toBeFalse();
+      board.config = config;
 
       // The opponent's base is not the player's to move, so it says nothing.
       const theirs = board.cells.find(c => c.panel === 'tr' && !!c.piece)!;
@@ -1628,12 +1632,28 @@ describe('GameBoardComponent reach preview', () => {
         setUp();
         board.movesLeftFor = '0,0';
         board.movesLeft = 2;
-        board.homecomingsSpent = HOMECOMINGS_PER_SETUP_TURN;
+        board.homecomingsSpent = 3;
 
         const cell = anyBoard().cellsByKey.get(beside);
         expect(board.drivable(cell)).toBeFalse();
         board.onHexClick(cell);
         expect(board.legalTargets.size).toBe(0);
+      });
+
+      it("reads the turn's count off the game's config", () => {
+        // rules.homecomingsPerSetupTurn: a room that allows four lets a
+        // fourth unit set out after three have gone.
+        setUp();
+        board.config = { ...board.config, rules: { homecomingsPerSetupTurn: 4 } };
+        board.movesLeftFor = '0,0';
+        board.movesLeft = 2;
+        board.homecomingsSpent = 3;
+
+        const cell = anyBoard().cellsByKey.get(beside);
+        expect(board.drivable(cell)).toBeTrue();
+        // And the doorways light up for it, which is a second read of the count.
+        board.onHexClick(cell);
+        expect(board.legalTargets.size).toBeGreaterThan(0);
       });
 
       it('walks home within its MOV - it does not teleport in', () => {

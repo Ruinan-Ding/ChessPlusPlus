@@ -830,6 +830,23 @@ describe('LocalGameService', () => {
       expect(hexes.filter(h => board[h]).length).toBe(5);
     });
 
+    it("reads a phase initialization's entries off the game's config", async () => {
+      // rules.phaseInitEntries: a room that says two stops the third.
+      const rules = (service as any).game.config.rules;
+      const saved = rules.phaseInitEntries;
+      rules.phaseInitEntries = 2;
+      try {
+        const g = at(7);
+        ['-10,9', '-8,9', '-6,9'].forEach((to, i) => g.engine.send({
+          type: 'enter_board', from: 'bl-1', to, unit: reserve(`r${i}`),
+        }));
+        await flush();
+        expect(g.refusal()).toBe('That reserve has started its units for the turn');
+      } finally {
+        rules.phaseInitEntries = saved;
+      }
+    });
+
     it('refuses a walk home while the way home is shut', async () => {
       // Both halves of a numbered phase's play shut the base doorways.
       const g = at(15, { ...kings, ...walker('-11,11') });
@@ -846,6 +863,24 @@ describe('LocalGameService', () => {
       g.engine.send({ type: 'make_move', from: '-11,8', to: '-12,8', withdraw: true });
       await flush();
       expect(g.refusal()).toBe('Only your own first three rows walk home');
+    });
+
+    it("reads a setup turn's walks home off the game's config", async () => {
+      // rules.homecomingsPerSetupTurn: a room that says one stops the second.
+      const rules = (service as any).game.config.rules;
+      const saved = rules.homecomingsPerSetupTurn;
+      rules.homecomingsPerSetupTurn = 1;
+      try {
+        const g = at(7, { ...kings, ...walker('-11,11', 'w1'), ...walker('-10,11', 'w2') });
+        g.engine.send({ type: 'make_move', from: '-11,11', to: '-12,11', withdraw: true });
+        await flush();
+        expect(g.refusal()).toBeUndefined();
+        g.engine.send({ type: 'make_move', from: '-10,11', to: '-12,10', withdraw: true });
+        await flush();
+        expect(g.refusal()).toBe('That is all who may walk home this turn');
+      } finally {
+        rules.homecomingsPerSetupTurn = saved;
+      }
     });
 
     it('walks three home in a setup turn and no more', async () => {

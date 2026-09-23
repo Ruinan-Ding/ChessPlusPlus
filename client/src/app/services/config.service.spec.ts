@@ -79,6 +79,27 @@ describe('ConfigService validation, against the server\'s', () => {
     expect(service.validateGameRules(config).valid).toBeTrue();
   });
 
+  it('fills the counted rules in at their defaults, and refuses a negative one', () => {
+    // They were constants before they were config: a config that predates
+    // them is read at the numbers every game was played under.
+    const config: any = minimal();
+    expect(service.validateGameRules(config).valid).toBeTrue();
+    expect(config.rules.panelMoversPerTurn).toBe(3);
+    expect(config.rules.phaseInitEntries).toBe(5);
+    expect(config.rules.homecomingsPerSetupTurn).toBe(3);
+    expect(config.rules.cpPerPhase).toBe(100);
+
+    for (const key of ['panelMoversPerTurn', 'phaseInitEntries', 'homecomingsPerSetupTurn', 'cpPerPhase']) {
+      const bad: any = minimal();
+      bad.rules[key] = -1;
+      expect(service.validateGameRules(bad).valid).withContext(key).toBeFalse();
+      bad.rules[key] = 1.5;
+      expect(service.validateGameRules(bad).valid).withContext(key).toBeFalse();
+      bad.rules[key] = 0;
+      expect(service.validateGameRules(bad).valid).withContext(key).toBeTrue();
+    }
+  });
+
   it('refuses an explicit null floor, the way load_config does', () => {
     // Both normalisers only fill an ABSENT key, so an explicit null survives
     // on each side. This used to read it through `?? 0`, call it valid, and

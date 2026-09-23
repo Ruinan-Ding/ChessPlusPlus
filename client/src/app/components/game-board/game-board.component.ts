@@ -17,13 +17,12 @@ import {
   computeMoveCosts, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
   BASE_PANELS, HEX_DIRS, PANELS_DEALT,
 } from '../../services/hex-rules';
-import { PANEL_MOVERS_PER_TURN } from '../../services/history-rules';
 import {
-  HOMECOMINGS_PER_SETUP_TURN, boardMovesPerTurn, overtimeTollAt, overtimeTollOver,
-  PHASE_INIT_ENTRIES,
+  boardMovesPerTurn, overtimeTollAt, overtimeTollOver,
   isEntryOpen, isHomecomingOpen, isInitialization, isOvertime, isPhaseInitialization,
   isSetupTurn, isWrapOpen, sideOfPly,
 } from '../../services/phases';
+import { ruleOf } from '../../services/config.service';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -3498,7 +3497,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // as one of them. Overtime has no count: the turn's own move allowance is
     // the only cap a walk home needs there.
     if (isSetupTurn(this.turnNumber)
-        && this.homecomingsSpent >= HOMECOMINGS_PER_SETUP_TURN) return;
+        && this.homecomingsSpent >= ruleOf(this.config, 'homecomingsPerSetupTurn')) return;
     const refund = this.wrapCost(cell);
     const mov = budget ?? this.config?.units?.[cell.piece?.unit_id ?? '']?.move ?? 0;
     for (const [gate, arrow] of baseGatewayHexes(this.radius)) {
@@ -3860,8 +3859,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (this.lockedUnits.has(uid)) return false;
     const base = BASE_PANELS.has(cell.panel);
     const movers = base ? this.baseMovers : this.reserveMovers;
-    const cap = !base && isPhaseInitialization(this.turnNumber)
-      ? PHASE_INIT_ENTRIES : PANEL_MOVERS_PER_TURN;
+    const cap = ruleOf(this.config, !base && isPhaseInitialization(this.turnNumber)
+      ? 'phaseInitEntries' : 'panelMoversPerTurn');
     return movers.has(uid) || movers.size < cap;
   }
 
@@ -4527,7 +4526,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (this.config?.units?.[hex.piece?.unit_id ?? '']?.commander) return false;
     const color = hex.piece?.color ?? 'white';
     if (!inHomeRows(color, Number(hex.key.split(',')[1]), this.radius)) return false;
-    return this.homecomingsSpent < HOMECOMINGS_PER_SETUP_TURN;
+    return this.homecomingsSpent < ruleOf(this.config, 'homecomingsPerSetupTurn');
   }
 
   /** Hand the game room what its Unit panel shows for the hex just clicked. */

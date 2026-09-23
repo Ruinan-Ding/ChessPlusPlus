@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
-import { ConfigService } from './config.service';
+import { ConfigService, ruleOf } from './config.service';
 import {
   computeLegalMoves, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
 } from './hex-rules';
@@ -9,7 +9,7 @@ import {
   panelMoverAllowed,
 } from './history-rules';
 import {
-  HOMECOMINGS_PER_SETUP_TURN, boardMovesPerTurn, overtimeTollAt, isEntryOpen,
+  boardMovesPerTurn, overtimeTollAt, isEntryOpen,
   isHomecomingOpen, isInitialization, isSetupTurn, isWrapOpen, noAttackMessage,
 } from './phases';
 
@@ -406,7 +406,7 @@ export class LocalGameService {
     // A crossing spends one of the reserve's three starts for the turn - five
     // in a phase initialization - and the opening gives a unit one move for
     // the whole phase.
-    if (!panelMoverAllowed(g.moveHistory, g.turnNumber, unit.color, unit.uid)) {
+    if (!panelMoverAllowed(g.moveHistory, g.turnNumber, unit.color, unit.uid, undefined, g.config)) {
       this.emit({ type: 'invalid_move', message: 'That reserve has started its units for the turn' });
       return;
     }
@@ -470,7 +470,7 @@ export class LocalGameService {
     // has already spent. Where the walk goes and what it costs to get there
     // are still the client's - both want the panel model this engine has not
     // got, and the cost wants the boost that may have lent the steps.
-    if (!panelMoverAllowed(g.moveHistory, g.turnNumber, unit.color, unit.uid, panel)) {
+    if (!panelMoverAllowed(g.moveHistory, g.turnNumber, unit.color, unit.uid, panel, g.config)) {
       this.emit({ type: 'invalid_move', message: 'That panel has started its units for the turn' });
       return;
     }
@@ -815,7 +815,7 @@ export class LocalGameService {
       }
       if (isSetupTurn(g.turnNumber)) {
         const gone = homecomingsAt(g.moveHistory, g.turnNumber, movingColor);
-        if (!gone.has(piece?.uid) && gone.size >= HOMECOMINGS_PER_SETUP_TURN) {
+        if (!gone.has(piece?.uid) && gone.size >= ruleOf(g.config, 'homecomingsPerSetupTurn')) {
           this.emit({ type: 'invalid_move', message: 'That is all who may walk home this turn' });
           return;
         }

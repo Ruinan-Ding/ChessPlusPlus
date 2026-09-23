@@ -16,7 +16,7 @@ import {
   captureClaims, captureScore, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
 } from '../../services/hex-rules';
 import { buildPlayback } from '../../services/playback';
-import { DEFAULT_GAME_CONFIG } from '../../services/config.service';
+import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
 import { homecomingsAt, openingMovedHexes } from '../../services/history-rules';
 import {
   OVERTIME_LAST_TURN, SCORING_PHASES, boardMovesPerTurn, handOversBy,
@@ -196,13 +196,6 @@ interface Standing {
  * more than 5 clear to take it outright, black only more than 3.
  */
 const OVERTIME_MARGIN = { white: 3, black: 5 };
-
-/**
- * What a side is handed at the start of each phase to spend on abilities.
- * Five awards over a match - the opening, the three phases and overtime.
- * ponytail: the owner's placeholder - "for now, just set it to 100".
- */
-const CP_PER_PHASE = 100;
 
 /**
  * Why nothing in the ability panels can be picked, unlocked or cast in a
@@ -2009,7 +2002,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   cpOf(side: 'mine' | 'opponent'): number {
     const phases = phaseIndexAt(this.gameState.snapshot.turnNumber) + 1;
-    return CP_PER_PHASE * phases - (side === 'mine' ? this.myCpSpent : this.opponentCpSpent);
+    // rules.cpPerPhase, handed out five times over a match - the opening, the
+    // three phases and overtime.
+    return ruleOf(this.gameState.snapshot.config, 'cpPerPhase') * phases - (side === 'mine' ? this.myCpSpent : this.opponentCpSpent);
   }
 
   get myCp(): number { return this.cpOf('mine'); }

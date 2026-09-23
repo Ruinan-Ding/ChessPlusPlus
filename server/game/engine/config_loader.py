@@ -391,9 +391,38 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "turnTimeLimit": 0,
         # A side loses when its commander dies; 'elimination' (no units left)
         # is the other supported objective.
-        "objective": "regicide"
+        "objective": "regicide",
+        # How many units each panel - the base and the reserve, separately -
+        # may start in one turn.
+        "panelMoversPerTurn": 3,
+        # How many a side may bring out of its reserve in a phase
+        # initialization. Stands instead of panelMoversPerTurn for the reserve
+        # on that turn, not beside it.
+        "phaseInitEntries": 5,
+        # How many units a side may walk home in one setup turn.
+        "homecomingsPerSetupTurn": 3,
+        # The CP each side is handed at the start of every phase.
+        "cpPerPhase": 100
     }
 }
+
+#: The rules a config may leave out and be read at their default. Each is a
+#: whole number >= 0, filled in by _normalise_config and read by rule_of.
+COUNTED_RULES = (
+    'panelMoversPerTurn', 'phaseInitEntries', 'homecomingsPerSetupTurn', 'cpPerPhase')
+
+
+def rule_of(config: Optional[Dict[str, Any]], key: str) -> Any:
+    """
+    One of *config*'s rules, or the default's when the config has none.
+
+    A room's config has been normalised by the time it is played, so the
+    fallback is for the callers that are handed no config at all.
+    """
+    rules = (config or {}).get('rules')
+    if isinstance(rules, dict) and key in rules:
+        return rules[key]
+    return DEFAULT_CONFIG['rules'][key]
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +468,11 @@ def _normalise_config(config: Dict[str, Any]) -> None:
             for side in ('white', 'black')
         )
         rules['objective'] = 'regicide' if commanded else 'elimination'
+    # These were constants before they were config, so absent means the
+    # number every game was played under.
+    if isinstance(rules, dict):
+        for key in COUNTED_RULES:
+            rules.setdefault(key, DEFAULT_CONFIG['rules'][key])
 
 
 def _validate_config(config: Dict[str, Any]) -> List[str]:
@@ -496,6 +530,11 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
     floor = rules.get('minStrikeDamage', 0)
     if not isinstance(floor, int) or isinstance(floor, bool) or floor < 0:
         errors.append(f"rules.minStrikeDamage must be an integer >= 0, got {floor}")
+
+    for key in COUNTED_RULES:
+        count = rules.get(key, 0)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            errors.append(f"rules.{key} must be an integer >= 0, got {count}")
 
     if 'setup' not in config:
         errors.append("Missing 'setup'")
