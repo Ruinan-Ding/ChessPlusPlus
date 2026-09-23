@@ -117,32 +117,130 @@
     },
     "abilities": {
       "type": "object",
-      "description": "Global ability catalogue, keyed by ability id. PLACEHOLDER: the engine does not read abilities yet.",
-      "additionalProperties": {
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "description",
-          "cooldown"
-        ],
-        "properties": {
-          "id": {
+      "description": "The ability catalogue and how a side gets at it. Keyed by a STABLE id throughout - never by position - because a side's saved loadout, path and cooldowns are written by id, and a reordered list would otherwise re-point every one of them. The engine still does not read abilities; the client does, and this is where their numbers live so that tuning one is a config edit.",
+      "properties": {
+        "slots": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many pool abilities a side may carry at once."
+        },
+        "pool": {
+          "type": "array",
+          "items": {
             "type": "string"
           },
-          "name": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "cooldown": {
-            "type": "integer",
-            "minimum": 0
+          "description": "Catalogue ids a side picks its loadout from."
+        },
+        "paths": {
+          "type": "array",
+          "description": "The ways a side can specialise. One per match.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "cost",
+              "passive",
+              "skill",
+              "ultimate"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "cost": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "CP to unlock the path."
+              },
+              "passive": {
+                "type": "string",
+                "description": "Catalogue id, granted free with the path."
+              },
+              "skill": {
+                "type": "string",
+                "description": "Catalogue id."
+              },
+              "ultimate": {
+                "type": "string",
+                "description": "Catalogue id, once a match."
+              }
+            },
+            "additionalProperties": false
           }
         },
-        "additionalProperties": false
-      }
+        "catalogue": {
+          "type": "object",
+          "description": "Every ability, keyed by its own id.",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "target"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "target": {
+                "enum": [
+                  "friendly",
+                  "enemy",
+                  "universal"
+                ],
+                "description": "What a cast is aimed at; 'universal' needs no target."
+              },
+              "cost": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Points for a pool ability, CP for a path's."
+              },
+              "cooldown": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "mov": {
+                "type": "integer"
+              },
+              "atk": {
+                "type": "integer"
+              },
+              "def": {
+                "type": "integer"
+              },
+              "damage": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "heal": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "points": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Points the cast hands its caster."
+              },
+              "testing": {
+                "type": "boolean",
+                "description": "A testing lever, not a balanced ability. Kept out of networked play: Rally hands out 300 points, which would break the wrap's price."
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "setup": {
       "type": "object",

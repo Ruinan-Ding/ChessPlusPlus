@@ -532,6 +532,118 @@ describe('GameRoomComponent ability panel', () => {
     expect(moves[0].to).toBe('0,2');
   });
 
+  it('reads its whole catalogue off the config, so tuning one is a config edit', () => {
+    const c = room();
+    // The shipped default is what an empty room draws from - one catalogue,
+    // not a second copy hard-coded on the component.
+    expect(c.abilityIds.length).toBe(17);
+    expect(c.abilityIds.slice(0, 3)).toEqual(['dash', 'focus', 'bulwark']);
+    expect(c.abilityEffects[0].name).toBe('Dash');
+    expect(c.abilityEffects[0].mov).toBe(2);
+    // The zeros a config leaves out are filled in: every reader wants a
+    // number, and `undefined` reached a stat line as NaN.
+    expect(c.abilityEffects[0].atk).toBe(0);
+    expect(c.abilityEffects[0].def).toBe(0);
+
+    // A game's own config wins over the default, which is the whole point.
+    c.gameState.snapshot.config = {
+      abilities: {
+        slots: 1,
+        pool: ['zap'],
+        paths: [],
+        catalogue: { zap: { id: 'zap', name: 'Zap', target: 'enemy', cost: 9, damage: 3 } },
+      },
+    };
+    expect(c.abilityIds).toEqual(['zap']);
+    expect(c.abilityEffects[0].name).toBe('Zap');
+    expect(c.abilityCosts).toEqual([9]);
+    expect(c.abilitySlots).toBe(1);
+    expect(c.abilityPool).toEqual([0]);
+    expect(c.abilityPaths).toEqual([]);
+  });
+
+  it('resolves a path’s abilities from ids to the slots the room asks in', () => {
+    const c = room();
+    // The config names a path's three by id; `isPathSlot`, `purseFor` and the
+    // template all ask in slot numbers, so the translation happens once.
+    const bastion = c.abilityPaths[0];
+    expect(bastion.id).toBe('bastion');
+    expect(c.abilityIds[bastion.passive]).toBe('bastion');
+    expect(c.abilityIds[bastion.skill]).toBe('anchor');
+    expect(c.abilityIds[bastion.ultimate]).toBe('fortress');
+    // And those slots are path slots, which is what decides the purse.
+    expect(c.isPathSlot(bastion.skill)).toBeTrue();
+    expect(c.isPathSlot(0)).toBeFalse();
+  });
+
+  it('marks the owner’s testing levers, so they can be kept out of a real game', () => {
+    const c = room();
+    const levers = c.abilityEffects.filter((a: any) => a.testing).map((a: any) => a.id);
+    // Rally hands out 300 points; letting it into networked play breaks the
+    // wrap's price. Mend is its partner on the bench.
+    expect(levers.sort()).toEqual(['mend', 'rally']);
+    expect(c.abilityEffects[c.slotOfAbility('rally')].points).toBe(300);
+  });
+
+  it('saves the ability state by id, so a reordered catalogue keeps its meaning', () => {
+    const c = room();
+    c.gameId = 'local';
+    // A side carrying Bulwark and Sap, on the Tempo path, with Focus cooling.
+    c.myLoadout = [c.slotOfAbility('bulwark'), c.slotOfAbility('sap')];
+    c.myPath = c.abilityPaths.findIndex((p: any) => p.id === 'tempo');
+    c.myCooldowns = c.abilityIds.map(() => 0);
+    c.myCooldowns[c.slotOfAbility('focus')] = 2;
+    (c as any).persistLocalUiState();
+
+    const saved = JSON.parse(localStorage.getItem('cpp.localGame.ui.v2')!);
+    // Ids on the way out - never the slot numbers, which mean nothing away
+    // from the catalogue that produced them.
+    expect(saved.myLoadout).toEqual(['bulwark', 'sap']);
+    expect(saved.myPath).toBe('tempo');
+    expect(saved.myCooldowns).toEqual({ focus: 2 });
+
+    // Now reorder the catalogue: same abilities, different slots.
+    const base: any = (c as any).abilityConfig;
+    c.gameState.snapshot.config = {
+      abilities: {
+        slots: base.slots,
+        pool: [...base.pool].reverse(),
+        paths: [...base.paths].reverse(),
+        catalogue: base.catalogue,
+      },
+    };
+    const fresh = room();
+    fresh.gameId = 'local';
+    fresh.gameState.snapshot.config = c.gameState.snapshot.config;
+    (fresh as any).restoreLocalUiState();
+
+    // Different slot numbers, the same three abilities. Saved by position,
+    // this side would have come back holding somebody else's loadout.
+    expect(fresh.myLoadout).not.toEqual(c.myLoadout);
+    expect(fresh.myLoadout.map((s: number) => fresh.abilityIds[s])).toEqual(['bulwark', 'sap']);
+    expect(fresh.abilityPaths[fresh.myPath!].id).toBe('tempo');
+    expect(fresh.myCooldowns[fresh.slotOfAbility('focus')]).toBe(2);
+    localStorage.removeItem('cpp.localGame.ui.v2');
+  });
+
+  it('drops an ability the catalogue no longer has, rather than pointing at nothing', () => {
+    const c = room();
+    c.gameId = 'local';
+    localStorage.setItem('cpp.localGame.ui.v2', JSON.stringify({
+      myLoadout: ['dash', 'retired-ability', 'sap'],
+      myPath: 'no-such-path',
+      myCooldowns: { focus: 3, 'retired-ability': 9 },
+    }));
+    (c as any).restoreLocalUiState();
+
+    expect(c.myLoadout.map((s: number) => c.abilityIds[s])).toEqual(['dash', 'sap']);
+    // A path this config does not know reads as no path, which is the same
+    // answer a side that never took one gives.
+    expect(c.myPath).toBeNull();
+    expect(c.myCooldowns[c.slotOfAbility('focus')]).toBe(3);
+    localStorage.removeItem('cpp.localGame.ui.v2');
+  });
+
   it('lets nobody act while a committed turn plays itself back', () => {
     const c = room();
     c.pickAbility('mine', TARGETED);

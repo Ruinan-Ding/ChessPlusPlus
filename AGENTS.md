@@ -1843,21 +1843,31 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
   discovery pattern and run under a bare `manage.py test` (89 vs 85). They pass. Left as-is.
 - `client/src/app/components/setup-config/setup-config.component.html` is still a raw JSON
   `<textarea>` with a "Configuration UI will be added here" placeholder.
-- `abilities` exists in the schema and in `DEFAULT_CONFIG` as `{}`. The engine does not read
-  it yet. The real catalogue is hard-coded on the room component (`abilityEffects`,
-  `abilityCosts`, `abilityPaths`, `abilityPool`) and labelled a placeholder throughout, with two
-  testing levers in the pool: **Mend** (free, heals 20) and **Rally** (free, hands out 300
-  points). **Abilities stay gated to solo (`buffsBind`, `canChooseAbilities`) until the real
-  catalogue settles — the owner's decision, PUNCHLIST 6.15.** Making this catalogue authoritative
-  would freeze a placeholder into the protocol and put a free 300 points a cast into networked
-  play, which breaks the wrap's price.
-  - **When it does move, move the system, not the content.** Key abilities by a stable `id`, not
-    by their index in `abilityEffects` — every record replays, so a reordered list would re-point
-    every cast in every recorded game. Put the catalogue in the config (a `config-sync` change;
-    the schema's current `abilities` shape does not fit the client's table), so tuning stays a
-    config edit. Keep the testing levers out of networked play. Boosts will have to reach the
-    server's combat — `strike_damage` and the move budgets — which today deliberately ignore the
-    `bonuses` a message carries. Do not port the current arrays as they are.
+- **The ability catalogue lives in the config** (`abilities`: `slots`, `pool`, `paths`,
+  `catalogue`), in all three mirrors. **The engine still does not read it** — only the client
+  does — so tuning an ability is a config edit and nothing more. This is the *system* half of
+  PUNCHLIST 6.15; the numbers themselves are still the owner's placeholders, and two testing
+  levers sit in the pool: **Mend** (free, heals 20) and **Rally** (free, hands out 300 points),
+  both carrying `testing: true` so they can be kept out of a real game. **Abilities stay gated
+  to solo (`buffsBind`, `canChooseAbilities`) until the numbers settle.**
+  - **Ids outlive slots.** The catalogue is keyed by a stable `id`; the room works internally in
+    *slot numbers* (the template, the glows, the cooldown arrays all do), and `abilityIds` is the
+    single place the two meet — pool first, then each path's passive, skill and ultimate.
+    Everything that **outlives the component** is written by id (`persistLocalUiState`, saved
+    under `cpp.localGame.ui.v2`), so reordering the config moves the slots and leaves a saved
+    loadout, path and cooldowns pointing at the same abilities. An id the catalogue has lost is
+    dropped rather than pointing at nothing.
+  - **Derived once per config** (`catalogueCache`). The template reads `abilityEffects`,
+    `abilityCosts` and `abilityPaths` on every change-detection pass, and rebuilding seventeen
+    entries each time would allocate through the whole match — the same reason `standings` and
+    `homecomingsSpent` carry caches. `mov`/`atk`/`def` are filled in at 0 where the config omits
+    them: every reader wants a number, and `undefined` reached a stat line as `NaN`.
+  - **Only the client validates them** (`validateGameRules`): the pool and each path must name
+    abilities the catalogue has, and an entry must carry its own key as its `id`. The server's
+    `_validate_config` deliberately does not, the engine never touching abilities.
+  - **Still to move**, and deliberately not done here: boosts have to reach the server's combat —
+    `strike_damage` and the move budgets — which today ignore the `bonuses` a message carries.
+    That, and the numbers, are what keep abilities solo.
   - A networked room still opens the ability panels, so the refusal is what a player reads:
     `ABILITIES_SOLO_ONLY`, through `choiceRefusal` and `abilityBlockedNote`. It used to be "not
     your turn" everywhere, which was false on your own turn — and in solo it also said so for a

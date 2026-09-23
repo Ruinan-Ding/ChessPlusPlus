@@ -142,7 +142,178 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "defense": 10
         }
     },
-    "abilities": {},
+    # The ability catalogue, and how a side gets at it. Keyed by a STABLE id
+    # throughout - never by position - because a side's saved loadout, path and
+    # cooldowns are written by id, and a reordered list would re-point every
+    # one of them. `cost` is in whichever purse the ability draws on: points
+    # for a pool ability, CP for a path's (see `isPathSlot` in the room).
+    #
+    # A path shares its id with its own passive on purpose: the path IS its
+    # passive. They live in different namespaces - `paths` is a list, the
+    # catalogue is a map - and nothing looks one up in the other.
+    #
+    # `testing: True` marks the owner's bench rather than a balanced ability,
+    # and is what keeps Rally's 300 points out of networked play.
+    #
+    # **The engine still does not read any of this.** It is here so that
+    # tuning an ability is a config edit rather than a code change, which is
+    # the half of PUNCHLIST 6.15 that could land without the numbers settling.
+    "abilities": {
+        "slots": 4,
+        "pool": ["dash", "focus", "bulwark", "sap", "arc-bolt", "mire", "mend", "rally"],
+        "paths": [
+            {
+                "id": "bastion",
+                "name": "Bastion",
+                "cost": 6,
+                "passive": "bastion",
+                "skill": "anchor",
+                "ultimate": "fortress"
+            },
+            {
+                "id": "onslaught",
+                "name": "Onslaught",
+                "cost": 7,
+                "passive": "onslaught",
+                "skill": "cleave",
+                "ultimate": "ruin"
+            },
+            {
+                "id": "tempo",
+                "name": "Tempo",
+                "cost": 5,
+                "passive": "tempo",
+                "skill": "surge",
+                "ultimate": "blitz"
+            }
+        ],
+        "catalogue": {
+            "dash": {
+                "id": "dash",
+                "name": "Dash",
+                "target": "friendly",
+                "cost": 3,
+                "mov": 2
+            },
+            "focus": {
+                "id": "focus",
+                "name": "Focus",
+                "target": "friendly",
+                "cost": 5,
+                "atk": 2
+            },
+            "bulwark": {
+                "id": "bulwark",
+                "name": "Bulwark",
+                "target": "friendly",
+                "cost": 1,
+                "def": 3
+            },
+            "sap": {
+                "id": "sap",
+                "name": "Sap",
+                "target": "enemy",
+                "cost": 4,
+                "mov": -2,
+                "atk": -2,
+                "def": -2,
+                "damage": 6
+            },
+            "arc-bolt": {
+                "id": "arc-bolt",
+                "name": "Arc Bolt",
+                "target": "enemy",
+                "cost": 3,
+                "damage": 8
+            },
+            "mire": {
+                "id": "mire",
+                "name": "Mire",
+                "target": "enemy",
+                "cost": 2,
+                "mov": -3
+            },
+            "mend": {
+                "id": "mend",
+                "name": "Mend",
+                "target": "friendly",
+                "cost": 0,
+                "heal": 20,
+                "testing": True
+            },
+            "rally": {
+                "id": "rally",
+                "name": "Rally",
+                "target": "universal",
+                "cost": 0,
+                "points": 300,
+                "testing": True
+            },
+            "bastion": {
+                "id": "bastion",
+                "name": "Bastion",
+                "target": "friendly",
+                "cost": 0,
+                "def": 1
+            },
+            "anchor": {
+                "id": "anchor",
+                "name": "Anchor",
+                "target": "friendly",
+                "cost": 4,
+                "def": 4
+            },
+            "fortress": {
+                "id": "fortress",
+                "name": "Fortress",
+                "target": "universal",
+                "cost": 8,
+                "points": 4
+            },
+            "onslaught": {
+                "id": "onslaught",
+                "name": "Onslaught",
+                "target": "friendly",
+                "cost": 0,
+                "atk": 1
+            },
+            "cleave": {
+                "id": "cleave",
+                "name": "Cleave",
+                "target": "enemy",
+                "cost": 5,
+                "damage": 10
+            },
+            "ruin": {
+                "id": "ruin",
+                "name": "Ruin",
+                "target": "universal",
+                "cost": 8,
+                "points": 5
+            },
+            "tempo": {
+                "id": "tempo",
+                "name": "Tempo",
+                "target": "friendly",
+                "cost": 0,
+                "mov": 1
+            },
+            "surge": {
+                "id": "surge",
+                "name": "Surge",
+                "target": "friendly",
+                "cost": 3,
+                "mov": 3
+            },
+            "blitz": {
+                "id": "blitz",
+                "name": "Blitz",
+                "target": "universal",
+                "cost": 8,
+                "points": 3
+            }
+        }
+    },
     "setup": {
         # Three rows on each side of the radius-11 board, spaced so nothing
         # sits shoulder to shoulder. White's edge row is r=+11; black is the point

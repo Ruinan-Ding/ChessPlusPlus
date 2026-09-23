@@ -97,4 +97,58 @@ describe('ConfigService validation, against the server\'s', () => {
     expect(service.validateGameRules(config).valid).toBeTrue();
     expect(config.rules.objective).toBe('elimination');
   });
+
+  /**
+   * The ability ids have to join up. **Only the client reads abilities**, so
+   * this is the only validator that can catch a catalogue that does not: the
+   * server's deliberately leaves them alone, the engine never touching them.
+   * A pool or a path naming an ability that is not there reaches the room as
+   * a blank slot rather than an error, which is the kind of thing a config
+   * editor should be told about while they are still editing.
+   */
+  it('takes a catalogue whose ids all join up', () => {
+    const config: any = minimal();
+    config.abilities = {
+      slots: 1,
+      pool: ['zap'],
+      paths: [{ id: 'way', name: 'Way', cost: 1,
+                passive: 'zap', skill: 'zap', ultimate: 'zap' }],
+      catalogue: { zap: { id: 'zap', name: 'Zap', target: 'enemy' } },
+    };
+    expect(service.validateGameRules(config).valid).toBeTrue();
+  });
+
+  it('refuses a pool or a path that names an ability the catalogue has not got', () => {
+    const base: any = minimal();
+    base.abilities = { pool: ['zap'], paths: [], catalogue: {} };
+    expect(service.validateGameRules(base).valid).toBeFalse();
+
+    const path: any = minimal();
+    path.abilities = {
+      pool: [],
+      paths: [{ id: 'way', name: 'Way', cost: 1,
+                passive: 'zap', skill: 'missing', ultimate: 'zap' }],
+      catalogue: { zap: { id: 'zap', name: 'Zap', target: 'enemy' } },
+    };
+    const result = service.validateGameRules(path);
+    expect(result.valid).toBeFalse();
+    expect(result.errors!.some(e => e.includes('skill'))).toBeTrue();
+  });
+
+  it('refuses a catalogue entry that does not carry its own id', () => {
+    // The map key and the entry's id are two statements of one fact, and the
+    // room reads whichever is nearer - so they must not be able to disagree.
+    const config: any = minimal();
+    config.abilities = {
+      pool: ['zap'], paths: [],
+      catalogue: { zap: { id: 'zapp', name: 'Zap', target: 'enemy' } },
+    };
+    expect(service.validateGameRules(config).valid).toBeFalse();
+  });
+
+  it('still takes a config with no abilities at all', () => {
+    const config: any = minimal();
+    delete config.abilities;
+    expect(service.validateGameRules(config).valid).toBeTrue();
+  });
 });

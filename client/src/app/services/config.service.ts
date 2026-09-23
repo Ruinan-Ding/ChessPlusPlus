@@ -17,7 +17,13 @@ import { BehaviorSubject, Observable } from 'rxjs';
  * onto an occupied hex (ally or enemy).
  */
 
-const DEFAULT_GAME_CONFIG = {
+/**
+ * The shipped config. Exported for the one consumer that needs it before a
+ * game exists: the room draws its ability panels in a room with no snapshot
+ * yet, and falling back to this keeps the catalogue in ONE place rather than
+ * leaving a second copy hard-coded on the component.
+ */
+export const DEFAULT_GAME_CONFIG = {
   version: '1.0',
   board: {
     radius: 11,              // 12 cells per hexagon edge
@@ -69,7 +75,174 @@ const DEFAULT_GAME_CONFIG = {
       move: 6
     }
   },
-  abilities: {},
+  /**
+   * The ability catalogue, and how a side gets at it. Mirrors
+   * `DEFAULT_CONFIG['abilities']` in config_loader.py, byte for byte.
+   *
+   * Keyed by a **stable id** throughout - never by position - because a
+   * side's saved loadout, path and cooldowns are written by id, and a
+   * reordered list would re-point every one of them. `cost` is in whichever
+   * purse the ability draws on: points for a pool ability, CP for a path's.
+   *
+   * A path shares its id with its own passive on purpose: the path IS its
+   * passive. Different namespaces - `paths` is a list, `catalogue` a map.
+   */
+  abilities: {
+    slots: 4,
+    pool: ['dash', 'focus', 'bulwark', 'sap', 'arc-bolt', 'mire', 'mend', 'rally'],
+    paths: [
+      {
+        id: 'bastion',
+        name: 'Bastion',
+        cost: 6,
+        passive: 'bastion',
+        skill: 'anchor',
+        ultimate: 'fortress'
+      },
+      {
+        id: 'onslaught',
+        name: 'Onslaught',
+        cost: 7,
+        passive: 'onslaught',
+        skill: 'cleave',
+        ultimate: 'ruin'
+      },
+      {
+        id: 'tempo',
+        name: 'Tempo',
+        cost: 5,
+        passive: 'tempo',
+        skill: 'surge',
+        ultimate: 'blitz'
+      }
+    ],
+    catalogue: {
+      dash: {
+        id: 'dash',
+        name: 'Dash',
+        target: 'friendly',
+        cost: 3,
+        mov: 2
+      },
+      focus: {
+        id: 'focus',
+        name: 'Focus',
+        target: 'friendly',
+        cost: 5,
+        atk: 2
+      },
+      bulwark: {
+        id: 'bulwark',
+        name: 'Bulwark',
+        target: 'friendly',
+        cost: 1,
+        def: 3
+      },
+      sap: {
+        id: 'sap',
+        name: 'Sap',
+        target: 'enemy',
+        cost: 4,
+        mov: -2,
+        atk: -2,
+        def: -2,
+        damage: 6
+      },
+      'arc-bolt': {
+        id: 'arc-bolt',
+        name: 'Arc Bolt',
+        target: 'enemy',
+        cost: 3,
+        damage: 8
+      },
+      mire: {
+        id: 'mire',
+        name: 'Mire',
+        target: 'enemy',
+        cost: 2,
+        mov: -3
+      },
+      mend: {
+        id: 'mend',
+        name: 'Mend',
+        target: 'friendly',
+        cost: 0,
+        heal: 20,
+        testing: true
+      },
+      rally: {
+        id: 'rally',
+        name: 'Rally',
+        target: 'universal',
+        cost: 0,
+        points: 300,
+        testing: true
+      },
+      bastion: {
+        id: 'bastion',
+        name: 'Bastion',
+        target: 'friendly',
+        cost: 0,
+        def: 1
+      },
+      anchor: {
+        id: 'anchor',
+        name: 'Anchor',
+        target: 'friendly',
+        cost: 4,
+        def: 4
+      },
+      fortress: {
+        id: 'fortress',
+        name: 'Fortress',
+        target: 'universal',
+        cost: 8,
+        points: 4
+      },
+      onslaught: {
+        id: 'onslaught',
+        name: 'Onslaught',
+        target: 'friendly',
+        cost: 0,
+        atk: 1
+      },
+      cleave: {
+        id: 'cleave',
+        name: 'Cleave',
+        target: 'enemy',
+        cost: 5,
+        damage: 10
+      },
+      ruin: {
+        id: 'ruin',
+        name: 'Ruin',
+        target: 'universal',
+        cost: 8,
+        points: 5
+      },
+      tempo: {
+        id: 'tempo',
+        name: 'Tempo',
+        target: 'friendly',
+        cost: 0,
+        mov: 1
+      },
+      surge: {
+        id: 'surge',
+        name: 'Surge',
+        target: 'friendly',
+        cost: 3,
+        mov: 3
+      },
+      blitz: {
+        id: 'blitz',
+        name: 'Blitz',
+        target: 'universal',
+        cost: 8,
+        points: 3
+      }
+    }
+  },
   setup: {
     // Three rows on each side of the radius-11 board, spaced so nothing
     // sits shoulder to shoulder. White's edge row is r=+11; black is the point
@@ -327,9 +500,44 @@ export class ConfigService {
       }
     }
 
-    // Abilities (optional - just needs to be an object if present)
-    if (config.abilities !== undefined && typeof config.abilities !== 'object') {
-      errors.push('"abilities" must be an object');
+    // Abilities. Optional, but if present the ids have to join up: the pool
+    // and every path name abilities out of the catalogue, and a name with
+    // nothing behind it reaches the room as a blank slot rather than an
+    // error. **Only the client reads abilities**, so this is the only place
+    // that can catch it - the server's `_validate_config` deliberately does
+    // not, the engine never touching them (see the `config-sync` skill).
+    if (config.abilities !== undefined) {
+      if (typeof config.abilities !== 'object' || config.abilities === null) {
+        errors.push('"abilities" must be an object');
+      } else {
+        const abilities = config.abilities;
+        const catalogue = abilities.catalogue ?? {};
+        const known = (id: unknown) => typeof id === 'string' && !!catalogue[id];
+        if (abilities.pool !== undefined && !Array.isArray(abilities.pool)) {
+          errors.push('"abilities.pool" must be an array of catalogue ids');
+        } else {
+          for (const id of abilities.pool ?? []) {
+            if (!known(id)) errors.push(`"abilities.pool" names unknown ability "${id}"`);
+          }
+        }
+        if (abilities.paths !== undefined && !Array.isArray(abilities.paths)) {
+          errors.push('"abilities.paths" must be an array');
+        } else {
+          for (const path of abilities.paths ?? []) {
+            for (const slot of ['passive', 'skill', 'ultimate'] as const) {
+              if (!known(path?.[slot])) {
+                errors.push(
+                  `"abilities.paths" entry "${path?.id}" names unknown ${slot} "${path?.[slot]}"`);
+              }
+            }
+          }
+        }
+        for (const [id, ability] of Object.entries<any>(catalogue)) {
+          if (ability?.id !== id) {
+            errors.push(`"abilities.catalogue.${id}" must carry its own id`);
+          }
+        }
+      }
     }
 
     return errors.length > 0 ? { valid: false, errors } : { valid: true };

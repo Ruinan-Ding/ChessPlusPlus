@@ -16,6 +16,7 @@ import {
   captureClaims, captureScore, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
 } from '../../services/hex-rules';
 import { buildPlayback } from '../../services/playback';
+import { DEFAULT_GAME_CONFIG } from '../../services/config.service';
 import { homecomingsAt, openingMovedHexes } from '../../services/history-rules';
 import {
   OVERTIME_LAST_TURN, SCORING_PHASES, boardMovesPerTurn, handOversBy,
@@ -30,20 +31,74 @@ interface GameOptions {
   turnTimeLimit?: number;
 }
 
-const LOCAL_UI_STATE_KEY = 'cpp.localGame.ui.v1';
+// v2: the ability fields inside are written by catalogue id rather than by
+// slot number. A v1 blob holds numbers where this expects strings, and a
+// number read as an id resolves to nothing - so the key is bumped and an old
+// save is ignored outright rather than quietly restoring the wrong abilities.
+// Only the UI layer resets; the position and history live under their own key.
+const LOCAL_UI_STATE_KEY = 'cpp.localGame.ui.v2';
+
+/** One ability as the config holds it. Everything but id/name/target is optional. */
+interface AbilityEntry {
+  id: string;
+  name: string;
+  description?: string;
+  target?: 'friendly' | 'enemy' | 'universal';
+  cost?: number;
+  cooldown?: number;
+  mov?: number; atk?: number; def?: number;
+  damage?: number; heal?: number; points?: number;
+  /** The owner's bench rather than a balanced ability - kept out of networked play. */
+  testing?: boolean;
+}
+
+/** A path as the config holds it: its three abilities named by id. */
+interface AbilityPath {
+  id: string; name: string; cost: number;
+  passive: string; skill: string; ultimate: string;
+}
+
+/** The same path with its abilities resolved to slots, which is how the room asks. */
+interface AbilityPathSlots {
+  id: string; name: string; cost: number;
+  passive: number; skill: number; ultimate: number;
+}
+
+interface AbilityCatalogue {
+  slots?: number;
+  pool?: string[];
+  paths?: AbilityPath[];
+  catalogue?: Record<string, AbilityEntry>;
+}
+
+/** What the room reads off a slot: the config's entry with its zeros filled in. */
+interface AbilityEffect {
+  id: string;
+  name: string;
+  target: 'friendly' | 'enemy' | 'universal';
+  mov: number; atk: number; def: number;
+  damage?: number; heal?: number; points?: number;
+  testing?: boolean;
+}
 
 interface LocalUiState {
   myPoints: number;
   opponentPoints: number;
   myCpSpent: number;
   opponentCpSpent: number;
-  unitCooldowns: number[];
-  opponentCooldowns: number[];
-  myCooldowns: number[];
-  myLoadout: number[];
-  opponentLoadout: number[];
-  myPath: number | null;
-  opponentPath: number | null;
+  // **Written by catalogue id, never by slot.** Inside the component these
+  // are slot numbers - the template, the glows and the cooldown arrays all
+  // work in positions - but a position only means anything next to the
+  // catalogue that produced it, and reordering the config would re-point
+  // every saved loadout, path and cooldown. The translation happens here and
+  // nowhere else (`persistLocalUiState` / `restoreLocalUiState`).
+  unitCooldowns: Record<string, number>;
+  opponentCooldowns: Record<string, number>;
+  myCooldowns: Record<string, number>;
+  myLoadout: string[];
+  opponentLoadout: string[];
+  myPath: string | null;
+  opponentPath: string | null;
   myUltimateUsed: boolean;
   opponentUltimateUsed: boolean;
   buffs: Record<string, UnitBuff>;
@@ -548,6 +603,40 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     
   }
 
+  /** A slot list as catalogue ids, dropping any slot this config has lost. */
+  private idsOfSlots(slots: number[]): string[] {
+    const ids = this.abilityIds;
+    return slots.map(slot => ids[slot]).filter((id): id is string => !!id);
+  }
+
+  /** A per-slot array as a map by id - what survives a reordered catalogue. */
+  private cooldownsById(bySlot: number[]): Record<string, number> {
+    const ids = this.abilityIds;
+    const out: Record<string, number> = {};
+    bySlot.forEach((turns, slot) => {
+      if (turns && ids[slot]) out[ids[slot]] = turns;
+    });
+    return out;
+  }
+
+  /** And back: unknown ids are dropped, which is what a retired ability is. */
+  private slotsOfIds(ids: unknown): number[] {
+    if (!Array.isArray(ids)) return [];
+    return ids
+      .map(id => (typeof id === 'string' ? this.slotOfAbility(id) : -1))
+      .filter(slot => slot >= 0);
+  }
+
+  private cooldownsBySlot(byId: unknown): number[] {
+    const out = this.abilityIds.map(() => 0);
+    if (!byId || typeof byId !== 'object') return out;
+    for (const [id, turns] of Object.entries(byId as Record<string, unknown>)) {
+      const slot = this.slotOfAbility(id);
+      if (slot >= 0 && Number.isFinite(turns)) out[slot] = turns as number;
+    }
+    return out;
+  }
+
   private persistLocalUiState(): void {
     if (this.gameId !== 'local') return;
     const state: LocalUiState = {
@@ -555,13 +644,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       opponentPoints: this.opponentPoints,
       myCpSpent: this.myCpSpent,
       opponentCpSpent: this.opponentCpSpent,
-      unitCooldowns: this.unitCooldowns,
-      opponentCooldowns: this.opponentCooldowns,
-      myCooldowns: this.myCooldowns,
-      myLoadout: this.myLoadout,
-      opponentLoadout: this.opponentLoadout,
-      myPath: this.myPath,
-      opponentPath: this.opponentPath,
+      unitCooldowns: this.cooldownsById(this.unitCooldowns),
+      opponentCooldowns: this.cooldownsById(this.opponentCooldowns),
+      myCooldowns: this.cooldownsById(this.myCooldowns),
+      myLoadout: this.idsOfSlots(this.myLoadout),
+      opponentLoadout: this.idsOfSlots(this.opponentLoadout),
+      myPath: this.myPath === null ? null : (this.abilityPaths[this.myPath]?.id ?? null),
+      opponentPath: this.opponentPath === null
+        ? null : (this.abilityPaths[this.opponentPath]?.id ?? null),
       myUltimateUsed: this.myUltimateUsed,
       opponentUltimateUsed: this.opponentUltimateUsed,
       buffs: this.buffs,
@@ -591,10 +681,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (Number.isFinite(state.opponentPoints)) this.opponentPoints = state.opponentPoints!;
       if (Number.isFinite(state.myCpSpent)) this.myCpSpent = state.myCpSpent!;
       if (Number.isFinite(state.opponentCpSpent)) this.opponentCpSpent = state.opponentCpSpent!;
-      if (Array.isArray(state.unitCooldowns)) this.unitCooldowns = state.unitCooldowns;
-      if (Array.isArray(state.opponentCooldowns)) this.opponentCooldowns = state.opponentCooldowns;
-      if (Array.isArray(state.myCooldowns)) this.myCooldowns = state.myCooldowns;
-      if (Array.isArray(state.myLoadout)) this.myLoadout = state.myLoadout;
+      if (state.unitCooldowns) this.unitCooldowns = this.cooldownsBySlot(state.unitCooldowns);
+      if (state.opponentCooldowns) {
+        this.opponentCooldowns = this.cooldownsBySlot(state.opponentCooldowns);
+      }
+      if (state.myCooldowns) this.myCooldowns = this.cooldownsBySlot(state.myCooldowns);
+      if (state.myLoadout) this.myLoadout = this.slotsOfIds(state.myLoadout);
       // Shape-checked like its neighbours: a stored value from an older
       // build indexes to undefined, and the arithmetic downstream turns that
       // into NaN on the panel rather than failing where it went wrong.
@@ -602,11 +694,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (debt && Number.isFinite(debt.mine) && Number.isFinite(debt.opponent)) {
         this.swapDebt = { mine: debt.mine, opponent: debt.opponent };
       }
-      if (Array.isArray(state.opponentLoadout)) this.opponentLoadout = state.opponentLoadout;
-      if (typeof state.myPath === 'number' || state.myPath === null) this.myPath = state.myPath;
-      if (typeof state.opponentPath === 'number' || state.opponentPath === null) {
-        this.opponentPath = state.opponentPath;
-      }
+      if (state.opponentLoadout) this.opponentLoadout = this.slotsOfIds(state.opponentLoadout);
+      // A path whose id this config no longer knows comes back as no path,
+      // which is the same answer a side that never took one gives.
+      const pathOf = (id: unknown) => {
+        if (typeof id !== 'string') return null;
+        const at = this.abilityPaths.findIndex(path => path.id === id);
+        return at >= 0 ? at : null;
+      };
+      if (state.myPath !== undefined) this.myPath = pathOf(state.myPath);
+      if (state.opponentPath !== undefined) this.opponentPath = pathOf(state.opponentPath);
       if (typeof state.myUltimateUsed === 'boolean') this.myUltimateUsed = state.myUltimateUsed;
       if (typeof state.opponentUltimateUsed === 'boolean') this.opponentUltimateUsed = state.opponentUltimateUsed;
       if (state.buffs && typeof state.buffs === 'object') this.buffs = state.buffs;
@@ -3592,64 +3689,115 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /** Hover preview - takes precedence over the selection while it lasts. */
   hoveredUnit: SelectedUnit | null = null;
 
-  /** What each ability costs in points. Placeholder until abilities exist. */
-  // Pool, then each path's passive (free with the path), skill and ultimate.
-  // Slot 7 (Rally) is free on purpose - see abilityEffects.
-  // ponytail: slot 6 is free like slot 7 beside it - the pair is the owner's
-  // testing bench, a heal and a purse, picked together in one go.
-  abilityCosts = [3, 5, 1, 4, 3, 2, 0, 0, 0, 4, 8, 0, 5, 8, 0, 3, 8];
+  /**
+   * The ability catalogue as the config holds it - the game's, if one is
+   * running, and the shipped default otherwise. The room draws its panels in
+   * a room with no snapshot yet, and falling back to `DEFAULT_GAME_CONFIG`
+   * keeps the catalogue in ONE place rather than leaving a second copy
+   * hard-coded here for the empty case.
+   */
+  private get abilityConfig(): AbilityCatalogue {
+    return ((this.gameState.snapshot.config as any)?.abilities
+      ?? (DEFAULT_GAME_CONFIG as any).abilities) as AbilityCatalogue;
+  }
 
   /**
-   * What each slot does. Arbitrary numbers - this is the proof of concept
-   * that an ability can be clicked, aimed at a unit and change its stats for
-   * a turn. Slot 5 is the passive: it is not cast, so its numbers are what
-   * the unit carries once it has the rank for it.
+   * Everything derived from the catalogue, worked out once per config.
+   *
+   * The template reads `abilityEffects`, `abilityCosts` and `abilityPaths` on
+   * every change-detection pass, and a getter that rebuilt seventeen entries
+   * each time would allocate through the whole match - the same reason
+   * `homecomingsSpent` and `standings` carry caches. Keyed on the config's
+   * identity, which is replaced wholesale and never edited, so the key is all
+   * the invalidation needed.
    */
-  readonly abilityEffects = [
-    // Slots 0-7 are the pool a side picks four of; between them they can put
-    // a unit into every state the board draws: lifted, dragged, wounded.
-    { name: 'Dash', target: 'friendly' as const, mov: 2, atk: 0, def: 0 },
-    { name: 'Focus', target: 'friendly' as const, mov: 0, atk: 2, def: 0 },
-    { name: 'Bulwark', target: 'friendly' as const, mov: 0, atk: 0, def: 3 },
-    { name: 'Sap', target: 'enemy' as const, mov: -2, atk: -2, def: -2, damage: 6 },
-    { name: 'Arc Bolt', target: 'enemy' as const, mov: 0, atk: 0, def: 0, damage: 8 },
-    { name: 'Mire', target: 'enemy' as const, mov: -3, atk: 0, def: 0 },
-    // ponytail: the owner's other testing lever, and Rally's partner in the
-    // pool - "heal a static 20 for testing purposes". Flat, free, and the only
-    // way to put HP back into a unit by hand.
-    { name: 'Mend', target: 'friendly' as const, mov: 0, atk: 0, def: 0, heal: 20 },
-    // ponytail: the owner's testing lever - free, and hands out 300 points,
-    // so any priced rule (a wrap crossing, a path, an ultimate) can be tried
-    // without playing thirty turns to afford it. Put it back to 2 / 1 point
-    // when the real numbers land.
-    { name: 'Rally', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 300 },
-    // 8-16: three paths of three. A side unlocks one path and gets its
-    // passive (global, on every unit it owns), its skill and its ultimate.
-    // A passive carries its path's name: the path IS its passive, and the
-    // owner asked for them back in step after a spell apart.
-    { name: 'Bastion', target: 'friendly' as const, mov: 0, atk: 0, def: 1 },
-    { name: 'Anchor', target: 'friendly' as const, mov: 0, atk: 0, def: 4 },
-    { name: 'Fortress', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 4 },
+  private catalogueCache: {
+    config: AbilityCatalogue | null;
+    ids: string[];
+    effects: AbilityEffect[];
+    costs: number[];
+    paths: AbilityPathSlots[];
+  } | null = null;
 
-    { name: 'Onslaught', target: 'friendly' as const, mov: 0, atk: 1, def: 0 },
-    { name: 'Cleave', target: 'enemy' as const, mov: 0, atk: 0, def: 0, damage: 10 },
-    { name: 'Ruin', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 5 },
+  private get catalogue() {
+    const config = this.abilityConfig;
+    if (this.catalogueCache?.config === config) return this.catalogueCache;
+    const ids = [
+      ...(config?.pool ?? []),
+      ...(config?.paths ?? []).flatMap(path => [path.passive, path.skill, path.ultimate]),
+    ];
+    const entries = config?.catalogue ?? {};
+    const effects: AbilityEffect[] = ids.map(id => {
+      const a = entries[id] ?? ({ id, name: id } as AbilityEntry);
+      return {
+        id, name: a.name ?? id,
+        target: (a.target ?? 'friendly') as 'friendly' | 'enemy' | 'universal',
+        // Filled in at 0 where the config leaves them out: a config omits what
+        // an ability does not do, and every reader here expects a number.
+        // `undefined` would have reached a stat line as `NaN`.
+        mov: a.mov ?? 0, atk: a.atk ?? 0, def: a.def ?? 0,
+        ...(a.damage !== undefined ? { damage: a.damage } : {}),
+        ...(a.heal !== undefined ? { heal: a.heal } : {}),
+        ...(a.points !== undefined ? { points: a.points } : {}),
+        ...(a.testing ? { testing: true } : {}),
+      };
+    });
+    const slotOf = (id: string) => ids.indexOf(id);
+    this.catalogueCache = {
+      config,
+      ids,
+      effects,
+      costs: ids.map(id => entries[id]?.cost ?? 0),
+      // Ids in the config, slots in here: `isPathSlot`, `purseFor` and the
+      // template all ask in slot numbers, so the translation happens once.
+      paths: (config?.paths ?? []).map(path => ({
+        id: path.id, name: path.name, cost: path.cost,
+        passive: slotOf(path.passive),
+        skill: slotOf(path.skill),
+        ultimate: slotOf(path.ultimate),
+      })),
+    };
+    return this.catalogueCache;
+  }
 
-    { name: 'Tempo', target: 'friendly' as const, mov: 1, atk: 0, def: 0 },
-    { name: 'Surge', target: 'friendly' as const, mov: 3, atk: 0, def: 0 },
-    { name: 'Blitz', target: 'universal' as const, mov: 0, atk: 0, def: 0, points: 3 },
-  ];
+  /**
+   * Catalogue ids in slot order: the pool first, then each path's passive,
+   * skill and ultimate.
+   *
+   * **The one place a position and an id meet.** Everything inside the
+   * component still works in slot numbers - the template, the glows, the
+   * cooldown arrays - and everything that OUTLIVES the component is written
+   * by id (`persistLocalUiState`). Reordering the config therefore moves the
+   * slots and leaves a saved loadout pointing at the same abilities, which is
+   * the half of PUNCHLIST 6.15 that could land without the numbers settling.
+   */
+  get abilityIds(): string[] { return this.catalogue.ids; }
+
+  /** The slot a catalogue id sits in, or -1 if this config has no such id. */
+  slotOfAbility(id: string): number {
+    return this.abilityIds.indexOf(id);
+  }
+
+  /** What each ability costs, in whichever purse `isPathSlot` says buys it. */
+  get abilityCosts(): number[] { return this.catalogue.costs; }
+
+  /**
+   * What each slot does, read off the config in slot order.
+   *
+   * `mov`/`atk`/`def` are filled in at 0 where the config leaves them out: a
+   * config omits what an ability does not do, and every reader here expects a
+   * number. `undefined` would have shown up as `NaN` in a stat line rather
+   * than as nothing happening.
+   */
+  get abilityEffects(): AbilityEffect[] { return this.catalogue.effects; }
+
 
   /**
    * The three ways a side can go, named for the passive each one grants. One
    * per match: unlocking costs CP, and what it buys - a global passive, a
    * skill and an ultimate - is that path's alone.
    */
-  readonly abilityPaths = [
-    { name: 'Bastion', cost: 6, passive: 8, skill: 9, ultimate: 10 },
-    { name: 'Onslaught', cost: 7, passive: 11, skill: 12, ultimate: 13 },
-    { name: 'Tempo', cost: 5, passive: 14, skill: 15, ultimate: 16 },
-  ];
+  get abilityPaths(): AbilityPathSlots[] { return this.catalogue.paths; }
 
   /** Which path each side took, or null while the choice is still open. */
   myPath: number | null = null;
@@ -3676,8 +3824,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * Indices of the pool a side picks from, and how many it may hold. Picked
    * in pairs (see `pairOf`), so four slots is two picks.
    */
-  readonly abilityPool = [0, 1, 2, 3, 4, 5, 6, 7];
-  readonly abilitySlots = 4;
+  get abilityPool(): number[] {
+    // The pool leads the slot order, so its slots are its own positions.
+    return (this.abilityConfig?.pool ?? []).map((_, i) => i);
+  }
+
+  get abilitySlots(): number { return this.abilityConfig?.slots ?? 0; }
   /**
    * The four each side is carrying, in the order they were picked. Empty
    * until then: nothing is chosen for you, the picks happen in the game.
