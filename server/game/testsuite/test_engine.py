@@ -246,7 +246,7 @@ class ConfigLoaderTestCase(TestCase):
         loaded = load_config(raw)
         self.assertEqual(
             {k: loaded['rules'][k] for k in COUNTED_RULES},
-            {'panelMoversPerTurn': 3, 'phaseInitEntries': 5,
+            {'panelMoversPerTurn': 3, 'postmatchEntries': 5,
              'homecomingsPerSetupTurn': 3, 'cpPerPhase': 100})
         for key in COUNTED_RULES:
             for value in (-1, 1.5, True, None):
@@ -254,6 +254,28 @@ class ConfigLoaderTestCase(TestCase):
                 bad['rules'][key] = value
                 with self.assertRaises(ValueError, msg=f'{key}={value!r}'):
                     load_config(bad)
+
+    def test_a_snapshot_under_the_old_postmatch_key_loads_at_the_default(self):
+        """
+        postmatchEntries was phaseInitEntries while the extra turn opened a
+        phase instead of closing it, and nothing migrates the old key. That is
+        only safe because the validator refuses no rule it does not know: a
+        room frozen with the old key must still load, and read the new one at
+        its default rather than at whatever the old one said.
+        """
+        import copy
+        from game.engine.config_loader import DEFAULT_CONFIG, rule_of
+        raw = copy.deepcopy(DEFAULT_CONFIG)
+        del raw['rules']['postmatchEntries']
+        raw['rules']['phaseInitEntries'] = 1
+        loaded = load_config(raw)
+        self.assertEqual(loaded['rules']['postmatchEntries'], 5)
+        self.assertEqual(rule_of(loaded, 'postmatchEntries'), 5)
+        # A room already playing is never loaded again: its config_snapshot is
+        # read as it was stored, and that is the road a frozen room takes -
+        # rule_of's fallback, not the normaliser's fill.
+        self.assertNotIn('postmatchEntries', raw['rules'])
+        self.assertEqual(rule_of(raw, 'postmatchEntries'), 5)
 
     def test_a_negative_damage_floor_is_rejected(self):
         """
@@ -1528,8 +1550,8 @@ class PhaseScheduleTestCase(TestCase):
 
     def test_overtime_starts_where_the_client_says(self):
         # 3 + 11 + 11 + 11 turns, two plies each, then the next one. Eleven,
-        # not ten: each numbered phase opens with an initialization turn that
-        # its ten do not count.
+        # not ten: each numbered phase closes with a postmatch turn that its
+        # ten do not count.
         self.assertEqual(phases.OVERTIME_FIRST_PLY, 73)
         self.assertFalse(phases.is_overtime(72))
         self.assertTrue(phases.is_overtime(73))
@@ -1539,29 +1561,46 @@ class PhaseScheduleTestCase(TestCase):
         self.assertEqual([p for p in range(1, 12) if phases.is_initialization(p)],
                          [1, 2, 3, 4, 5, 6])
 
-    def test_each_numbered_phase_opens_with_one_initialization_turn(self):
-        """Turns 4, 15 and 26 - and none of them eats a turn of play."""
-        init_turns = [t for t in range(1, 40) if phases.is_phase_initialization(2 * t - 1)]
-        self.assertEqual(init_turns, [4, 15, 26])
-        # Both plies of it, so each side gets one hand-over to set out on.
-        self.assertTrue(phases.is_phase_initialization(7))
-        self.assertTrue(phases.is_phase_initialization(8))
+    def test_each_numbered_phase_closes_with_one_postmatch_turn(self):
+        """Turns 14, 25 and 36 - and none of them eats a turn of play."""
+        postmatch_turns = [t for t in range(1, 40) if phases.is_postmatch(2 * t - 1)]
+        self.assertEqual(postmatch_turns, [14, 25, 36])
+        # Both plies of it, so each side gets one hand-over to set out on -
+        # and no other ply anywhere, overtime included.
+        self.assertEqual([p for p in range(1, 111) if phases.is_postmatch(p)],
+                         [27, 28, 49, 50, 71, 72])
+        # It belongs to the phase it closes: turn 14 is still Phase 1, and
+        # Phase 2 starts on turn 15.
+        self.assertEqual([phases.phase_index_at(p) for p in (7, 25, 27, 28, 29)],
+                         [1, 1, 1, 1, 2])
         # A setup turn is the opening's three plus these; the opening is not
         # widened to include them.
         self.assertEqual([t for t in range(1, 40) if phases.is_setup_turn(2 * t - 1)],
-                         [1, 2, 3, 4, 15, 26])
-        self.assertFalse(phases.is_initialization(7))
+                         [1, 2, 3, 14, 25, 36])
+        self.assertFalse(phases.is_initialization(27))
+
+    def test_play_starts_the_moment_the_opening_ends(self):
+        """
+        The owner's reason for moving the extra turn to the end of the phase:
+        at the front, it followed the opening's three setup turns straight
+        away, and a match opened on four in a row. Turn 4 is Phase 1's first
+        turn of play now.
+        """
+        self.assertFalse(phases.is_setup_turn(7))
+        self.assertFalse(phases.is_setup_turn(8))
+        self.assertEqual(phases.stage_at(7), 'Phase 1')
+        self.assertTrue(phases.is_wrap_open(7))
 
     def test_the_wrap_is_open_before_each_halftime(self):
         """
-        The played first half of a numbered phase and nothing else: turns 5-9,
-        16-20 and 27-31. Not the opening, not an initialization turn, and not
-        overtime - `before_halftime` alone used to say yes to all three.
+        The played first half of a numbered phase and nothing else: turns 4-8,
+        15-19 and 26-30. Not the opening, not a postmatch, and not overtime -
+        `before_halftime` alone used to say yes to the opening and overtime.
         """
         open_turns = [t for t in range(1, 40) if phases.is_wrap_open(2 * t - 1)]
         self.assertEqual(
             open_turns,
-            list(range(5, 10)) + list(range(16, 21)) + list(range(27, 32)))
+            list(range(4, 9)) + list(range(15, 20)) + list(range(26, 31)))
 
     def test_the_reserve_and_the_base_doorways_keep_their_own_windows(self):
         """
@@ -1570,10 +1609,11 @@ class PhaseScheduleTestCase(TestCase):
         overtime; the wrap runs on the first halves. No turn opens all three.
         """
         entry = [t for t in range(1, 40) if phases.is_entry_open(2 * t - 1)]
-        self.assertEqual(entry, [1, 2, 3, 4] + list(range(10, 16))
-                         + list(range(21, 27)) + list(range(32, 37)))
+        self.assertEqual(entry, [1, 2, 3] + list(range(9, 15))
+                         + list(range(20, 26)) + list(range(31, 37)))
         home = [t for t in range(1, 40) if phases.is_homecoming_open(2 * t - 1)]
-        self.assertEqual(home, [1, 2, 3, 4, 15, 26] + list(range(37, 40)))
+        # Phase 3's postmatch (36) runs straight on into overtime (37 on).
+        self.assertEqual(home, [1, 2, 3, 14, 25, 36] + list(range(37, 40)))
         for turn in range(1, 40):
             ply = 2 * turn - 1
             self.assertFalse(
@@ -1582,15 +1622,22 @@ class PhaseScheduleTestCase(TestCase):
 
     def test_the_stages_have_the_names_the_header_counts_down_to(self):
         named = {t: phases.stage_at(2 * t - 1)
-                 for t in (1, 3, 4, 5, 9, 10, 14, 15, 16, 26, 31, 36, 37)}
+                 for t in (1, 3, 4, 8, 9, 13, 14, 15, 19, 20, 24, 25,
+                           26, 30, 31, 35, 36, 37)}
         self.assertEqual(named, {
             1: 'Initialization', 3: 'Initialization',
-            4: 'Phase 1 Initialization', 5: 'Phase 1', 9: 'Phase 1',
-            10: 'Phase 1 Halftime', 14: 'Phase 1 Halftime',
-            15: 'Phase 2 Initialization', 16: 'Phase 2',
-            26: 'Phase 3 Initialization', 31: 'Phase 3',
-            36: 'Phase 3 Halftime', 37: 'Overtime 1',
+            4: 'Phase 1', 8: 'Phase 1',
+            9: 'Phase 1 Halftime', 13: 'Phase 1 Halftime',
+            14: 'Phase 1 Postmatch',
+            15: 'Phase 2', 19: 'Phase 2',
+            20: 'Phase 2 Halftime', 24: 'Phase 2 Halftime',
+            25: 'Phase 2 Postmatch',
+            26: 'Phase 3', 30: 'Phase 3',
+            31: 'Phase 3 Halftime', 35: 'Phase 3 Halftime',
+            36: 'Phase 3 Postmatch', 37: 'Overtime 1',
         })
+        # Both hand-overs of a postmatch name it, black's as well as white's.
+        self.assertEqual(phases.stage_at(28), 'Phase 1 Postmatch')
         # Overtime is three stages, not one: the toll climbs through them.
         self.assertEqual(
             [phases.stage_at(2 * t - 1) for t in (44, 45, 49, 50)],
@@ -1603,8 +1650,10 @@ class PhaseScheduleTestCase(TestCase):
 
         Counted forward from overtime's first turn rather than written down.
         The client's ``OVERTIME_LAST_TURN`` used to be the literal 50, and when
-        the initialization turns pushed overtime from turn 34 to turn 37 the
-        literal stayed put and quietly cost overtime three of its turns.
+        the extra turn each numbered phase gained (an initialization at its
+        start then, a postmatch at its end now) pushed overtime from turn 34 to
+        turn 37, the literal stayed put and quietly cost overtime three of its
+        turns.
         """
         self.assertEqual(phases.OVERTIME_FIRST_TURN, 37)
         self.assertEqual(phases.OVERTIME_LAST_TURN, 50)
@@ -1666,20 +1715,25 @@ class PhaseScheduleTestCase(TestCase):
         self.assertEqual(board_moves_at(panelled, 89, 'white'), 0)
 
         # A walk home is the turn's board action in overtime and a deployment
-        # while setting out - ply 7 being turn 4, Phase 1's initialization.
+        # while setting out - ply 27 being turn 14, Phase 1's postmatch.
         self.assertEqual(board_moves_at([move(withdrawn=True)], 89, 'white'), 1)
         self.assertEqual(
-            board_moves_at([move(withdrawn=True, turn=7)], 7, 'white'), 0)
+            board_moves_at([move(withdrawn=True, turn=27)], 27, 'white'), 0)
 
     def test_a_setup_turn_says_which_one_it_is_when_it_refuses_a_blow(self):
         self.assertEqual(phases.no_attack_message(1), 'Nobody attacks in the opening')
-        self.assertEqual(phases.no_attack_message(7),
-                         'Nobody attacks in a phase initialization')
+        self.assertEqual(phases.no_attack_message(27),
+                         'Nobody attacks in the postmatch')
+        self.assertEqual(phases.no_attack_message(72),
+                         'Nobody attacks in the postmatch')
         # And nothing at all on a turn that refuses no blow. Asked the other
-        # way round it answered 'a phase initialization' for every playable
+        # way round it answered for the phase's extra turn on every playable
         # turn of every phase, which is what a caller reading it as a general
-        # "why was this refused?" would have been handed.
-        self.assertEqual([phases.no_attack_message(p) for p in (9, 40, 80)], ['', '', ''])
+        # "why was this refused?" would have been handed. Ply 7 is turn 4,
+        # which refused a blow while it was Phase 1's initialization and is
+        # Phase 1's first turn of play now.
+        self.assertEqual([phases.no_attack_message(p) for p in (7, 9, 40, 80)],
+                         ['', '', '', ''])
 
     def test_white_plays_the_odd_plies(self):
         self.assertEqual([phases.side_of_ply(p) for p in (1, 2, 3, 4)],
@@ -1829,8 +1883,8 @@ class PanelMoveTestCase(DealtPanels, TestCase):
         self.assertTrue(all(v['price'] == 0 for v in targets.values()))
 
     def test_mov_is_spent_a_few_steps_at_a_time_across_the_turn(self):
-        # Ply 7, Phase 1 - past the opening, whose once-a-phase lock is a
-        # different rule with its own test below.
+        # Ply 7, turn 4: Phase 1's first turn of play - past the opening, whose
+        # once-a-phase lock is a different rule with its own test below.
         config, radius, board, at = self._setup()
         unit = panels.panel_occupancy(config, radius, [], ply=7)[at['rbr4']]
         self.assertEqual(panels.panel_allowance(config, [], unit, 7), 6)
@@ -1860,21 +1914,22 @@ class PanelMoveTestCase(DealtPanels, TestCase):
         self.assertEqual(len(panels.panel_movers(crossed, 1, 'white')['reserve']), 4)
 
     def test_the_movers_allowance_is_read_off_the_config(self):
-        # rules.panelMoversPerTurn, and rules.phaseInitEntries for the reserve
-        # in a phase initialization: tuning either is a config edit.
+        # rules.panelMoversPerTurn, and rules.postmatchEntries for the reserve
+        # in a postmatch: tuning either is a config edit. Ply 27 is turn 14,
+        # Phase 1's postmatch.
         config, radius, board, at = self._setup()
         config = {**config, 'rules': {**config['rules'],
-                                      'panelMoversPerTurn': 2, 'phaseInitEntries': 1}}
+                                      'panelMoversPerTurn': 2, 'postmatchEntries': 1}}
         two = [_panel_step(uid, 'x', 'white', at[uid], at[uid], 1, 'br')
                for uid in ('rbr0', 'rbr1')]
         by_uid = {u['uid']: u for u in
                   panels.panel_occupancy(config, radius, two, ply=1).values()}
         self.assertIsNone(panels.panel_allowance(config, two, by_uid['rbr3'], 1))
-        one = [_panel_step('rbr0', 'x', 'white', at['rbr0'], at['rbr0'], 7, 'br')]
+        one = [_panel_step('rbr0', 'x', 'white', at['rbr0'], at['rbr0'], 27, 'br')]
         by_uid = {u['uid']: u for u in
-                  panels.panel_occupancy(config, radius, one, ply=7).values()}
-        self.assertIsNone(panels.panel_allowance(config, one, by_uid['rbr3'], 7))
-        self.assertIsNotNone(panels.panel_allowance(config, one, by_uid['rbr0'], 7))
+                  panels.panel_occupancy(config, radius, one, ply=27).values()}
+        self.assertIsNone(panels.panel_allowance(config, one, by_uid['rbr3'], 27))
+        self.assertIsNotNone(panels.panel_allowance(config, one, by_uid['rbr0'], 27))
 
     def test_through_the_opening_a_unit_moves_once_for_the_whole_phase(self):
         config, radius, board, at = self._setup()
@@ -1884,14 +1939,14 @@ class PanelMoveTestCase(DealtPanels, TestCase):
         self.assertIsNone(panels.panel_allowance(config, history, moved, 3))
         # But on the SAME ply it is simply one of the turn's movers.
         self.assertIsNotNone(panels.panel_allowance(config, history, moved, 1))
-        # Ply 7 is turn 4, Phase 1's initialization: past the opening, so
+        # Ply 7 is turn 4, Phase 1's first turn of play: past the opening, so
         # the opening's lock is gone with the phase that owned it.
         self.assertEqual(panels.panel_allowance(config, history, moved, 7), 6)
 
-    def test_a_phase_initialization_starts_five_out_of_a_reserve(self):
+    def test_a_postmatch_starts_five_out_of_a_reserve(self):
         """
         The owner's number, and it stands INSTEAD of the per-panel three
-        rather than beside it. Ply 7 is turn 4 - Phase 1's initialization.
+        rather than beside it. Ply 27 is turn 14 - Phase 1's postmatch.
         """
         config, radius, board, at = self._setup()
         occupancy = panels.panel_occupancy(config, radius, [])
@@ -1908,19 +1963,22 @@ class PanelMoveTestCase(DealtPanels, TestCase):
         sixth['uid'] = 'not-one-of-them'
         # Four started, and a fifth still may.
         self.assertIsNotNone(
-            panels.panel_allowance(config, walked(reserve[:4], 7), sixth, 7))
+            panels.panel_allowance(config, walked(reserve[:4], 27), sixth, 27))
         # Five started, and a sixth may not.
         self.assertIsNone(
-            panels.panel_allowance(config, walked(reserve[:5], 7), sixth, 7))
+            panels.panel_allowance(config, walked(reserve[:5], 27), sixth, 27))
         # One of the five walks on regardless: the cap is on how many are
         # started, not on how far they go.
         self.assertIsNotNone(
-            panels.panel_allowance(config, walked(reserve[:5], 7), dict(reserve[0]), 7))
+            panels.panel_allowance(config, walked(reserve[:5], 27), dict(reserve[0]), 27))
 
-        # Off an initialization turn the reserve is back to three. Ply 9 is
-        # turn 5, Phase 1's first played turn.
-        self.assertIsNone(
-            panels.panel_allowance(config, walked(reserve[:3], 9), sixth, 9))
+        # Off a postmatch the reserve is back to three, on either side of it.
+        # Ply 25 is turn 13, the last turn of Phase 1's halftime; ply 29 is
+        # turn 15, Phase 2's first turn of play.
+        for ply in (25, 29):
+            self.assertIsNone(
+                panels.panel_allowance(config, walked(reserve[:3], ply), sixth, ply),
+                f'ply {ply}')
 
     def test_homecomings_are_counted_by_uid_for_the_ply_and_the_side(self):
         """Mirrors `homecomingsAt` in history-rules.ts."""

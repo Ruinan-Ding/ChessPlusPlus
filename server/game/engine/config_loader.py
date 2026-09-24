@@ -395,10 +395,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # How many units each panel - the base and the reserve, separately -
         # may start in one turn.
         "panelMoversPerTurn": 3,
-        # How many a side may bring out of its reserve in a phase
-        # initialization. Stands instead of panelMoversPerTurn for the reserve
-        # on that turn, not beside it.
-        "phaseInitEntries": 5,
+        # How many a side may bring out of its reserve in a phase's postmatch
+        # turn. Stands instead of panelMoversPerTurn for the reserve on that
+        # turn, not beside it.
+        "postmatchEntries": 5,
         # How many units a side may walk home in one setup turn.
         "homecomingsPerSetupTurn": 3,
         # The CP each side is handed at the start of every phase.
@@ -408,8 +408,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 #: The rules a config may leave out and be read at their default. Each is a
 #: whole number >= 0, filled in by _normalise_config and read by rule_of.
+#:
+#: postmatchEntries was phaseInitEntries while the extra turn opened a phase
+#: rather than closing it. Nothing migrates the old key: neither runtime
+#: validator (_validate_config here, validateGameRules in the client) refuses
+#: a rule it does not know, so a room snapshot that still carries
+#: phaseInitEntries loads, ignores it, and reads postmatchEntries at its
+#: default. The schema's additionalProperties would refuse it, but nothing
+#: runs the schema at runtime.
 COUNTED_RULES = (
-    'panelMoversPerTurn', 'phaseInitEntries', 'homecomingsPerSetupTurn', 'cpPerPhase')
+    'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpPerPhase')
 
 
 def rule_of(config: Optional[Dict[str, Any]], key: str) -> Any:

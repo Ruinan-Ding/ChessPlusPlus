@@ -15,7 +15,7 @@
 
 import { ruleOf } from './config.service';
 import { BASE_PANELS } from './hex-rules';
-import { isInitialization, isPhaseInitialization, isSetupTurn } from './phases';
+import { isInitialization, isPostmatch, isSetupTurn } from './phases';
 
 /**
  * A move record, as loosely as the history actually holds one: what a record
@@ -124,12 +124,13 @@ export function panelMoversAt(
  * half of `panel_allowance`; the MOV half stays with the board, which is the
  * only place that knows what a one-turn boost lent the unit.
  *
- * **The reserve's allowance is five in a phase initialization**, and it stands
- * instead of the three rather than beside it. It covers walking inside the
- * reserve as well as crossing out of it, because they are the same allowance:
- * capping the walk at three would leave two of the five unable to reach a
- * gateway to spend their crossing on. The base keeps its three - nothing in
- * the rule was about the base, and the wrap is shut on that turn anyway.
+ * **The reserve's allowance is five in a postmatch** (`rules.postmatchEntries`),
+ * and it stands instead of the three rather than beside it. It covers walking
+ * inside the reserve as well as crossing out of it, because they are the same
+ * allowance: capping the walk at three would leave two of the five unable to
+ * reach a gateway to spend their crossing on. The base keeps its three -
+ * nothing in the rule was about the base, and the wrap is shut on that turn
+ * anyway.
  */
 export function panelMoverAllowed(
   history: Move[] | undefined, ply: number, color: string, uid: string, panel?: string,
@@ -137,8 +138,8 @@ export function panelMoverAllowed(
 ): boolean {
   const base = BASE_PANELS.has(panel ?? '');
   const movers = panelMoversAt(history, ply, color)[base ? 'base' : 'reserve'];
-  const cap = ruleOf(config, !base && isPhaseInitialization(ply)
-    ? 'phaseInitEntries' : 'panelMoversPerTurn');
+  const cap = ruleOf(config, !base && isPostmatch(ply)
+    ? 'postmatchEntries' : 'panelMoversPerTurn');
   return movers.has(uid) || movers.size < cap;
 }
 

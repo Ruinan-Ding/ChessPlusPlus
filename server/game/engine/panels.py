@@ -1036,16 +1036,18 @@ def panel_allowance(
     are used up and it is not one of them. Otherwise its move stat less what it
     has already walked, which may be 0.
 
-    **In a phase initialization the reserve's cap is five, not three.** The
-    owner's number, and it stands *instead of* the per-panel three rather than
-    beside it. It governs walking inside the reserve as well as crossing out of
-    it, because the two are the same allowance: capping the walk at three would
+    **In a postmatch the reserve's cap is five, not three.** The owner's
+    number, and it stands *instead of* the per-panel three rather than beside
+    it. It governs walking inside the reserve as well as crossing out of it,
+    because the two are the same allowance: capping the walk at three would
     leave two of the five unable to reach a gateway to spend their crossing on.
     The base keeps its three - nothing in the rule was about the base, and the
-    wrap is shut on that turn anyway.
+    wrap is shut on that turn anyway. (The five belonged to a phase's
+    initialization turn until that turn moved to the end of the phase and
+    became its postmatch; the allowance moved with it, unchanged.)
     """
     from .config_loader import rule_of
-    from .phases import is_phase_initialization
+    from .phases import is_postmatch
 
     moves = list(history or [])
     uid = unit.get('uid')
@@ -1054,11 +1056,11 @@ def panel_allowance(
     kind = 'base' if is_base(unit.get('panel')) else 'reserve'
     movers = panel_movers(moves, ply, unit.get('color'))[kind]
     # Three out of the base and three out of the reserve, never three between
-    # them - rules.panelMoversPerTurn, or rules.phaseInitEntries for the
-    # reserve in a phase initialization.
+    # them - rules.panelMoversPerTurn, or rules.postmatchEntries for the
+    # reserve in a postmatch.
     cap = rule_of(config, 'panelMoversPerTurn')
-    if kind == 'reserve' and is_phase_initialization(ply):
-        cap = rule_of(config, 'phaseInitEntries')
+    if kind == 'reserve' and is_postmatch(ply):
+        cap = rule_of(config, 'postmatchEntries')
     if uid not in movers and len(movers) >= cap:
         return None
     stat = ((config.get('units') or {}).get(unit.get('unit_id')) or {}).get('move', 0)

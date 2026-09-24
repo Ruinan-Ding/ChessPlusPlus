@@ -113,39 +113,49 @@ describe('history-rules', () => {
       expect(panelMoverAllowed(three, 1, 'white', 'r9', 'br')).toBeTrue();
     });
 
-    it('lets five out of a reserve in a phase initialization', () => {
+    it('lets five out of a reserve in a postmatch', () => {
       // The owner's number, and it stands INSTEAD of the three rather than
-      // beside it. Ply 7 is turn 4 - Phase 1's own initialization turn.
+      // beside it. Ply 27 is turn 14 - Phase 1's own postmatch.
       // `panelStep` walks inside the BASE by default; these are the reserve's.
       const five = [0, 1, 2, 3, 4].map(
-        i => panelStep(`r${i}`, 'white', 7, { panel: 'br' }));
-      expect(ruleOf(undefined, 'phaseInitEntries')).toBe(5);
-      expect(panelMoverAllowed(five.slice(0, 4), 7, 'white', 'r9', 'br')).toBeTrue();
-      expect(panelMoverAllowed(five, 7, 'white', 'r9', 'br')).toBeFalse();
+        i => panelStep(`r${i}`, 'white', 27, { panel: 'br' }));
+      expect(ruleOf(undefined, 'postmatchEntries')).toBe(5);
+      expect(panelMoverAllowed(five.slice(0, 4), 27, 'white', 'r9', 'br')).toBeTrue();
+      expect(panelMoverAllowed(five, 27, 'white', 'r9', 'br')).toBeFalse();
       // One of the five may still walk on.
-      expect(panelMoverAllowed(five, 7, 'white', 'r2', 'br')).toBeTrue();
+      expect(panelMoverAllowed(five, 27, 'white', 'r2', 'br')).toBeTrue();
+      // Black's half of the turn is the postmatch too: ply 28.
+      const blacks = [0, 1, 2, 3].map(
+        i => panelStep(`s${i}`, 'black', 28, { panel: 'tl' }));
+      expect(panelMoverAllowed(blacks, 28, 'black', 's9', 'tl')).toBeTrue();
     });
 
     it('leaves the base at three on that turn, and both at three off it', () => {
-      // Nothing in the rule was about the base, and the wrap is shut on an
-      // initialization turn anyway.
-      const four = [0, 1, 2, 3].map(i => panelStep(`b${i}`, 'white', 7));
-      expect(panelMoverAllowed(four.slice(0, 3), 7, 'white', 'b9', 'bl')).toBeFalse();
-      // Ply 9 is turn 5, Phase 1's play: the reserve is back to three.
-      const fourReserve = [0, 1, 2, 3].map(
-        i => panelStep(`r${i}`, 'white', 9, { panel: 'br' }));
-      expect(panelMoverAllowed(fourReserve.slice(0, 3), 9, 'white', 'r9', 'br')).toBeFalse();
+      // Nothing in the rule was about the base, and the wrap is shut on a
+      // postmatch anyway.
+      const four = [0, 1, 2, 3].map(i => panelStep(`b${i}`, 'white', 27));
+      expect(panelMoverAllowed(four.slice(0, 3), 27, 'white', 'b9', 'bl')).toBeFalse();
+      // Either side of it the reserve is back to three: ply 25 is turn 13, the
+      // last of Phase 1's play, and ply 29 is turn 15, the first of Phase 2's.
+      // Ply 7 is turn 4, which used to be Phase 1's initialization and now
+      // plays - so it is three there too.
+      for (const at of [7, 25, 29]) {
+        const fourReserve = [0, 1, 2, 3].map(
+          i => panelStep(`r${i}`, 'white', at, { panel: 'br' }));
+        expect(panelMoverAllowed(fourReserve.slice(0, 3), at, 'white', 'r9', 'br'))
+          .withContext(`ply ${at}`).toBeFalse();
+      }
     });
 
     it("reads both allowances off the game's config", () => {
       // Tuning them is a config edit: a room that says two stops the third.
-      const config = { rules: { panelMoversPerTurn: 2, phaseInitEntries: 1 } };
+      const config = { rules: { panelMoversPerTurn: 2, postmatchEntries: 1 } };
       const two = [0, 1].map(i => panelStep(`b${i}`, 'white', 1));
       expect(panelMoverAllowed(two, 1, 'white', 'b9', 'bl')).toBeTrue();
       expect(panelMoverAllowed(two, 1, 'white', 'b9', 'bl', config)).toBeFalse();
-      const one = [panelStep('r0', 'white', 7, { panel: 'br' })];
-      expect(panelMoverAllowed(one, 7, 'white', 'r9', 'br')).toBeTrue();
-      expect(panelMoverAllowed(one, 7, 'white', 'r9', 'br', config)).toBeFalse();
+      const one = [panelStep('r0', 'white', 27, { panel: 'br' })];
+      expect(panelMoverAllowed(one, 27, 'white', 'r9', 'br')).toBeTrue();
+      expect(panelMoverAllowed(one, 27, 'white', 'r9', 'br', config)).toBeFalse();
     });
   });
 
@@ -236,8 +246,8 @@ describe('boardMovesAt', () => {
     // a setup turn three go as deployments and none of them is that action.
     const home = [move({ withdrawn: true, turn: 89 })] as any[];
     expect(boardMovesAt(home, 89, 'white')).toBe(1);
-    // Ply 7 is turn 4, Phase 1’s initialization turn.
-    const setup = [move({ withdrawn: true, turn: 7 })] as any[];
-    expect(boardMovesAt(setup, 7, 'white')).toBe(0);
+    // Ply 27 is turn 14, Phase 1’s postmatch.
+    const setup = [move({ withdrawn: true, turn: 27 })] as any[];
+    expect(boardMovesAt(setup, 27, 'white')).toBe(0);
   });
 });

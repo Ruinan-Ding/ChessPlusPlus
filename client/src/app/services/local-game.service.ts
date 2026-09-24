@@ -334,10 +334,11 @@ export class LocalGameService {
    * Whether a message brought an ability onto a turn that forbids one.
    *
    * **No ability fires on a turn given to setting out** - the owner's rule for
-   * a phase initialization, and true of the opening for the same reason. This
-   * is the one ability rule the engine can keep without the abilities being
-   * settled: it does not need to know what a cast is *worth* to know that none
-   * should have arrived. What it is worth stays on trust, as everything about
+   * a phase's extra turn (its postmatch now; it was an initialization at the
+   * phase's start when the rule was made), and true of the opening for the
+   * same reason. This is the one ability rule the engine can keep without the
+   * abilities being settled: it does not need to know what a cast is *worth*
+   * to know that none should have arrived. What it is worth stays on trust, as everything about
    * abilities does.
    *
    * A zero is not a use. The room sends `moveBonus: 0` and an all-zero
@@ -404,8 +405,8 @@ export class LocalGameService {
       return;
     }
     // A crossing spends one of the reserve's three starts for the turn - five
-    // in a phase initialization - and the opening gives a unit one move for
-    // the whole phase.
+    // in a postmatch - and the opening gives a unit one move for the whole
+    // phase.
     if (!panelMoverAllowed(g.moveHistory, g.turnNumber, unit.color, unit.uid, undefined, g.config)) {
       this.emit({ type: 'invalid_move', message: 'That reserve has started its units for the turn' });
       return;
@@ -839,8 +840,8 @@ export class LocalGameService {
     //
     // Two predicates, deliberately. Nobody attacks on any turn given to
     // setting out; the one-move-per-phase lock is the opening's alone, and
-    // handing it to a single initialization turn would stop a unit that had
-    // moved in some earlier turn of a phase it has nothing to do with.
+    // handing it to a single postmatch turn would stop a unit that had moved
+    // in some earlier turn of a phase it has nothing to do with.
     if (isSetupTurn(g.turnNumber)) {
       // Landing on an enemy is an attack too, by another road.
       if (attack || (relocating && start[to] && start[to].color !== movingColor)) {

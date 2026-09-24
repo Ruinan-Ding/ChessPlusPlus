@@ -1698,13 +1698,15 @@ class PanelAttackLiveIntegrationTests(DealtPanels, TransactionTestCase):
     RESERVE_QUEEN = '-9,-3'
     BESIDE_BASE = '11,-3'      # beside rtr1, black's base rook
     BASE_ROOK = '12,-4'
-    #: Ply 9: the first of Phase 1's *play*, and white's. These tests used to
-    #: strike on ply 1, which is the opening - where nobody attacks. Nothing
-    #: enforced that until the server had a phase schedule, so they passed while
-    #: striking a blow the game's own rules forbid. Ply 7 is no good either now:
-    #: turn 4 is Phase 1's own initialization turn, which refuses a blow for the
-    #: same reason the opening does.
-    PAST_OPENING = 9
+    #: Ply 7: turn 4, the first of Phase 1's *play*, and white's. These tests
+    #: used to strike on ply 1, which is the opening - where nobody attacks.
+    #: Nothing enforced that until the server had a phase schedule, so they
+    #: passed while striking a blow the game's own rules forbid. For a while
+    #: they struck on ply 9 instead, because turn 4 was Phase 1's own
+    #: initialization turn and refused a blow for the same reason the opening
+    #: does; that turn has since moved to the end of the phase as its
+    #: postmatch, and play starts the moment the opening ends.
+    PAST_OPENING = 7
 
     async def _stand_pawn(self, game, at):
         state = await GameState.objects.aget(game_id=game.game_id)
@@ -1796,8 +1798,9 @@ class PanelAttackLiveIntegrationTests(DealtPanels, TransactionTestCase):
             })
             err = await _receive_until(white, 'error')
             self.assertEqual(err['code'], 'INVALID_MOVE')
-            # Refused for its range, not for the opening: this is ply 7.
-            self.assertNotIn('opening', err.get('message', ''))
+            # Refused for its range, not for a setup turn: this is ply 7, turn
+            # 4, which plays now that the extra turn closes the phase instead.
+            self.assertEqual(err.get('message'), 'That hex is out of attack range')
 
             state = await GameState.objects.aget(game_id=game.game_id)
             self.assertEqual(state.turn_number, self.PAST_OPENING)
@@ -1943,8 +1946,9 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
 
     Turn numbers throughout are plies. Turn 8 (ply 15) is Phase 1's played
     first half - the wrap's window. Turn 11 (ply 21) is its halftime half -
-    the way in. Turn 4 (ply 7) is Phase 1's own initialization - both, plus
-    the three walks home. Turn 37 (ply 73) is overtime - the way home alone.
+    the way in. Turn 14 (ply 27) is Phase 1's postmatch - the way in still,
+    plus the three walks home. Turn 37 (ply 73) is overtime - the way home
+    alone.
     """
 
     ARCHER_AT = '7,7'          # rbr4, white's reserve archer
@@ -2044,9 +2048,10 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
 
     async def test_the_walks_home_are_read_off_the_rooms_config(self):
         # rules.homecomingsPerSetupTurn: a room that says one stops the second.
+        # Ply 27 is turn 14, Phase 1's postmatch.
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
         try:
-            await self._wind_to(game, 7)
+            await self._wind_to(game, 27)
             state = await GameState.objects.aget(game_id=game.game_id)
             config = dict(state.config_snapshot)
             config['rules'] = {**config['rules'], 'homecomingsPerSetupTurn': 1}
@@ -2077,7 +2082,7 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
         """
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
         try:
-            await self._wind_to(game, 7)
+            await self._wind_to(game, 27)
             # One walk per doorway, then a fourth that routes through the
             # first doorway - its own unit standing there is passed over.
             walks = [('-11,11', '-12,11'), ('-11,10', '-12,10'),
@@ -2091,14 +2096,14 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
                 if reply['type'] == 'error':
                     errors.append(reply['message'])
                 else:
-                    self.assertEqual(reply['turnNumber'], 7)
+                    self.assertEqual(reply['turnNumber'], 27)
 
             self.assertEqual(errors, ['That is all who may walk home this turn'])
             state = await GameState.objects.aget(game_id=game.game_id)
-            gone = panels.homecomings_at(state.move_history, 7, 'white')
+            gone = panels.homecomings_at(state.move_history, 27, 'white')
             self.assertEqual(len(gone), 3)
-            # Still white's, still turn 4: three walks took no hand-over.
-            self.assertEqual(state.turn_number, 7)
+            # Still white's, still turn 14: three walks took no hand-over.
+            self.assertEqual(state.turn_number, 27)
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
@@ -2279,19 +2284,31 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
-    async def test_nobody_attacks_in_a_phase_initialization(self):
+    async def test_nobody_attacks_in_the_postmatch(self):
         """
-        Turn 4 refuses a blow for the same reason the opening does - and says
-        which turn refused it, since "the opening" by then is over.
+        Turn 14 refuses a blow for the same reason the opening does - and says
+        which turn refused it, since "the opening" by then is over. Both roads
+        to a blow: a board move that swings, and a swing into a panel.
         """
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
         try:
-            await self._wind_to(game, 7)
+            await self._wind_to(game, 27)
             await white.send_json_to({
                 'type': 'make_move', 'from': '-5,9', 'to': '-5,9', 'attack': '-5,8',
             })
             err = await _receive_until(white, 'error')
-            self.assertEqual(err['message'], 'Nobody attacks in a phase initialization')
+            self.assertEqual(err['message'], 'Nobody attacks in the postmatch')
+
+            await white.send_json_to({
+                'type': 'panel_attack', 'from': '-8,-3', 'to': '-8,-3', 'attack': '-9,-3',
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['message'], 'Nobody attacks in the postmatch')
+
+            # Neither took the turn or wrote anything down.
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.turn_number, 27)
+            self.assertEqual(state.move_history, [])
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
@@ -2529,30 +2546,84 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
+    async def _step_once(self, game, white, uid, plan_rules=None):
+        """
+        Send `uid` one cheapest step inside its panel, from where it stands.
+
+        `plan_rules` lays rules over the room's for *choosing* the step only,
+        so a test can ask for a step the room's own rules then refuse - rather
+        than one this helper already knew was refused, which proves nothing
+        about the server.
+        """
+        state = await GameState.objects.aget(game_id=game.game_id)
+        config = state.config_snapshot
+        radius = config['board']['radius']
+        occupancy = panels.panel_occupancy(
+            config, radius, state.move_history, ply=state.turn_number)
+        frm = next(k for k, u in occupancy.items() if u['uid'] == uid)
+        plan = {**config, 'rules': {**config['rules'], **(plan_rules or {})}}
+        targets = panels.panel_move_targets(
+            plan, radius, state.move_history, state.board_state, frm,
+            state.turn_number, points=0)
+        # Planned rules are asked for so the step is a real one; with nowhere
+        # to go, the stand-in step below would be refused for being no step at
+        # all, and a refusal the test reads as the room's rule would be that.
+        assert targets or plan_rules is None, (uid, frm, plan_rules)
+        to = min(targets, key=lambda k: (targets[k]['cost'], k)) if targets else frm
+        await white.send_json_to({'type': 'panel_move', 'from': frm, 'to': to})
+        return frm
+
     async def test_a_fourth_reserve_unit_may_not_start_moving(self):
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
         try:
-            async def step_once(uid):
-                state = await GameState.objects.aget(game_id=game.game_id)
-                config = state.config_snapshot
-                radius = config['board']['radius']
-                occupancy = panels.panel_occupancy(
-                    config, radius, state.move_history, ply=state.turn_number)
-                frm = next(k for k, u in occupancy.items() if u['uid'] == uid)
-                targets = panels.panel_move_targets(
-                    config, radius, state.move_history, state.board_state, frm,
-                    state.turn_number, points=0)
-                to = min(targets, key=lambda k: (targets[k]['cost'], k)) if targets else frm
-                await white.send_json_to({'type': 'panel_move', 'from': frm, 'to': to})
-                return frm
-
             for uid in ('rbr0', 'rbr1', 'rbr2'):
-                await step_once(uid)
+                await self._step_once(game, white, uid)
                 await _receive_until(white, 'game_state_update')
             # The three movers are spent, and rbr3 is not one of them.
-            await step_once('rbr3')
+            await self._step_once(game, white, 'rbr3')
             err = await _receive_until(white, 'error')
             self.assertEqual(err['code'], 'INVALID_MOVE')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_postmatch_starts_the_whole_reserve(self):
+        """
+        Ply 27 is turn 14, Phase 1's postmatch, where the reserve's cap is
+        rules.postmatchEntries - five - instead of the three above. The dealt
+        reserve is five strong, so every one of them may start.
+        """
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await GameState.objects.filter(game_id=game.game_id).aupdate(turn_number=27)
+            for uid in ('rbr0', 'rbr1', 'rbr2', 'rbr3', 'rbr4'):
+                await self._step_once(game, white, uid)
+                reply = await _receive_until(white, ('game_state_update', 'error'))
+                self.assertEqual(reply['type'], 'game_state_update', (uid, reply))
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_postmatch_reads_its_reserve_allowance_off_the_rooms_config(self):
+        # A room that says one stops the second, where the default would let
+        # five go - the room's own config, not the shipped number.
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            state = await GameState.objects.aget(game_id=game.game_id)
+            config = dict(state.config_snapshot)
+            config['rules'] = {**config['rules'], 'postmatchEntries': 1}
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                turn_number=27, config_snapshot=config)
+
+            await self._step_once(game, white, 'rbr0')
+            await _receive_until(white, 'game_state_update')
+            # Planned as if the room allowed the default five, so the step
+            # asked for is a real one and only the room's one refuses it.
+            await self._step_once(game, white, 'rbr1', plan_rules={'postmatchEntries': 5})
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual([m['unit']['uid'] for m in state.move_history], ['rbr0'])
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
@@ -2642,9 +2713,10 @@ class OpeningRulesLiveIntegrationTests(TransactionTestCase):
             (frm, to), = await self._pawn_steps(game, 1)
             await white.send_json_to({'type': 'make_move', 'from': frm, 'to': to})
             await _receive_until(white, 'move_made')
-            # Wind on to ply 9, the first of Phase 1's play and white's again.
+            # Wind on to ply 7, turn 4: the first of Phase 1's play, straight
+            # after the opening, and white's again.
             await GameState.objects.filter(game_id=game.game_id).aupdate(
-                turn_number=9, current_turn=(await GameState.objects.aget(
+                turn_number=7, current_turn=(await GameState.objects.aget(
                     game_id=game.game_id)).player_white)
             q, r = (int(n) for n in to.split(','))
             await white.send_json_to({'type': 'make_move', 'from': to, 'to': f'{q},{r - 1}'})

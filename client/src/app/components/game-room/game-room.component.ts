@@ -20,7 +20,7 @@ import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
 import { homecomingsAt, openingMovedHexes } from '../../services/history-rules';
 import {
   OVERTIME_LAST_TURN, SCORING_PHASES, boardMovesPerTurn, handOversBy,
-  isInitialization, isOvertime, isPhaseInitialization, isSetupTurn, phaseIndexAt,
+  isInitialization, isOvertime, isPostmatch, isSetupTurn, phaseIndexAt,
   pointsPerTurnAt, stageAt, turnHeading, turnOf, turnPointsBy,
 } from '../../services/phases';
 import { AudioService } from '../../services/audio.service';
@@ -3364,12 +3364,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /**
    * What each phase finished on, once it has. Kept rather than derived: a
-   * phase's cap is the board as it stood when the phase ended, and that board
-   * is gone by the time anything asks. Persisted with the rest of the local
-   * UI state, so a reload does not forget the match so far.
-   * ponytail ceiling: a client that is not running when a phase ends banks
-   * nothing for it - the board it would read has already moved on. Deriving
-   * it needs a board snapshot per phase, which is the server's to keep.
+   * phase's cap is the board as it stood when its play ended - the start of
+   * its postmatch - and that board is gone by the time anything asks.
+   * Persisted with the rest of the local UI state in a solo game, so a reload
+   * there does not forget the match so far; a networked room keeps no copy.
+   * ponytail ceiling: a client that misses that moment - a networked reload,
+   * or one that joins late - banks the phase at the next hand-over it sees,
+   * off whatever board is showing by then, postmatch reshuffling and all.
+   * Deriving it needs a board snapshot per phase, which is the server's to
+   * keep.
    */
   phaseBank: Record<number, { white: number; black: number }> = {};
 
@@ -3387,15 +3390,30 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /**
    * Bank the score of every scoring phase that has ended without one.
    *
-   * Read on the first turn of the next phase, which is the one moment the
-   * board still shows the position the old phase finished on: a turn's move
-   * is applied before its number is handed on.
+   * **A phase is over once its postmatch begins**, not once the next phase
+   * does. Read on the postmatch's first hand-over, which is the one moment the
+   * board still shows the position the phase's play finished on: a turn's
+   * move is applied before its number is handed on, and nothing of the
+   * postmatch has been played yet. Any later and the postmatch has had its
+   * say - reserve entries and walks home rearrange the board there, and the
+   * phase they close must not be scored on them.
+   *
+   * It used to wait for the next phase's first turn, which was its
+   * initialization while the extra turn opened a phase - the same moment, by
+   * a different road. With the extra turn moved to the end of the phase it
+   * closes, that would bank a board the postmatch had already reshuffled.
+   * `phaseIndexAt` still counts the postmatch as its own phase's, which is
+   * why "is this phase over" asks about the postmatch as well as the index.
+   * A phase with no postmatch still banks on the next phase's first turn.
    */
   private bankEndedPhases(): void {
-    const now = phaseIndexAt(this.gameState.snapshot.turnNumber);
+    const ply = this.gameState.snapshot.turnNumber;
+    const now = phaseIndexAt(ply);
+    const closing = isPostmatch(ply);
     let banked = false;
     for (const phase of SCORING_PHASES) {
-      if (phase >= now || this.phaseBank[phase]) continue;
+      const over = phase < now || (phase === now && closing);
+      if (!over || this.phaseBank[phase]) continue;
       this.phaseBank[phase] = {
         white: this.capOf('white') - this.deathsOf('white', phase),
         black: this.capOf('black') - this.deathsOf('black', phase),
@@ -3433,9 +3451,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // At the *end* of overtime's last turn, so that turn itself is still
     // played out. `OVERTIME_LAST_TURN` used to be the literal 50 declared in
     // this file; it is now read off the schedule with the rest of overtime,
-    // because the literal did not move when the initialization turns pushed
-    // overtime from turn 34 to turn 37 and it silently cost overtime three of
-    // its turns.
+    // because the literal did not move when the extra turn each numbered phase
+    // gained (an initialization at its start then, a postmatch at its end now)
+    // pushed overtime from turn 34 to turn 37, and it silently cost overtime
+    // three of its turns.
+    //
+    // Phase 3 banks as its postmatch begins, so a verdict is readable from
+    // turn 36 - one turn before overtime rather than on its first.
     return turnOf(this.gameState.snapshot.turnNumber) > OVERTIME_LAST_TURN
       ? 'black' : 'overtime';
   }
@@ -3452,12 +3474,16 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /**
    * What the header says after whose turn it is: where the match has got to.
    * The stage of the schedule by name - INITIALIZATION, PHASE 1, PHASE 1
-   * HALFTIME, and so on to OVERTIME - giving way to the result once there is
-   * one to give way to.
+   * HALFTIME, PHASE 1 POSTMATCH, and so on to OVERTIME 3 - giving way to the
+   * result once there is one to give way to.
    *
-   * Overtime is both a stage and a verdict, and reads the same either way,
-   * so the stage covers it and nothing is lost. The header used to name
-   * overtime and nothing else, which left the other seven stages unnamed.
+   * Overtime is both a stage and a verdict, so the stage covers it. The one
+   * turn the two part is Phase 3's postmatch: the third phase banks as it
+   * begins, so a close match is already bound for overtime there, and the
+   * header still says PHASE 3 POSTMATCH - the turn being played - until
+   * OVERTIME 1 arrives with the next. A decided match shows its winner from
+   * that same turn. The header used to name overtime and nothing else, which
+   * left the other stages unnamed.
    */
   get stageLabel(): string {
     const verdict = this.matchVerdict;
@@ -3486,10 +3512,17 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // Nothing is scored in the opening: no unit can be killed and no zone is
     // capped, so the header reads a flat 0 - 0 = 0 rather than counting hexes
     // towards a phase that banks nothing.
-    const opening = isInitialization(snapshot.turnNumber);
+    //
+    // Nor in a postmatch, for a sharper reason. `phaseIndexAt` still calls it
+    // the closing phase's, and that phase has already been banked as the
+    // postmatch began (`bankEndedPhases`) - so its cap and its deaths read
+    // live here as well would count the phase twice, once in the bank and
+    // once as the running total. And what the board holds by then is the
+    // postmatch's reshuffling, which scores for nobody.
+    const idle = isInitialization(turn) || isPostmatch(turn);
     const build = (color: 'white' | 'black'): Standing => {
-      const cap = opening ? 0 : this.capOf(color);
-      const death = this.deathsOf(color, phase);
+      const cap = idle ? 0 : this.capOf(color);
+      const death = idle ? 0 : this.deathsOf(color, phase);
       const total = cap - death;
       const banked = SCORING_PHASES
         .filter(index => this.phaseBank[index])
@@ -3603,8 +3636,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   private beginTurnFor(color: string): void {
     if (!color) return;
-    // The turn just handed over is the last of its phase often enough that
-    // this is where a phase ends - and the board has not moved on yet.
+    // The turn just handed over is the last of its phase's play often enough
+    // that this is where a phase ends - and the board has not moved on yet.
     this.bankEndedPhases();
     // A boost lasts one turn: it runs out when its caster comes round again.
     const kept = Object.fromEntries(
@@ -4927,14 +4960,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   /**
    * Why a panel is closed. A networked room shuts them all for good, the
-   * opening shuts them all whoever's turn it is, and otherwise it is the turn.
-   * In that order: the room is the most basic reason, and naming the opening in
-   * a room where nothing could ever be cast would point at the wrong thing.
+   * opening and each phase's postmatch shut them all whoever's turn it is, and
+   * otherwise it is the turn. In that order: the room is the most basic
+   * reason, and naming the opening in a room where nothing could ever be cast
+   * would point at the wrong thing.
+   *
+   * A postmatch is named by its stage - "the phase 1 postmatch" - rather than
+   * as "the initialization", which by then ended back at turn 3.
    */
   get abilityBlockedNote(): string {
     if (!this.isSinglePlayer) return ABILITIES_SOLO_ONLY;
     const ply = this.gameState.snapshot.turnNumber;
-    if (isPhaseInitialization(ply)) {
+    if (isPostmatch(ply)) {
       return `Unavailable: no abilities during the ${stageAt(ply).toLowerCase()}.`;
     }
     return isInitialization(ply)
@@ -4968,7 +5005,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /**
    * Whether this side may *cast* right now. Choosing plus one rule more:
    * nothing is cast on a turn given to setting out - the opening's three and
-   * each numbered phase's own initialization. No pool ability, no path skill
+   * each numbered phase's own postmatch. No pool ability, no path skill
    * or ultimate, no unit ability. Everything that spends one runs through
    * here, so this is the one place it has to be said.
    *

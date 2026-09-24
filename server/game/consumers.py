@@ -1704,10 +1704,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             # locks a unit out before it offers it one.
             #
             # Two predicates, deliberately. **Nobody attacks** on any turn given
-            # to setting out, the opening's three and each phase's own; **the
-            # one-move-per-phase lock** is the opening's alone, and handing it
-            # to a single initialization turn would stop a unit that had moved
-            # in some earlier turn of a phase it has nothing to do with.
+            # to setting out, the opening's three and each phase's postmatch;
+            # **the one-move-per-phase lock** is the opening's alone, and
+            # handing it to a single postmatch turn would stop a unit that had
+            # moved in some earlier turn of a phase it has nothing to do with.
             if is_setup_turn(state.turn_number):
                 if data.get('attack'):
                     await send_error(
@@ -2167,7 +2167,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             # A crossing is a reserve unit's move, so it is held to the same
             # allowance as a walk inside the panel: not locked out of the
             # opening, one of at most three reserve movers this turn - five in a
-            # phase initialization - and only on what it has not already walked.
+            # postmatch - and only on what it has not already walked.
             # Without this a unit shuffled to the gateway first crossed on a
             # full MOV it had half spent.
             allowance = panels.panel_allowance(config, history, unit, state.turn_number)

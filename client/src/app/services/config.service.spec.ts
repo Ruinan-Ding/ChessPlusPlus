@@ -85,11 +85,11 @@ describe('ConfigService validation, against the server\'s', () => {
     const config: any = minimal();
     expect(service.validateGameRules(config).valid).toBeTrue();
     expect(config.rules.panelMoversPerTurn).toBe(3);
-    expect(config.rules.phaseInitEntries).toBe(5);
+    expect(config.rules.postmatchEntries).toBe(5);
     expect(config.rules.homecomingsPerSetupTurn).toBe(3);
     expect(config.rules.cpPerPhase).toBe(100);
 
-    for (const key of ['panelMoversPerTurn', 'phaseInitEntries', 'homecomingsPerSetupTurn', 'cpPerPhase']) {
+    for (const key of ['panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpPerPhase']) {
       const bad: any = minimal();
       bad.rules[key] = -1;
       expect(service.validateGameRules(bad).valid).withContext(key).toBeFalse();
@@ -98,6 +98,17 @@ describe('ConfigService validation, against the server\'s', () => {
       bad.rules[key] = 0;
       expect(service.validateGameRules(bad).valid).withContext(key).toBeTrue();
     }
+  });
+
+  it('still loads a config that says phaseInitEntries, at the new key\'s default', () => {
+    // The postmatch's allowance was `phaseInitEntries` while the extra turn
+    // opened a phase. The old key is not migrated: nothing rejects a rule key
+    // it does not know, so a room snapshot saved before the rename loads, and
+    // reads `postmatchEntries` at its default rather than at what it said.
+    const config: any = minimal();
+    config.rules.phaseInitEntries = 2;
+    expect(service.validateGameRules(config).valid).toBeTrue();
+    expect(config.rules.postmatchEntries).toBe(5);
   });
 
   it('refuses an explicit null floor, the way load_config does', () => {

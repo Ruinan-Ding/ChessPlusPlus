@@ -29,17 +29,19 @@ describe('LocalGameService', () => {
   /**
    * Past every turn given to setting out, where nobody attacks at all.
    *
-   * Eight plies of passing rather than a turn number written over the cache:
+   * Six plies of passing rather than a turn number written over the cache:
    * the pass is what a real game does to get there, and the specs that need
    * it are about blows, which a setup turn refuses outright. A pass moves
    * nobody, so the board they were written against is the board they get.
    *
-   * Eight, not six: the opening's three turns are followed by Phase 1's own
-   * initialization turn, which refuses a blow for the same reason. Ply 9 is
-   * turn 5, the first of Phase 1's play.
+   * Six - the opening's three turns and nothing after them. It was eight
+   * while Phase 1 opened with an initialization turn of its own, which
+   * refused a blow for the same reason; that extra turn is the phase's
+   * postmatch now, at its other end, so play starts the moment the opening
+   * is over. Ply 7 is turn 4, the first of Phase 1's play.
    */
   const pastOpening = async () => {
-    for (let i = 0; i < 8; i++) service.send({ type: 'pass_turn' });
+    for (let i = 0; i < 6; i++) service.send({ type: 'pass_turn' });
     await flush();
   };
 
@@ -248,17 +250,17 @@ describe('LocalGameService', () => {
   });
 
   it('refuses a move once the turn’s allowance is spent', async () => {
-    // Ply 9 is turn 5, one board move. The second message is refused rather
+    // Ply 7 is turn 4, one board move. The second message is refused rather
     // than quietly played into the next side’s turn.
     await pastOpening();
     service.send({ type: 'make_move', from: '-5,9', to: '-5,8', more: true });
     await flush();
     // `more` on the last move the allowance permits ends the turn anyway -
     // there is nothing left for it to hold the seat open for.
-    expect(last('move_made').turnNumber).toBe(10);
+    expect(last('move_made').turnNumber).toBe(8);
 
     // Wind back into the same hand-over: a second board move is refused.
-    (service as any).game.turnNumber = 9;
+    (service as any).game.turnNumber = 7;
     (service as any).game.currentTurn = 'Solo';
     service.send({ type: 'make_move', from: '-4,9', to: '-4,8' });
     await flush();
@@ -458,8 +460,8 @@ describe('LocalGameService', () => {
         '0,0': { unit_id: 'rook', color: 'white', hp, max_hp: hp, uid: 'w0,0' },
         '1,0': { unit_id: 'rook', color: 'black', hp, max_hp: hp, uid: 'b1,0' },
       },
-      // Ply 9: the first on which anybody may swing at all.
-      currentTurn: 'Solo', turnNumber: 9, moveHistory: [], winner: '', endReason: '',
+      // Ply 7: the first on which anybody may swing at all.
+      currentTurn: 'Solo', turnNumber: 7, moveHistory: [], winner: '', endReason: '',
       turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
     });
 
@@ -496,8 +498,9 @@ describe('LocalGameService', () => {
         '1,0': { unit_id: 'king', color: 'black', hp: 5, max_hp: 45, uid: 'b1,0' },
         '-5,0': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'w-5,0' },
       },
-      // Ply 9: every setup turn is over, so the killing blow may land.
-      currentTurn: 'Solo', turnNumber: 9, moveHistory: [], winner: '', endReason: '',
+      // Ply 7: the opening is over and Phase 1 is playing, so the killing blow
+      // may land.
+      currentTurn: 'Solo', turnNumber: 7, moveHistory: [], winner: '', endReason: '',
       turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
     }));
     const engine = new LocalGameService((service as any).configService);
@@ -782,14 +785,29 @@ describe('LocalGameService', () => {
       '1,0': { unit_id: 'king', color: 'black', hp: 45, max_hp: 45, uid: 'bk' },
     };
 
-    it('refuses an attack in a phase initialization, and says which turn', async () => {
-      // Turn 4 refuses a blow for the same reason the opening does, and
-      // saying "the opening" there points at a phase that has already ended.
-      const g = at(7, { ...kings, ...walker('-5,9') });
+    it('refuses an attack in a postmatch, and says which turn', async () => {
+      // Turn 14 - Phase 1's postmatch, plies 27 and 28 - refuses a blow for
+      // the same reason the opening does, and saying "the opening" there
+      // points at a phase that ended at turn 3.
+      const g = at(27, { ...kings, ...walker('-5,9') });
       g.engine.send({ type: 'make_move', from: '-5,9', to: '-5,9', attack: '-5,8' });
       await flush();
-      expect(g.refusal()).toBe('Nobody attacks in a phase initialization');
+      expect(g.refusal()).toBe('Nobody attacks in the postmatch');
       expect(g.seen.find(m => m.type === 'move_made')).toBeUndefined();
+    });
+
+    it('lets a blow land on turn 4, which used to be a setup turn and now plays', async () => {
+      // Phase 1's extra turn moved from its start to its end, so the turn
+      // straight after the opening is a turn of play. Refused here, it would
+      // be the four-setup-turn opening the move was made to get rid of.
+      const g = at(7, {
+        ...kings, ...walker('-5,9'),
+        '-5,8': { unit_id: 'pawn', color: 'black', hp: 20, max_hp: 20, uid: 'b1' },
+      });
+      g.engine.send({ type: 'make_move', from: '-5,9', to: '-5,9', attack: '-5,8' });
+      await flush();
+      expect(g.refusal()).toBeUndefined();
+      expect(g.seen.find(m => m.type === 'move_made').move.damage_dealt).toBeGreaterThan(0);
     });
 
     it('refuses a crossing that would stop past its own first three rows', async () => {
@@ -814,11 +832,12 @@ describe('LocalGameService', () => {
       expect(g.refusal()).toBe('The way in is shut');
     });
 
-    it('starts five out of a reserve in a phase initialization, and no more', async () => {
+    it('starts five out of a reserve in a postmatch, and no more', async () => {
       // Five stands INSTEAD of the per-panel three on that turn, so the fourth
-      // and fifth go through and the sixth does not.
+      // and fifth go through and the sixth does not. Ply 27 is turn 14, Phase
+      // 1's postmatch.
       const hexes = ['-10,9', '-8,9', '-6,9', '-3,9', '-1,9', '1,9'];
-      const g = at(7);
+      const g = at(27);
       hexes.forEach((to, i) => g.engine.send({
         type: 'enter_board', from: 'bl-1', to, unit: reserve(`r${i}`),
       }));
@@ -830,20 +849,20 @@ describe('LocalGameService', () => {
       expect(hexes.filter(h => board[h]).length).toBe(5);
     });
 
-    it("reads a phase initialization's entries off the game's config", async () => {
-      // rules.phaseInitEntries: a room that says two stops the third.
+    it("reads a postmatch's entries off the game's config", async () => {
+      // rules.postmatchEntries: a room that says two stops the third.
       const rules = (service as any).game.config.rules;
-      const saved = rules.phaseInitEntries;
-      rules.phaseInitEntries = 2;
+      const saved = rules.postmatchEntries;
+      rules.postmatchEntries = 2;
       try {
-        const g = at(7);
+        const g = at(27);
         ['-10,9', '-8,9', '-6,9'].forEach((to, i) => g.engine.send({
           type: 'enter_board', from: 'bl-1', to, unit: reserve(`r${i}`),
         }));
         await flush();
         expect(g.refusal()).toBe('That reserve has started its units for the turn');
       } finally {
-        rules.phaseInitEntries = saved;
+        rules.postmatchEntries = saved;
       }
     });
 
@@ -858,8 +877,9 @@ describe('LocalGameService', () => {
 
     it('refuses a walk home from outside its own first three rows', async () => {
       // Row 8 again: a unit that has pushed up the board walks back down into
-      // its own ground before it can walk off it.
-      const g = at(7, { ...kings, ...walker('-11,8') });
+      // its own ground before it can walk off it. On a postmatch, where the
+      // way home is open, so the rows are what refuse it.
+      const g = at(27, { ...kings, ...walker('-11,8') });
       g.engine.send({ type: 'make_move', from: '-11,8', to: '-12,8', withdraw: true });
       await flush();
       expect(g.refusal()).toBe('Only your own first three rows walk home');
@@ -871,7 +891,7 @@ describe('LocalGameService', () => {
       const saved = rules.homecomingsPerSetupTurn;
       rules.homecomingsPerSetupTurn = 1;
       try {
-        const g = at(7, { ...kings, ...walker('-11,11', 'w1'), ...walker('-10,11', 'w2') });
+        const g = at(27, { ...kings, ...walker('-11,11', 'w1'), ...walker('-10,11', 'w2') });
         g.engine.send({ type: 'make_move', from: '-11,11', to: '-12,11', withdraw: true });
         await flush();
         expect(g.refusal()).toBeUndefined();
@@ -884,7 +904,8 @@ describe('LocalGameService', () => {
     });
 
     it('walks three home in a setup turn and no more', async () => {
-      const g = at(7, {
+      // Ply 27, Phase 1's postmatch.
+      const g = at(27, {
         ...kings,
         ...walker('-11,11', 'w1'), ...walker('-10,11', 'w2'),
         ...walker('-8,11', 'w3'), ...walker('-7,11', 'w4'),
@@ -905,7 +926,7 @@ describe('LocalGameService', () => {
       }
       expect(g.refusal()).toBe('That is all who may walk home this turn');
       // Three went, and the turn is still the one they went on.
-      expect((g.engine as any).game.turnNumber).toBe(7);
+      expect((g.engine as any).game.turnNumber).toBe(27);
       expect(g.seen.filter(m => m.type === 'game_state_update').length).toBe(3);
       expect(g.seen.filter(m => m.type === 'move_made').length).toBe(0);
     });
@@ -923,7 +944,8 @@ describe('LocalGameService', () => {
     it('fires no ability on a turn given to setting out', async () => {
       // The one ability rule the engine can keep with the abilities unsettled:
       // it need not know what a cast is worth to know none should have come.
-      const g = at(7, { ...kings, ...walker('-5,9') });
+      // Ply 27, Phase 1's postmatch.
+      const g = at(27, { ...kings, ...walker('-5,9') });
       g.engine.send({
         type: 'make_move', from: '-5,9', to: '-5,8',
         effectsBefore: [{ uid: 'w1', hp: 6, at: '-5,9' }],
@@ -947,14 +969,14 @@ describe('LocalGameService', () => {
       // `Number(x) || 0` was inert as a guard: nonsense came back NaN, which
       // is falsy, so it passed for "no ability"; a negative one is truthy, so
       // it refused a move no ability had touched.
-      const nonsense = at(7, { ...kings, ...walker('-5,9') });
+      const nonsense = at(27, { ...kings, ...walker('-5,9') });
       nonsense.engine.send({
         type: 'make_move', from: '-5,9', to: '-5,8', moveBonus: 'x' as any,
       });
       await flush();
       expect(nonsense.refusal()).toBe('No ability fires while a side is setting out');
 
-      const negative = at(7, { ...kings, ...walker('-5,9') });
+      const negative = at(27, { ...kings, ...walker('-5,9') });
       negative.engine.send({
         type: 'make_move', from: '-5,9', to: '-5,8', bonuses: { atk: -1 } as any,
       });
@@ -1115,8 +1137,9 @@ describe('LocalGameService', () => {
 
     it('refuses the wrap while it is shut', async () => {
       // The schedule needs only the ply, so it needs none of the three things
-      // this engine has not got. Turns 10-14 are Phase 1's shut halftime half;
-      // ply 19 is turn 10. `panel_move_targets` offers no wrap there at all.
+      // this engine has not got. Turns 9-13 are Phase 1's halftime half, with
+      // the wrap shut; ply 19 is turn 10. `panel_move_targets` offers no wrap
+      // there at all.
       const config = (service as any).game.config;
       localStorage.setItem('cpp.localGame.v1', JSON.stringify({
         username: 'Solo', hostColor: 'white', started: true, config,
@@ -1143,9 +1166,9 @@ describe('LocalGameService', () => {
         boardState: {
           '-11,11': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'wk' },
         },
-        // Turn 4, a phase initialization: the way home is open there, so the
+        // Turn 14, Phase 1's postmatch: the way home is open there, so the
         // king is refused by his own rule and not by a shut doorway.
-        currentTurn: 'Solo', turnNumber: 7, moveHistory: [], winner: '', endReason: '',
+        currentTurn: 'Solo', turnNumber: 27, moveHistory: [], winner: '', endReason: '',
         turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
       }));
       const engine = new LocalGameService((service as any).configService);

@@ -19,7 +19,7 @@ import {
 } from '../../services/hex-rules';
 import {
   boardMovesPerTurn, overtimeTollAt, overtimeTollOver,
-  isEntryOpen, isHomecomingOpen, isInitialization, isOvertime, isPhaseInitialization,
+  isEntryOpen, isHomecomingOpen, isInitialization, isOvertime, isPostmatch,
   isSetupTurn, isWrapOpen, sideOfPly,
 } from '../../services/phases';
 import { ruleOf } from '../../services/config.service';
@@ -3477,7 +3477,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * too - see `homecoming_targets` and the browser engine's `move`.
    *
    * **When it is open**: any setup turn - the opening's three and each phase's
-   * own initialization - and all of overtime. Shut through both halves of a
+   * own postmatch - and all of overtime. Shut through both halves of a
    * numbered phase's play. Overtime is the owner's exception and is not a
    * setup turn: the toll is running and units are still fighting, so a walk
    * home there is an ordinary move that happens to end off the board, and the
@@ -3831,9 +3831,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /**
-   * Any turn given to setting out - the opening, or a phase's initialization
-   * turn. Deliberately not the same question as `initializing`: the one-move-
-   * per-phase lock above is the opening's alone, but nobody attacks on either.
+   * Any turn given to setting out - the opening, or a phase's postmatch.
+   * Deliberately not the same question as `initializing`: the one-move-per-
+   * phase lock above is the opening's alone, but nobody attacks on either.
    */
   private get settingOut(): boolean {
     return isSetupTurn(this.turnNumber);
@@ -3848,19 +3848,20 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * Both panels carry the cap, all match, and each carries its own: three
    * out of the base and three out of the reserve, never three between them.
    *
-   * **A phase's initialization turn raises the reserve's to five** - the same
-   * number `panelMoverAllowed` and `panel_allowance` raise it to, and the
-   * board must raise it too or the fourth and fifth are offered by neither
-   * engine's rule but refused by the screen. The base keeps its three:
-   * nothing in that allowance was about the base.
+   * **A phase's postmatch raises the reserve's to five**
+   * (`rules.postmatchEntries`) - the same number `panelMoverAllowed` and
+   * `panel_allowance` raise it to, and the board must raise it too or the
+   * fourth and fifth are offered by neither engine's rule but refused by the
+   * screen. The base keeps its three: nothing in that allowance was about the
+   * base.
    */
   private panelCanMove(cell: HexCell): boolean {
     const uid = this.uidOf(cell);
     if (this.lockedUnits.has(uid)) return false;
     const base = BASE_PANELS.has(cell.panel);
     const movers = base ? this.baseMovers : this.reserveMovers;
-    const cap = ruleOf(this.config, !base && isPhaseInitialization(this.turnNumber)
-      ? 'phaseInitEntries' : 'panelMoversPerTurn');
+    const cap = ruleOf(this.config, !base && isPostmatch(this.turnNumber)
+      ? 'postmatchEntries' : 'panelMoversPerTurn');
     return movers.has(uid) || movers.size < cap;
   }
 
@@ -4147,8 +4148,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // reaches, though, includes them both: a unit at the edge shows its range
     // running on into the panel beside it.
     // On any turn given to setting out, nobody attacks at all - the opening
-    // and a phase's initialization turn alike, which is what both engines
-    // refuse. Offering a target here would stage a blow they then reject.
+    // and a phase's postmatch alike, which is what both engines refuse.
+    // Offering a target here would stage a blow they then reject.
     if (!cell.panel && !this.settingOut) {
       const range: number = this.config?.units?.[cell.piece.unit_id]?.attackRange ?? 1;
       for (const other of this.cells) {

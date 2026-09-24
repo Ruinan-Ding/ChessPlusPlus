@@ -23,8 +23,8 @@ describe('GameRoomComponent ability panel', () => {
    * side on a particular balance sets what it has already spent.
    */
   const giveCp = (c: any, cp: number) => {
-    // Turn 5, Phase 1's first played turn. Not turn 4: that is the phase's own
-    // initialization, and nothing is cast on a turn given to setting out.
+    // Turn 5, in Phase 1's play. Any turn of it would do but the postmatch at
+    // its end (turn 14): nothing is cast on a turn given to setting out.
     c.gameState.snapshot.turnNumber = 10;
     c.myCpSpent = 200 - cp;
   };
@@ -1044,12 +1044,16 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canUseAbilities('mine')).toBeFalse();
     expect(c.canAfford('mine', TARGETED, 0)).toBeFalse();
 
-    // Nor on Phase 1's own initialization turn, which is a setup turn too.
-    c.gameState.snapshot.turnNumber = 8;   // turn 4, Phase 1 Initialization
+    // Which is the turn straight after the opening now.
+    c.gameState.snapshot.turnNumber = 8;   // turn 4, Phase 1's first played
+    expect(c.canUseAbilities('mine')).toBeTrue();
+
+    // Nor on Phase 1's own postmatch, which is a setup turn too.
+    c.gameState.snapshot.turnNumber = 27;  // turn 14, Phase 1 Postmatch
     expect(c.canChooseAbilities('mine')).toBeTrue();
     expect(c.canUseAbilities('mine')).toBeFalse();
 
-    c.gameState.snapshot.turnNumber = 10;  // turn 5, Phase 1's first played
+    c.gameState.snapshot.turnNumber = 29;  // turn 15, Phase 2's first played
     expect(c.canUseAbilities('mine')).toBeTrue();
   });
 
@@ -1156,7 +1160,7 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
     c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
     c.gameState.snapshot.moveHistory = [];
-    c.gameState.snapshot.turnNumber = 50;   // turn 25, Phase 3
+    c.gameState.snapshot.turnNumber = 52;   // turn 26, Phase 3's first played
 
     // Nothing banked yet reads as the phase alone - no parenthetical to draw.
     expect(c.phaseScore('mine').banked).toEqual([]);
@@ -1206,7 +1210,7 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.config = { board: { radius: 11 }, units: {} };
     c.gameState.snapshot.boardState = {};
     c.gameState.snapshot.moveHistory = [];
-    c.gameState.snapshot.turnNumber = 67;   // turn 34, the first of overtime
+    c.gameState.snapshot.turnNumber = 73;   // turn 37, the first of overtime
     const settle = (white: number, black: number) => {
       c.phaseBank = { 1: { white, black }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
       (c as any).standingsCache = null;
@@ -1242,11 +1246,11 @@ describe('GameRoomComponent ability panel', () => {
 
     // Overtime costs a king an HP a turn and a side nothing at all - the
     // owner's rule, "loses just HP". The score it opens on is the score it
-    // keeps, however long it runs.
-    expect(at(67).match).toBe(4);
-    expect(at(68).match).toBe(4);
-    expect(at(69).match).toBe(4);
-    expect(at(70).match).toBe(4);
+    // keeps, however long it runs. Hand-over 73 is turn 37, its first.
+    expect(at(73).match).toBe(4);
+    expect(at(74).match).toBe(4);
+    expect(at(75).match).toBe(4);
+    expect(at(76).match).toBe(4);
     expect(at(99).match).toBe(4);
 
     // The three phases are what the match is summed from; overtime adds no
@@ -1260,7 +1264,7 @@ describe('GameRoomComponent ability panel', () => {
     expect(at(101).verdict).toBe('black');
   });
 
-  it('banks a phase as the next one begins, once', () => {
+  it('banks a phase as its postmatch begins, once', () => {
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
     c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
@@ -1268,21 +1272,134 @@ describe('GameRoomComponent ability panel', () => {
       { color: 'black', unit_id: 'pawn', captured: 'pawn', defender_eliminated: true, turn: 8 },
     ];
 
-    // Still inside Phase 1: nothing to bank.
+    // Still inside Phase 1's play: nothing to bank - not even on its very
+    // last hand-over, where the phase has one move still to make.
     c.gameState.snapshot.turnNumber = 20;   // turn 10, its halftime half
     (c as any).bankEndedPhases();
     expect(c.phaseBank[1]).toBeUndefined();
-
-    // Phase 2's initialization turn is the first on which Phase 1's board is
-    // still on screen and the phase itself is over.
-    c.gameState.snapshot.turnNumber = 29;   // turn 15
+    c.gameState.snapshot.turnNumber = 26;   // turn 13, black's half
     (c as any).bankEndedPhases();
+    expect(c.phaseBank[1]).toBeUndefined();
+
+    // The postmatch's first hand-over is the first on which Phase 1 is over
+    // and its board is still on screen: the last move of its play has landed
+    // and nothing of the postmatch has been played. Banked through the
+    // hand-over itself, the way a live room gets there - not once Phase 2
+    // begins, by which time the postmatch has rearranged the board.
+    c.gameState.snapshot.turnNumber = 27;   // turn 14, Phase 1 Postmatch
+    c.beginTurnFor('white');
     expect(c.phaseBank[1]).toEqual({ white: 2, black: 0 });
 
-    // Banked once and left alone, however the board moves afterwards.
+    // Banked once and left alone, however the postmatch moves the board - a
+    // unit walked home out of the zone, say - and on into the next phase.
     c.gameState.snapshot.boardState = {};
     (c as any).bankEndedPhases();
+    c.gameState.snapshot.turnNumber = 28;   // black's half of the postmatch
+    c.beginTurnFor('black');
+    c.gameState.snapshot.turnNumber = 29;   // turn 15, Phase 2
+    c.beginTurnFor('white');
     expect(c.phaseBank[1]).toEqual({ white: 2, black: 0 });
+    // And Phase 2 waits for its own postmatch.
+    expect(c.phaseBank[2]).toBeUndefined();
+  });
+
+  it('reads nought on a postmatch, and counts the phase it banked once', () => {
+    const c = room();
+    c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
+    c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
+    c.gameState.snapshot.moveHistory = [
+      { color: 'black', unit_id: 'pawn', captured: 'pawn', defender_eliminated: true, turn: 8 },
+    ];
+    // Phase 1 banks as its postmatch begins: 7 held, 5 lost.
+    c.gameState.snapshot.turnNumber = 27;
+    (c as any).bankEndedPhases();
+    (c as any).standingsCache = null;
+
+    // The postmatch is still Phase 1's by the index, but nothing of it is
+    // live: the phase is in the bank, and read live beside it as well it
+    // would be counted twice - 2 banked and the same 2 running, for 4.
+    const mine = c.phaseScore('mine');
+    expect(mine).toEqual(jasmine.objectContaining({ cap: 0, death: 0, total: 0 }));
+    expect(mine.banked).toEqual([2]);
+    expect(mine.match).toBe(2);
+    c.gameState.snapshot.turnNumber = 28;   // black's half reads the same
+    expect(c.phaseScore('mine').match).toBe(2);
+
+    // And the next phase counts live again, with Phase 1's loss left behind.
+    c.gameState.snapshot.turnNumber = 29;
+    expect(c.phaseScore('mine')).toEqual(jasmine.objectContaining({ cap: 7, death: 0, total: 7 }));
+    expect(c.phaseScore('mine').match).toBe(9);
+  });
+
+  it('reads the verdict from Phase 3\'s postmatch, a turn before overtime', () => {
+    // Phase 3 banks as its postmatch begins, like the other two, so all three
+    // are in on turn 36 rather than on overtime's first turn.
+    const c = room();
+    c.gameState.snapshot.config = { board: { radius: 11 }, units: {} };
+    c.gameState.snapshot.boardState = {};
+    c.gameState.snapshot.moveHistory = [];
+    c.phaseBank = { 1: { white: 9, black: 0 }, 2: { white: 0, black: 0 } };
+
+    c.gameState.snapshot.turnNumber = 70;   // turn 35, the last of Phase 3's play
+    (c as any).bankEndedPhases();
+    expect(c.phaseBank[3]).toBeUndefined();
+    expect(c.matchVerdict).toBeNull();
+
+    c.gameState.snapshot.turnNumber = 71;   // turn 36, Phase 3 Postmatch
+    (c as any).bankEndedPhases();
+    expect(c.phaseBank[3]).toEqual({ white: 0, black: 0 });
+    expect(c.matchVerdict).toBe('white');
+    // A decided match says so in the header from that turn...
+    expect(c.stageLabel).toBe('YOU WIN');
+
+    // ...and a close one is bound for overtime, but the header names the turn
+    // being played until overtime actually arrives with the next.
+    c.phaseBank = { 1: { white: 0, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+    (c as any).standingsCache = null;
+    expect(c.matchVerdict).toBe('overtime');
+    expect(c.stageLabel).toBe('PHASE 3 POSTMATCH');
+    c.gameState.snapshot.turnNumber = 73;   // turn 37
+    expect(c.stageLabel).toBe('OVERTIME 1');
+  });
+
+  it('banks through the socket, off the board the hand-over brought', () => {
+    // The road a live room takes: a move_made lands, its board and its turn
+    // number are applied, and only then does the next side begin - which is
+    // where the bank is read. Begun before the message was applied, the room
+    // would still be on turn 13, nothing would bank until the postmatch had
+    // played a hand-over, and that bank would read a board the postmatch's
+    // deployments had already changed. The specs above set the ply by hand
+    // and would never notice.
+    const c = room();
+    c.gameState.snapshot.turnTimeLimit = 0;
+    c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
+    c.gameState.snapshot.boardState = {};
+    c.gameState.snapshot.moveHistory = [];
+    c.gameState.snapshot.turnNumber = 26;   // turn 13, black's half: the last of Phase 1's play
+    c.gameState.applyMoveMade = (msg: any) => {
+      const s = c.gameState.snapshot;
+      c.gameState.snapshot = {
+        ...s, boardState: msg.boardState, turnNumber: msg.turnNumber,
+        currentTurn: msg.currentTurn, moveHistory: [...s.moveHistory, msg.move],
+      };
+    };
+    const made = (ply: number, board: Record<string, any>) => c.handleWebSocketMessage({
+      type: 'move_made', turnNumber: ply, currentTurn: 'me', boardState: board,
+      move: { color: ply % 2 ? 'black' : 'white', unit_id: 'pawn', from: '0,0', to: '0,0' },
+    });
+    // A turn staged and never sent holds nothing: were it read, white would
+    // bank nought.
+    c.stagedActions = [{ from: '0,0', to: '0,0', board: {} }];
+
+    // Black's last move of the play lands and hands the postmatch to white.
+    made(27, { '0,0': { unit_id: 'pawn', color: 'white' } });
+    expect(c.phaseBank[1]).toEqual({ white: 7, black: 0 });
+
+    // White's postmatch walks the pawn home, and black's half begins: the
+    // bank is the play's, and stays so.
+    made(28, {});
+    expect(c.phaseBank[1]).toEqual({ white: 7, black: 0 });
+    expect(c.phaseBank[2]).toBeUndefined();
   });
 
   it('takes the seat the host picked, and tosses for Random', () => {
@@ -1415,18 +1532,25 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canAfford('mine', 0, 0)).toBeFalse();
     expect(c.abilityBlockedNote).toBe('Unavailable: no abilities during the initialization.');
 
-    // A numbered phase's own initialization turn shuts them for the same
-    // reason, and says which turn refused rather than naming the opening -
-    // which by then ended several turns ago.
-    c.gameState.snapshot.turnNumber = 8;
+    // A numbered phase's own postmatch shuts them for the same reason, and
+    // says which turn refused rather than naming the opening - which by then
+    // ended eleven turns ago. The header names the same stage.
+    c.gameState.snapshot.turnNumber = 27;   // turn 14, Phase 1 Postmatch
     expect(c.canUseAbilities('mine')).toBeFalse();
     expect(c.abilityBlockedNote)
-      .toBe('Unavailable: no abilities during the phase 1 initialization.');
+      .toBe('Unavailable: no abilities during the phase 1 postmatch.');
+    expect(c.stageLabel).toBe('PHASE 1 POSTMATCH');
+    c.gameState.snapshot.turnNumber = 72;   // turn 36, black's half
+    expect(c.abilityBlockedNote)
+      .toBe('Unavailable: no abilities during the phase 3 postmatch.');
 
-    // Past every setup turn they come back, and the note goes back to the turn.
-    c.gameState.snapshot.turnNumber = 10;
-    expect(c.canUseAbilities('mine')).toBeTrue();
-    expect(c.abilityBlockedNote).toBe('Unavailable: not your turn.');
+    // Off a setup turn they come back, and the note goes back to the turn -
+    // on turn 4 as well, which used to be Phase 1's own setup turn.
+    for (const ply of [7, 10, 29]) {
+      c.gameState.snapshot.turnNumber = ply;
+      expect(c.canUseAbilities('mine')).withContext(`ply ${ply}`).toBeTrue();
+      expect(c.abilityBlockedNote).withContext(`ply ${ply}`).toBe('Unavailable: not your turn.');
+    }
   });
 
   it('scores nothing in the opening, and stops scoring in overtime', () => {

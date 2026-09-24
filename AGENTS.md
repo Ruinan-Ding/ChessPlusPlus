@@ -71,11 +71,15 @@ Any change to config shape touches all three or validation rejects live configs:
 | `server/game/engine/config_loader.py` | `DEFAULT_CONFIG` + `_validate_config()` |
 | `client/src/app/services/config.service.ts` | `DEFAULT_GAME_CONFIG` (line ~28) + `validateGameRules()` |
 
-The whole-number rules a config may leave out (`panelMoversPerTurn`, `phaseInitEntries`,
+The whole-number rules a config may leave out (`panelMoversPerTurn`, `postmatchEntries`,
 `homecomingsPerSetupTurn`, `cpPerPhase`) are listed once per side in `COUNTED_RULES`, filled in
 at their defaults by both normalisers, and read through `ruleOf(config, key)` /
 `rule_of(config, key)` - never as a module constant, because one server process plays every
-room and each room may carry its own config. The overtime schedule (`OVERTIME_STAGES` in
+room and each room may carry its own config. `postmatchEntries` was `phaseInitEntries` until
+the phase's extra turn moved from its start to its end; the old key is not migrated. Neither
+runtime validator rejects a rule key it does not know, so a room saved with the old name reads
+the new one at its default (5) and carries the stale key along unread. The schema itself does
+say `additionalProperties: false` on `rules`, but nothing loads the schema at runtime. The overtime schedule (`OVERTIME_STAGES` in
 `phases.ts` / `phases.py`) is still code, for that reason: it is read by functions that take
 only a ply, and making it per-room means handing them the room's schedule.
 
@@ -250,8 +254,8 @@ Decided so far:
     **Both panels carry the cap, all match**: three out of the base and three out of the
     reserve, never three between them. *The reserve used to carry it only through the
     initialization and shuffle freely after; the owner asked for the base's rule on both.*
-    **The reserve's three becomes five on a numbered phase's initialization turn**
-    (`rules.phaseInitEntries`), and the five stand instead of the three rather than beside them;
+    **The reserve's three becomes five on a numbered phase's postmatch turn**
+    (`rules.postmatchEntries`), and the five stand instead of the three rather than beside them;
     the base keeps its three. Allowances reset each ply. Moving a panel unit is still not the turn's one board
     action - it happens alongside it. Three is the owner's placeholder ("for now").
     **A panel unit that has been started this turn is marked**: a gold dot off the plate's
@@ -306,12 +310,16 @@ Decided so far:
     mirror, `(12,-1)` and `(-11,-1)`. `wrapTips()` / `addWrap()` derive both from the radius, so
     neither number is hardcoded.
   - **The turn indicator names the stage** (`stageLabel` in the room, `stageAt()` in
-    `phases.ts`): `YOUR TURN - PHASE 1 HALFTIME`. Eleven stages - `Initialization`,
-    `Phase 1 Initialization`, `Phase 1`, `Phase 1 Halftime`, ... , `Overtime` - because **a
-    phase that breaks in the middle is two stages** and **one that opens with an
-    initialization turn is three**, each taking its own name, which is the same name
-    `turnHeading()` counts down to. The result replaces the stage once the three phases have
-    settled one; overtime is both a stage and a verdict and reads the same either way. *It
+    `phases.ts`): `YOUR TURN - PHASE 1 HALFTIME`. Thirteen stages - `Initialization`,
+    `Phase 1`, `Phase 1 Halftime`, `Phase 1 Postmatch`, ... , `Overtime 1`, `Overtime 2`,
+    `Overtime 3` - because **a phase that breaks in the middle is two stages**, **one that
+    closes with a postmatch turn is three**, and overtime breaks twice more, each taking its
+    own name, which is the same name `turnHeading()` counts down to. The result replaces the
+    stage once the three phases have settled one - which can be as early as Phase 3's
+    postmatch, turn 36, since that is when the third phase banks (see the scoring below).
+    Overtime is both a stage and a verdict, so the stage covers it; a close match on turn 36
+    is bound for overtime but still reads `PHASE 3 POSTMATCH`, the turn being played, until
+    `OVERTIME 1` arrives on turn 37. *It
     used to name overtime and nothing else, leaving the other seven unnamed.* Amber now, not
     the old pale gold: it sits on the light header on every turn rather than only in overtime.
   - **A panel's wounds are applied on every rebuild, not just when it is dealt**
@@ -427,8 +435,8 @@ Decided so far:
       sends none and the board stands. Only a king *the toll itself felled* ends the game
       there - a pass has never looked at who is beaten and must not start.
   - **The wrap runs on a window** (`isWrapOpen()` in `phases.ts`): open on **a numbered
-    phase's played first half and nothing else** - turns 5-9, 16-20 and 27-31. Not the
-    opening, not an initialization turn, and not overtime. See the window table in the
+    phase's played first half and nothing else** - turns 4-8, 15-19 and 26-30. Not the
+    opening, not a postmatch turn, and not overtime. See the window table in the
     schedule section for all three arrows. Shut means **no target and no price**:
     `addWrap()` returns at the top, so not even the struck-through `wrapDenied` figure is
     drawn, because a price is an offer and there is nothing on offer. What says so instead is
@@ -844,9 +852,9 @@ Decided so far:
   | phase | turns | |
   |---|---|---|
   | Initialization | 1-3 | the opening |
-  | Phase 1 | 4 / 5-14 | turn 4 is its **initialization turn**; halftime after turn 9 |
-  | Phase 2 | 15 / 16-25 | initialization turn 15; halftime after turn 20 |
-  | Phase 3 | 26 / 27-36 | initialization turn 26; halftime after turn 31 |
+  | Phase 1 | 4-13 / 14 | halftime after turn 8; turn 14 is its **postmatch turn** |
+  | Phase 2 | 15-24 / 25 | halftime after turn 19; postmatch turn 25 |
+  | Phase 3 | 26-35 / 36 | halftime after turn 30; postmatch turn 36 |
   | Overtime 1 | 37-44 | first hand-over is 73 (`OVERTIME_FIRST_PLY`); toll **-1**, purse **+1** a turn, **1** board move |
   | Overtime 2 | 45-49 | toll **-2**, purse **+3** a turn, **2** board moves |
   | Overtime 3 | 50 | the last turn; toll **-3**, purse **+5**, **3** board moves, and anything still standing is black's |
@@ -854,20 +862,35 @@ Decided so far:
   A halftime splits a ten-turn phase evenly. These are full turns, so the opening is six
   hand-overs and each phase is twenty-two.
 
-  **Each numbered phase opens with an initialization turn of its own, and its ten turns do
-  not count it.** Carried as `init: true` on the phase rather than as a phase of its own
-  (`phaseSpan()`): a separate entry would have to be excluded from `SCORING_PHASES` and from
-  every "which phase am I in" answer, and turn 4 *is* part of Phase 1. Two predicates come
-  off it and must not be confused - `isInitialization()` is **the opening alone**, because
-  the opening's one-move-per-phase lock hangs off it and handing that to a single turn would
-  stop a unit that moved in an unrelated earlier turn; `isSetupTurn()` is the opening plus
-  each phase's initialization turn, and covers only what the two genuinely share.
+  **Each numbered phase closes with a postmatch turn of its own, and its ten turns do not
+  count it.** Carried as `postmatch: true` on the phase rather than as a phase of its own
+  (`phaseSpan()` adds the one turn): a separate entry would have to be excluded from
+  `SCORING_PHASES` and from every "which phase am I in" answer, and turn 14 *is* part of
+  Phase 1 - `phaseIndexAt()` answers 1 for it. A ply is the postmatch when its phase has the
+  flag and it falls on the turn after the ten, `phaseStartTurn(index) + turns`
+  (`isPostmatch()` / `is_postmatch()`). Play starts on the phase's first turn, so the
+  halftime splits the ten from there and the postmatch, coming after both halves, reads as
+  past the halftime; `isWrapOpen()` still refuses it by name, for clarity. Two predicates come
+  off the schedule and must not be confused - `isInitialization()` is **the opening alone**,
+  because the opening's one-move-per-phase lock hangs off it and handing that to a single
+  turn would stop a unit that moved in an unrelated earlier turn; `isSetupTurn()` is the
+  opening plus each phase's postmatch turn, and covers only what the two genuinely share.
+  - *The extra turn used to open the phase, as `Phase N Initialization` (`init: true`,
+    `isPhaseInitialization()`, `playStartTurn()`).* That put four setup turns in a row at the
+    start of the match - the opening's three and then Phase 1's own - and the owner moved it
+    to the end of each phase and renamed it, 23 Sep 2026: *"make it phase x postmatch, and
+    move the inization part to the end of the phase. that way you dont have 3 inization turns
+    then start right away at phase 1 initialization"*. It is the same turn with the same
+    allowances, only moved. Every phase still spans eleven turns, so which phase a ply
+    belongs to, the CP a phase hands out and overtime's start at turn 37 did not move with it.
 
   **The history header counts down to the next change**, in full turns:
-  `Turn 1 - 2 Until Phase 1 Initialization`. A change lands at the *end* of the turn it is
-  counted to, so the turn it lands on has already moved on to the next one - turn 3 is the
-  last of the opening and reads `Turn 3 - 1 Until Phase 1`. An initialization turn is two
-  changes, into it and out of it again. Past the last change it says where you are, in the
+  `Turn 1 - 2 Until Phase 1`. A change lands at the *end* of the turn it is counted to, so
+  the turn it lands on has already moved on to the next one - turn 3 is the last of the
+  opening and reads `Turn 3 - 5 Until Phase 1 Halftime`. A postmatch is two changes, into it
+  at the end of the phase's tenth turn and out of it into the next phase one turn later: turn
+  12 reads `1 Until Phase 1 Postmatch`, turn 13 `1 Until Phase 2`, and turn 14, the postmatch
+  itself, `5 Until Phase 2 Halftime`. Past the last change it says where you are, in the
   **stage's** name rather than the phase's: `Turn 50 - Overtime 3`.
 
 - **Three arrows a side, three windows, and no turn opens all three.** Every one is read off
@@ -877,15 +900,19 @@ Decided so far:
 
   | | predicate | open on |
   |---|---|---|
-  | the wrap, out of a base | `isWrapOpen()` | a numbered phase's **played first half**: 5-9, 16-20, 27-31 |
-  | the three ways in, out of a reserve | `isEntryOpen()` | any setup turn, and each phase's **halftime half**: 1-4, 10-15, 21-26, 32-36 |
-  | the three ways home, into a base | `isHomecomingOpen()` | any setup turn, and **all of overtime**: 1-4, 15, 26, 37+ |
+  | the wrap, out of a base | `isWrapOpen()` | a numbered phase's **played first half**: 4-8, 15-19, 26-30 |
+  | the three ways in, out of a reserve | `isEntryOpen()` | any setup turn, and each phase's **halftime half**: 1-3, 9-14, 20-25, 31-36 |
+  | the three ways home, into a base | `isHomecomingOpen()` | any setup turn, and **all of overtime**: 1-3, 14, 25, 36 onward |
 
   The wrap and the way in are near enough complements: a side spends a phase's first half
-  sending units out around the outside and its second half bringing them back in. *The wrap
+  sending units out around the outside and its second half bringing them back in. With the
+  postmatch at the end, the way in runs unbroken from a phase's halftime through its
+  postmatch, and the next phase's wrap opens on the very next turn. *The wrap
   used to be `beforeHalftime()` alone, which said yes for every phase with no break to fall
   either side of - quietly including the opening and the whole of overtime. It is now spelled
-  out as three conditions because each one refuses a different turn.*
+  out as three conditions: the scoring phase and the halftime each refuse turns the other does
+  not, and the postmatch clause, redundant since the postmatch moved past the halftime, is kept
+  so the rule reads the way the owner said it.*
 
 - **A crossing lands in its own first three rows, and a walk home starts in them**
   (`inHomeRows()` in `hex-rules.ts`, `in_home_rows()` in `engine/panels.py`; `HOME_ROWS = 3`).
@@ -900,11 +927,12 @@ Decided so far:
   so the opening offers white exactly one legal crossing - '1,9', six steps off. Reserves
   backfill ground the line has vacated; they do not pour onto an empty board.*
 
-- **A phase's initialization turn has its own allowances.** One full turn, both sides, and on
-  it: **no ability fires and nobody attacks** (`isSetupTurn()`, shared with the opening -
-  `noAttackMessage()` says which of the two refused, since "the opening" on turn 15 points at
-  a phase that ended ten turns ago); **five units may be started out of the reserve** rather
-  than the usual three (`rules.phaseInitEntries`, and it stands *instead of* the per-panel three,
+- **A phase's postmatch turn has its own allowances.** One full turn, both sides, and on it:
+  **no ability fires and nobody attacks** (`isSetupTurn()`, shared with the opening -
+  `noAttackMessage()` says which of the two refused, `Nobody attacks in the postmatch` or
+  `Nobody attacks in the opening`, since "the opening" on turn 14 points at a phase that
+  ended a whole phase ago); **five units may be started out of the reserve** rather than the
+  usual three (`rules.postmatchEntries`, and it stands *instead of* the per-panel three,
   covering walks inside the reserve as well as crossings out of it - capping the walk at three
   would leave two of the five unable to reach a gateway); and **three units may walk home**
   (`rules.homecomingsPerSetupTurn`, counted by `homecomingsAt()` / `homecomings_at()`). The base
@@ -914,7 +942,8 @@ Decided so far:
   off the board and the turn's own move allowance is the only cap it needs.
   - **All three enforce each of these, the board included.** The board kept its own copy of
     the mover rule (`panelCanMove`, its own `reserveMovers` set) and its own copy of the
-    no-attack rule, and neither heard about the initialization turn - so the fourth and fifth
+    no-attack rule, and neither heard about the phase's extra setup turn (then an
+    initialization at the phase's start, now its postmatch) - so the fourth and fifth
     crossings were refused by the only thing a player can click, and a strike was *offered* on
     a turn both engines then refused it on, stalling a networked turn on the error banner. A
     rule applied in one place and not its twin is this repo's oldest bug shape; when one of
@@ -928,8 +957,9 @@ Decided so far:
     matters: `canChooseAbilities()` (take a pair up, take a path, hand a pair back through
     Reselect) is open through every setup turn; `canUseAbilities()` is that plus
     "not `isSetupTurn()`", and everything that spends an ability runs through it. So a
-    numbered phase's initialization turn shuts casting for the same reason the opening does.
-    The panels say which rule closed them, and name the turn (`abilityBlockedNote`). The
+    numbered phase's postmatch turn shuts casting for the same reason the opening does.
+    The panels say which rule closed them, and name the turn (`abilityBlockedNote`: on turn
+    14, `Unavailable: no abilities during the phase 1 postmatch.`). The
     offline engine refuses one too (`abilityFault()`): it need not know what a cast is
     *worth* to know none should have arrived, which is the one ability rule it can keep with
     the abilities still unsettled.
@@ -962,6 +992,12 @@ Decided so far:
   - **The opening reads a flat `🚩 0 - 💀 0 = 0`.** Nothing can be killed in it and nothing
     caps, so `cap` is forced to 0 rather than counting hexes towards a phase that banks
     nothing (`standings()`). What the owner asked for, verbatim.
+  - **So does a postmatch's running score**, for a different reason: it scores nothing, like
+    the opening, but it sits *inside* the phase it closes (`phaseIndexAt()` puts turn 14 in
+    Phase 1), and that phase has already banked by then - see below. Left live, its cap and
+    deaths would be the running phase and the phase just banked would be counted twice in
+    `z`. `standings()` reads both as 0 on a postmatch turn, so Phase 1's postmatch reads
+    `🚩 0 - 💀 0 = 0 (+ 7 = 7)` in the owner's example.
   - **Overtime draws no numbers at all** (`showScore`, `isOvertime()`). It scores nothing - it
     is a deathmatch until a king falls or turn 50 runs out - so a frozen score on screen would
     only mislead. The turn indicator still says `OVERTIME`.
@@ -1004,12 +1040,22 @@ Decided so far:
     board. Cumulative deaths would be charged again in every later phase and the sum would
     mean nothing.
   - **Banked, not derived** (`phaseBank`, `bankEndedPhases()`), and persisted with the rest of
-    the local UI state. A phase's cap is the board as it stood when the phase ended, and that
-    board is gone by the time anything asks - so it is read on the **first turn of the next
-    phase**, the one moment the old position is still on screen (a turn's move lands before
-    its number is handed on). *Ceiling: a client not running at that moment banks nothing for
-    that phase. Deriving it instead needs a board snapshot per phase, which is the server's to
-    keep.*
+    the local UI state. A phase's cap is the board as it stood when its play ended, and that
+    board is gone by the time anything asks - so it is read on the **first hand-over of the
+    phase's own postmatch**, the one moment the board still shows how the play finished (a
+    turn's move lands before its number is handed on). Not a hand-over later: the postmatch
+    rearranges units - entries out of the reserve, walks home - and none of that may count
+    towards the phase it closes. So a scoring phase is over, and banks, once
+    `phase < now || (phase === now && isPostmatch(ply))`. *It used to bank once
+    `phaseIndexAt()` had moved past the phase, on the next phase's first turn - the same
+    moment while that turn was the next phase's initialization; with the extra turn at the end
+    it would have banked the postmatch's rearranging as well.* The third phase therefore banks
+    at the start of Phase 3's postmatch (turn 36), and `matchVerdict` is readable from there
+    rather than from overtime's first turn - intended. *Ceiling: a client that misses that
+    moment - a networked reload (only a solo game persists the bank) or a late join - banks
+    the phase at the next hand-over it sees, off whatever board is showing by then, postmatch
+    reshuffling and all. Deriving it instead needs a board snapshot per phase, which is the
+    server's to keep.*
   - `SCORING_PHASES` names the three numbered phases: **the match is summed from those three
     and no others**. The opening banks nothing, and overtime is not a phase but a decider - it
     takes points away rather than adding a score of its own, so the running `cap - death` stops
@@ -1062,7 +1108,9 @@ Decided so far:
 - **The third phase ending settles the match, or sends it to overtime** (`matchVerdict`).
   White must finish **more than 5** clear to take it outright; black only **more than 3**
   (`OVERTIME_MARGIN`) - black is allowed the wider gap because white moves first. Anything
-  closer than that is overtime.
+  closer than that is overtime. "Ending" is the end of Phase 3's play: the verdict is read
+  from the first hand-over of its postmatch (turn 36, ply 71), when the third phase banks,
+  one turn before overtime begins.
   - **Overtime runs in three stretches and the toll climbs through them** (`OVERTIME_STAGES`
     in `phases.ts`, mirrored in `phases.py`): turns **37-44 take -1**, **45-49 take -2**, and
     the **last turn, 50, takes -3**. A match with both kings still standing at the end of it
@@ -1073,9 +1121,11 @@ Decided so far:
     - **Counted forward from overtime's first turn, not written down.** `OVERTIME_FIRST_TURN`
       and `OVERTIME_LAST_TURN` are both read off the schedule, so a phase that moves carries
       all of overtime with it. `OVERTIME_LAST_TURN` used to be the literal `50` declared in
-      `game-room.component.ts`, and when each numbered phase gained an initialization turn -
-      moving overtime's start from 34 to 37 - the literal stayed where it was and silently
-      cost overtime three of its fourteen turns. Nothing failed.
+      `game-room.component.ts`, and when each numbered phase gained its extra turn - then an
+      initialization at the phase's start, now the postmatch at its end - moving overtime's
+      start from 34 to 37, the literal stayed where it was and silently cost overtime three of
+      its fourteen turns. Nothing failed. Moving that turn to the end of each phase moved
+      nothing in overtime: every phase still spans eleven turns.
     - **`overtimeTollAt()` answering `0` is the schedule gate as well as the amount.** Neither
       engine keeps a `ply < OVERTIME_FIRST_PLY` test of its own beside it: one question with
       one answer beats two that can come to disagree.
@@ -1122,7 +1172,8 @@ Decided so far:
         board behind a turn already spoken for.
     - **Overtime is three stages, not one** (`stageAt()`), so the header reads `OVERTIME 1`,
       `OVERTIME 2`, `OVERTIME 3`, and `MILESTONES` counts down to each - including the one
-      *into* overtime, which turn 36 announces as `Until Overtime 1`. The stretches are named
+      *into* overtime, which turn 35 counts down to as `1 Until Overtime 1` (the change lands
+      at the end of turn 36, Phase 3's postmatch). The stretches are named
       and the phase they sit in is not: `phaseAt()` still answers `Overtime` for all fourteen
       turns, the same split a numbered phase already has from its halftime. A countdown to a
       bare `Overtime` would name something `stageAt()` never says.

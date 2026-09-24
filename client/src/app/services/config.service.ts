@@ -324,9 +324,9 @@ export const DEFAULT_GAME_CONFIG = {
     // How many units each panel - the base and the reserve, separately - may
     // start in one turn.
     panelMoversPerTurn: 3,
-    // How many a side may bring out of its reserve in a phase initialization.
-    // Stands instead of panelMoversPerTurn for the reserve on that turn.
-    phaseInitEntries: 5,
+    // How many a side may bring out of its reserve in a phase's postmatch
+    // turn. Stands instead of panelMoversPerTurn for the reserve on that turn.
+    postmatchEntries: 5,
     // How many units a side may walk home in one setup turn.
     homecomingsPerSetupTurn: 3,
     // The CP each side is handed at the start of every phase.
@@ -337,9 +337,14 @@ export const DEFAULT_GAME_CONFIG = {
 /**
  * The rules a config may leave out and be read at their default. Each is a
  * whole number >= 0. Mirrors COUNTED_RULES in config_loader.py.
+ *
+ * `postmatchEntries` was `phaseInitEntries` while a phase's extra turn opened
+ * it rather than closing it. The old key is not carried over: nothing here
+ * rejects a rule key it does not know, so a config that still says
+ * `phaseInitEntries` loads, and reads `postmatchEntries` at its default.
  */
 export const COUNTED_RULES = [
-  'panelMoversPerTurn', 'phaseInitEntries', 'homecomingsPerSetupTurn', 'cpPerPhase',
+  'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpPerPhase',
 ] as const;
 export type CountedRule = typeof COUNTED_RULES[number];
 
