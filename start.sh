@@ -70,7 +70,16 @@ backend=$!
 
 echo "Frontend :$FRONTEND_PORT"
 kill_port "$FRONTEND_PORT"
-(cd client && npx ng serve --port "$FRONTEND_PORT") &
+# The same split as the backend. node_modules installed from Windows holds
+# only the Windows builds of its native packages (rollup, esbuild), so WSL's
+# own node cannot run it - it goes through cmd.exe to Windows node instead.
+# A Linux install (rollup-linux-*) runs as it is.
+if command -v wslpath >/dev/null 2>&1 && ! ls -d client/node_modules/@rollup/rollup-linux-* >/dev/null 2>&1; then
+  client_win=$(wslpath -w "$PWD/client")
+  (cmd.exe /C "cd /d $client_win && npx ng serve --port $FRONTEND_PORT") &
+else
+  (cd client && npx ng serve --port "$FRONTEND_PORT") &
+fi
 frontend=$!
 
 # Ctrl-C here should take both with it, not leave one holding a port. Killing
