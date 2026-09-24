@@ -258,23 +258,8 @@
       display: flex;
     }
 
-    // Everything else in here floats over the board rather than taking a
-    // slice of its height - the panels are clipped against the full box.
-    .waiting-placeholder {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #999;
-      font-size: 1.1rem;
-      p { margin: 0; }
     }
 
-    }
-
-  // Game Mode, centred on the empty board before play starts. Light-on-dark,
-  // since it sits on the board panel rather than in a white rail card.
   .points { font-variant-numeric: tabular-nums; }
 
   /* The pool is picked in pairs, and a row of the two-column grid is a pair.
@@ -932,19 +917,6 @@
   // sized by the space available, never by what happens to be in it.
   .stats-panel { flex: 1 1 0; min-height: 0; }
 
-  // Solo room: side picker standing in for the Ready button.
-  .color-toggle-btn {
-    background-color: #fff;
-    color: #2c3e50;
-    box-shadow: inset 0 0 0 2px #2c3e50;
-
-    &.as-black {
-      background-color: #1c1c1c;
-      color: #fff;
-      box-shadow: none;
-    }
-  }
-
   .gear-button {
     font-size: 15px;
   }
@@ -1578,7 +1550,6 @@
     cursor: not-allowed;
   }
 
-  .game-settings-panel,
   .players-section {
     width: 100%;
     min-width: 0;
@@ -1833,12 +1804,6 @@
       color: #fff;
       &:hover { background-color: #2980b9; }
     }
-
-    .stay-btn {
-      background-color: #e6e9ec;
-      color: #2c3e50;
-      &:hover { background-color: #d6dade; }
-    }
   }
 
   // ==================== REVEAL MODE REQUEST MODALS ====================
@@ -2039,7 +2004,6 @@
       min-height: 460px;
     }
     .match-panel,
-    .game-settings-panel,
     .players-section,
     .lobby-chat,
     .users-panel,
