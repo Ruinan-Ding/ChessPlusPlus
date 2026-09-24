@@ -88,8 +88,10 @@ Both at once, restarting whichever is already running:
 ./start.sh -k       # just stop them
 ```
 
-Both stream into the one terminal. The rest of this
-section is what that script does, if you would rather run them by hand.
+Both stream into the one terminal. It brings the database up to date first
+(`manage.py migrate`, which does nothing when there is nothing to apply), and
+starts nothing if that fails. The rest of this section is what that script
+does, if you would rather run them by hand.
 
 ### First-time setup
 ```bash

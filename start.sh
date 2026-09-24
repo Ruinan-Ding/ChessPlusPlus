@@ -56,16 +56,33 @@ kill_port "$BACKEND_PORT"
 # it goes through cmd.exe and sets the variables on the Windows side.
 # `wslpath` only exists inside WSL, which is how the two are told apart.
 if [ -x server/venv/bin/daphne ]; then
-  (cd server && DJANGO_DEBUG=true ./venv/bin/daphne -p "$BACKEND_PORT" core.asgi:application) &
+  venv=linux
 elif [ -f server/venv/Scripts/daphne.exe ] && command -v wslpath >/dev/null 2>&1; then
+  venv=wsl
   server_win=$(wslpath -w "$PWD/server")
-  (cmd.exe /C "cd /d $server_win && set DJANGO_DEBUG=true&& set DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0&& venv\\Scripts\\daphne.exe -p $BACKEND_PORT core.asgi:application") &
 elif [ -f server/venv/Scripts/daphne.exe ]; then
-  (cd server && DJANGO_DEBUG=true ./venv/Scripts/daphne.exe -p "$BACKEND_PORT" core.asgi:application) &
+  venv=windows
 else
   echo "No venv at server/venv - run the first-time setup in README.md" >&2
   exit 1
 fi
+
+# Bring the database up to the models before anything reads it. A model that
+# gains a field comes with a migration, and a server started on the old schema
+# runs happily until the first game it reads or saves - then "no such column".
+# With nothing to apply, migrate does nothing. If it fails, the server would
+# only fail later and less clearly, so nothing starts.
+case $venv in
+  linux) (cd server && DJANGO_DEBUG=true ./venv/bin/python manage.py migrate --noinput) ;;
+  wsl) cmd.exe /C "cd /d $server_win && set DJANGO_DEBUG=true&& venv\\Scripts\\python.exe manage.py migrate --noinput" ;;
+  windows) (cd server && DJANGO_DEBUG=true ./venv/Scripts/python.exe manage.py migrate --noinput) ;;
+esac || { echo "Database migration failed - see above. Nothing started." >&2; exit 1; }
+
+case $venv in
+  linux) (cd server && DJANGO_DEBUG=true ./venv/bin/daphne -p "$BACKEND_PORT" core.asgi:application) & ;;
+  wsl) (cmd.exe /C "cd /d $server_win && set DJANGO_DEBUG=true&& set DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0&& venv\\Scripts\\daphne.exe -p $BACKEND_PORT core.asgi:application") & ;;
+  windows) (cd server && DJANGO_DEBUG=true ./venv/Scripts/daphne.exe -p "$BACKEND_PORT" core.asgi:application) & ;;
+esac
 backend=$!
 
 echo "Frontend :$FRONTEND_PORT"
