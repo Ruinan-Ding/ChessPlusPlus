@@ -367,10 +367,10 @@ describe("overtime's three stretches", () => {
   });
 
   it('keeps taking the heaviest toll past the last turn', () => {
-    // The verdict past turn 50 is black's, but it is read and not enforced -
-    // so a game played on has to keep paying rather than quietly stop. `null`
-    // there would have been a king who bleeds for fourteen turns and then
-    // becomes immortal.
+    // Both engines end the match as turn 50 is played out, so no game gets
+    // here by playing - but a position built past it has to keep paying
+    // rather than quietly stop. `null` there would have been a king who
+    // bleeds for fourteen turns and then becomes immortal.
     expect(isOvertime(ply(500))).toBeTrue();
     expect(overtimeTollAt(ply(51))).toBe(3);
     expect(overtimeTollAt(ply(500))).toBe(3);

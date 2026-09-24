@@ -163,10 +163,11 @@ def overtime_stage_at(ply: int) -> Optional[Dict]:
     Which stretch of overtime a hand-over falls in, or ``None`` before
     overtime begins.
 
-    Past the last turn it is the last stretch rather than ``None``: the match
-    is black's by then, but that verdict is read and not enforced, so a game
-    played on past turn 50 keeps paying the heaviest toll instead of quietly
-    ceasing to pay one at all.
+    Past the last turn it is the last stretch rather than ``None``. Both
+    engines end the match as turn 50 is played out
+    (:func:`scoring.schedule_ending`), so no game reaches it by playing; a
+    position built past it still pays the heaviest toll rather than quietly
+    none at all.
     """
     if not is_overtime(ply):
         return None
@@ -212,8 +213,8 @@ def turn_points_by(color: str, ply: int) -> int:
     ``hand_overs_by`` at the stretch's ends.
 
     Past the last stretch it keeps paying at the last rate, for the reason the
-    toll keeps taking at it: the verdict there is read and not enforced, and a
-    game played on must not quietly stop settling up.
+    toll keeps taking at it: the match ends as turn 50 is played out, but a
+    position built past it must not quietly stop settling up.
     """
     played = max(0, int(ply))
     start = OVERTIME_FIRST_PLY - 1
@@ -264,11 +265,11 @@ def is_postmatch(ply: int) -> bool:
 
     It belongs to the phase it closes, not the one after: the phase's index
     still answers for it, so turn 14 is Phase 1's, and the CP a phase hands out
-    is not handed out again on it. What it does not do is *score*. The client
-    banks a phase the moment its postmatch begins, because the postmatch
-    rearranges units - crossings, walks home - and those must not count
-    towards the phase it closes. (The server banks nothing, so nothing here
-    has to know that.)
+    is not handed out again on it. What it does not do is *score*. Both
+    engines bank a phase on the hand-over into its postmatch
+    (:func:`scoring.bank_ended_phases`), because the postmatch rearranges
+    units - crossings, walks home - and those must not count towards the
+    phase it closes.
     """
     index = phase_index_at(ply)
     phase = PHASES[index]

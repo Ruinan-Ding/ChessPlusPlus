@@ -144,10 +144,14 @@ class GameState(models.Model):
     """
     END_REASON_CHOICES = [
         ('', 'In progress'),
+        ('regicide', 'Commander killed'),
         ('elimination', 'All enemy units eliminated'),
+        ('points', 'Won on points after Phase 3'),
+        ('overtime', 'Overtime ran out; black wins'),
         ('resign', 'Resignation'),
         ('timeout', 'Timeout'),
         ('draw_agreed', 'Draw by agreement'),
+        ('draw_mutual', 'Both commanders fell together'),
         ('draw_max_turns', 'Draw by max turns'),
         ('disconnect', 'Disconnect forfeit'),
     ]
@@ -168,6 +172,11 @@ class GameState(models.Model):
     end_reason = models.CharField(max_length=20, choices=END_REASON_CHOICES, blank=True, default='')
     # Frozen copy of the GameConfig used at game start (prevents mid-game config edits from corrupting state)
     config_snapshot = models.JSONField(default=dict)
+    # What each scoring phase finished on, {"1": {"white": n, "black": n}, ...},
+    # banked as the phase's postmatch begins (engine/scoring.py). Kept rather
+    # than derived: a phase's score reads the board as its play ended, and no
+    # board but the current one is stored.
+    phase_bank = models.JSONField(default=dict, blank=True)
     # Draw offer tracking
     draw_offered_by = models.CharField(max_length=24, blank=True, default='')
     # When the current turn started - persisted so reconnect resyncs report the

@@ -1669,10 +1669,10 @@ class PhaseScheduleTestCase(TestCase):
         ``ply < OVERTIME_FIRST_PLY`` of its own beside this, so there is one
         question with one answer rather than two that can disagree.
 
-        Past the last turn it is still the heaviest toll. The match is black's
-        by then, but that verdict is read and not enforced, so a game played on
-        has to keep paying - ``None`` there would be a king who bleeds for
-        fourteen turns and then becomes immortal.
+        Past the last turn it is still the heaviest toll. Both engines end the
+        match as turn 50 is played out, so no game gets there by playing; a
+        position built past it still has to keep paying - ``None`` there would
+        be a king who bleeds for fourteen turns and then becomes immortal.
         """
         self.assertEqual([phases.overtime_toll_at(p) for p in (1, 7, 71, 72)],
                          [0, 0, 0, 0])
@@ -2153,3 +2153,115 @@ class PointsTestCase(TestCase):
         # And none of it is black's business.
         self.assertEqual(economy.points_of('black', 21, [wrap, home], config),
                          economy.points_of('black', 21, [], config))
+
+
+class ScoringTestCase(TestCase):
+    """
+    The phase bank and the schedule's two endings (engine/scoring.py). The
+    client's match-score.spec.ts pins the same numbers on the same positions,
+    so the two mirrors have one set of answers to agree on.
+    """
+
+    PAWN = {'units': {'pawn': {'value': 5}}, 'board': {'radius': 11}}
+
+    def test_the_five_zones_are_nineteen_hexes_each_on_the_shipped_board(self):
+        from game.engine import scoring
+        zone = scoring.capture_zone_hexes(11)
+        self.assertEqual(len(zone), 95)
+        for centre in ('0,0', '7,0', '-7,0', '3,-6', '-3,6'):
+            self.assertIn(centre, zone)
+
+    def test_a_unit_claims_its_hex_and_the_zone_hexes_beside_it(self):
+        from game.engine import scoring
+        # In the middle of a zone: its own hex and all six around it.
+        alone = {'0,0': {'unit_id': 'pawn', 'color': 'white'}}
+        self.assertEqual(scoring.cap_of(alone, 11, 'white'), 7)
+        # On a zone's rim: only the zone hexes beside it count.
+        rim = {'-5,0': {'unit_id': 'pawn', 'color': 'white'}}
+        self.assertEqual(scoring.cap_of(rim, 11, 'white'), 4)
+        # Two sides touching cancel the hexes both reach: the two they stand
+        # on and the two beside both, which leaves three apiece.
+        touching = {**alone, '1,0': {'unit_id': 'pawn', 'color': 'black'}}
+        self.assertEqual(scoring.cap_of(touching, 11, 'white'), 3)
+        self.assertEqual(scoring.cap_of(touching, 11, 'black'), 3)
+
+    def test_a_loss_is_charged_to_the_phase_it_happened_in(self):
+        from game.engine import scoring
+        history = [
+            # Ply 8, Phase 1: black killed a white pawn.
+            {'color': 'black', 'unit_id': 'pawn', 'captured': 'pawn',
+             'defender_eliminated': True, 'turn': 8},
+            # Ply 31, Phase 2: white's attacker died to the counter.
+            {'color': 'white', 'unit_id': 'pawn', 'attacker_eliminated': True, 'turn': 31},
+        ]
+        self.assertEqual(scoring.deaths_of(self.PAWN, history, 'white', 1), 5)
+        self.assertEqual(scoring.deaths_of(self.PAWN, history, 'white', 2), 5)
+        self.assertEqual(scoring.deaths_of(self.PAWN, history, 'white'), 10)
+        self.assertEqual(scoring.deaths_of(self.PAWN, history, 'black'), 0)
+
+    def test_a_phase_banks_as_its_postmatch_begins_and_once(self):
+        from game.engine import scoring
+        board = {'0,0': {'unit_id': 'pawn', 'color': 'white'}}
+        history = [{'color': 'black', 'unit_id': 'pawn', 'captured': 'pawn',
+                    'defender_eliminated': True, 'turn': 8}]
+        # Handed to ply 26 or before, Phase 1 is still being played.
+        self.assertEqual(scoring.bank_ended_phases({}, self.PAWN, board, history, 26), {})
+        # Handed to ply 27 - its postmatch - it is over: 7 held, 5 lost.
+        bank = scoring.bank_ended_phases({}, self.PAWN, board, history, 27)
+        self.assertEqual(bank, {'1': {'white': 2, 'black': 0}})
+        # The postmatch reshuffles the board; the bank is the play's and stays.
+        later = scoring.bank_ended_phases(bank, self.PAWN, {}, history, 29)
+        self.assertEqual(later, {'1': {'white': 2, 'black': 0}})
+        # Phase 2 waits for its own postmatch.
+        self.assertNotIn('2', scoring.bank_ended_phases(bank, self.PAWN, board, history, 48))
+        self.assertIn('2', scoring.bank_ended_phases(bank, self.PAWN, board, history, 49))
+
+    def test_the_margins_decide_on_points_or_send_it_to_overtime(self):
+        from game.engine import scoring
+
+        def settle(white, black):
+            return scoring.decided_on_points({
+                '1': {'white': white, 'black': black},
+                '2': {'white': 0, 'black': 0}, '3': {'white': 0, 'black': 0}})
+
+        # White has to be more than 5 clear; black only more than 3.
+        self.assertEqual(settle(6, 0), 'white')
+        self.assertIsNone(settle(5, 0))
+        self.assertEqual(settle(0, 4), 'black')
+        self.assertIsNone(settle(0, 3))
+        # Nothing is decided on two phases of three.
+        self.assertIsNone(scoring.decided_on_points({'1': {'white': 99, 'black': 0}}))
+
+    def test_points_end_it_as_phase_three_banks_and_turn_fifty_ends_it_for_black(self):
+        from game.engine import scoring
+        clear = {'1': {'white': 9, 'black': 0}, '2': {'white': 0, 'black': 0},
+                 '3': {'white': 0, 'black': 0}}
+        level = {**clear, '1': {'white': 0, 'black': 0}}
+        # All three in and white past the margin: the hand-over into Phase 3's
+        # postmatch, ply 71, is the first that can say so, and ends it.
+        self.assertEqual(scoring.schedule_ending(clear, 71), ('white', 'points'))
+        self.assertIsNone(scoring.schedule_ending(level, 71))
+        # Turn 50 is played out first: its hand-overs are 99 and 100, and a
+        # level match ends on the hand-over into turn 51, black's.
+        self.assertIsNone(scoring.schedule_ending(level, 100))
+        self.assertEqual(scoring.schedule_ending(level, 101), ('black', 'overtime'))
+
+    def test_a_phase_banked_after_its_moment_is_late_and_decides_nothing(self):
+        from game.engine import scoring
+        board = {'0,0': {'unit_id': 'pawn', 'color': 'white'}}
+        # Banked on the hand-over into its postmatch: on time.
+        self.assertNotIn('late', scoring.bank_ended_phases({}, self.PAWN, board, [], 27)['1'])
+        # Banked a hand-over later - a room that was mid-game when the bank
+        # moved to the engines - it is marked, and so is every phase banked
+        # with it.
+        late = scoring.bank_ended_phases({}, self.PAWN, board, [], 72)
+        self.assertEqual({k: v.get('late') for k, v in late.items()},
+                         {'1': True, '2': True, '3': True})
+        # A bank with a late phase in it decides nothing on points, however
+        # clear it reads - and a late Phase 1 spoils an on-time Phase 3.
+        clear_but_late = {'1': {'white': 9, 'black': 0, 'late': True},
+                          '2': {'white': 0, 'black': 0}, '3': {'white': 0, 'black': 0}}
+        self.assertIsNone(scoring.decided_on_points(clear_but_late))
+        self.assertIsNone(scoring.schedule_ending(clear_but_late, 71))
+        # Turn 50 still ends it: that rule needs no score.
+        self.assertEqual(scoring.schedule_ending(clear_but_late, 101), ('black', 'overtime'))

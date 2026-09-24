@@ -725,6 +725,120 @@ describe('LocalGameService', () => {
     });
   });
 
+  /**
+   * The schedule's two endings, which this engine enforces the way the server
+   * does (match-score.ts): a side past the other's margin as Phase 3 banks
+   * wins on points, and a match still standing once turn 50 is played out is
+   * black's. Both kings stand on the rim of a side zone each - the same four
+   * hexes apiece - so whatever the board banks, it banks level.
+   */
+  describe('the schedule\'s endings', () => {
+    const at = (ply: number, phaseBank: any = {}, blackHp = 45) => {
+      const config = JSON.parse(JSON.stringify((service as any).game.config));
+      localStorage.setItem('cpp.localGame.v1', JSON.stringify({
+        username: 'Solo', hostColor: 'white', started: true, config,
+        boardState: {
+          '-5,0': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'wk' },
+          '5,0': { unit_id: 'king', color: 'black', hp: blackHp, max_hp: 45, uid: 'bk' },
+        },
+        currentTurn: ply % 2 ? 'Solo' : LOCAL_OPPONENT,
+        turnNumber: ply, moveHistory: [], winner: '', endReason: '',
+        turnStartedAt: new Date().toISOString(), mode: 'default', options: {}, phaseBank,
+      }));
+      const engine = new LocalGameService((service as any).configService);
+      const seen: any[] = [];
+      engine.messages$.subscribe(m => seen.push(m));
+      return { engine, seen, find: (t: string) => seen.find(m => m.type === t) };
+    };
+
+    it('banks a phase on the hand-over into its postmatch, and hands the bank out', async () => {
+      const g = at(26);   // black's half of turn 13, the last of Phase 1's play
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('turn_passed').phaseBank).toEqual({ 1: { white: 4, black: 4 } });
+      // And it is the game's: a reload brings it back.
+      g.engine.send({ type: 'request_game_state' });
+      await flush();
+      expect(g.find('game_state_update').phaseBank).toEqual({ 1: { white: 4, black: 4 } });
+    });
+
+    it('ends the match at the end of turn 50, with both kings standing - black\'s', async () => {
+      const g = at(99);
+      // White's half of turn 50 is played, and the match goes on.
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('game_over')).toBeUndefined();
+      expect(g.find('turn_passed').currentTurn).toBe(LOCAL_OPPONENT);
+      // Black's half ends it.
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('game_over')).toEqual(jasmine.objectContaining({
+        winner: LOCAL_OPPONENT, endReason: 'overtime',
+      }));
+      expect(g.seen.filter(m => m.type === 'turn_passed')[1].currentTurn).toBe('');
+    });
+
+    it('ends it the same on a move that plays turn 50 out', async () => {
+      // A move hands over through its own path, not the pass's: both ask.
+      const g = at(100);
+      g.engine.send({ type: 'make_move', from: '5,0', to: '6,0' });
+      await flush();
+      expect(g.find('move_made').currentTurn).toBe('');
+      expect(g.find('game_over')).toEqual(jasmine.objectContaining({
+        winner: LOCAL_OPPONENT, endReason: 'overtime',
+      }));
+    });
+
+    it('but a king the last toll kills still loses by regicide', async () => {
+      // The board decides before the schedule does.
+      const g = at(100, {}, 3);
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('game_over')).toEqual(jasmine.objectContaining({
+        winner: 'Solo', endReason: 'regicide',
+      }));
+    });
+
+    it('ends the match on points as Phase 3 banks', async () => {
+      const g = at(70, { 1: { white: 9, black: 0 }, 2: { white: 0, black: 0 } });
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('turn_passed').phaseBank[3]).toEqual({ white: 4, black: 4 });
+      expect(g.find('game_over')).toEqual(jasmine.objectContaining({
+        winner: 'Solo', endReason: 'points',
+      }));
+    });
+
+    it('plays a close match on into overtime', async () => {
+      // Five clear is not more than five.
+      const g = at(70, { 1: { white: 5, black: 0 }, 2: { white: 0, black: 0 } });
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('game_over')).toBeUndefined();
+      expect(g.find('turn_passed').currentTurn).toBe('Solo');
+    });
+
+    it('decides nothing on points while a phase was banked late', async () => {
+      // Phase 1 banked after its moment, off the wrong board: Phase 3 banks on
+      // time, white reads nine clear, and the match still goes on.
+      const g = at(70, { 1: { white: 9, black: 0, late: true }, 2: { white: 0, black: 0 } });
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('turn_passed').phaseBank[3].late).toBeUndefined();
+      expect(g.find('game_over')).toBeUndefined();
+    });
+
+    it('does not end a match on a Phase 3 bank taken late', async () => {
+      // A game saved past the moment banks Phase 3 at its next hand-over, off
+      // a board that no longer shows how Phase 3 finished - and plays on.
+      const g = at(80, { 1: { white: 9, black: 0 }, 2: { white: 0, black: 0 } });
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('turn_passed').phaseBank[3]).toBeDefined();
+      expect(g.find('game_over')).toBeUndefined();
+    });
+  });
+
   it('ends on resign, with the other seat winning', async () => {
     service.send({ type: 'resign' });
     await flush();
@@ -744,6 +858,33 @@ describe('LocalGameService', () => {
    * something this engine has not got, and the purse also holds what
    * abilities have paid in and out - see 6.15 and 6.17.
    */
+  it('calls a blow into a panel that leaves no commander standing a draw', async () => {
+    // Every hand-over settles the match in one place now. The panel blow's
+    // copy of the order had no mutual draw in it, so a blow that left both
+    // sides without a commander went to black by regicide, off nothing more
+    // than list order. No commander on either side is the plainest way there.
+    const config = (service as any).game.config;
+    localStorage.setItem('cpp.localGame.v1', JSON.stringify({
+      username: 'Solo', hostColor: 'white', started: true, config,
+      boardState: { '-5,9': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'wp' } },
+      currentTurn: 'Solo', turnNumber: 9, moveHistory: [], winner: '', endReason: '',
+      turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
+    }));
+    const engine = new LocalGameService((service as any).configService);
+    const seen: any[] = [];
+    engine.messages$.subscribe(m => seen.push(m));
+    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+    engine.send({
+      type: 'panel_attack', intoPanel: true, panel: 'tr',
+      from: '-5,9', attack: '-5,8', unit: home,
+    });
+    await flush();
+    expect(seen.find(m => m.type === 'move_made')).toBeDefined();
+    expect(seen.find(m => m.type === 'game_over')).toEqual(jasmine.objectContaining({
+      winner: '', endReason: 'draw_mutual',
+    }));
+  });
+
   describe('the rules it keeps without a panel', () => {
     /** A reserve unit of white's, as a panel message carries one. */
     const reserve = (uid: string, over: any = {}) => ({

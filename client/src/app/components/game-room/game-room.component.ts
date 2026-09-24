@@ -13,13 +13,16 @@ import { GameStateService } from '../../services/game-state.service';
 import { AuthService } from '../../services/auth.service';
 import { AnimStep, FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap } from '../game-board/game-board.component';
 import {
-  captureClaims, captureScore, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
+  hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
 } from '../../services/hex-rules';
+import {
+  PhaseBank, capOf, deathsOf, matchVerdict,
+} from '../../services/match-score';
 import { buildPlayback } from '../../services/playback';
 import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
 import { homecomingsAt, openingMovedHexes } from '../../services/history-rules';
 import {
-  OVERTIME_LAST_TURN, SCORING_PHASES, boardMovesPerTurn, handOversBy,
+  SCORING_PHASES, boardMovesPerTurn, handOversBy,
   isInitialization, isOvertime, isPostmatch, isSetupTurn, phaseIndexAt,
   pointsPerTurnAt, stageAt, turnHeading, turnOf, turnPointsBy,
 } from '../../services/phases';
@@ -105,7 +108,6 @@ interface LocalUiState {
   abilityUsed: Record<string, boolean>;
   soloColor: 'white' | 'black';
   seatChoice: 'random' | 'white' | 'black';
-  phaseBank: Record<number, { white: number; black: number }>;
   stagedActions: StagedAction[];
   swapDebt: { mine: number; opponent: number };
   gameRoomMessages: ChatMessage[];
@@ -189,13 +191,6 @@ interface Standing {
   /** Whether this side is ahead on `match`. */
   leading: boolean;
 }
-
-/**
- * How far behind a side may finish the third phase and still force overtime.
- * Black is allowed the wider gap because white moves first: white has to be
- * more than 5 clear to take it outright, black only more than 3.
- */
-const OVERTIME_MARGIN = { white: 3, black: 5 };
 
 /**
  * Why nothing in the ability panels can be picked, unlocked or cast in a
@@ -651,7 +646,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       abilityUsed: this.abilityUsed,
       soloColor: this.soloColor,
       seatChoice: this.seatChoice,
-      phaseBank: this.phaseBank,
       stagedActions: this.stagedActions,
       swapDebt: this.swapDebt,
       gameRoomMessages: this.gameRoomMessages,
@@ -706,7 +700,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           || state.seatChoice === 'black') {
         this.seatChoice = state.seatChoice;
       }
-      if (state.phaseBank) this.phaseBank = state.phaseBank;
       if (Array.isArray(state.stagedActions)) this.stagedActions = state.stagedActions;
       if (Array.isArray(state.gameRoomMessages)) {
         this.gameRoomMessages = state.gameRoomMessages.filter(
@@ -759,7 +752,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.opponentPoints = 0;
         this.myCpSpent = 0;
         this.opponentCpSpent = 0;
-        this.phaseBank = {};
         this.standingsCache = null;
         this.unitCooldowns = this.abilityEffects.map(() => 0);
         this.opponentCooldowns = this.abilityEffects.map(() => 0);
@@ -3332,25 +3324,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       .length;
   }
 
-  private deathsOf(color: 'white' | 'black', phase?: number): number {
-    const snapshot = this.gameState.snapshot;
-    const units = snapshot.config?.units ?? {};
-    const value = (unitId: string | null | undefined) =>
-      (unitId ? units[unitId]?.value : 0) ?? 0;
-    let total = 0;
-    for (const move of snapshot.moveHistory ?? []) {
-      // Each phase is scored on its own, so a loss counts against the phase
-      // it happened in and no other - otherwise summing the three would
-      // charge the early deaths again every time.
-      if (phase !== undefined && phaseIndexAt(move.turn) !== phase) continue;
-      // The defender belongs to whoever was not moving; a counter-attack
-      // kills the mover's own unit.
-      if (move.defender_eliminated && move.color !== color) total += value(move.captured);
-      if (move.attacker_eliminated && move.color === color) total += value(move.unit_id);
-    }
-    return total;
-  }
-
   /**
    * Both halves of the score cost a pass over data the template asks for on
    * every change-detection run - including one per mouse move across the
@@ -3363,103 +3336,33 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   } | null = null;
 
   /**
-   * What each phase finished on, once it has. Kept rather than derived: a
-   * phase's cap is the board as it stood when its play ended - the start of
-   * its postmatch - and that board is gone by the time anything asks.
-   * Persisted with the rest of the local UI state in a solo game, so a reload
-   * there does not forget the match so far; a networked room keeps no copy.
-   * ponytail ceiling: a client that misses that moment - a networked reload,
-   * or one that joins late - banks the phase at the next hand-over it sees,
-   * off whatever board is showing by then, postmatch reshuffling and all.
-   * Deriving it needs a board snapshot per phase, which is the server's to
-   * keep.
-   */
-  phaseBank: Record<number, { white: number; black: number }> = {};
-
-  /** What a side is holding right now, however far through the phase it is. */
-  private capOf(color: 'white' | 'black'): number {
-    const snapshot = this.gameState.snapshot;
-    // The staged board, the same one being drawn: a unit walked out of a zone
-    // has left it as far as the eye is concerned, so the score says so before
-    // the turn is committed rather than after.
-    const board = this.stagedBoard ?? snapshot.boardState ?? {};
-    return captureScore(
-      captureClaims(board, snapshot.config?.board?.radius ?? 11), color);
-  }
-
-  /**
-   * Bank the score of every scoring phase that has ended without one.
+   * What each phase finished on, as the engine banked it: the server's in a
+   * networked room, the browser engine's in a solo game. Every hand-over
+   * carries it (`GameSnapshot.phaseBank`).
    *
-   * **A phase is over once its postmatch begins**, not once the next phase
-   * does. Read on the postmatch's first hand-over, which is the one moment the
-   * board still shows the position the phase's play finished on: a turn's
-   * move is applied before its number is handed on, and nothing of the
-   * postmatch has been played yet. Any later and the postmatch has had its
-   * say - reserve entries and walks home rearrange the board there, and the
-   * phase they close must not be scored on them.
-   *
-   * It used to wait for the next phase's first turn, which was its
-   * initialization while the extra turn opened a phase - the same moment, by
-   * a different road. With the extra turn moved to the end of the phase it
-   * closes, that would bank a board the postmatch had already reshuffled.
-   * `phaseIndexAt` still counts the postmatch as its own phase's, which is
-   * why "is this phase over" asks about the postmatch as well as the index.
-   * A phase with no postmatch still banks on the next phase's first turn.
+   * It used to be banked here, by whichever client happened to be watching
+   * when a phase ended - so a reload or a late join banked late, off a board
+   * the postmatch had already reshuffled, and nothing could end a match on a
+   * score only the browser knew. The engines bank it now, as each phase's
+   * postmatch begins, and end the match on it (match-score.ts).
    */
-  private bankEndedPhases(): void {
-    const ply = this.gameState.snapshot.turnNumber;
-    const now = phaseIndexAt(ply);
-    const closing = isPostmatch(ply);
-    let banked = false;
-    for (const phase of SCORING_PHASES) {
-      const over = phase < now || (phase === now && closing);
-      if (!over || this.phaseBank[phase]) continue;
-      this.phaseBank[phase] = {
-        white: this.capOf('white') - this.deathsOf('white', phase),
-        black: this.capOf('black') - this.deathsOf('black', phase),
-      };
-      banked = true;
-    }
-    if (banked) {
-      this.standingsCache = null;
-      this.persistLocalUiState();
-    }
+  get phaseBank(): PhaseBank {
+    return this.gameState.snapshot.phaseBank ?? {};
   }
 
   /**
    * What the match comes to once the third phase is in: white's score against
-   * black's, and what that settles.
+   * black's, and what that settles - `null` while any phase is unbanked, the
+   * side that took it on points, else overtime, and black's once turn 50 has
+   * been played out (match-score.ts).
    *
-   * `null` while any scoring phase is still to be banked - nothing is decided
-   * until all three are. Otherwise a side takes it outright by finishing more
-   * than the other's margin clear; anything closer goes to overtime, and an
-   * overtime that reaches its last turn goes to black.
-   *
-   * ponytail: the verdict is read, not enforced. The engine ends a game on
-   * elimination, resignation or the clock and knows nothing of capture zones,
-   * so this says who is winning rather than stopping the match.
+   * **Enforced now, not just read.** Both engines end the match on the same
+   * rules as the hand-over lands (`points`, `overtime`), so this names the
+   * result the match is about to end on rather than one it would play past.
+   * Readable from turn 36: Phase 3 banks as its postmatch begins.
    */
   get matchVerdict(): 'white' | 'black' | 'overtime' | null {
-    if (SCORING_PHASES.some(phase => !this.phaseBank[phase])) return null;
-    const standing = this.standings();
-    const mineColor = this.gameState.myColor(this.username) || 'white';
-    const white = mineColor === 'black' ? standing.opponent : standing.mine;
-    const black = mineColor === 'black' ? standing.mine : standing.opponent;
-    const lead = white.match - black.match;
-    if (lead > OVERTIME_MARGIN.black) return 'white';
-    if (-lead > OVERTIME_MARGIN.white) return 'black';
-    // At the *end* of overtime's last turn, so that turn itself is still
-    // played out. `OVERTIME_LAST_TURN` used to be the literal 50 declared in
-    // this file; it is now read off the schedule with the rest of overtime,
-    // because the literal did not move when the extra turn each numbered phase
-    // gained (an initialization at its start then, a postmatch at its end now)
-    // pushed overtime from turn 34 to turn 37, and it silently cost overtime
-    // three of its turns.
-    //
-    // Phase 3 banks as its postmatch begins, so a verdict is readable from
-    // turn 36 - one turn before overtime rather than on its first.
-    return turnOf(this.gameState.snapshot.turnNumber) > OVERTIME_LAST_TURN
-      ? 'black' : 'overtime';
+    return matchVerdict(this.phaseBank, this.gameState.snapshot.turnNumber);
   }
 
   /** The verdict in the header's own terms, or '' while nothing is settled. */
@@ -3498,6 +3401,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   private standings(): { mine: Standing; opponent: Standing } {
     const snapshot = this.gameState.snapshot;
+    // The staged board, the same one being drawn: a unit walked out of a zone
+    // has left it as far as the eye is concerned, so the score says so before
+    // the turn is committed rather than after.
     const board = this.stagedBoard ?? snapshot.boardState ?? {};
     const history = snapshot.moveHistory;
     const turn = snapshot.turnNumber;
@@ -3514,15 +3420,19 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // towards a phase that banks nothing.
     //
     // Nor in a postmatch, for a sharper reason. `phaseIndexAt` still calls it
-    // the closing phase's, and that phase has already been banked as the
-    // postmatch began (`bankEndedPhases`) - so its cap and its deaths read
-    // live here as well would count the phase twice, once in the bank and
-    // once as the running total. And what the board holds by then is the
+    // the closing phase's, and the engine banked that phase as the postmatch
+    // began (`bankEndedPhases` in match-score.ts) - so its cap and its deaths
+    // read live here as well would count the phase twice, once in the bank
+    // and once as the running total. And what the board holds by then is the
     // postmatch's reshuffling, which scores for nobody.
+    //
+    // The live figures are the engines' own derivations (match-score.ts), so
+    // the running score and the one a phase banks are the same sum.
     const idle = isInitialization(turn) || isPostmatch(turn);
+    const radius: number = snapshot.config?.board?.radius ?? 11;
     const build = (color: 'white' | 'black'): Standing => {
-      const cap = idle ? 0 : this.capOf(color);
-      const death = idle ? 0 : this.deathsOf(color, phase);
+      const cap = idle ? 0 : capOf(board, radius, color);
+      const death = idle ? 0 : deathsOf(snapshot.config, history, color, phase);
       const total = cap - death;
       const banked = SCORING_PHASES
         .filter(index => this.phaseBank[index])
@@ -3636,9 +3546,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   private beginTurnFor(color: string): void {
     if (!color) return;
-    // The turn just handed over is the last of its phase's play often enough
-    // that this is where a phase ends - and the board has not moved on yet.
-    this.bankEndedPhases();
     // A boost lasts one turn: it runs out when its caster comes round again.
     const kept = Object.fromEntries(
       Object.entries(this.buffs).filter(([, b]) => b.caster !== color),
@@ -4121,6 +4028,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       case 'timeout':    return 'A player ran out of time.';
       case 'elimination': return 'All units on one side were eliminated.';
       case 'regicide': return 'A commander was killed.';
+      case 'points': return 'Phase 3 ended with one side past the margin.';
+      case 'overtime': return 'Overtime ran out with both kings standing: black wins.';
       case 'draw_mutual': return 'Both sides fell in the same exchange.';
       case 'draw_agreed': return 'Both players agreed to a draw.';
       case 'draw_max_turns': return 'The turn limit was reached.';

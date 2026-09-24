@@ -32,7 +32,7 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # 114 tests, engine + consumers + models
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (255 tests, 24 Sep 2026)
 
 # Live network checks - real sockets against the server above, in a second shell
 python scripts/e2e/match.py    # one full match: lobby, invite, room, moves, rejoin, resign
@@ -821,7 +821,10 @@ Decided so far:
   exactly like an empty one, to the score and on the board. Geometry and claims are
   `captureZoneHexes()` / `captureClaims()` in `hex-rules.ts`, read by the board (which colours
   them, white's amber and black's violet) and by the room (which scores them), so the two can
-  never disagree. Client-side only - the server does not know a zone from any other hex.
+  never disagree. **The server has them too** (`capture_zone_hexes()` / `capture_claims()` in
+  `engine/scoring.py`, ported onto `board.py`'s own geometry), because it banks each phase's score and ends the
+  match on it - see the scoring below. Its `_js_round` is `Math.round`, not Python's `round`,
+  which rounds a half to even.
 - **Each side's home rows are tinted.** The three rows nearest a side's edge - its setup area, up
   to and including the pawn wall, so `r = 9, 10, 11` for white and the mirror for black - carry a
   pale wash: green for the seat's own, red for the opponent's. `homeOf()` in
@@ -1039,23 +1042,32 @@ Decided so far:
     Cap is whatever is held right now, and a phase's score is banked as that phase's last
     board. Cumulative deaths would be charged again in every later phase and the sum would
     mean nothing.
-  - **Banked, not derived** (`phaseBank`, `bankEndedPhases()`), and persisted with the rest of
-    the local UI state. A phase's cap is the board as it stood when its play ended, and that
-    board is gone by the time anything asks - so it is read on the **first hand-over of the
-    phase's own postmatch**, the one moment the board still shows how the play finished (a
-    turn's move lands before its number is handed on). Not a hand-over later: the postmatch
-    rearranges units - entries out of the reserve, walks home - and none of that may count
-    towards the phase it closes. So a scoring phase is over, and banks, once
-    `phase < now || (phase === now && isPostmatch(ply))`. *It used to bank once
-    `phaseIndexAt()` had moved past the phase, on the next phase's first turn - the same
-    moment while that turn was the next phase's initialization; with the extra turn at the end
-    it would have banked the postmatch's rearranging as well.* The third phase therefore banks
-    at the start of Phase 3's postmatch (turn 36), and `matchVerdict` is readable from there
-    rather than from overtime's first turn - intended. *Ceiling: a client that misses that
-    moment - a networked reload (only a solo game persists the bank) or a late join - banks
-    the phase at the next hand-over it sees, off whatever board is showing by then, postmatch
-    reshuffling and all. Deriving it instead needs a board snapshot per phase, which is the
-    server's to keep.*
+  - **Banked by the engines, not the room** (`bankEndedPhases()` in `match-score.ts`, mirrored
+    by `bank_ended_phases()` in `engine/scoring.py`). The server keeps the bank on its state
+    row (`GameState.phase_bank`, migration 0008) and the browser engine on its saved game; every
+    hand-over carries it (`phaseBank` on `move_made`, `turn_passed`, `game_state_update` and
+    `game_started`), and the room shows the snapshot's (`GameSnapshot.phaseBank`) rather than
+    keeping one. A phase's cap is the board as it stood when its play ended, and no board but
+    the current one is stored - so it is read on the **hand-over into the phase's own
+    postmatch**, the one moment the board still shows how the play finished. Not a hand-over
+    later: the postmatch rearranges units - entries out of the reserve, walks home - and none of
+    that may count towards the phase it closes. So a scoring phase is over, and banks, once
+    `phase < now || (phase === now && isPostmatch(ply))` (`phaseOver()` / `phase_over()`),
+    and a phase banked is never read again. The third phase therefore banks at the start of
+    Phase 3's postmatch (turn 36), and `matchVerdict` is readable from there.
+    - *It used to be the room's*, banked by whichever client happened to be watching as a
+      phase ended and persisted in the solo UI state only - so a networked reload or a late
+      join banked late, off a board the postmatch had already reshuffled, and nothing could end
+      a match on a score only the browser knew. Moved to the engines on 24 Sep 2026, when the
+      owner asked for the match to end on turn 50 (6.25).
+    - **A phase banked after its moment is marked `late`** (`phaseOver(phase, ply - 1)` already
+      true on the hand-over that banks it). A room already past a phase's postmatch when the
+      bank arrived - mid-game at the deploy, a solo game saved before it, or a position built by
+      hand - banks the phase at its next hand-over, off whatever board that leaves. It is shown,
+      but **a bank with a late phase in it decides nothing on points** (`decidedOnPoints()` /
+      `decided_on_points()`), so neither the engines nor the header end a match on it; it plays
+      on to the turn-50 rule. The old room's saved banks are not carried over for the same
+      reason: the late mark keeps the result honest without them.
   - `SCORING_PHASES` names the three numbered phases: **the match is summed from those three
     and no others**. The opening banks nothing, and overtime is not a phase but a decider - it
     takes points away rather than adding a score of its own, so the running `cap - death` stops
@@ -1105,12 +1117,19 @@ Decided so far:
 - **One dial sets the pace of a recap** (`PLAYBACK_SPEED` in `game-board.component.ts`). Every
   beat is written at its 1x length and divided by it, so the recap keeps its shape and only
   its speed changes. Currently **1.5** - the owner's "about 50% faster".
-- **The third phase ending settles the match, or sends it to overtime** (`matchVerdict`).
-  White must finish **more than 5** clear to take it outright; black only **more than 3**
-  (`OVERTIME_MARGIN`) - black is allowed the wider gap because white moves first. Anything
-  closer than that is overtime. "Ending" is the end of Phase 3's play: the verdict is read
-  from the first hand-over of its postmatch (turn 36, ply 71), when the third phase banks,
-  one turn before overtime begins.
+- **The third phase ending settles the match, or sends it to overtime** (`decidedOnPoints()` /
+  `decided_on_points()`, shown by `matchVerdict`). White must finish **more than 5** clear to
+  take it outright; black only **more than 3** (`OVERTIME_MARGIN`, in `match-score.ts` and
+  `scoring.py`) - black is allowed the wider gap because white moves first. Anything closer
+  than that is overtime. "Ending" is the end of Phase 3's play: the hand-over into its
+  postmatch (turn 36, ply 71), when the third phase banks, one turn before overtime begins.
+  **Both engines end the match there** (`endReason: 'points'`) - the postmatch is not played.
+  - **Never on a late phase** (see the bank above). The first version checked every hand-over
+    and the first test that wound a game straight to overtime ended it on points off the dealt
+    board; the second only asked on the hand-over into Phase 3's postmatch, which still let a
+    late Phase 1 or 2 decide it, and let the header name a winner the engine would never
+    declare. The late mark answers both, and `matchVerdict` and `scheduleEnding` now read the
+    one `decidedOnPoints`, so the header and the ending cannot disagree.
   - **Overtime runs in three stretches and the toll climbs through them** (`OVERTIME_STAGES`
     in `phases.ts`, mirrored in `phases.py`): turns **37-44 take -1**, **45-49 take -2**, and
     the **last turn, 50, takes -3**. A match with both kings still standing at the end of it
@@ -1232,10 +1251,20 @@ Decided so far:
       never walks home, so this only keeps a hand-built board honest. `doomedKing()` returns
       false on any `hex.panel`. The turn the wider warning buys is for landing a heal.
   - **The END of turn 50 gives it to black** (`OVERTIME_LAST_TURN`), however level it still
-    is - turn 50 is played out first, so the verdict flips at hand-over 101, not 99.
-  - *The verdict is read, not enforced.* The engine ends a game on elimination, resignation or
-    the clock and knows nothing of capture zones, so this says who is winning and draws it in
-    the header - it does not stop the match. Enforcing it means the score living server-side.
+    is - turn 50 is played out first, so the match ends on the hand-over into turn 51 (ply
+    101), not on 99. **Both engines end it there** (`endReason: 'overtime'`), on a move, a
+    pass, or the clock's pass alike. *The owner, 24 Sep 2026: "didnt i say the games not
+    suppose to last longer than 50 turns"* - they had; until then the header said so and the
+    match played on, the toll taking three a turn until a king died.
+  - **One settlement per engine, in one order** (`_settle_hand_over()` in `consumers.py`, run
+    by `_commit_turn` and `_settle_pass`; `settleHandOver()` in the browser engine, run by its
+    move, its panel blow and its pass). **The board decides first** - both sides beaten is a
+    mutual draw, one is the other's win by the objective - then the schedule, then `maxTurns`,
+    a custom config's turn limit, checked against the turn just played. A king killed on the
+    hand-over that would end the match is a regicide, not the schedule's ending. The order
+    used to be written out at every hand-over, five copies across two languages, and the
+    browser engine's panel blow had already lost its mutual draw: a blow that left neither side
+    a commander went to black by list order.
 - **What a phase otherwise does is not decided.** No phase change fires anything else: no
   deployment opens, nothing is locked
   Do not build phase plumbing unprompted. (This is the same "phase of the war" the reserve

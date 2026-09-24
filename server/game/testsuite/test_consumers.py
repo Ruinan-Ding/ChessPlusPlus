@@ -2419,6 +2419,198 @@ class OvertimeTollLiveIntegrationTests(TransactionTestCase):
             await opp_comm.disconnect()
 
 
+class MatchEndingLiveIntegrationTests(TransactionTestCase):
+    """
+    The schedule's two endings, enforced by the server (engine/scoring.py): a
+    side past the other's margin as Phase 3 banks wins on points, and a match
+    still standing once turn 50 is played out is black's. Both were the
+    owner's rules long before anything enforced them - the header read them,
+    and the match played on.
+
+    Each test winds the stored game to the ply it needs, with the side whose
+    ply it is to play and whatever bank the earlier phases would have left.
+    """
+
+    async def _wind(self, game, ply, bank=None, black_king_hp=None):
+        state = await GameState.objects.aget(game_id=game.game_id)
+        board = dict(state.board_state)
+        if black_king_hp is not None:
+            king_at = next(k for k, v in board.items()
+                           if v['unit_id'] == 'king' and v['color'] == 'black')
+            board[king_at] = {**board[king_at], 'hp': black_king_hp}
+        mover = state.player_white if ply % 2 else state.player_black
+        await GameState.objects.filter(game_id=game.game_id).aupdate(
+            turn_number=ply, current_turn=mover, board_state=board,
+            phase_bank=bank or {})
+        return state
+
+    async def test_turn_fifty_played_out_goes_to_black(self):
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            state = await self._wind(game, 99)
+            # White's half of turn 50 is played, and the match goes on.
+            await white.send_json_to({'type': 'pass_turn'})
+            passed = await _receive_until(black, 'turn_passed')
+            self.assertEqual(passed['currentTurn'], state.player_black)
+
+            # Black's half ends it, with both kings standing: black's.
+            await black.send_json_to({'type': 'pass_turn'})
+            over = await _receive_until(white, 'game_over')
+            self.assertEqual(over['endReason'], 'overtime')
+            self.assertEqual(over['winner'], state.player_black)
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(stored.end_reason, 'overtime')
+            self.assertEqual(stored.turn_number, 101)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_king_the_last_toll_kills_still_loses_by_regicide(self):
+        # The board decides before the schedule does: black's king on the
+        # toll's 3 dies of it at the end of turn 50, and that is white's win,
+        # not black's by default.
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            state = await self._wind(game, 100, black_king_hp=3)
+            await black.send_json_to({'type': 'pass_turn'})
+            over = await _receive_until(white, 'game_over')
+            self.assertEqual(over['endReason'], 'regicide')
+            self.assertEqual(over['winner'], state.player_white)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_side_past_the_margin_as_phase_three_banks_wins_on_points(self):
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            # Ply 70 is black's half of turn 35, the last of Phase 3's play.
+            state = await self._wind(game, 70, bank={
+                '1': {'white': 9, 'black': 0}, '2': {'white': 0, 'black': 0}})
+            await black.send_json_to({'type': 'pass_turn'})
+            over = await _receive_until(white, 'game_over')
+            self.assertEqual(over['endReason'], 'points')
+            self.assertEqual(over['winner'], state.player_white)
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            # Phase 3 banked on the way: the dealt board is the same for both
+            # sides, so it came to a draw and white's nine carried it.
+            self.assertEqual(stored.phase_bank['3']['white'], stored.phase_bank['3']['black'])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_close_match_goes_on_into_overtime(self):
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            await self._wind(game, 70, bank={
+                '1': {'white': 5, 'black': 0}, '2': {'white': 0, 'black': 0}})
+            await black.send_json_to({'type': 'pass_turn'})
+            passed = await _receive_until(white, 'turn_passed')
+            # Five clear is not more than five: nobody has it outright.
+            self.assertTrue(passed['currentTurn'])
+            self.assertIn('3', passed['phaseBank'])
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(stored.end_reason, '')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_hand_over_that_leaves_no_commander_standing_is_a_draw(self):
+        # The board decides first, and both sides beaten is nobody's win - not
+        # the first colour in the list's. A board with no commander on it at
+        # all is the plainest way there.
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            state = await GameState.objects.aget(game_id=game.game_id)
+            pawn_at, pawn = next(
+                (k, v) for k, v in state.board_state.items()
+                if v['unit_id'] == 'pawn' and v['color'] == 'white')
+            q, r = (int(n) for n in pawn_at.split(','))
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                board_state={pawn_at: pawn}, turn_number=9, current_turn=state.player_white)
+            await white.send_json_to({'type': 'make_move', 'from': pawn_at, 'to': f'{q},{r - 1}'})
+            over = await _receive_until(black, 'game_over')
+            self.assertEqual(over['endReason'], 'draw_mutual')
+            self.assertEqual(over['winner'], '')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_late_phase_decides_nothing_on_points(self):
+        # Phase 1 banked after its moment - off a board that no longer showed
+        # how it finished - is shown, but a match is not ended on it.
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            await self._wind(game, 70, bank={
+                '1': {'white': 9, 'black': 0, 'late': True}, '2': {'white': 0, 'black': 0}})
+            await black.send_json_to({'type': 'pass_turn'})
+            passed = await _receive_until(white, 'turn_passed')
+            self.assertTrue(passed['currentTurn'])
+            self.assertNotIn('late', passed['phaseBank']['3'])
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(stored.end_reason, '')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_move_that_plays_turn_fifty_out_ends_it_the_same(self):
+        # A move hands over through _commit_turn, not the pass's settlement:
+        # both have to ask the schedule.
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            state = await self._wind(game, 100)
+            board = state.board_state
+            # Any black pawn with an empty hex straight ahead of it.
+            frm, to = next(
+                (k, f"{int(k.split(',')[0])},{int(k.split(',')[1]) + 1}")
+                for k, v in board.items()
+                if v['unit_id'] == 'pawn' and v['color'] == 'black'
+                and f"{int(k.split(',')[0])},{int(k.split(',')[1]) + 1}" not in board)
+            await black.send_json_to({'type': 'make_move', 'from': frm, 'to': to})
+            made = await _receive_until(white, 'move_made')
+            self.assertEqual(made['currentTurn'], '')
+            over = await _receive_until(white, 'game_over')
+            self.assertEqual(over['endReason'], 'overtime')
+            self.assertEqual(over['winner'], state.player_black)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_rematch_starts_with_no_phases_banked(self):
+        # The state row is reused on a rematch; the last match's bank is not.
+        from game.consumers import GameConsumer
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            state = await self._wind(game, 40, bank={'1': {'white': 3, 'black': 1}})
+            await GameConsumer()._create_game_state(
+                game.game_id, state.board_state, state.player_white,
+                state.player_white, state.player_black, state.config_snapshot)
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(stored.phase_bank, {})
+            self.assertEqual(stored.turn_number, 1)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_the_bank_rides_on_the_hand_over_into_a_postmatch(self):
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            # Ply 26 is black's half of turn 13, the last of Phase 1's play.
+            await self._wind(game, 26)
+            await black.send_json_to({'type': 'pass_turn'})
+            passed = await _receive_until(white, 'turn_passed')
+            self.assertEqual(set(passed['phaseBank']), {'1'})
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(stored.phase_bank, passed['phaseBank'])
+
+            # And a reconnecting screen gets it back with the rest of the state.
+            await white.send_json_to({'type': 'request_game_state'})
+            full = await _receive_until(white, 'game_state_update')
+            self.assertEqual(full['phaseBank'], passed['phaseBank'])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+
 class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
     """
     Walking a unit inside its panel, and the wrap, against a live consumer.

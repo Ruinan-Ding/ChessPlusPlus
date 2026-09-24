@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
+import { PhaseBank } from './match-score';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -66,6 +67,12 @@ export interface GameSnapshot {
   turnStartedAt: string;
   /** Username of player who offered a draw, or ''. */
   drawOfferedBy: string;
+  /**
+   * What each scoring phase finished on, as the engine banked it - the
+   * server's, or the browser engine's in a solo game. Every hand-over carries
+   * the latest; the room shows it rather than keeping a bank of its own.
+   */
+  phaseBank: PhaseBank;
 }
 
 const EMPTY_SNAPSHOT: GameSnapshot = {
@@ -81,6 +88,7 @@ const EMPTY_SNAPSHOT: GameSnapshot = {
   turnTimeLimit: 0,
   turnStartedAt: '',
   drawOfferedBy: '',
+  phaseBank: {},
 };
 
 // ---------------------------------------------------------------------------
@@ -147,6 +155,7 @@ export class GameStateService {
       turnTimeLimit: timeLimit,
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
+      phaseBank: msg.phaseBank ?? {},
     });
   }
 
@@ -164,6 +173,7 @@ export class GameStateService {
       moveHistory: [...prev.moveHistory, ...(msg.effectsBefore ?? []), move, ...(msg.effects ?? [])],
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
+      phaseBank: msg.phaseBank ?? prev.phaseBank,
     });
   }
 
@@ -184,6 +194,7 @@ export class GameStateService {
       moveHistory: msg.effectsBefore ? [...prev.moveHistory, ...msg.effectsBefore] : prev.moveHistory,
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
+      phaseBank: msg.phaseBank ?? prev.phaseBank,
     });
   }
 
@@ -214,6 +225,7 @@ export class GameStateService {
       turnTimeLimit: timeLimit,
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: msg.drawOfferedBy ?? '',
+      phaseBank: msg.phaseBank ?? {},
     });
   }
 

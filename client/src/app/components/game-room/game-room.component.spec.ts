@@ -1,5 +1,6 @@
 import { BehaviorSubject, Subject, of } from 'rxjs';
 import { GameRoomComponent } from './game-room.component';
+import { GameStateService } from '../../services/game-state.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
 
 /**
@@ -1167,7 +1168,7 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.phaseScore('mine').match).toBe(7);
 
     // Phases 1 and 2, as they finished.
-    c.phaseBank = { 1: { white: 4, black: 9 }, 2: { white: 6, black: 1 } };
+    c.gameState.snapshot.phaseBank = { 1: { white: 4, black: 9 }, 2: { white: 6, black: 1 } };
     (c as any).standingsCache = null;
     const us = c.phaseScore('mine');
     const them = c.phaseScore('opponent');
@@ -1180,7 +1181,7 @@ describe('GameRoomComponent ability panel', () => {
     expect(them.leading).toBeFalse();
 
     // Level pegging lights neither, so a glow always means a lead.
-    c.phaseBank = { 1: { white: 0, black: 7 } };
+    c.gameState.snapshot.phaseBank = { 1: { white: 0, black: 7 } };
     (c as any).standingsCache = null;
     expect(c.phaseScore('mine').match).toBe(7);
     expect(c.phaseScore('opponent').match).toBe(7);
@@ -1212,13 +1213,13 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.moveHistory = [];
     c.gameState.snapshot.turnNumber = 73;   // turn 37, the first of overtime
     const settle = (white: number, black: number) => {
-      c.phaseBank = { 1: { white, black }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+      c.gameState.snapshot.phaseBank = { 1: { white, black }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
       (c as any).standingsCache = null;
       return c.matchVerdict;
     };
 
     // Nothing is settled until all three are banked.
-    c.phaseBank = { 1: { white: 99, black: 0 } };
+    c.gameState.snapshot.phaseBank = { 1: { white: 99, black: 0 } };
     (c as any).standingsCache = null;
     expect(c.matchVerdict).toBeNull();
 
@@ -1236,7 +1237,7 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.config = { board: { radius: 11 }, units: {} };
     c.gameState.snapshot.boardState = {};
     c.gameState.snapshot.moveHistory = [];
-    c.phaseBank = { 1: { white: 4, black: 4 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+    c.gameState.snapshot.phaseBank = { 1: { white: 4, black: 4 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
     const at = (turn: number) => {
       c.gameState.snapshot.turnNumber = turn;
       (c as any).standingsCache = null;
@@ -1264,43 +1265,27 @@ describe('GameRoomComponent ability panel', () => {
     expect(at(101).verdict).toBe('black');
   });
 
-  it('banks a phase as its postmatch begins, once', () => {
+  it('shows the bank the engine keeps, and banks nothing of its own', () => {
+    // The engines bank a phase as its postmatch begins (match-score.ts) and
+    // hand the bank out with every hand-over. The room used to bank as well,
+    // off whatever board it happened to be looking at when a phase ended - so
+    // a reload or a late join banked late, off a board the postmatch had
+    // already reshuffled. It shows the engine's now.
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
     c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
-    c.gameState.snapshot.moveHistory = [
-      { color: 'black', unit_id: 'pawn', captured: 'pawn', defender_eliminated: true, turn: 8 },
-    ];
+    c.gameState.snapshot.moveHistory = [];
+    c.gameState.snapshot.phaseBank = {};
 
-    // Still inside Phase 1's play: nothing to bank - not even on its very
-    // last hand-over, where the phase has one move still to make.
-    c.gameState.snapshot.turnNumber = 20;   // turn 10, its halftime half
-    (c as any).bankEndedPhases();
-    expect(c.phaseBank[1]).toBeUndefined();
-    c.gameState.snapshot.turnNumber = 26;   // turn 13, black's half
-    (c as any).bankEndedPhases();
-    expect(c.phaseBank[1]).toBeUndefined();
-
-    // The postmatch's first hand-over is the first on which Phase 1 is over
-    // and its board is still on screen: the last move of its play has landed
-    // and nothing of the postmatch has been played. Banked through the
-    // hand-over itself, the way a live room gets there - not once Phase 2
-    // begins, by which time the postmatch has rearranged the board.
-    c.gameState.snapshot.turnNumber = 27;   // turn 14, Phase 1 Postmatch
+    // Into Phase 1's postmatch with no bank on the hand-over: nothing is made up.
+    c.gameState.snapshot.turnNumber = 27;
     c.beginTurnFor('white');
-    expect(c.phaseBank[1]).toEqual({ white: 2, black: 0 });
+    expect(c.phaseBank).toEqual({});
 
-    // Banked once and left alone, however the postmatch moves the board - a
-    // unit walked home out of the zone, say - and on into the next phase.
-    c.gameState.snapshot.boardState = {};
-    (c as any).bankEndedPhases();
-    c.gameState.snapshot.turnNumber = 28;   // black's half of the postmatch
-    c.beginTurnFor('black');
-    c.gameState.snapshot.turnNumber = 29;   // turn 15, Phase 2
-    c.beginTurnFor('white');
-    expect(c.phaseBank[1]).toEqual({ white: 2, black: 0 });
-    // And Phase 2 waits for its own postmatch.
-    expect(c.phaseBank[2]).toBeUndefined();
+    // The engine's, as it arrived.
+    c.gameState.snapshot.phaseBank = { 1: { white: 3, black: 1 } };
+    expect(c.phaseScore('mine').banked).toEqual([3]);
+    expect(c.phaseScore('opponent').banked).toEqual([1]);
   });
 
   it('reads nought on a postmatch, and counts the phase it banked once', () => {
@@ -1310,10 +1295,9 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.moveHistory = [
       { color: 'black', unit_id: 'pawn', captured: 'pawn', defender_eliminated: true, turn: 8 },
     ];
-    // Phase 1 banks as its postmatch begins: 7 held, 5 lost.
+    // Phase 1, as the engine banked it when its postmatch began: 7 held, 5 lost.
     c.gameState.snapshot.turnNumber = 27;
-    (c as any).bankEndedPhases();
-    (c as any).standingsCache = null;
+    c.gameState.snapshot.phaseBank = { 1: { white: 2, black: 0 } };
 
     // The postmatch is still Phase 1's by the index, but nothing of it is
     // live: the phase is in the bank, and read live beside it as well it
@@ -1332,74 +1316,90 @@ describe('GameRoomComponent ability panel', () => {
   });
 
   it('reads the verdict from Phase 3\'s postmatch, a turn before overtime', () => {
-    // Phase 3 banks as its postmatch begins, like the other two, so all three
-    // are in on turn 36 rather than on overtime's first turn.
+    // The engines bank Phase 3 as its postmatch begins, like the other two,
+    // so all three are in on turn 36 rather than on overtime's first turn.
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: {} };
     c.gameState.snapshot.boardState = {};
     c.gameState.snapshot.moveHistory = [];
-    c.phaseBank = { 1: { white: 9, black: 0 }, 2: { white: 0, black: 0 } };
+    const two = { 1: { white: 9, black: 0 }, 2: { white: 0, black: 0 } };
 
     c.gameState.snapshot.turnNumber = 70;   // turn 35, the last of Phase 3's play
-    (c as any).bankEndedPhases();
-    expect(c.phaseBank[3]).toBeUndefined();
+    c.gameState.snapshot.phaseBank = two;
     expect(c.matchVerdict).toBeNull();
 
     c.gameState.snapshot.turnNumber = 71;   // turn 36, Phase 3 Postmatch
-    (c as any).bankEndedPhases();
-    expect(c.phaseBank[3]).toEqual({ white: 0, black: 0 });
+    c.gameState.snapshot.phaseBank = { ...two, 3: { white: 0, black: 0 } };
     expect(c.matchVerdict).toBe('white');
-    // A decided match says so in the header from that turn...
+    // A decided match says so in the header from that turn - it is the result
+    // the engine has just ended the match on...
     expect(c.stageLabel).toBe('YOU WIN');
 
     // ...and a close one is bound for overtime, but the header names the turn
     // being played until overtime actually arrives with the next.
-    c.phaseBank = { 1: { white: 0, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
-    (c as any).standingsCache = null;
+    c.gameState.snapshot.phaseBank = { 1: { white: 0, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
     expect(c.matchVerdict).toBe('overtime');
     expect(c.stageLabel).toBe('PHASE 3 POSTMATCH');
     c.gameState.snapshot.turnNumber = 73;   // turn 37
     expect(c.stageLabel).toBe('OVERTIME 1');
   });
 
-  it('banks through the socket, off the board the hand-over brought', () => {
-    // The road a live room takes: a move_made lands, its board and its turn
-    // number are applied, and only then does the next side begin - which is
-    // where the bank is read. Begun before the message was applied, the room
-    // would still be on turn 13, nothing would bank until the postmatch had
-    // played a hand-over, and that bank would read a board the postmatch's
-    // deployments had already changed. The specs above set the ply by hand
-    // and would never notice.
+  it('names no points winner off a bank with a late phase in it', () => {
+    // The engines refuse to end a match on a phase banked late, off the wrong
+    // board; the header must not name that result either, or it shows a win
+    // for fourteen turns that the engine then hands the other way.
     const c = room();
-    c.gameState.snapshot.turnTimeLimit = 0;
-    c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
+    c.gameState.snapshot.config = { board: { radius: 11 }, units: {} };
     c.gameState.snapshot.boardState = {};
     c.gameState.snapshot.moveHistory = [];
-    c.gameState.snapshot.turnNumber = 26;   // turn 13, black's half: the last of Phase 1's play
-    c.gameState.applyMoveMade = (msg: any) => {
-      const s = c.gameState.snapshot;
-      c.gameState.snapshot = {
-        ...s, boardState: msg.boardState, turnNumber: msg.turnNumber,
-        currentTurn: msg.currentTurn, moveHistory: [...s.moveHistory, msg.move],
-      };
+    c.gameState.snapshot.phaseBank = {
+      1: { white: 9, black: 0, late: true }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 },
     };
-    const made = (ply: number, board: Record<string, any>) => c.handleWebSocketMessage({
-      type: 'move_made', turnNumber: ply, currentTurn: 'me', boardState: board,
-      move: { color: ply % 2 ? 'black' : 'white', unit_id: 'pawn', from: '0,0', to: '0,0' },
+    c.gameState.snapshot.turnNumber = 80;   // turn 40, overtime
+    expect(c.matchVerdict).toBe('overtime');
+    expect(c.stageLabel).toBe('OVERTIME 1');
+    c.gameState.snapshot.turnNumber = 101;
+    expect(c.matchVerdict).toBe('black');
+  });
+
+  it('takes the bank each hand-over brings', () => {
+    // The live road, through the real state service: the bank rides on the
+    // hand-over, and the room shows the one the message carried.
+    const c = room();
+    c.gameState = new GameStateService();
+    c.gameState.applyGameStarted({
+      playerWhite: 'me', playerBlack: 'Opponent', currentTurn: 'Opponent', turnNumber: 26,
+      config: { board: { radius: 11 }, units: {} }, boardState: {},
     });
-    // A turn staged and never sent holds nothing: were it read, white would
-    // bank nought.
-    c.stagedActions = [{ from: '0,0', to: '0,0', board: {} }];
+    expect(c.phaseBank).toEqual({});
+    const bank = { 1: { white: 7, black: 0 } };
 
-    // Black's last move of the play lands and hands the postmatch to white.
-    made(27, { '0,0': { unit_id: 'pawn', color: 'white' } });
-    expect(c.phaseBank[1]).toEqual({ white: 7, black: 0 });
+    // Black's last move of Phase 1's play hands the postmatch to white.
+    c.handleWebSocketMessage({
+      type: 'move_made', turnNumber: 27, currentTurn: 'me', boardState: {}, phaseBank: bank,
+      move: { color: 'black', unit_id: 'pawn', from: '0,0', to: '0,0' },
+    });
+    expect(c.phaseBank).toEqual(bank);
 
-    // White's postmatch walks the pawn home, and black's half begins: the
-    // bank is the play's, and stays so.
-    made(28, {});
-    expect(c.phaseBank[1]).toEqual({ white: 7, black: 0 });
-    expect(c.phaseBank[2]).toBeUndefined();
+    // A pass that carries none - an older server - keeps what was there.
+    c.handleWebSocketMessage({
+      type: 'turn_passed', color: 'white', turnNumber: 28, currentTurn: 'Opponent', boardState: {},
+    });
+    expect(c.phaseBank).toEqual(bank);
+
+    // A resync after a reload brings it back whole, and a new match has none.
+    c.gameState.applyFullState({ turnNumber: 40, phaseBank: bank });
+    expect(c.phaseBank).toEqual(bank);
+    c.gameState.applyGameStarted({ playerWhite: 'me', playerBlack: 'Opponent' });
+    expect(c.phaseBank).toEqual({});
+  });
+
+  it('says how a match the schedule ended was ended', () => {
+    const c = room();
+    expect(c.endReasonDetail({ endReason: 'points' }))
+      .toBe('Phase 3 ended with one side past the margin.');
+    expect(c.endReasonDetail({ endReason: 'overtime' }))
+      .toBe('Overtime ran out with both kings standing: black wins.');
   });
 
   it('takes the seat the host picked, and tosses for Random', () => {

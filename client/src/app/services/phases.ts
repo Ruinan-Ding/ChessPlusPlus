@@ -143,9 +143,10 @@ export function isScoringPhase(ply: number): boolean {
  * answers the closing phase's index for it, so whatever reads "which phase is
  * this" - the CP a phase hands out, the deaths a phase is charged - reads the
  * closing phase there. The score is the one thing that has to know better,
- * in two places in the room: `bankEndedPhases`, which banks the phase as its
- * postmatch begins, and `standings`, which reads the postmatch as nought so
- * the phase just banked is not counted a second time.
+ * in two places: `bankEndedPhases` (match-score.ts, run by the engines on
+ * each hand-over), which banks the phase as its postmatch begins, and the
+ * room's `standings`, which reads the postmatch as nought so the phase just
+ * banked is not counted a second time.
  */
 export function isPostmatch(ply: number): boolean {
   const index = phaseIndexAt(ply);
@@ -198,7 +199,8 @@ export function noAttackMessage(ply: number): string {
  * Real damage, and a commander on that much HP dies of it. The toll climbs so
  * that a match neither side can win on the board still ends: the last turn
  * takes three, and a king who walks into it on three or less does not walk
- * out. A match still standing after it goes to black - see `matchVerdict`.
+ * out. A match still standing after it goes to black, and both engines end
+ * it there - see `scheduleEnding` in match-score.ts.
  *
  * `turns` are full turns - white's hand-over and black's - counted forward
  * from overtime's first, which gives turns 37-44, 45-49 and 50 on the shipped
@@ -270,10 +272,10 @@ export function isOvertime(ply: number): boolean {
  * Which stretch of overtime a hand-over falls in, or `null` before overtime
  * begins.
  *
- * Past the last turn it is the last stretch rather than `null`: the match is
- * black's by then, but that verdict is read and not enforced, so a game
- * played on past turn 50 keeps paying the heaviest toll instead of quietly
- * ceasing to pay one at all.
+ * Past the last turn it is the last stretch rather than `null`. Both engines
+ * end the match as turn 50 is played out (`scheduleEnding` in match-score.ts),
+ * so no game reaches it by playing; a position built past it - a saved game,
+ * a test - still pays the heaviest toll rather than quietly none at all.
  */
 export function overtimeStageAt(ply: number): OvertimeStage | null {
   if (!isOvertime(ply)) return null;
@@ -350,8 +352,8 @@ export function pointsPerTurnAt(ply: number): number {
  * uses to count a side's turns between two plies.
  *
  * Past the last stretch it keeps paying at the last rate, for the reason the
- * toll keeps taking at it: the verdict there is read and not enforced, and a
- * game played on must not quietly stop settling up.
+ * toll keeps taking at it: the match ends as turn 50 is played out, but a
+ * position built past it must not quietly stop settling up.
  */
 export function turnPointsBy(color: 'white' | 'black', ply: number): number {
   const played = Math.max(0, ply);
