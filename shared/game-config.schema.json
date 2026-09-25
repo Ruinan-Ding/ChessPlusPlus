@@ -251,7 +251,7 @@
       "properties": {
         "white": {
           "type": "object",
-          "description": "Map of 'q,r' coordinate strings to unit type ids for white.",
+          "description": "Map of 'q,r' coordinate strings to unit type ids for white. A battlefield hex stands the unit on the board; a hex of white's own panels (the bottom two: base bottom-left, reserve bottom-right) deals it into that panel - the default puts each side's base squad there. A hex in the other side's panels, or a commander in any panel, is refused.",
           "propertyNames": {
             "pattern": "^-?\\d+,-?\\d+$"
           },
@@ -261,7 +261,7 @@
         },
         "black": {
           "type": "object",
-          "description": "Map of 'q,r' coordinate strings to unit type ids for black.",
+          "description": "Map of 'q,r' coordinate strings to unit type ids for black. A battlefield hex stands the unit on the board; a hex of black's own panels (the top two: base top-right, reserve top-left) deals it into that panel - the default puts each side's base squad there. A hex in the other side's panels, or a commander in any panel, is refused.",
           "propertyNames": {
             "pattern": "^-?\\d+,-?\\d+$"
           },

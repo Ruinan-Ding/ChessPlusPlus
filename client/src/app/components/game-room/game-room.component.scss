@@ -14,6 +14,11 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    // A long turn banner - a timer, a stage, two scores with their banked
+    // phases - takes a second row rather than pushing the buttons and the
+    // connection status off the right-hand edge.
+    flex-wrap: wrap;
+    row-gap: 6px;
     flex: 0 0 auto;          // never steal height from the board
     margin-bottom: 8px;
     padding-bottom: 6px;
@@ -43,7 +48,9 @@
       justify-content: center;
       gap: 16px;
       text-align: center;
-      font-size: clamp(1.1rem, 2.5vw, 2rem);
+      // Not in vw: the room is laid out at least ROOM_MIN_WIDTH wide and
+      // scaled to the window (fitRoom), and vw would read the window instead.
+      font-size: 2rem;
       font-weight: 800;
       letter-spacing: 0.08em;
       white-space: nowrap;
@@ -428,7 +435,9 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    flex: 0 0 clamp(190px, 18vw, 260px);
+    // A share of the room rather than of the window (vw): the room is scaled
+    // to fit the window (fitRoom), so the window's width is not the room's.
+    flex: 0 0 clamp(190px, 18%, 260px);
     min-height: 0;
     overflow-y: auto;
   }
@@ -913,9 +922,12 @@
   .opponent-panel,
   .abilities-panel { flex: 0 0 auto; }
   // The unit panel takes whatever height the column has left, and the effects
-  // box is what grows into it. Basis 0 for the same reason as the box itself:
-  // sized by the space available, never by what happens to be in it.
-  .stats-panel { flex: 1 1 0; min-height: 0; }
+  // box is what grows into it - but never less than its own contents. It was
+  // basis 0 and free to shrink, and in any window shorter than the column the
+  // two ability panels above it crushed it to its border: the stats, the
+  // unit's abilities and its effects, gone. The owner: "this game is NOT
+  // playable with that gone". The room scales to fit instead (fitRoom).
+  .stats-panel { flex: 1 0 auto; min-height: 0; }
 
   .gear-button {
     font-size: 15px;
@@ -1167,7 +1179,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    flex: 0 0 clamp(230px, 22vw, 320px);
+    flex: 0 0 clamp(230px, 22%, 320px);
     min-height: 0;
   }
 
@@ -1981,50 +1993,10 @@
   }
 }
 
-@media (max-width: 900px) {
-  .game-room-container {
-    main {
-      flex-direction: column;
-      gap: 20px;
-      height: auto;
-      overflow: visible;
-    }
-    // Stacked into a column, so the fixed-pixel rail bases would become fixed
-    // *heights*. Give each section a real height instead of letting flex
-    // collapse it to nothing.
-    .match-panels,
-    .side-rail {
-      flex: 0 0 auto;
-      overflow: visible;
-      width: 100%;
-      min-width: 0;
-    }
-    .game-area {
-      flex: 0 0 auto;
-      min-height: 460px;
-    }
-    .match-panel,
-    .players-section,
-    .lobby-chat,
-    .users-panel,
-    .side-rail .chat-panel {
-      width: 100%;
-      min-width: 0;
-      max-height: 260px;
-      overflow: auto;
-    }
-    .history-panel { min-height: 140px; }
-
-    .reveal-waiting-overlay .reveal-waiting-modal {
-      max-width: 90%;
-      padding: 30px 25px;
-    }
-    
-    .reveal-request-overlay .reveal-request-modal {
-      max-width: 90%;
-    }
-  }
-}
+// No narrow-window layout. Under 900px the columns used to stack, and the
+// board landed below the left column, off the bottom of the window. The room
+// is scaled to fit instead (fitRoom), so it is never laid out narrower than
+// ROOM_MIN_WIDTH and the three columns always stand side by side.
 // Roster heading when there is no server behind it.
 .offline-head {
   color: #c0392b;

@@ -341,6 +341,17 @@ function fallen(
   return key && unit ? [{ key, unit_id: unit.unit_id, color: unit.color }] : [];
 }
 
+/**
+ * The least the room is laid out at; a smaller window scales it down to fit
+ * (`fitRoom`). Measured, not chosen: 1480 is the header's width with the turn
+ * banner at full size and its buttons on one line, and 1120 is the left
+ * column at its full 260px - both ability panels, the Unit panel's stats,
+ * abilities and effects, and the rows of buttons between them, 1011px - under
+ * the header, with room for a hint line or two.
+ */
+const ROOM_MIN_WIDTH = 1480;
+const ROOM_MIN_HEIGHT = 1120;
+
 @Component({
   selector: 'app-game-room',
   standalone: true,
@@ -417,6 +428,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   ) {}
   
   ngOnInit(): void {
+    this.fitRoom();
     // Only clear messages if not returning from setup
     const isReturningFromSetup = this.navigationState.getNavigationContext() === 'game-room' && 
                                   this.navigationState.isIntentionalNavigation();
@@ -3689,6 +3701,38 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   @HostListener('window:focus')
   onWindowFocus(): void { this.windowFocused = true; this.cdr.markForCheck(); }
+
+  /**
+   * How far the room is scaled down to fit the window, and the size it is
+   * laid out at while it is.
+   *
+   * **Nothing on this screen is ever hidden to make room** - the owner, 25 Sep
+   * 2026: *"DO NOT HIDE ANYTHING AS IT MAKES THIS GAME UNPLAYABLE"*. A window
+   * smaller than the room needs used to cost a panel: the Unit panel was
+   * crushed to its border by the two ability panels above it, the header
+   * pushed its right-hand buttons off the edge, and under 900px wide the
+   * columns stacked with the board below the fold. Now the room is laid out
+   * at no less than `ROOM_MIN_WIDTH` x `ROOM_MIN_HEIGHT` and the whole of it
+   * scaled down to the window (CSS `zoom`), so a smaller window gets a
+   * smaller room, never a shorter one.
+   *
+   * `null` sizes leave the stylesheet's 100% x 100vh in charge; they are only
+   * set while the room is scaled, when it has to be laid out bigger than the
+   * window by exactly the factor it is drawn smaller.
+   */
+  roomZoom = 1;
+  roomWidth: number | null = null;
+  roomHeight: number | null = null;
+
+  @HostListener('window:resize')
+  fitRoom(): void {
+    const zoom = Math.min(
+      1, window.innerWidth / ROOM_MIN_WIDTH, window.innerHeight / ROOM_MIN_HEIGHT);
+    this.roomZoom = zoom;
+    this.roomWidth = zoom < 1 ? window.innerWidth / zoom : null;
+    this.roomHeight = zoom < 1 ? window.innerHeight / zoom : null;
+    this.cdr.markForCheck();
+  }
 
   @HostListener('window:keydown', ['$event'])
   onShortcut(event: KeyboardEvent): void {

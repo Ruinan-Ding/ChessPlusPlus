@@ -32,7 +32,7 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (265 tests, 25 Sep 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (274 tests, 25 Sep 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
@@ -242,24 +242,36 @@ Decided so far:
   - **Right plane** = staged troops. Every couple of phases of the war, units here can be
     selected and deployed into the player's first row. Unlike the left plane, the right plane
     **can** be attacked, but only in very specific ways.
-  - **Panels start empty for now**: new games deal no units into the four planes.
-    `buildReserves()` and `deal_panels()` leave the panels empty at game start. The panel
-    movement, combat, and history-replay code remains available for later deployment rules,
-    including units explicitly returned to a panel by a recorded action.
-    - **The emptiness is a decision, not arithmetic, and the deal is still here.**
-      `PANELS_DEALT` in `hex-rules.ts` and `engine/panels.py` is the one flag on each side,
-      and the deal it gates is `buildReserves()`'s own body and `dealt_panels()`. Turning the
-      squads back on is that flag, **both sides together** - one alone and the two halves of a
-      networked game disagree about who is standing where. It was briefly the whole of
-      `deal_panels`, which left 36 server tests and 15 client specs with no fixtures, and with
-      them every rule that *works* a panel: the walk, the wrap, the crossing, the blow into
-      one, the walk home, and the windows and allowances over all of them. A rule nobody
-      exercises while it is being changed is a rule that rots.
-    - **The tests deal their own.** `DealtPanels` (both server test modules) and
-      `setPanelsDealt(true)` in the board spec turn the squads on for the duration; the live
-      e2e scripts cannot reach into the process, so `scripts/e2e/panels.py` needs the server
-      started with `CPP_DEAL_PANELS=1`. Everything else runs against empty panels, which is
-      what a real game now deals.
+  - **Each side opens with its base squad; both reserves open empty.** The owner, 25 Sep
+    2026: *"at the start of game, there will be units in base"*, by the numbers on the board
+    (Show Hex), as white: rooks on 518 and 523, knights on 519 and 522, bishops on 520 and 521,
+    shieldmen on 495 and 499, archers on 496 and 498, pawns on 497 and 471-475 - the base's
+    bottom three rows, full - and *"the same to black side"*, the point mirror (19-24,
+    43-47, 67-71).
+    - **The config's `setup` places them.** A side's setup is one map of hexes, battlefield
+      and panels alike, so the starting position reads the way the board is numbered: an
+      entry on the battlefield is the board's (`build_initial_board` / `buildBoard`), one on a
+      hex of **that side's own** panels is dealt there (`set_up_panels()` / `dealSetUpPanels()`,
+      from `deal_panels()` / `buildReserves()`), with the board's uid shape,
+      `{color[0]}{q},{r}`. No new config field: the schema already took any `q,r`.
+    - **Both validators refuse** an entry in the other side's panels (every panel rule would
+      count it as theirs) and a commander in any panel (he starts on the battlefield; under
+      regicide one off it is a side that has lost). `validateGameRules` has no grid, so it
+      reads a panel's side off the sign of the hex's pixel y, as `panelOf` does - `r` on an
+      edge-up board, `q + 2r` on a vertex-up one; a test on each side pins the hex where the
+      two readings part.
+    - **The placeholder squads stay, as the tests' fixture.** `PANELS_DEALT` in
+      `hex-rules.ts` and `engine/panels.py` deals them - one of each of the first five unit
+      types on every third hex of all four panels (`dealt_panels()` / the rest of
+      `buildReserves()`) - **instead of** the setup's panel entries, never beside them. 36
+      server tests and 15 client specs of everything that *works* a panel - the walk, the
+      wrap, the crossing, the blow into one, the walk home, and the windows and allowances
+      over them - were written against those squads and keep them: `DealtPanels` (both server
+      test modules) and `setPanelsDealt(true)` in the board spec. The live e2e scripts cannot
+      reach into the process, so `scripts/e2e/panels.py` needs the server started with
+      `CPP_DEAL_PANELS=1`; the other three run against the setup's squads, as a real game
+      does. The flag goes on **both sides together** or the two halves of a networked game
+      disagree about who is standing where.
   - **The red plane is the base, the green one the reserve.** **Every panel unit, base and
     reserve alike, gets its own MOV per turn and no more** - spendable a few steps at a time,
     never an endless shuffle (`panelMoved` in `game-board.component.ts`, keyed by uid).
@@ -309,8 +321,9 @@ Decided so far:
     `undoPanelMove()`), staged board actions by the room; every entry is stamped, and
     `undoMove()` pops from whichever is newer - so Undo always takes back the thing just done
     rather than reaching past it. Taking a crossing back hands its price back with it.
-  - **Panel openings are currently empty.** When panel units are reintroduced, both sides must
-    be dealt the same mirrored opening rather than independently choosing shapes.
+  - **Both sides open on mirrored squads.** The setup's base squads are the point mirror of
+    each other, as the placeholder deal's are (black's panels walked backwards): a side dealt
+    a different shape would open with a different reach.
   - **Every label on the board counter-rotates** (`textTransform`), or it reads upside down on
     a board flipped for a black seat. That includes the wrap's `-x`, the base's `+x` and the
     mending `+1`; all three shipped without it and were upside down for whoever sat as black.
@@ -319,7 +332,10 @@ Decided so far:
     panel unit may not cross - so a unit on either the tip or its doorway shuts the crossing
     for the whole panel: nothing reaches the base tip, or nothing lands past the reserve one.
     The dealt squad used to sit on both, so the wrap was closed from the first turn and a
-    reload re-dealt the blockage as fast as it was shuffled away.
+    reload re-dealt the blockage as fast as it was shuffled away. **The setup deal does not
+    check it** - it deals exactly what the config says. The owner's squads sit in the base's
+    bottom three rows, clear of it (white's corridor is 283 and 307); a custom setup that puts
+    a unit there shuts its own wrap until that unit walks off.
   - **The wrap is the only way out of the base.** A unit that reaches its base's outer tip may
     step across to the reserve tip facing it, and **the crossing costs 1 MOV**; whatever is left
     carries on into the reserve. On the shipped board white's pair is hex **283** `(-12,1)` and
@@ -1118,6 +1134,30 @@ Decided so far:
   the one-commit-per-turn guard makes End Turn a no-op for the rest of the turn, and the recap
   curtain leaves the board non-interactive. Together that is what "the game fails to end turn"
   looks like, and it is reachable from any rejection, not just the one that exposed it.
+- **Nothing on the room screen is ever hidden to make room.** The owner, 25 Sep 2026: *"DO
+  NOT HIDE ANYTHING AS IT MAKES THIS GAME UNPLAYABLE"*. The room is laid out at no less than
+  `ROOM_MIN_WIDTH` x `ROOM_MIN_HEIGHT` (1480 x 1120), and a smaller window scales the whole of
+  it down (`fitRoom()`, CSS `zoom` on `.game-room-container`): a smaller window gets a smaller
+  room, never a shorter one. What it replaced, all measured:
+  - the Unit panel was `flex: 1 1 0` and free to shrink, and in any window shorter than the
+    left column the two ability panels above it crushed it to its border - 2px at 1400x800,
+    and on the owner's own 1904x946 window everything below HP/ATK was gone;
+  - the header pushed its buttons and the connection status off the right edge below about
+    1470px;
+  - under 900px the columns stacked, with the board below the bottom of the window.
+  - **The two numbers are measured, not chosen**: 1480 is the header on one line with the
+    banner at full size, 1120 the left column at its full 260px (1011px) under the header,
+    with a hint line to spare. Past them, the header wraps (`flex-wrap`) and the column
+    scrolls - `.stats-panel` is `flex: 1 0 auto`, never less than its contents.
+  - **No `vw` inside the room.** While it is scaled the room is laid out bigger than the
+    window, so a size read off the window is wrong for it: the columns are shares of the room
+    (`clamp(190px, 18%, 260px)`, `clamp(230px, 22%, 320px)`), the banner a flat `2rem`.
+  - **No narrow-window layout.** The `max-width: 900px` stacking is gone. Do not bring back a
+    breakpoint that rearranges or collapses a panel.
+  - Checked in headless Chrome at 1904x946 (drawn at 85%), 1100x650, 880x600 and 700x500:
+    nothing off screen, the left column unscrolled, the Unit panel whole. Chrome fires no
+    `resize` in a hidden tab, so a test driven through a background tab sees the old zoom -
+    drive the size with `Emulation.setDeviceMetricsOverride` instead.
 - **A finished match stays on screen.** `gameStarted` deliberately stays **true** through
   `game_over`: the last position keeps the panel with the result banner over it
   (`.result-banner.over-board`), the turn indicator and the score go, and abilities shut. What
@@ -1535,8 +1575,9 @@ could answer it. Everything below is **derived from the config and the move hist
 no panel table, no points column and no migration.
 
 - **`server/game/engine/panels.py`** is the model: the geometry (`gateway_hexes`,
-  `base_gateway_hexes`, `wrap_tips`, `wrap_corridor`), the currently empty opening deal
-  (`deal_panels`, mirrored by `buildReserves`), mending
+  `base_gateway_hexes`, `wrap_tips`, `wrap_corridor`), the opening deal - the setup's squads,
+  or the placeholder ones under `PANELS_DEALT` (`deal_panels`, mirrored by `buildReserves`),
+  mending
   (`panel_hp`, `withdrawn_units`), and **`panel_occupancy`, which replays the history in order**:
   the deal, then every walk home, walk inside a panel and crossing, in the order they happened.
   It was two sets once — "ever crossed" and "ever walked home" — which was right only while a unit

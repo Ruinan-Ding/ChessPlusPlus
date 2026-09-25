@@ -2505,3 +2505,44 @@ describe('GameRoomComponent leaving', () => {
     });
   });
 });
+
+/**
+ * The owner: "DO NOT HIDE ANYTHING AS IT MAKES THIS GAME UNPLAYABLE". A
+ * window smaller than the room gets the whole room scaled down, never a panel
+ * crushed or a column stacked below the board.
+ */
+describe('GameRoomComponent fitting the window', () => {
+  let innerWidth: jasmine.Spy;
+  let innerHeight: jasmine.Spy;
+  beforeEach(() => {
+    innerWidth = spyOnProperty(window, 'innerWidth');
+    innerHeight = spyOnProperty(window, 'innerHeight');
+  });
+
+  const fit = (width: number, height: number) => {
+    innerWidth.and.returnValue(width);
+    innerHeight.and.returnValue(height);
+    const c: any = { cdr: { markForCheck: () => {} } };
+    GameRoomComponent.prototype.fitRoom.call(c);
+    return c;
+  };
+
+  it('scales the room down by whichever side is shorter, laid out at its least', () => {
+    // Half the least width, and more than half the least height: width decides.
+    const c = fit(740, 700);
+    expect(c.roomZoom).toBe(0.5);
+    expect(c.roomWidth).toBe(1480);
+    expect(c.roomHeight).toBe(1400);
+    // Height decides here.
+    const d = fit(1904, 560);
+    expect(d.roomZoom).toBe(0.5);
+    expect(d.roomHeight).toBe(1120);
+  });
+
+  it('leaves a window big enough for the whole room alone', () => {
+    const c = fit(2000, 1200);
+    expect(c.roomZoom).toBe(1);
+    expect(c.roomWidth).toBeNull();
+    expect(c.roomHeight).toBeNull();
+  });
+});

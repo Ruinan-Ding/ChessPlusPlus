@@ -1518,13 +1518,13 @@ async def _start_seated_game():
 
 class DealtPanels:
     """
-    Deal the panel squads for the duration of a test.
+    Deal the placeholder panel squads for the duration of a test.
 
-    A new game now opens with all four panels empty while the owner clears the
-    placeholder squads out (``panels.PANELS_DEALT``). Everything that *works* a
-    panel is still here and still has to be right for the day they come back,
-    so these turn the deal back on rather than going away - a rule nobody
-    exercises while it is being changed is a rule that rots.
+    A new game stands in its panels what the config's setup puts there - the
+    owner's base squads. These tests were written against the placeholder
+    squads (one of each of five unit types, every third hex, all four panels),
+    so they turn those on instead (``panels.PANELS_DEALT``) and keep their
+    fixtures.
     """
 
     def setUp(self):

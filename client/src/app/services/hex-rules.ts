@@ -33,15 +33,18 @@ export const HEX_DIRS: [number, number][] = [
 export const BASE_PANELS = new Set(['bl', 'tr']);
 
 /**
- * Whether a new game deals squads into the panels. Mirrors `PANELS_DEALT` in
- * `server/game/engine/panels.py`, and the two must be turned back on together
- * or the two sides of a networked game disagree about who is standing where.
+ * Whether a new game gets the **placeholder** squads instead of the setup's.
+ * Mirrors `PANELS_DEALT` in `server/game/engine/panels.py`, and the two go on
+ * together or the two sides of a networked game disagree about who is
+ * standing where.
  *
- * **Temporarily off**: the owner is clearing the placeholder squads out, so a
- * new game opens with all four panels empty. Everything that *works* a panel
- * is untouched and still tested - the walk, the wrap, the crossing, the blow,
- * the walk home, and the windows and allowances over all of them - because a
- * rule nobody exercises while it is being changed is a rule that rots.
+ * A real game stands in its panels what the config's setup puts there - since
+ * 25 Sep 2026 the owner's base squads, and nothing in the reserves. The
+ * placeholder deal (one of each of the first five unit types, on every third
+ * hex of all four panels) is what the panel specs were written against - the
+ * walk, the wrap, the crossing, the blow, the walk home - so they turn this on
+ * and keep their fixtures. With it on the placeholder squads stand **instead
+ * of** the setup's panel entries, never beside them.
  *
  * Mutable so the specs can deal a board to test that machinery on; nothing in
  * the app writes to it. `setPanelsDealt` is the only writer.

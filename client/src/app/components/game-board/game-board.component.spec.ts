@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { SimpleChange } from '@angular/core';
-import { GameBoardComponent } from './game-board.component';
+import { GameBoardComponent, hexNumberMap } from './game-board.component';
+import { DEFAULT_GAME_CONFIG } from '../../services/config.service';
 import { OVERTIME_FIRST_PLY } from '../../services/phases';
 import { setPanelsDealt } from '../../services/hex-rules';
 
@@ -28,11 +29,11 @@ describe('GameBoardComponent reach preview', () => {
     '-3,0': { unit_id: 'scout', color: 'white', hp: 6, max_hp: 6 },
   };
 
-  // A new game opens with all four panels empty while the owner clears the
-  // placeholder squads out. Everything below that works a panel - the walk,
-  // the wrap, the crossing, the blow into one, the walk home, and the windows
-  // and allowances over them - is still live code and still has to be right
-  // for the day the squads come back, so these deal a board to test it on.
+  // A new game stands in its panels what the config's setup puts there - the
+  // owner's base squads ('GameBoardComponent setup deal', below). Everything
+  // here that works a panel - the walk, the wrap, the crossing, the blow into
+  // one, the walk home, and the windows and allowances over them - was written
+  // against the placeholder squads, so these deal those instead.
   beforeEach(() => setPanelsDealt(true));
   afterEach(() => setPanelsDealt(false));
 
@@ -2470,5 +2471,82 @@ describe('GameBoardComponent reach preview', () => {
       expect(stands.length).toBe(1);
       expect(zone()).toContain(stands[0]);
     });
+  });
+});
+
+/**
+ * What a real game stands in its panels: the setup's entries on each side's
+ * own panel hexes - the owner's base squads, and nothing in the reserves.
+ * Mirrors SetUpPanelsTestCase in test_engine.py.
+ */
+describe('GameBoardComponent setup deal', () => {
+  /** The owner's base squad for white, by the number on each hex, 25 Sep 2026. */
+  const WHITE_BASE_BY_NUMBER: Record<number, string> = {
+    518: 'rook', 519: 'knight', 520: 'bishop', 521: 'bishop', 522: 'knight', 523: 'rook',
+    495: 'shieldman', 496: 'archer', 497: 'pawn', 498: 'archer', 499: 'shieldman',
+    471: 'pawn', 472: 'pawn', 473: 'pawn', 474: 'pawn', 475: 'pawn',
+  };
+  let board: any;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({ imports: [GameBoardComponent] }).compileComponents();
+  });
+
+  const deal = (config: any, panelHp: Record<string, number> = {}) => {
+    board = TestBed.createComponent(GameBoardComponent).componentInstance;
+    board.config = config;
+    board.radius = config.board.radius;
+    board.boardState = {};
+    board.panelHp = panelHp;
+    board.ngOnChanges({
+      config: new SimpleChange(null, config, true),
+      radius: new SimpleChange(null, config.board.radius, true),
+      boardState: new SimpleChange(null, {}, true),
+    });
+    return board.reserves as Record<string, any>;
+  };
+
+  it("opens each base on the owner's squad, by the numbers on the board", () => {
+    const reserves = deal(structuredClone(DEFAULT_GAME_CONFIG));
+    const numbers = hexNumberMap(11);
+    const white: Record<number, string> = {};
+    for (const [key, unit] of Object.entries(reserves)) {
+      if (unit.color === 'white') white[numbers[key]] = unit.unit_id;
+    }
+    expect(white).toEqual(WHITE_BASE_BY_NUMBER);
+    // Black's is the point mirror.
+    for (const [key, unit] of Object.entries(reserves)) {
+      if (unit.color !== 'white') continue;
+      const [q, r] = key.split(',').map(Number);
+      expect(reserves[`${-q},${-r}`]).toEqual(jasmine.objectContaining(
+        { unit_id: unit.unit_id, color: 'black' }));
+    }
+    expect(Object.keys(reserves).length).toBe(32);
+    // Both bases, and neither reserve.
+    const panels = new Set(Object.keys(reserves).map(k => board.cellsByKey.get(k)?.panel));
+    expect(panels).toEqual(new Set(['bl', 'tr']));
+    expect(reserves['-17,11']).toEqual({
+      unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'w-17,11',
+    });
+  });
+
+  it('deals a wounded unit wounded, and a dead one not at all', () => {
+    const reserves = deal(structuredClone(DEFAULT_GAME_CONFIG), { 'w-17,11': 7, 'b12,-9': 0 });
+    expect(reserves['-17,11'].hp).toBe(7);
+    expect(reserves['12,-9']).toBeUndefined();
+    expect(Object.keys(reserves).length).toBe(31);
+  });
+
+  it("deals into a reserve too, and nothing into the other side's panels or a king", () => {
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    deal(config);
+    const freeBase = [...board.panelZones.get('bl')].find((k: string) => !config.setup.white[k]);
+    config.setup.white['2,10'] = 'pawn';      // hex 513, white's reserve
+    config.setup.white['-2,-10'] = 'pawn';    // black's reserve - not white's to fill
+    config.setup.white[freeBase] = 'king';    // a commander starts on the battlefield
+    const reserves = deal(config);
+    expect(reserves['2,10']).toEqual(jasmine.objectContaining({ color: 'white', uid: 'w2,10' }));
+    expect(reserves['-2,-10']).toBeUndefined();
+    expect(reserves[freeBase]).toBeUndefined();
   });
 });

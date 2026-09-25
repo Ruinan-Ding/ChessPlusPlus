@@ -2889,22 +2889,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /**
-   * Start new games with empty base and reserve panels.
-   *
-   * Panel history is still replayed below for compatibility with recorded
-   * deployment actions, but no placeholder squad is dealt into a fresh game.
+   * Deal a new game's panels: what the config's setup stands in them, or the
+   * placeholder squads while `PANELS_DEALT` is on (the specs' fixture).
    */
   private buildReserves(): void {
-    // **The emptiness is a decision, not arithmetic.** A new game opens with
-    // all four panels empty while the owner clears the placeholder squads out
-    // (`PANELS_DEALT`), but the deal itself stays here and stays tested - the
-    // panels come back, and everything that works one is still live code.
     if (!PANELS_DEALT) {
-      const stamp = `${this.radius}|${this.orientation}|empty`;
+      const setup = this.config?.setup;
+      const stamp = `${this.radius}|${this.orientation}|setup|` +
+        JSON.stringify([setup?.white ?? null, setup?.black ?? null]);
       if (stamp === this.reservesKey) return;
       this.reservesKey = stamp;
       this.reserves = {};
       this.fallen.clear();
+      this.dealSetUpPanels();
       return;
     }
     const roster = Object.entries(this.config?.units ?? {})
@@ -2960,6 +2957,47 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         if (left <= 0) return;
         this.reserves[at] = { unit_id: id, color, hp: left, max_hp: hp, uid };
       });
+    }
+  }
+
+  /**
+   * The units the config's setup stands in the panels. Mirrors
+   * `set_up_panels` in `server/game/engine/panels.py`.
+   *
+   * A side's setup is one map of hexes, battlefield and panels alike, so the
+   * starting position reads the way the board is numbered. The battlefield's
+   * entries are the board builders'; this takes every one that falls on a hex
+   * of **that side's own** panels. One anywhere else - the other side's
+   * panels, or off the drawn block - is not dealt (`validateGameRules`
+   * refuses the first), nor is a commander, who starts on the battlefield.
+   *
+   * The uid is the board's shape, `${color[0]}${q},${r}` - the hex it was
+   * dealt on, so it is deterministic and never meets a board unit's.
+   */
+  private dealSetUpPanels(): void {
+    const panelAt = new Map<string, string>();
+    for (const [panel, hexes] of this.panelZones) {
+      for (const hex of hexes) panelAt.set(hex, panel);
+    }
+    for (const color of ['white', 'black'] as const) {
+      const placement = this.config?.setup?.[color];
+      if (!placement || typeof placement !== 'object') continue;
+      for (const [coord, unitId] of Object.entries<any>(placement)) {
+        const [q, r] = String(coord).split(',').map(Number);
+        if (!Number.isInteger(q) || !Number.isInteger(r)) continue;
+        const at = `${q},${r}`;
+        const panel = panelAt.get(at);
+        if (!panel || (panel[0] === 'b' ? 'white' : 'black') !== color) continue;
+        const def = this.config?.units?.[unitId];
+        if (!def || def.commander) continue;
+        const hp = def.hp ?? 1;
+        const uid = `${color[0]}${at}`;
+        // As in the placeholder deal: a wound taken in a panel outlives the
+        // deal, and nothing at 0 is dealt at all.
+        const left = this.panelHp[uid] ?? hp;
+        if (left <= 0) continue;
+        this.reserves[at] = { unit_id: unitId, color, hp: left, max_hp: hp, uid };
+      }
     }
   }
 

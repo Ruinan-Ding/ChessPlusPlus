@@ -17,6 +17,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from .board import HexBoard, coord_key, parse_coord
+from .panels import axial_to_pixel, color_of_panel, on_battlefield, panel_of
 
 logger = logging.getLogger('game')
 
@@ -329,6 +330,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         #                 row.
         # Odd separations are what stay centred here: the row holds an even number
         # of hexes, so an even gap would put the pair off the middle.
+        #
+        # Then each side's base: its bottom three rows, full - rook knight
+        # bishop bishop knight rook, shieldman archer pawn archer shieldman, and
+        # five pawns. The owner, 25 Sep 2026: "at the start of game, there will
+        # be units in base", by the numbers on the board (the # after each).
+        # A hex off the battlefield is a panel hex: build_initial_board leaves
+        # it alone and the panel deal (panels.set_up_panels) stands the unit
+        # there. Black's is the same point mirror.
         "white": {
             "-11,11":  "pawn",
             "-10,11":  "archer",
@@ -354,6 +363,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "-2,9":    "archer",
             "0,9":     "pawn",
             "2,9":     "shieldman",
+            "-17,11":  "rook",       # 518
+            "-16,11":  "knight",     # 519
+            "-15,11":  "bishop",     # 520
+            "-14,11":  "bishop",     # 521
+            "-13,11":  "knight",     # 522
+            "-12,11":  "rook",       # 523
+            "-16,10":  "shieldman",  # 495
+            "-15,10":  "archer",     # 496
+            "-14,10":  "pawn",       # 497
+            "-13,10":  "archer",     # 498
+            "-12,10":  "shieldman",  # 499
+            "-16,9":   "pawn",       # 471
+            "-15,9":   "pawn",       # 472
+            "-14,9":   "pawn",       # 473
+            "-13,9":   "pawn",       # 474
+            "-12,9":   "pawn",       # 475
         },
         "black": {
             "11,-11":  "pawn",
@@ -380,6 +405,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "2,-9":    "archer",
             "0,-9":    "pawn",
             "-2,-9":   "shieldman",
+            "17,-11":  "rook",       # 24
+            "16,-11":  "knight",     # 23
+            "15,-11":  "bishop",     # 22
+            "14,-11":  "bishop",     # 21
+            "13,-11":  "knight",     # 20
+            "12,-11":  "rook",       # 19
+            "16,-10":  "shieldman",  # 47
+            "15,-10":  "archer",     # 46
+            "14,-10":  "pawn",       # 45
+            "13,-10":  "archer",     # 44
+            "12,-10":  "shieldman",  # 43
+            "16,-9":   "pawn",       # 71
+            "15,-9":   "pawn",       # 70
+            "14,-9":   "pawn",       # 69
+            "13,-9":   "pawn",       # 68
+            "12,-9":   "pawn",       # 67
         },
     },
     "rules": {
@@ -556,6 +597,10 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
     if 'setup' not in config:
         errors.append("Missing 'setup'")
     else:
+        board = config.get('board') if isinstance(config.get('board'), dict) else {}
+        radius = board.get('radius')
+        orientation = board.get('orientation', 'edge-up')
+        units = config.get('units') if isinstance(config.get('units'), dict) else {}
         for side in ('white', 'black'):
             placement = config['setup'].get(side, {})
             if not isinstance(placement, dict):
@@ -563,11 +608,27 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                 continue
             for coord_str, unit_id in placement.items():
                 try:
-                    parse_coord(coord_str)
+                    q, r = parse_coord(coord_str)
                 except ValueError:
                     errors.append(f"Invalid coordinate '{coord_str}' in setup.{side}")
+                    q = r = None
                 if unit_id not in config.get('units', {}):
                     errors.append(f"Unknown unit '{unit_id}' at {coord_str} in setup.{side}")
+                # Off the battlefield is a panel, and a side's panels are its
+                # own two: a unit dealt into the other side's would be counted
+                # as theirs by every panel rule. And a commander starts on the
+                # battlefield - under regicide one in a panel is a side that
+                # has lost before it moves. Mirrors validateGameRules.
+                if q is None or not isinstance(radius, int) or on_battlefield(q, r, radius):
+                    continue
+                owner = color_of_panel(panel_of(*axial_to_pixel(q, r, orientation)))
+                if owner != side:
+                    errors.append(
+                        f"setup.{side} puts a unit at {coord_str}, in {owner}'s panels")
+                elif (units.get(unit_id) or {}).get('commander'):
+                    errors.append(
+                        f"setup.{side} puts its commander at {coord_str}, in a panel - "
+                        f"a commander starts on the battlefield")
 
     # The objective decides how a game is lost, so a config that cannot
     # satisfy it is unplayable rather than merely odd: under regicide a side
@@ -628,6 +689,11 @@ def build_initial_board(config: Dict[str, Any]) -> HexBoard:
         for coord_str, unit_id in placement.items():
             q, r = parse_coord(coord_str)
             if not board.is_valid(q, r):
+                # A panel hex is the panel deal's (panels.set_up_panels), and
+                # the setup puts a base's squad there on purpose.
+                if color_of_panel(panel_of(*axial_to_pixel(
+                        q, r, config['board'].get('orientation', 'edge-up')))) == color:
+                    continue
                 logger.warning(
                     f"Skipping out-of-bounds placement: {unit_id} at ({q},{r}) "
                     f"for {color} (radius={radius})"

@@ -1,4 +1,5 @@
-<div class="game-room-container" *ngIf="gameState.state$ | async as state">
+<div class="game-room-container" *ngIf="gameState.state$ | async as state"
+     [style.zoom]="roomZoom" [style.width.px]="roomWidth" [style.height.px]="roomHeight">
   <header>
     <!-- Grouped, so the speaker keeps the same place whether or not the turn
          indicator is there to take the middle. Every move, blow, cast, commit

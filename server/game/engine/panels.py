@@ -9,8 +9,9 @@ feature behind ``entryBind``.
 Nothing here is persisted, and no migration adds a panel table, because none is
 needed: **the panels are entirely derivable from what the server already has.**
 
-* New games currently start with an empty *deal*. Recorded panel actions can
-  still repopulate the derived occupancy later.
+* A new game's *deal* is the config's: every ``setup`` entry that falls on a
+  hex of that side's own panels (:func:`set_up_panels`) - each side's base
+  squad, and nothing in the reserves.
 * The *geometry* - where a panel joins the board - is a pure function of radius.
 * Everything that happens to a panel unit afterwards is written into
   ``GameState.move_history``, which the server already stores verbatim.
@@ -264,19 +265,21 @@ def panel_roster(config: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
     return roster[:PANEL_SQUAD]
 
 
-#: Whether a new game deals units into the panels.
+#: Whether a new game gets the **placeholder** squads instead of the setup's.
 #:
-#: **Temporarily off.** The owner is clearing the placeholder squads out of the
-#: bases and reserves, so a new game opens with all four empty. Everything that
-#: *works* a panel is untouched and still tested - the walk, the wrap, the
-#: crossing, the blow, the walk home - because the panels come back, and a rule
-#: nobody exercises in the meantime is a rule that rots. See
-#: :func:`dealt_panels`, which is what the tests deal with.
+#: A real game stands in its panels what the config's ``setup`` puts there
+#: (:func:`set_up_panels`) - since 25 Sep 2026 the owner's base squads, and
+#: nothing in the reserves. The placeholder deal (:func:`dealt_panels`: one of
+#: each of the first five unit types, on every third hex of all four panels) is
+#: what the panel tests were written against - the walk, the wrap, the
+#: crossing, the blow, the walk home - so they turn this on and keep their
+#: fixtures, and a rule nobody exercises is a rule that rots. With it on, the
+#: placeholder squads stand **instead of** the setup's panel entries, never
+#: beside them.
 #:
-#: ``CPP_DEAL_PANELS=1`` turns the squads back on for one process. That is for
-#: the live e2e scripts, which drive a real server over a real socket and so
-#: cannot reach in and set this the way the unit tests do; a deployment leaves
-#: it unset and gets empty panels. It goes when the squads come back for good.
+#: ``CPP_DEAL_PANELS=1`` turns it on for one process. That is for the live e2e
+#: scripts, which drive a real server over a real socket and so cannot reach in
+#: and set this the way the unit tests do; a deployment leaves it unset.
 PANELS_DEALT = os.environ.get('CPP_DEAL_PANELS') == '1'
 
 
@@ -287,20 +290,12 @@ def deal_panels(
     panel_hp: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Return the initial panel occupancy.
-
-    New games currently start with empty base and reserve panels
-    (:data:`PANELS_DEALT`). Panel history is still replayed by
-    :func:`panel_occupancy` so recorded deployment actions remain
-    understandable when the feature is re-enabled.
-
-    **The emptiness is a decision, not arithmetic.** The deal itself is still
-    here, in :func:`dealt_panels`, so turning the squads back on is this one
-    flag rather than a function to write again from the client.
+    Return the initial panel occupancy: the setup's (:func:`set_up_panels`),
+    or the placeholder squads while :data:`PANELS_DEALT` is on.
     """
-    if not PANELS_DEALT:
-        return {}
-    return dealt_panels(config, radius, orientation, panel_hp)
+    if PANELS_DEALT:
+        return dealt_panels(config, radius, orientation, panel_hp)
+    return set_up_panels(config, radius, orientation, panel_hp)
 
 
 def dealt_panels(
@@ -348,6 +343,67 @@ def dealt_panels(
             if left <= 0:
                 continue
             dealt[spots[i]] = {
+                'unit_id': unit_id,
+                'color': color,
+                'hp': left,
+                'max_hp': full,
+                'uid': uid,
+                'panel': panel,
+            }
+    return dealt
+
+
+def set_up_panels(
+    config: Dict[str, Any],
+    radius: int,
+    orientation: str = 'edge-up',
+    panel_hp: Optional[Dict[str, int]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    The units the config's ``setup`` stands in the panels, by hex key. Mirrors
+    the setup branch of ``buildReserves``.
+
+    A side's setup is one map of hexes, battlefield and panels alike, so the
+    starting position reads the way the board is numbered. The battlefield's
+    entries are :func:`build_initial_board`'s; this takes every one that falls
+    on a hex of **that side's own** panels. One anywhere else - the other
+    side's panels, or off the drawn block - is not dealt (``_validate_config``
+    refuses the first), nor is a commander, who starts on the battlefield.
+
+    The uid is the board's shape, ``{color[0]}{q},{r}`` - the hex it was dealt
+    on, so it is deterministic and never meets a board unit's. ``panel_hp`` is
+    what the record says each has left, by uid, as for :func:`dealt_panels`.
+    """
+    wounded = panel_hp or {}
+    units = config.get('units') or {}
+    setup = config.get('setup') or {}
+    panel_at_hex = {
+        hex_key: panel
+        for panel, hexes in panel_zones(radius, orientation).items()
+        for hex_key in hexes
+    }
+    dealt: Dict[str, Dict[str, Any]] = {}
+    for color in ('white', 'black'):
+        placement = setup.get(color)
+        if not isinstance(placement, dict):
+            continue
+        for coord, unit_id in placement.items():
+            try:
+                key = coord_key(*parse_key(coord))
+            except ValueError:
+                continue
+            panel = panel_at_hex.get(key)
+            if panel is None or color_of_panel(panel) != color:
+                continue
+            spec = units.get(unit_id)
+            if not isinstance(spec, dict) or spec.get('commander'):
+                continue
+            full = spec.get('hp', 1)
+            uid = f"{color[0]}{key}"
+            left = wounded.get(uid, full)
+            if left <= 0:
+                continue
+            dealt[key] = {
                 'unit_id': unit_id,
                 'color': color,
                 'hp': left,

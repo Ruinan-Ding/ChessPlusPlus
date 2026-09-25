@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { ConfigService } from './config.service';
+import { ConfigService, DEFAULT_GAME_CONFIG } from './config.service';
 
 /**
  * The setup screen is the only thing standing between a pasted config and a
@@ -177,6 +177,32 @@ describe('ConfigService validation, against the server\'s', () => {
       catalogue: { zap: { id: 'zapp', name: 'Zap', target: 'enemy' } },
     };
     expect(service.validateGameRules(config).valid).toBeFalse();
+  });
+
+  it("refuses a unit in the other side's panels, and a commander in a panel", () => {
+    expect(service.validateGameRules(structuredClone(DEFAULT_GAME_CONFIG)).valid).toBeTrue();
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    config.setup.black['-17,11'] = 'rook';   // white's base
+    config.setup.white['-17,10'] = 'king';   // a king in a panel
+    const result = service.validateGameRules(config);
+    // White's setup is read first, as _validate_config reads it.
+    expect(result.errors).toEqual([
+      'setup.white puts its commander at -17,10, in a panel - a commander starts on the battlefield',
+      "setup.black puts a unit at -17,11, in white's panels",
+    ]);
+  });
+
+  it("reads a vertex-up board's panels off the pixel, as the server does", () => {
+    // -14,5: below the middle on an edge-up board (r >= 0), above it on a
+    // vertex-up one (q + 2r < 0) - the one place the two readings part.
+    const config: any = minimal();
+    config.board.radius = 11;
+    config.units.pawn = { ...config.units.king, id: 'pawn', commander: false };
+    config.setup = { white: { '0,11': 'king', '-14,5': 'pawn' }, black: { '0,-11': 'king' } };
+    expect(service.validateGameRules(structuredClone(config)).valid).toBeTrue();
+    config.board.orientation = 'vertex-up';
+    expect(service.validateGameRules(config).errors)
+      .toEqual(["setup.white puts a unit at -14,5, in black's panels"]);
   });
 
   it('still takes a config with no abilities at all', () => {

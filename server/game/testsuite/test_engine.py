@@ -5,12 +5,16 @@ These are plain Django TestCase tests that exercise the pure-Python engine
 modules without needing WebSocket or async infrastructure.
 """
 
+import copy
+
 from django.test import TestCase
 from typing import Any, Dict
 
 from game.engine import economy, panels, phases
 from game.engine.board import HexBoard, coord_key, parse_coord, hex_distance, HEX_DIRECTIONS
 from game.engine.config_loader import (
+    DEFAULT_CONFIG,
+    _validate_config,
     load_config,
     build_initial_board,
 )
@@ -865,15 +869,16 @@ class GameLogicTestCase(TestCase):
 
 class DealtPanels:
     """
-    Deal the panel squads for the duration of a test.
+    Deal the placeholder panel squads for the duration of a test.
 
-    A new game now opens with all four panels empty while the owner clears the
-    placeholder squads out (``panels.PANELS_DEALT``). Everything that *works* a
-    panel is still here and still has to be right for the day they come back -
-    the walk, the wrap, the crossing, the blow into a panel, the walk home, and
-    the windows and allowances that govern all of them - so these turn the deal
-    back on rather than going away. Turning them off instead would leave the
-    rules untested exactly while they are being changed.
+    A new game stands in its panels what the config's setup puts there - the
+    owner's base squads, and nothing in the reserves (``SetUpPanelsTestCase``).
+    The tests of everything that *works* a panel - the walk, the wrap, the
+    crossing, the blow into a panel, the walk home, and the windows and
+    allowances that govern all of them - were written against the placeholder
+    squads (one of each of five unit types, every third hex, all four panels),
+    so they turn those on instead (``panels.PANELS_DEALT``) and keep their
+    fixtures.
 
     Mix in before the test case: ``class Foo(DealtPanels, TestCase)``.
     """
@@ -886,6 +891,143 @@ class DealtPanels:
     def tearDown(self):
         panels.PANELS_DEALT = self._dealt_was
         super().tearDown()
+
+
+#: The owner's base squad for white, by the number the board draws on each hex
+#: (Show Hex), 25 Sep 2026. Black's is the point mirror.
+WHITE_BASE_BY_NUMBER = {
+    518: 'rook', 519: 'knight', 520: 'bishop', 521: 'bishop', 522: 'knight', 523: 'rook',
+    495: 'shieldman', 496: 'archer', 497: 'pawn', 498: 'archer', 499: 'shieldman',
+    471: 'pawn', 472: 'pawn', 473: 'pawn', 474: 'pawn', 475: 'pawn',
+}
+
+
+class SetUpPanelsTestCase(TestCase):
+    """
+    What a real game stands in its panels: the config's setup entries on each
+    side's own panel hexes - the owner's base squads (*"at the start of game,
+    there will be units in base"*), and nothing in the reserves.
+    """
+
+    def setUp(self):
+        self.config = load_config(None)
+        self.radius = self.config['board']['radius']
+        self.number = {
+            cell['key']: i + 1
+            for i, cell in enumerate(panels.grid_coords(self.radius))
+        }
+
+    def test_each_base_opens_on_the_owners_squad_by_hex_number(self):
+        dealt = panels.deal_panels(self.config, self.radius)
+        white = {self.number[k]: u['unit_id'] for k, u in dealt.items() if u['color'] == 'white'}
+        self.assertEqual(white, WHITE_BASE_BY_NUMBER)
+        self.assertEqual({u['panel'] for u in dealt.values() if u['color'] == 'white'}, {'bl'})
+        # Black's is the point mirror, in black's base.
+        by_key = {k: u for k, u in dealt.items() if u['color'] == 'black'}
+        self.assertEqual(len(by_key), 16)
+        for key, unit in dealt.items():
+            if unit['color'] != 'white':
+                continue
+            q, r = parse_coord(key)
+            mirror = by_key[coord_key(-q, -r)]
+            self.assertEqual(mirror['unit_id'], unit['unit_id'])
+            self.assertEqual(mirror['panel'], 'tr')
+        # On the shipped board, 518-523 mirror to 24-19 and 471-475 to 71-67.
+        self.assertEqual(self.number['17,-11'], 24)
+        self.assertEqual(self.number['12,-9'], 67)
+        # Nothing in either reserve.
+        self.assertFalse([u for u in dealt.values() if u['panel'] in ('br', 'tl')])
+
+    def test_a_setup_unit_is_dealt_whole_and_keyed_by_its_hex(self):
+        dealt = panels.deal_panels(self.config, self.radius)
+        rook = dealt['-17,11']
+        self.assertEqual(rook['uid'], 'w-17,11')
+        self.assertEqual(rook['hp'], self.config['units']['rook']['hp'])
+        self.assertEqual(rook['max_hp'], rook['hp'])
+        self.assertEqual(dealt['17,-11']['uid'], 'b17,-11')
+
+    def test_a_wounded_setup_unit_is_dealt_wounded_and_a_dead_one_not_at_all(self):
+        hurt = panels.deal_panels(
+            self.config, self.radius, panel_hp={'w-17,11': 7, 'b12,-9': 0})
+        self.assertEqual(hurt['-17,11']['hp'], 7)
+        self.assertNotIn('12,-9', hurt)
+        self.assertEqual(len(hurt), 31)
+
+    def test_the_board_is_untouched_by_the_panel_entries(self):
+        """build_initial_board takes the battlefield's entries and only those."""
+        cells = build_initial_board(self.config).to_dict()
+        self.assertEqual(len(cells), 48)
+        for key in cells:
+            q, r = parse_coord(key)
+            self.assertTrue(panels.on_battlefield(q, r, self.radius), key)
+
+    def test_a_new_games_panels_are_the_setup_and_its_units_can_walk(self):
+        occupancy = panels.panel_occupancy(self.config, self.radius, [])
+        self.assertEqual(occupancy, panels.deal_panels(self.config, self.radius))
+        # A pawn on the base's top row has the empty rows above it to walk to,
+        # in its own base - the machinery that works a panel works these.
+        board = build_initial_board(self.config).to_dict()
+        targets = panels.panel_move_targets(
+            self.config, self.radius, [], board, '-13,9', ply=1, points=0)
+        self.assertTrue(targets)
+        base = set(panels.panel_zones(self.radius)['bl'])
+        for hex_key in targets:
+            self.assertIn(hex_key, base)
+            self.assertNotIn(hex_key, occupancy)
+
+    def test_a_setup_entry_in_a_reserve_is_dealt_there_and_nowhere_else(self):
+        """
+        The setup is one map of hexes; the owner's only fills the bases. What is
+        not the side's own to fill - the other side's panels, or any panel for a
+        commander - is not dealt, whatever validation would have said of it.
+        """
+        config = copy.deepcopy(self.config)
+        free_base = next(k for k in panels.panel_zones(self.radius)['bl']
+                         if k not in config['setup']['white'])
+        config['setup']['white']['2,10'] = 'pawn'    # hex 513, white's reserve
+        config['setup']['white']['-2,-10'] = 'pawn'  # black's reserve
+        config['setup']['white'][free_base] = 'king'
+        dealt = panels.deal_panels(config, self.radius)
+        self.assertEqual(dealt['2,10']['panel'], 'br')
+        self.assertEqual(dealt['2,10']['uid'], 'w2,10')
+        self.assertNotIn('-2,-10', dealt)
+        self.assertNotIn(free_base, dealt)
+
+    def test_the_placeholder_flag_deals_its_squads_instead(self):
+        was = panels.PANELS_DEALT
+        panels.PANELS_DEALT = True
+        try:
+            dealt = panels.deal_panels(self.config, self.radius)
+        finally:
+            panels.PANELS_DEALT = was
+        self.assertEqual(len(dealt), 20)
+        self.assertTrue(all(u['uid'].startswith('r') for u in dealt.values()))
+
+    def test_a_setup_that_crosses_sides_or_benches_its_commander_is_refused(self):
+        self.assertEqual(_validate_config(copy.deepcopy(DEFAULT_CONFIG)), [])
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['setup']['black']['-17,11'] = 'rook'   # white's base
+        config['setup']['white']['-17,10'] = 'king'   # a king in a panel
+        errors = _validate_config(config)
+        self.assertIn("setup.black puts a unit at -17,11, in white's panels", errors)
+        self.assertIn(
+            'setup.white puts its commander at -17,10, in a panel - '
+            'a commander starts on the battlefield', errors)
+        self.assertEqual(len(errors), 2)
+
+    def test_a_vertex_up_boards_panels_are_read_off_the_pixel(self):
+        """
+        -14,5 is below the middle on an edge-up board (r >= 0) and above it on
+        a vertex-up one (q + 2r < 0) - the one place the two readings part, and
+        the client's validateGameRules has to part the same way.
+        """
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['setup']['white']['-14,5'] = 'pawn'
+        self.assertEqual(_validate_config(config), [])
+        config['board']['orientation'] = 'vertex-up'
+        self.assertEqual(
+            _validate_config(config),
+            ["setup.white puts a unit at -14,5, in black's panels"])
 
 
 class PanelsTestCase(DealtPanels, TestCase):

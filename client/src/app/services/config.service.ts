@@ -257,6 +257,14 @@ export const DEFAULT_GAME_CONFIG = {
     //                 - eight spaced units are one hex wider than the row.
     // Odd separations are what stay centred here: the row holds an even number
     // of hexes, so an even gap would put the pair off the middle.
+    //
+    // Then each side's base: its bottom three rows, full - rook knight bishop
+    // bishop knight rook, shieldman archer pawn archer shieldman, and five
+    // pawns. The owner, 25 Sep 2026: "at the start of game, there will be units
+    // in base", by the numbers on the board (the // after each). A hex off the
+    // battlefield is a panel hex: the board builders leave it alone and the
+    // panel deal (`buildReserves`) stands the unit there. Black's is the same
+    // point mirror.
     white: {
       '-11,11':  'pawn',
       '-10,11':  'archer',
@@ -281,7 +289,23 @@ export const DEFAULT_GAME_CONFIG = {
       '-4,9':    'pawn',
       '-2,9':    'archer',
       '0,9':     'pawn',
-      '2,9':     'shieldman'
+      '2,9':     'shieldman',
+      '-17,11':  'rook',      // 518
+      '-16,11':  'knight',    // 519
+      '-15,11':  'bishop',    // 520
+      '-14,11':  'bishop',    // 521
+      '-13,11':  'knight',    // 522
+      '-12,11':  'rook',      // 523
+      '-16,10':  'shieldman', // 495
+      '-15,10':  'archer',    // 496
+      '-14,10':  'pawn',      // 497
+      '-13,10':  'archer',    // 498
+      '-12,10':  'shieldman', // 499
+      '-16,9':   'pawn',      // 471
+      '-15,9':   'pawn',      // 472
+      '-14,9':   'pawn',      // 473
+      '-13,9':   'pawn',      // 474
+      '-12,9':   'pawn'       // 475
     },
     black: {
       '11,-11':  'pawn',
@@ -307,7 +331,23 @@ export const DEFAULT_GAME_CONFIG = {
       '4,-9':    'pawn',
       '2,-9':    'archer',
       '0,-9':    'pawn',
-      '-2,-9':   'shieldman'
+      '-2,-9':   'shieldman',
+      '17,-11':  'rook',      // 24
+      '16,-11':  'knight',    // 23
+      '15,-11':  'bishop',    // 22
+      '14,-11':  'bishop',    // 21
+      '13,-11':  'knight',    // 20
+      '12,-11':  'rook',      // 19
+      '16,-10':  'shieldman', // 47
+      '15,-10':  'archer',    // 46
+      '14,-10':  'pawn',      // 45
+      '13,-10':  'archer',    // 44
+      '12,-10':  'shieldman', // 43
+      '16,-9':   'pawn',      // 71
+      '15,-9':   'pawn',      // 70
+      '14,-9':   'pawn',      // 69
+      '13,-9':   'pawn',      // 68
+      '12,-9':   'pawn'       // 67
     }
   },
   rules: {
@@ -481,6 +521,8 @@ export class ConfigService {
       errors.push('Missing "setup"');
     } else {
       const coordPattern = /^-?\d+,-?\d+$/;
+      const radius = config.board?.radius;
+      const vertexUp = config.board?.orientation === 'vertex-up';
       for (const side of ['white', 'black'] as const) {
         const placement = config.setup[side];
         if (!placement || typeof placement !== 'object') {
@@ -493,6 +535,26 @@ export class ConfigService {
           }
           if (config.units && !(unitId as string in config.units)) {
             errors.push(`Unknown unit "${unitId}" at ${coord} in setup.${side}`);
+          }
+          // Off the battlefield is a panel, and a side's panels are its own
+          // two: a unit dealt into the other side's would be counted as theirs
+          // by every panel rule. And a commander starts on the battlefield -
+          // under regicide one in a panel is a side that has lost before it
+          // moves. Mirrors _validate_config.
+          const [q, r] = coord.split(',').map(Number);
+          if (!coordPattern.test(coord) || !Number.isInteger(radius)
+              || Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) <= radius) {
+            continue;
+          }
+          // The sign of the hex's pixel y (`axialToPixel`), which is what
+          // `panelOf` reads a panel's side off: below the middle is white's.
+          const owner = (vertexUp ? q + 2 * r : r) < 0 ? 'black' : 'white';
+          if (owner !== side) {
+            errors.push(`setup.${side} puts a unit at ${coord}, in ${owner}'s panels`);
+          } else if (config.units?.[unitId as string]?.commander) {
+            errors.push(
+              `setup.${side} puts its commander at ${coord}, in a panel - ` +
+              `a commander starts on the battlefield`);
           }
         }
       }
