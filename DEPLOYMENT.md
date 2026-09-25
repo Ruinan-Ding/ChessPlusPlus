@@ -108,19 +108,29 @@ Unset locally, so nothing changes for dev.
 Without this the image build copies `server/venv/` - hundreds of megabytes of Windows `.exe`
 binaries that cannot run on Linux - and your local `db.sqlite3` with your dev games in it.
 
-Create `server/.dockerignore`:
+Create `.dockerignore` **at the repository root** - the image is built from there (step 0.4),
+and Docker reads the ignore file at the root of what it builds from:
 
 ```
-venv/
-db.sqlite3
-__pycache__/
-*.pyc
-.pytest_cache/
+*
+!server/
+!shared/
+server/venv/
+server/db.sqlite3
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
 ```
+
+The first line ignores everything and the next two let back in only the two folders the server
+needs - the client, `.git` and the rest stay out of the image.
 
 ### 0.4 A `Dockerfile`
 
-Create `server/Dockerfile`:
+Create `server/Dockerfile`. It is built **from the repository root**, not from `server/`: the
+server reads the shipped game config from `shared/default-config.json`, which sits beside
+`server/` (the browser build reads the same file), so the image needs both folders, laid out
+as they are in the repo.
 
 ```dockerfile
 FROM python:3.12-slim
@@ -128,12 +138,13 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-WORKDIR /app
+WORKDIR /app/server
 
-COPY requirements.txt .
+COPY server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY shared/ /app/shared/
+COPY server/ .
 
 EXPOSE 8000
 
@@ -195,7 +206,7 @@ Opens a browser. Come back when it says you are logged in.
 
 ### Step 4 - create the app
 
-From the `server/` directory:
+From the **repository root** - the image needs `shared/` as well as `server/` (step 0.4):
 
 ```powershell
 fly launch --no-deploy
@@ -224,6 +235,7 @@ app = 'chessplusplus'          # whatever name you chose
 primary_region = 'sea'         # whatever region you chose
 
 [build]
+  dockerfile = 'server/Dockerfile'
 
 [env]
   DJANGO_DB_PATH = '/data/db.sqlite3'
@@ -296,6 +308,8 @@ refuses to start without a real secret key and an explicit host list when it is 
 intended behaviour: forgetting fails loudly instead of quietly shipping debug mode.
 
 ### Step 8 - deploy
+
+From the repository root, where `fly.toml` is:
 
 ```powershell
 fly deploy
@@ -446,7 +460,7 @@ if it gets OOM-killed you will see it in `fly logs`, and you put it back.
 ### Redeploying
 
 - **Client**: push to `main`. The workflow does it.
-- **Server**: `fly deploy` from `server/`.
+- **Server**: `fly deploy` from the repository root.
 - **A config change only** (`fly.toml`): `fly deploy` as well.
 - **A new secret**: `fly secrets set ...` restarts the machine on its own.
 

@@ -2530,6 +2530,28 @@ describe('GameBoardComponent setup deal', () => {
     });
   });
 
+  it("hands the room a unit's real numbers, and the hex its two digits", () => {
+    // The room writes these back as a panel unit's HP when a cast lands, so a
+    // clamp here cut a 120-HP unit to 99 for good.
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    config.units.rook.hp = 120;
+    config.units.rook.move = 104;
+    board = TestBed.createComponent(GameBoardComponent).componentInstance;
+    const state = { '0,0': { unit_id: 'rook', color: 'white', hp: 115, max_hp: 120, uid: 'wr' } };
+    board.config = config;
+    board.radius = 11;
+    board.boardState = state;
+    board.ngOnChanges({
+      config: new SimpleChange(null, config, true),
+      radius: new SimpleChange(null, 11, true),
+      boardState: new SimpleChange(null, state, true),
+    });
+    const hex = board.cellsByKey.get('0,0');
+    const seen = board.describe(hex);
+    expect([seen.hp, seen.hpMax, seen.mv]).toEqual([115, 120, 104]);
+    expect(hex.stats.hp).toBe(99);
+  });
+
   it('deals a wounded unit wounded, and a dead one not at all', () => {
     const reserves = deal(structuredClone(DEFAULT_GAME_CONFIG), { 'w-17,11': 7, 'b12,-9': 0 });
     expect(reserves['-17,11'].hp).toBe(7);

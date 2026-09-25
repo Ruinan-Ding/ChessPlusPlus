@@ -319,7 +319,12 @@ function hexPoints(cx: number, cy: number, orientation: BoardOrientation, size =
 
 /** Stats render in two digits at most - clamp rather than overflow the hex. */
 function twoDigits(v: number | null | undefined): number | null {
-  return v === null || v === undefined ? null : Math.min(99, Math.max(0, Math.trunc(v)));
+  return v === null || v === undefined ? null : Math.min(99, wholeStat(v)!);
+}
+
+/** A stat as a whole number, never negative - the real one, for the Unit panel and the room. */
+function wholeStat(v: number | null | undefined): number | null {
+  return v === null || v === undefined ? null : Math.max(0, Math.trunc(v));
 }
 
 /**
@@ -331,14 +336,6 @@ function placeholderVet(key: string, unitId: string): number {
   const seed = key + unitId;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
   return Math.abs(h) % 4;
-}
-
-/**
- * Attack as drawn on the hex: one number per ring the unit can strike,
- * outermost last - "16" for a melee unit, "26,19" for one that reaches two.
- */
-function attackText(unitId: string, config: any): string {
-  return attackTiers(unitId, config).map(d => String(twoDigits(d))).join(',');
 }
 
 function attackCellText(unitId: string, config: any, bonus = 0): string {
@@ -4486,12 +4483,16 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       unitId: pc.unit_id,
       name: def?.name ?? pc.unit_id,
       color: pc.color,
-      hp: twoDigits(pc.hp),
-      hpMax: twoDigits(pc.max_hp ?? def?.hp),
+      // The real numbers, not the hex's two digits: the room writes `hp` and
+      // `hpMax` back as a panel unit's HP when a cast lands on it, and a
+      // clamp here cut a 120-HP unit to 99 for good. Only the hex is short of
+      // room for a third digit.
+      hp: wholeStat(pc.hp),
+      hpMax: wholeStat(pc.max_hp ?? def?.hp),
       hpAfter: this.forecastHpAfter(hex.key),
-      atk: attackText(pc.unit_id, this.config),
-      def: hex.stats?.def ?? null,
-      mv: twoDigits(def?.move),
+      atk: attackTiers(pc.unit_id, this.config).map(d => String(wholeStat(d))).join(','),
+      def: wholeStat(def?.defense),
+      mv: wholeStat(def?.move),
       points: def?.value ?? 0,
       vet: hex.vet,
       panel: hex.panel || undefined,

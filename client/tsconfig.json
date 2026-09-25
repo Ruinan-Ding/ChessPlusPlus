@@ -4,7 +4,7 @@
   "compileOnSave": false,
   "compilerOptions": {
     "outDir": "./dist/out-tsc",
-    "rootDir": "./src",
+    "rootDir": "..",
     "strict": true,
     "noImplicitOverride": true,
     "noPropertyAccessFromIndexSignature": true,
@@ -13,6 +13,7 @@
     "skipLibCheck": true,
     "isolatedModules": true,
     "esModuleInterop": true,
+    "resolveJsonModule": true,
     "experimentalDecorators": true,
     "moduleResolution": "bundler",
     "importHelpers": true,

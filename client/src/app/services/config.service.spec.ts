@@ -140,15 +140,22 @@ describe('ConfigService validation, against the server\'s', () => {
    * editor should be told about while they are still editing.
    */
   it('takes a catalogue whose ids all join up', () => {
+    // A pair for the pool, and a path of three - each ability in one slot.
     const config: any = minimal();
     config.abilities = {
-      slots: 1,
-      pool: ['zap'],
+      slots: 2,
+      pool: ['zap', 'zip'],
       paths: [{ id: 'way', name: 'Way', cost: 1,
-                passive: 'zap', skill: 'zap', ultimate: 'zap' }],
-      catalogue: { zap: { id: 'zap', name: 'Zap', target: 'enemy' } },
+                passive: 'calm', skill: 'jab', ultimate: 'end' }],
+      catalogue: {
+        zap: { id: 'zap', name: 'Zap', target: 'enemy', damage: 3 },
+        zip: { id: 'zip', name: 'Zip', target: 'friendly', mov: 1 },
+        calm: { id: 'calm', name: 'Calm', target: 'friendly', def: 1 },
+        jab: { id: 'jab', name: 'Jab', target: 'enemy', damage: 2 },
+        end: { id: 'end', name: 'End', target: 'universal', points: 4 },
+      },
     };
-    expect(service.validateGameRules(config).valid).toBeTrue();
+    expect(service.validateGameRules(config)).toEqual({ valid: true });
   });
 
   it('refuses a pool or a path that names an ability the catalogue has not got', () => {
@@ -203,6 +210,77 @@ describe('ConfigService validation, against the server\'s', () => {
     config.board.orientation = 'vertex-up';
     expect(service.validateGameRules(config).errors)
       .toEqual(["setup.white puts a unit at -14,5, in black's panels"]);
+  });
+
+  it('refuses a misspelt unit field, and a stat left out', () => {
+    // `"atack": 20` loaded, drew ATK 0 on the hex and struck for 1.
+    const config: any = minimal();
+    config.units.king.atack = 20;
+    delete config.units.king.attack;
+    expect(service.validateGameRules(config).errors).toEqual([
+      'units.king.attack must be an integer >= 0',
+      'units.king has unknown field "atack"',
+    ]);
+  });
+
+  it("refuses a unit's own ability that is not a friendly one it can cast on itself", () => {
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    config.units.pawn.ability = 'nope';
+    config.units.rook.ability = 'sap';        // an enemy ability
+    config.units.knight.ability = 'bastion';  // a passive
+    // In the config's unit order: king, queen, rook, bishop, knight, ..., pawn.
+    expect(service.validateGameRules(config).errors).toEqual([
+      'units.rook.ability must be a friendly ability - it is cast on the unit itself',
+      'units.knight.ability must be a friendly ability - it is cast on the unit itself',
+      'units.pawn.ability names unknown ability "nope"',
+    ]);
+  });
+
+  it("refuses an ability's numbers that are not whole, or out of range", () => {
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    const cat = config.abilities.catalogue;
+    cat.dash.cooldown = 1.5;
+    cat.dash.turns = 0;
+    cat.focus.uses = 0;
+    cat.bulwark.target = 'ally';
+    cat.mire.dmg = 4;
+    expect(service.validateGameRules(config).errors).toEqual([
+      'abilities.catalogue.dash.cooldown must be an integer >= 0',
+      'abilities.catalogue.dash.turns must be an integer >= 1',
+      'abilities.catalogue.focus.uses must be an integer >= 1',
+      'abilities.catalogue.bulwark.target must be friendly, enemy or universal',
+      'abilities.catalogue.mire has unknown field "dmg"',
+    ]);
+  });
+
+  it('refuses a number an ability of its kind never reads', () => {
+    // Cleave's `points` paid nobody; a universal ultimate's `atk` boosted
+    // nothing. A number that does nothing is a number someone expects to.
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    const cat = config.abilities.catalogue;
+    cat.cleave.points = 5;
+    cat.ruin.atk = 2;
+    cat.bastion.cost = 3;
+    cat.dash.damage = 4;
+    cat['arc-bolt'].turns = 2;
+    expect(service.validateGameRules(config).errors).toEqual([
+      'abilities.catalogue.dash.damage does nothing on a friendly ability',
+      'abilities.catalogue.arc-bolt.turns does nothing on an ability that changes no stat',
+      'abilities.catalogue.bastion.cost does nothing on a passive',
+      'abilities.catalogue.cleave.points does nothing on an enemy ability',
+      'abilities.catalogue.ruin.atk does nothing on a universal ability',
+    ]);
+  });
+
+  it('refuses a pool that cannot be picked in pairs, and an ability in two slots', () => {
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    config.abilities.pool.push('anchor');     // odd, and already Bastion's skill
+    config.abilities.slots = 3;
+    expect(service.validateGameRules(config).errors).toEqual([
+      '"abilities.pool" must hold an even number of abilities - they are picked in pairs',
+      '"abilities.slots" must be an even whole number - picks come in pairs',
+      '"abilities" names "anchor" in more than one slot',
+    ]);
   });
 
   it('still takes a config with no abilities at all', () => {

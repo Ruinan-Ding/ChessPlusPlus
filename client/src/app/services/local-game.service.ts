@@ -106,6 +106,16 @@ interface LocalGame {
   phaseBank?: PhaseBank;
 }
 
+/**
+ * The extra steps a message says an ability lent a unit: a whole number, and
+ * never below 0 - a drained MOV is the board's to show, and walking fewer
+ * steps than offered is always legal. No ceiling: the config decides how far
+ * an ability sends a unit, and the board has already offered exactly that.
+ */
+function extraSteps(moveBonus: unknown): number {
+  return Math.max(0, Math.trunc(Number(moveBonus) || 0));
+}
+
 @Injectable({ providedIn: 'root' })
 export class LocalGameService {
   private outgoing = new Subject<any>();
@@ -573,7 +583,7 @@ export class LocalGameService {
     // set off from.
     const radius: number = g.config?.board?.radius ?? 11;
     const [q, r] = String(from).split(',').map(Number);
-    const bonus = Math.max(0, Math.min(10, Number(moveBonus) || 0));
+    const bonus = extraSteps(moveBonus);
     const budget = bonus
       ? (g.config?.units?.[attacker.unit_id]?.move ?? 0) + bonus
       : undefined;
@@ -760,11 +770,13 @@ export class LocalGameService {
     const movingColor = this.colorOf(g.currentTurn);
 
     const relocating = to !== from;
-    // Steps lent by a one-turn ability, on top of the unit's own move stat.
-    const bonus = Math.max(0, Math.min(10, Number(moveBonus) || 0));
-    // One-turn ability boosts, the client's word for them - taken because
-    // solo play has nobody to cheat. Clamped like the move bonus above.
-    const stat = (v: unknown) => Math.max(-20, Math.min(20, Number(v) || 0));
+    // Steps lent by an ability, on top of the unit's own move stat.
+    const bonus = extraSteps(moveBonus);
+    // Ability boosts, the client's word for them - taken because solo play
+    // has nobody to cheat. Whole numbers, and no ceiling: they were capped at
+    // 10 steps and +/-20, which the config never said, so a Surge of 12 was
+    // offered on the board and refused here as an illegal move.
+    const stat = (v: unknown) => Math.trunc(Number(v) || 0);
     const atkUp = stat(bonuses?.atk), defUp = stat(bonuses?.def);
     const theirAtkUp = stat(bonuses?.targetAtk), theirDefUp = stat(bonuses?.targetDef);
     const budget = bonus

@@ -495,15 +495,22 @@
                         title="Take a path to gain its passive."
                 >Passive</button>
               </ng-template>
-              <button class="scaffold-btn" type="button"
-                      [style.font-size]="abilityFontSize(0, unitCooldowns[0])"
-                      [title]="unitAbilityHint(0)"
-                      [class.focused]="unitAbilityFocus?.index === 0"
-                      [class.locked]="!vetUnlocked(0)"
-                      [class.ability-unavailable]="!canAfford('mine', 0, unitCooldowns[0])"
-                      [disabled]="!vetUnlocked(0) || !!displayUnit.panel"
-                      (click)="selectUnitAbility(0)"
-              >{{ abilityLabel(0, unitCooldowns[0]) }}</button>
+              <!-- The unit type's own ability (`units.<id>.ability`), with its
+                   own cooldown. `!== null`, because slot 0 is an ability. -->
+              <button class="scaffold-btn" type="button" *ngIf="displayUnitAbility !== null; else noOwnAbility"
+                      [style.font-size]="abilityFontSize(displayUnitAbility, unitCooldownOf(displayUnit.uid))"
+                      [title]="unitAbilityHint(displayUnitAbility)"
+                      [class.focused]="unitAbilityFocus?.index === displayUnitAbility"
+                      [class.locked]="!vetUnlocked(displayUnitAbility)"
+                      [class.ability-unavailable]="!displayUnitAbilityReady"
+                      [disabled]="!vetUnlocked(displayUnitAbility) || !!displayUnit.panel"
+                      (click)="selectUnitAbility(displayUnitAbility)"
+              >{{ abilityLabel(displayUnitAbility, unitCooldownOf(displayUnit.uid)) }}</button>
+              <ng-template #noOwnAbility>
+                <button class="scaffold-btn locked" type="button" disabled
+                        title="This unit has no ability of its own."
+                >No ability</button>
+              </ng-template>
             </div>
           </div></ng-template>
           <p class="arming-hint" *ngIf="pendingAbility">Click the selected target.</p>

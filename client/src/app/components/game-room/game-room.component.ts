@@ -50,11 +50,19 @@ interface AbilityEntry {
   target?: 'friendly' | 'enemy' | 'universal';
   cost?: number;
   cooldown?: number;
+  turns?: number;
+  uses?: number;
   mov?: number; atk?: number; def?: number;
   damage?: number; heal?: number; points?: number;
   /** The owner's bench rather than a balanced ability - kept out of networked play. */
   testing?: boolean;
 }
+
+/**
+ * How many of its side's turns an ability cools for when its catalogue entry
+ * names none - the one number every cast used before it could be configured.
+ */
+const DEFAULT_COOLDOWN = 3;
 
 /** A path as the config holds it: its three abilities named by id. */
 interface AbilityPath {
@@ -75,13 +83,19 @@ interface AbilityCatalogue {
   catalogue?: Record<string, AbilityEntry>;
 }
 
-/** What the room reads off a slot: the config's entry with its zeros filled in. */
+/** What the room reads off a slot: the config's entry with its defaults filled in. */
 interface AbilityEffect {
   id: string;
   name: string;
   target: 'friendly' | 'enemy' | 'universal';
   mov: number; atk: number; def: number;
   damage?: number; heal?: number; points?: number;
+  /** Turns it cools for after a cast (`DEFAULT_COOLDOWN` when unset). */
+  cooldown: number;
+  /** Caster's turns a mov/atk/def change lasts (1 when unset). */
+  turns: number;
+  /** Casts a match allows - per side, or per unit for a unit's own - or null for no limit. */
+  uses: number | null;
   testing?: boolean;
 }
 
@@ -113,15 +127,22 @@ interface LocalUiState {
   // catalogue that produced it, and reordering the config would re-point
   // every saved loadout, path and cooldown. The translation happens here and
   // nowhere else (`persistLocalUiState` / `restoreLocalUiState`).
-  unitCooldowns: Record<string, number>;
+  /**
+   * A unit's own ability cools per unit, keyed by uid. Older saves wrote one
+   * side-wide row by ability id under `unitCooldowns`; that is not read.
+   */
+  unitCooldownsByUid?: Record<string, UnitCooldown>;
   opponentCooldowns: Record<string, number>;
   myCooldowns: Record<string, number>;
   myLoadout: string[];
   opponentLoadout: string[];
   myPath: string | null;
   opponentPath: string | null;
-  myUltimateUsed: boolean;
-  opponentUltimateUsed: boolean;
+  /** Casts spent against an ability's `uses`, by `holder|abilityId` (see `abilityUses`). */
+  abilityUses?: Record<string, number>;
+  /** Read from older saves only: what `uses: 1` on an ultimate replaced. */
+  myUltimateUsed?: boolean;
+  opponentUltimateUsed?: boolean;
   buffs: Record<string, UnitBuff>;
   abilityUsed: Record<string, boolean>;
   soloColor: 'white' | 'black';
@@ -157,8 +178,25 @@ interface UnitEffect {
   mov: number;
   atk: number;
   def: number;
-  /** Turns left. Everything cast today runs to the caster's next turn. */
+  /**
+   * Turns left: one comes off as its caster's turn begins, and it lifts at 0.
+   * The ability's own `turns`, so 1 runs to the caster's next turn.
+   */
   turns: number;
+  /**
+   * Whose turn start counts it down. Per effect, not per unit: a unit carrying
+   * one side's boost and the other's drain loses each on its own caster's
+   * turn. Older saves have it on the buff alone (`UnitBuff.caster`).
+   */
+  caster?: string;
+  /** Cast by the other side - an offensive cast, which marks the unit hit. */
+  hostile?: boolean;
+}
+
+/** A unit's own ability cooling down, and whose turns tick it. */
+interface UnitCooldown {
+  turns: number;
+  color: string;
 }
 
 /**
@@ -327,7 +365,13 @@ interface AbilitySpend {
   gain?: number;
   uid: string;
   priorCooldown: number;
-  /** Whether that side had already spent its ultimate. */
+  /** For a unit's own ability: its cooldown before the cast, or null for none. */
+  priorUnitCooldown?: UnitCooldown | null;
+  /** Whose `uses` the cast counted against - a side, or a unit's uid. */
+  holder?: string;
+  /** How many of them had been spent before it. */
+  priorUses?: number;
+  /** Read from stacks saved before `uses`; nothing writes it now. */
   priorUltimate?: boolean;
   priorBuff: UnitBuff | null;
   priorUsed: boolean;
@@ -670,7 +714,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       cpScheme: CP_SCHEME,
       myAbilityPoints: this.myAbilityPoints,
       opponentAbilityPoints: this.opponentAbilityPoints,
-      unitCooldowns: this.cooldownsById(this.unitCooldowns),
+      unitCooldownsByUid: this.unitCooldowns,
       opponentCooldowns: this.cooldownsById(this.opponentCooldowns),
       myCooldowns: this.cooldownsById(this.myCooldowns),
       myLoadout: this.idsOfSlots(this.myLoadout),
@@ -678,8 +722,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       myPath: this.myPath === null ? null : (this.abilityPaths[this.myPath]?.id ?? null),
       opponentPath: this.opponentPath === null
         ? null : (this.abilityPaths[this.opponentPath]?.id ?? null),
-      myUltimateUsed: this.myUltimateUsed,
-      opponentUltimateUsed: this.opponentUltimateUsed,
+      abilityUses: this.abilityUses,
       buffs: this.buffs,
       abilityUsed: this.abilityUsed,
       soloColor: this.soloColor,
@@ -719,7 +762,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       if (Number.isFinite(state.opponentAbilityPoints)) {
         this.opponentAbilityPoints = state.opponentAbilityPoints!;
       }
-      if (state.unitCooldowns) this.unitCooldowns = this.cooldownsBySlot(state.unitCooldowns);
+      if (state.unitCooldownsByUid && typeof state.unitCooldownsByUid === 'object') {
+        this.unitCooldowns = Object.fromEntries(
+          Object.entries(state.unitCooldownsByUid).filter(([, cd]) =>
+            Number.isFinite(cd?.turns) && cd.turns > 0 && typeof cd.color === 'string'));
+      }
       if (state.opponentCooldowns) {
         this.opponentCooldowns = this.cooldownsBySlot(state.opponentCooldowns);
       }
@@ -742,8 +789,21 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       };
       if (state.myPath !== undefined) this.myPath = pathOf(state.myPath);
       if (state.opponentPath !== undefined) this.opponentPath = pathOf(state.opponentPath);
-      if (typeof state.myUltimateUsed === 'boolean') this.myUltimateUsed = state.myUltimateUsed;
-      if (typeof state.opponentUltimateUsed === 'boolean') this.opponentUltimateUsed = state.opponentUltimateUsed;
+      if (state.abilityUses && typeof state.abilityUses === 'object') {
+        this.abilityUses = Object.fromEntries(
+          Object.entries(state.abilityUses).filter(([, n]) => Number.isFinite(n) && n > 0));
+      } else {
+        // A save from before `uses` said only whether each side had spent its
+        // ultimate - one use of the ultimate of the path it took.
+        const spent: Record<string, number> = {};
+        for (const [side, used] of [
+          ['mine', state.myUltimateUsed], ['opponent', state.opponentUltimateUsed],
+        ] as const) {
+          const path = this.pathChoice(side);
+          if (used && path) spent[`${side}|${this.abilityIds[path.ultimate]}`] = 1;
+        }
+        this.abilityUses = spent;
+      }
       if (state.buffs && typeof state.buffs === 'object') this.buffs = state.buffs;
       if (state.abilityUsed && typeof state.abilityUsed === 'object') this.abilityUsed = state.abilityUsed;
       if (state.soloColor === 'white' || state.soloColor === 'black') this.soloColor = state.soloColor;
@@ -806,7 +866,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.myCpSpent = 0;
         this.opponentCpSpent = 0;
         this.standingsCache = null;
-        this.unitCooldowns = this.abilityEffects.map(() => 0);
+        this.unitCooldowns = {};
         this.opponentCooldowns = this.abilityEffects.map(() => 0);
         this.myCooldowns = this.abilityEffects.map(() => 0);
         this.myLoadout = [];
@@ -815,8 +875,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.opponentPath = null;
         this.abilityGlow = { mine: [], opponent: [] };
         this.abilityPickGlow = { mine: [], opponent: [] };
-        this.myUltimateUsed = false;
-        this.opponentUltimateUsed = false;
+        this.abilityUses = {};
         this.buffs = {};
         this.abilityUsed = {};
         this.opponentMoveVisuals = [];
@@ -2105,6 +2164,22 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     }
   }
 
+  /**
+   * Hand a side points - always points, whichever currency bought the ability
+   * that gave them. Kept apart like a charge (`myAbilityPoints`). A negative
+   * amount takes them back, which is what Undo does.
+   */
+  private grantPoints(side: 'mine' | 'opponent', amount: number): void {
+    if (!amount) return;
+    if (side === 'mine') {
+      this.myPoints += amount;
+      this.myAbilityPoints += amount;
+    } else {
+      this.opponentPoints += amount;
+      this.opponentAbilityPoints += amount;
+    }
+  }
+
   /** What buys that slot, named for a hint - and counted, so "1 point" reads. */
   private purseName(index: number, cost: number): string {
     if (this.isPathSlot(index)) return 'CP';
@@ -2346,7 +2421,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       ...(hit.mark ? { mark: hit.mark } : {}),
     }]);
     this.chargeFor(armed.side, armed.index, cost);
-    armed.cooldowns[armed.index] = 3;
+    armed.cooldowns[armed.index] = this.cooldownOf(armed.index);
+    this.spendUse(armed.side, armed.index);
     this.markUsed(armed.side, armed.index);
     this.pendingAbility = null;
     this.clearAbilityFocus();
@@ -2566,11 +2642,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (side === 'mine') this.myLoadout = next; else this.opponentLoadout = next;
     // Slots Reselect freed are refilled cold. Swapping changes what you
     // carry; it is not a way to hand yourself a ready ability mid-match.
-    // Three turns, the same as any cast leaves behind.
+    // The ability's own cooldown, the same as a cast of it leaves behind.
     for (const i of pair) {
       if (this.swapDebt[side] > 0) {
         this.swapDebt[side]--;
-        this.cooldownRow(side)[i] = 3;
+        this.cooldownRow(side)[i] = this.cooldownOf(i);
       }
     }
     for (const i of pair) this.flashPick(side, i);
@@ -2705,8 +2781,67 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return `${name} (${cooldown ?? 0}) - ${cost}`;
   }
 
-  private ultimateUsed(side: 'mine' | 'opponent'): boolean {
-    return side === 'mine' ? this.myUltimateUsed : this.opponentUltimateUsed;
+  /** How many turns a cast of that slot cools for - the catalogue's `cooldown`. */
+  private cooldownOf(index: number): number {
+    return this.abilityEffects[index]?.cooldown ?? DEFAULT_COOLDOWN;
+  }
+
+  /**
+   * Casts of that slot `holder` has left this match - Infinity with no limit.
+   * The holder is a side for the panels' abilities, and a unit's uid for its
+   * own: the catalogue's `uses` counts per side there and per unit here.
+   */
+  usesLeft(holder: string, index: number): number {
+    const uses = this.abilityEffects[index]?.uses;
+    if (uses === null || uses === undefined) return Infinity;
+    return Math.max(0, uses - (this.abilityUses[this.useKey(holder, index)] ?? 0));
+  }
+
+  /** By id, so a saved count survives a reordered catalogue. */
+  private useKey(holder: string, index: number): string {
+    return `${holder}|${this.abilityIds[index] ?? index}`;
+  }
+
+  /** Count one cast against the slot's `uses`, if it has any. */
+  private spendUse(holder: string, index: number): void {
+    if (this.abilityEffects[index]?.uses == null) return;
+    const key = this.useKey(holder, index);
+    this.abilityUses = { ...this.abilityUses, [key]: (this.abilityUses[key] ?? 0) + 1 };
+  }
+
+  /** The slot of the unit type's own ability (`units.<id>.ability`), or null. */
+  unitAbilityIndex(unit: SelectedUnit | null): number | null {
+    if (!unit) return null;
+    const id = (this.gameState.snapshot.config ?? DEFAULT_GAME_CONFIG as any)
+      ?.units?.[unit.unitId]?.ability;
+    const index = typeof id === 'string' ? this.slotOfAbility(id) : -1;
+    return index >= 0 ? index : null;
+  }
+
+  /** The displayed unit's own ability, for the template - 0 is a slot, not "none". */
+  get displayUnitAbility(): number | null {
+    return this.unitAbilityIndex(this.displayUnit);
+  }
+
+  /** Turns before this unit may use its own ability again. */
+  unitCooldownOf(uid: string | undefined): number {
+    return uid ? (this.unitCooldowns[uid]?.turns ?? 0) : 0;
+  }
+
+  /** Which panel side a unit plays for, whichever seat is looking. */
+  sideOfUnit(unit: SelectedUnit): 'mine' | 'opponent' {
+    return unit.color === this.casterColor('mine') ? 'mine' : 'opponent';
+  }
+
+  /**
+   * Whether the displayed unit's own ability could be used right now, for the
+   * button's look - `unitAbilityCanActivate` asks the same of the one opened.
+   */
+  get displayUnitAbilityReady(): boolean {
+    const unit = this.displayUnit;
+    const index = this.displayUnitAbility;
+    if (!unit || index === null) return false;
+    return this.canAfford(this.sideOfUnit(unit), index, this.unitCooldownOf(unit.uid), unit.uid);
   }
 
   abilityFontSize(index: number, cooldown: number): string {
@@ -2723,10 +2858,17 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   abilityHint(index: number, forOwnUnit = false): string {
     const e = this.abilityEffects[index];
     if (!e) return '';
-    const parts: string[] = [];
-    if (e.mov) parts.push(`${this.signed(e.mov)} MOV`);
-    if (e.atk) parts.push(`${this.signed(e.atk)} ATK`);
-    if (e.def) parts.push(`${this.signed(e.def)} DEF`);
+    const stats: string[] = [];
+    if (e.mov) stats.push(`${this.signed(e.mov)} MOV`);
+    if (e.atk) stats.push(`${this.signed(e.atk)} ATK`);
+    if (e.def) stats.push(`${this.signed(e.def)} DEF`);
+    // A stat change wears off after its caster's `turns`; damage, a heal and
+    // points happen once. Said beside the stats, so it cannot read as damage
+    // that lasts. A passive never wears off.
+    const parts: string[] = stats.length
+      ? [stats.join(', ') + (this.isPassive(index) || e.target === 'universal' ? ''
+        : ` for ${e.turns === 1 ? 'one turn' : `${e.turns} turns`}`)]
+      : [];
     if (e.damage) parts.push(`${e.damage} damage`);
     // HP given back, which nothing here used to read: Mend moves no stat and
     // deals no damage, so the one ability the owner added for testing
@@ -2738,6 +2880,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const effect = parts.join(', ') || 'no effect yet';
     const need = this.vetNeeded(index);
     const star = '\u2605'.repeat(need);
+    // The catalogue's `uses`, where it sets one.
+    const limit = e.uses === null ? '' : ` - ${e.uses === 1 ? 'once' : `${e.uses} times`} a match`;
 
     if (this.isPassive(index)) {
       return need ? `${effect} while the unit holds ${star}` : `${effect}, always on`;
@@ -2745,17 +2889,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // A universal ability lands on the side, not on a unit: telling the
     // player to click one is an instruction they cannot follow.
     if (e.target === 'universal') {
-      return `${effect} - used from here, it needs no target`;
+      return `${effect} - used from here, it needs no target${limit}`;
     }
-    // A heal is HP, which stays; only a stat boost wears off.
     const boost = e.target !== 'enemy' && !!(e.mov || e.atk || e.def);
-    const lasts = boost ? ' for one turn' : '';
     const how = forOwnUnit
       ? 'applies to this unit'
       : e.target === 'enemy'
         ? 'click the ability, then click an enemy'
         : `click, then click the unit to ${!boost && e.heal ? 'heal' : 'boost'}`;
-    return `${effect}${lasts} - ${how}${need ? ` (needs ${star})` : ''}`;
+    return `${effect} - ${how}${limit}${need ? ` (needs ${star})` : ''}`;
   }
 
   unitAbilityHint(index: number): string {
@@ -2777,42 +2919,57 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   abilityFocus: { side: 'mine' | 'opponent'; index: number; cooldowns: number[] } | null = null;
-  unitAbilityFocus: { index: number; cooldowns: number[] } | null = null;
+  unitAbilityFocus: { index: number } | null = null;
 
   selectUnitAbility(index: number): void {
     if (!this.displayUnit || this.displayUnit.panel) return;
     if (this.unitAbilityFocus?.index === index) {
       this.unitAbilityFocus = null;
     } else {
-      this.unitAbilityFocus = { index, cooldowns: this.unitCooldowns };
+      this.unitAbilityFocus = { index };
     }
     this.cdr.markForCheck();
   }
 
+  /**
+   * The displayed unit's own ability (`units.<id>.ability`), cast on the unit
+   * itself. It is the unit's: nothing has to be picked for it, its cooldown
+   * and its uses are that unit's alone, and in a solo game either side's
+   * units can use theirs on that side's turn, paid from that side's purse.
+   * It used to be the pool's first slot for every unit, usable only by the
+   * seat's own side and only once that pair had been picked.
+   */
   unitAbilityCanActivate(): boolean {
     const focus = this.unitAbilityFocus;
     const unit = this.displayUnit;
     // displayUnit follows the cursor, so a reserve the pointer crossed on the
     // way to the button must not be what the points are spent on.
-    return this.isSinglePlayer && !!focus && !this.isPassive(focus.index) && !!unit &&
-      this.isPicked('mine', focus.index) &&
-      unit.color === this.casterColor('mine') &&
-      this.vetUnlocked(focus.index) &&
-      this.canAfford('mine', focus.index, focus.cooldowns[focus.index] ?? 0);
+    if (!this.isSinglePlayer || !focus || !unit || unit.panel) return false;
+    if (this.isPassive(focus.index) || focus.index !== this.unitAbilityIndex(unit)) return false;
+    // Cast on the unit itself, so only a friendly ability can be one; the
+    // validators refuse any other (`units.<id>.ability`).
+    if (this.abilityTargetMode(focus.index) !== 'friendly') return false;
+    return this.vetUnlocked(focus.index) && this.canAfford(
+      this.sideOfUnit(unit), focus.index, this.unitCooldownOf(unit.uid), unit.uid);
   }
 
   activateUnitAbility(): void {
     const focus = this.unitAbilityFocus;
     const unit = this.displayUnit;
     if (!this.isSinglePlayer || !focus || !unit || !this.unitAbilityCanActivate()) return;
+    const side = this.sideOfUnit(unit);
     const effect = this.abilityEffects[focus.index];
     const cost = this.abilityCosts[focus.index] ?? 0;
-    const spend = this.spendOf(unit.uid, 'mine', 'unit', focus.index, unit.key);
-    this.chargeFor('mine', focus.index, cost);
-    focus.cooldowns[focus.index] = 3;
+    const spend = this.spendOf(unit.uid, side, 'unit', focus.index, unit.key);
+    this.chargeFor(side, focus.index, cost);
+    this.unitCooldowns = {
+      ...this.unitCooldowns,
+      [unit.uid]: { turns: this.cooldownOf(focus.index), color: unit.color },
+    };
+    this.spendUse(unit.uid, focus.index);
     this.buffs = {
       ...this.buffs,
-      [unit.uid]: this.stack(unit.uid, effect, this.casterColor('mine')),
+      [unit.uid]: this.stack(unit.uid, effect, unit.color),
     };
     this.abilityUsed = { ...this.abilityUsed, [unit.uid]: true };
     // A heal moves HP rather than a stat, and HP lives somewhere different
@@ -2825,7 +2982,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       kind: 'ability', from: unit.key, to: unit.key, uid: unit.uid,
       ...(mark ? { mark } : {}),
     }]);
-    this.markUsed('mine', focus.index);
+    this.markUsed(side, focus.index);
     this.addSystemMessage(`${effect.name} applied to ${unit.name}.`);
     this.persistLocalUiState();
     this.unitAbilityFocus = null;
@@ -2996,25 +3153,26 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (this.unitAbilityCanActivate()) return 'Ready - press Use.';
     const unit = this.displayUnit;
     if (!unit) return 'Unavailable: no unit selected.';
-    if (!this.isPicked('mine', focus.index)) return 'Not carried - pick it first.';
     if (unit.vet < this.vetNeeded(focus.index)) {
       return `Unavailable: needs ${'\u2605'.repeat(this.vetNeeded(focus.index))}.`;
     }
-    const cooldown = focus.cooldowns[focus.index] ?? 0;
+    const cooldown = this.unitCooldownOf(unit.uid);
     if (cooldown > 0) {
       return `On cooldown: ${cooldown} more turn${cooldown > 1 ? 's' : ''}.`;
     }
-    if (!this.canUseAbilities('mine')) return this.abilityBlockedNote;
+    if (this.usesLeft(unit.uid, focus.index) <= 0) return 'Unavailable: no uses left this match.';
+    const side = this.sideOfUnit(unit);
+    if (!this.canUseAbilities(side)) return this.abilityBlockedNote;
     const cost = this.abilityCosts[focus.index] ?? 0;
     return `Unavailable: costs ${cost} ${this.purseName(focus.index, cost)}, `
-      + `you have ${this.purseFor('mine', focus.index)}.`;
+      + `you have ${this.purseFor(side, focus.index)}.`;
   }
 
   /** Why the focused ability cannot be used, for the detail view to say. */
   get focusedAbilityBlocker(): string {
     const f = this.abilityFocus;
     if (!f || this.focusedAbilityCanActivate()) return '';
-    if (this.isUltimate(f.index) && this.ultimateUsed(f.side)) return 'Unavailable: already spent.';
+    if (this.usesLeft(f.side, f.index) <= 0) return 'Unavailable: no uses left this match.';
     const path = this.pathChoice(f.side);
     const fromPath = path && (f.index === path.skill || f.index === path.ultimate);
     if (!fromPath) {
@@ -3043,7 +3201,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   private abilityCanActivate(side: 'mine' | 'opponent', index: number, cooldown: number): boolean {
-    if (this.isPassive(index) || (this.isUltimate(index) && this.ultimateUsed(side))) return false;
+    if (this.isPassive(index) || this.usesLeft(side, index) <= 0) return false;
     // A path's own skill and ultimate come with the path; everything else on
     // the panel is pool, and only the four a side carries can be used.
     const path = this.pathChoice(side);
@@ -3126,14 +3284,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // be undoable, or its points and its ultimate are gone for good.
     const spend = this.spendOf('', side, side, index);
     const cost = this.abilityCosts[index] ?? 0;
-    // Cost and grant are the same currency, whichever one buys this slot.
-    this.chargeFor(side, index, cost - (this.abilityEffects[index].points ?? 0));
-    cooldowns[index] = 3;
+    // The cost comes out of whichever currency buys this slot - CP for a
+    // path's - and the grant is always points, which is what `points` says.
+    // They were netted in the slot's currency, so a path's ultimate handed
+    // its `points` back as CP and the points purse never moved.
+    this.chargeFor(side, index, cost);
+    this.grantPoints(side, this.abilityEffects[index].points ?? 0);
+    cooldowns[index] = this.cooldownOf(index);
+    this.spendUse(side, index);
     this.playSteps([{ kind: 'ability', from: '', to: '', index, side }]);
-    if (this.isUltimate(index)) {
-      if (side === 'mine') this.myUltimateUsed = true;
-      else this.opponentUltimateUsed = true;
-    }
     // The one cast path that never said so: an ultimate, or any universal
     // ability, was spent without the other player ever seeing it glow.
     this.markUsed(side, index);
@@ -3162,9 +3321,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return this.pendingAbility?.side === side && this.pendingAbility?.index === index;
   }
 
-  /** Affordable, off cooldown, and this side's turn to act. */
-  canAfford(side: 'mine' | 'opponent', index: number, cooldown: number): boolean {
-    if (cooldown > 0 || !this.canUseAbilities(side) || (this.isUltimate(index) && this.ultimateUsed(side))) return false;
+  /**
+   * Affordable, off cooldown, a use left, and this side's turn to act. The
+   * uses are counted against `holder` - the side, or a unit's uid for its own
+   * ability.
+   */
+  canAfford(side: 'mine' | 'opponent', index: number, cooldown: number, holder: string = side): boolean {
+    if (cooldown > 0 || !this.canUseAbilities(side) || this.usesLeft(holder, index) <= 0) return false;
     return this.purseFor(side, index) >= (this.abilityCosts[index] ?? 0);
   }
 
@@ -3199,7 +3362,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // so the board sees the change and redraws its reach.
       const spend = this.spendOf(unit.uid, armed.side, armed.side, armed.index, unit.key);
       this.chargeFor(armed.side, armed.index, cost);
-      armed.cooldowns[armed.index] = 3;
+      armed.cooldowns[armed.index] = this.cooldownOf(armed.index);
+      this.spendUse(armed.side, armed.index);
       this.buffs = {
         ...this.buffs,
         [unit.uid]: this.stack(unit.uid, e, this.casterColor(armed.side)),
@@ -3229,28 +3393,41 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   private stack(
     uid: string,
-    effect: { name: string; mov: number; atk: number; def: number },
+    effect: { name: string; mov: number; atk: number; def: number; turns?: number },
     caster: string,
     hostile = false,
   ): UnitBuff {
     const held = this.buffs[uid];
-    const mov = (held?.mov ?? 0) + effect.mov;
-    const atk = (held?.atk ?? 0) + effect.atk;
-    const def = (held?.def ?? 0) + effect.def;
-    const lifted = effect.mov > 0 || effect.atk > 0 || effect.def > 0;
-    // An offensive cast that only deals damage still counts as a drag: the
-    // unit was hit by something, and the board should say so.
-    const dragged = hostile || effect.mov < 0 || effect.atk < 0 || effect.def < 0;
+    return this.summed([
+      ...this.effectsOf(held),
+      {
+        name: effect.name, mov: effect.mov, atk: effect.atk, def: effect.def,
+        turns: Math.max(1, effect.turns ?? 1), caster, hostile,
+      },
+    ]);
+  }
+
+  /** A buff's effects, each carrying its own caster - older saves kept one on the buff. */
+  private effectsOf(buff: UnitBuff | undefined): UnitEffect[] {
+    return (buff?.effects ?? []).map(e => ({ ...e, caster: e.caster ?? buff!.caster }));
+  }
+
+  /**
+   * The buff a list of effects adds up to: the numbers the board reads, and
+   * which ways the unit has been pushed. Re-summed from what is left whenever
+   * one lifts, so a boost and a drain lift on their own casters' turns.
+   */
+  private summed(effects: UnitEffect[]): UnitBuff {
+    const sum = (stat: 'mov' | 'atk' | 'def') => effects.reduce((n, e) => n + e[stat], 0);
     return {
-      mov, atk, def,
-      caster: held?.caster ?? caster,
-      label: effect.name,
-      up: held?.up || lifted,
-      down: held?.down || dragged,
-      effects: [
-        ...(held?.effects ?? []),
-        { name: effect.name, mov: effect.mov, atk: effect.atk, def: effect.def, turns: 1 },
-      ],
+      mov: sum('mov'), atk: sum('atk'), def: sum('def'),
+      caster: effects[0]?.caster ?? '',
+      label: effects[effects.length - 1]?.name ?? '',
+      up: effects.some(e => e.mov > 0 || e.atk > 0 || e.def > 0),
+      // An offensive cast that only deals damage still counts as a drag: the
+      // unit was hit by something, and the board should say so.
+      down: effects.some(e => e.hostile || e.mov < 0 || e.atk < 0 || e.def < 0),
+      effects,
     };
   }
 
@@ -3663,11 +3840,33 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   private beginTurnFor(color: string): void {
     if (!color) return;
-    // A boost lasts one turn: it runs out when its caster comes round again.
-    const kept = Object.fromEntries(
-      Object.entries(this.buffs).filter(([, b]) => b.caster !== color),
-    );
-    if (Object.keys(kept).length !== Object.keys(this.buffs).length) this.buffs = kept;
+    // Each effect counts down on its own caster's turn and lifts at 0 - its
+    // ability's `turns`, so 1 runs to the caster's next turn. Per effect, not
+    // per unit: the whole unit's list used to go on whichever side had cast
+    // first, taking the other side's boost or drain a turn early or late.
+    let changed = false;
+    const next: Record<string, UnitBuff> = {};
+    for (const [uid, buff] of Object.entries(this.buffs)) {
+      const effects = this.effectsOf(buff);
+      if (!effects.some(e => e.caster === color)) {
+        next[uid] = buff;
+        continue;
+      }
+      changed = true;
+      const left = effects
+        .map(e => (e.caster === color ? { ...e, turns: e.turns - 1 } : e))
+        .filter(e => e.turns > 0);
+      if (left.length) next[uid] = this.summed(left);
+    }
+    if (changed) this.buffs = next;
+    // A unit's own ability cools on its own side's turns.
+    const cooling = Object.entries(this.unitCooldowns);
+    if (cooling.some(([, cd]) => cd.color === color)) {
+      this.unitCooldowns = Object.fromEntries(cooling
+        .map(([uid, cd]): [string, UnitCooldown] =>
+          [uid, cd.color === color ? { ...cd, turns: cd.turns - 1 } : cd])
+        .filter(([, cd]) => cd.turns > 0));
+    }
     // Spending an ability marks the unit for the turn it was spent in.
     this.abilityUsed = {};
     this.pickedThisTurn = [];
@@ -3684,7 +3883,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const tick = (cds: number[]) => cds.forEach((cd, i) => (cds[i] = Math.max(0, cd - 1)));
     if (isMine) {
       tick(this.myCooldowns);
-      tick(this.unitCooldowns);
     } else {
       tick(this.opponentCooldowns);
     }
@@ -3790,6 +3988,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    */
   private catalogueCache: {
     config: AbilityCatalogue | null;
+    units: Record<string, any> | null;
     ids: string[];
     effects: AbilityEffect[];
     costs: number[];
@@ -3798,12 +3997,27 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   private get catalogue() {
     const config = this.abilityConfig;
-    if (this.catalogueCache?.config === config) return this.catalogueCache;
-    const ids = [
+    // A game's own units, or the shipped ones before there is a game - never
+    // the shipped ones under a game that names its own.
+    const units = (this.gameState.snapshot.config
+      ? (this.gameState.snapshot.config as any).units ?? null
+      : (DEFAULT_GAME_CONFIG as any).units) as Record<string, any> | null;
+    if (this.catalogueCache?.config === config && this.catalogueCache?.units === units) {
+      return this.catalogueCache;
+    }
+    const inPanels = [
       ...(config?.pool ?? []),
       ...(config?.paths ?? []).flatMap(path => [path.passive, path.skill, path.ultimate]),
     ];
+    // A unit's own ability needs a slot of its own too, even when neither the
+    // pool nor a path names it. After the rest, so the panels' slots - which
+    // are what they draw - stay where they were.
+    const ownOnly = Object.values(units ?? {})
+      .map(unit => unit?.ability)
+      .filter((id): id is string => typeof id === 'string' && !inPanels.includes(id));
+    const ids = [...inPanels, ...new Set(ownOnly)];
     const entries = config?.catalogue ?? {};
+    const ultimates = new Set((config?.paths ?? []).map(path => path.ultimate));
     const effects: AbilityEffect[] = ids.map(id => {
       const a = entries[id] ?? ({ id, name: id } as AbilityEntry);
       return {
@@ -3816,12 +4030,17 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         ...(a.damage !== undefined ? { damage: a.damage } : {}),
         ...(a.heal !== undefined ? { heal: a.heal } : {}),
         ...(a.points !== undefined ? { points: a.points } : {}),
+        cooldown: a.cooldown ?? DEFAULT_COOLDOWN,
+        turns: a.turns ?? 1,
+        // A path's ultimate is once a match unless the config says otherwise.
+        uses: a.uses ?? (ultimates.has(id) ? 1 : null),
         ...(a.testing ? { testing: true } : {}),
       };
     });
     const slotOf = (id: string) => ids.indexOf(id);
     this.catalogueCache = {
       config,
+      units,
       ids,
       effects,
       costs: ids.map(id => entries[id]?.cost ?? 0),
@@ -3940,13 +4159,21 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /** An ability waiting for its target; null when nothing is armed. */
   pendingAbility: { side: 'mine' | 'opponent'; index: number; cooldowns: number[] } | null = null;
 
-  /** Placeholder ability cooldowns, in turns. Nothing decrements them yet. */
-  // One slot per ability: the pool of eight, then three paths of three.
-  unitCooldowns = new Array(17).fill(0);
+  /**
+   * Each side's cooldowns, in turns, one per slot: the pool, then each path's
+   * three, then any unit's own ability neither of those names. Resized to the
+   * catalogue as a match is dealt; `beginTurnFor` ticks them.
+   */
   opponentCooldowns = new Array(17).fill(0);
   myCooldowns = new Array(17).fill(0);
-  myUltimateUsed = false;
-  opponentUltimateUsed = false;
+  /** A unit's own ability cooling down, by the unit's uid - per unit, not per side. */
+  unitCooldowns: Record<string, UnitCooldown> = {};
+  /**
+   * Casts spent against the catalogue's `uses`, by `holder|abilityId` - the
+   * holder being a side, or a unit's uid for its own ability. Only abilities
+   * with a limit are counted. An ultimate's once-a-match is its `uses: 1`.
+   */
+  abilityUses: Record<string, number> = {};
 
   /** Keyboard shortcuts go quiet while typing or when the window loses focus. */
   windowFocused = true;
@@ -4733,33 +4960,49 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     /** Where it lands. Only the recap reads it, and only to play it there. */
     hex = '',
   ): AbilitySpend {
+    const effect = this.abilityEffects[index];
+    const holder = row === 'unit' ? uid : side;
     return {
       side, row, index, hex,
       cost: this.abilityCosts[index] ?? 0,
-      gain: this.abilityEffects[index]?.points ?? 0,
+      // Only a universal cast hands its points out, so only one has any to
+      // take back.
+      gain: effect?.target === 'universal' ? (effect.points ?? 0) : 0,
       uid,
-      priorCooldown: this.cooldownRow(row)[index] ?? 0,
-      priorUltimate: this.ultimateUsed(side),
+      priorCooldown: row === 'unit' ? 0 : (this.cooldownRow(row)[index] ?? 0),
+      ...(row === 'unit' ? { priorUnitCooldown: this.unitCooldowns[uid] ?? null } : {}),
+      holder,
+      priorUses: this.abilityUses[this.useKey(holder, index)] ?? 0,
       priorBuff: this.buffs[uid] ?? null,
       priorUsed: !!this.abilityUsed[uid],
     };
   }
 
-  private cooldownRow(row: 'mine' | 'opponent' | 'unit'): number[] {
-    if (row === 'unit') return this.unitCooldowns;
+  private cooldownRow(row: 'mine' | 'opponent'): number[] {
     return row === 'mine' ? this.myCooldowns : this.opponentCooldowns;
   }
 
   private refund(spend: AbilitySpend): void {
-    // A stack restored from disk predates the two fields below.
-    const net = spend.cost - (spend.gain ?? 0);
-    this.chargeFor(spend.side, spend.index, -net);
-    if (spend.side === 'mine') {
-      this.myUltimateUsed = spend.priorUltimate ?? this.myUltimateUsed;
-    } else {
-      this.opponentUltimateUsed = spend.priorUltimate ?? this.opponentUltimateUsed;
+    // The cost goes back into whichever currency bought it, and the grant
+    // comes back out of points - as `activateFocusedAbility` paid them.
+    this.chargeFor(spend.side, spend.index, -spend.cost);
+    this.grantPoints(spend.side, -(spend.gain ?? 0));
+    // A stack saved before `uses` has no holder; there is nothing to give back.
+    if (spend.holder !== undefined) {
+      const key = this.useKey(spend.holder, spend.index);
+      const uses = { ...this.abilityUses };
+      if (spend.priorUses) uses[key] = spend.priorUses;
+      else delete uses[key];
+      this.abilityUses = uses;
     }
-    this.cooldownRow(spend.row)[spend.index] = spend.priorCooldown;
+    if (spend.row === 'unit') {
+      const cooling = { ...this.unitCooldowns };
+      if (spend.priorUnitCooldown) cooling[spend.uid] = spend.priorUnitCooldown;
+      else delete cooling[spend.uid];
+      this.unitCooldowns = cooling;
+    } else {
+      this.cooldownRow(spend.row)[spend.index] = spend.priorCooldown;
+    }
 
     const buffs = { ...this.buffs };
     if (spend.priorBuff) buffs[spend.uid] = spend.priorBuff;

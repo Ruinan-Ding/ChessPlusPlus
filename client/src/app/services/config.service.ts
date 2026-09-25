@@ -1,382 +1,18 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
+import SHIPPED_CONFIG from '../../../../shared/default-config.json';
 
 /**
- * Default hex-grid game configuration.
+ * The shipped config: shared/default-config.json, the one file both engines
+ * read - the server's config_loader.py loads the same file. A number changed
+ * there is changed for solo and networked play alike; there used to be a copy
+ * here and one on the server, kept equal by hand. What each field means is in
+ * shared/game-config.schema.json.
  *
- * Mirrors DEFAULT_CONFIG in server/game/engine/config_loader.py.
- *
- * The only fixed game fact is the board: a hexagon with 12 cells per edge
- * (axial radius 11), drawn with an edge pointing up. Every unit below is a
- * PLACEHOLDER - the engine reads all behaviour from this data and knows
- * nothing about specific unit ids.
- *
- * Movement is a single `move` stat per unit: the number of adjacent-hex
- * steps it can take per turn. Movement floods outward through the six hex
- * neighbours, through empty hexes only - a unit can never move through or
- * onto an occupied hex (ally or enemy).
+ * Exported for the one consumer that needs it before a game exists: the room
+ * draws its ability panels in a room with no snapshot yet.
  */
-
-/**
- * The shipped config. Exported for the one consumer that needs it before a
- * game exists: the room draws its ability panels in a room with no snapshot
- * yet, and falling back to this keeps the catalogue in ONE place rather than
- * leaving a second copy hard-coded on the component.
- */
-export const DEFAULT_GAME_CONFIG = {
-  version: '1.0',
-  board: {
-    radius: 11,              // 12 cells per hexagon edge
-    orientation: 'edge-up'   // cosmetic: how the client draws the hexagon
-  },
-  units: {
-    king: {
-      id: 'king', name: 'King', symbol: 'K', value: 40, hp: 45, attack: 16, defense: 15, attackRange: 1, commander: true,
-      display: { white: '♔', black: '♚' },
-      move: 6
-    },
-    queen: {
-      id: 'queen', name: 'Queen', symbol: 'Q', value: 30, hp: 30, attack: 26, defense: 12, attackRange: 2,
-      display: { white: '♕', black: '♛' },
-      move: 6
-    },
-    rook: {
-      id: 'rook', name: 'Rook', symbol: 'R', value: 18, hp: 40, attack: 20, defense: 13, attackRange: 2,
-      display: { white: '♖', black: '♜' },
-      move: 6
-    },
-    bishop: {
-      id: 'bishop', name: 'Bishop', symbol: 'B', value: 14, hp: 22, attack: 22, defense: 10, attackRange: 3,
-      display: { white: '♗', black: '♝' },
-      move: 6
-    },
-    knight: {
-      id: 'knight', name: 'Knight', symbol: 'N', value: 12, hp: 28, attack: 18, defense: 11, attackRange: 1,
-      display: { white: '♘', black: '♞' },
-      move: 6
-    },
-    // Two more of the footsoldier's kind, either side of the pawn: one that
-    // outranges everything but the bishop and folds when reached, one that
-    // reaches nothing and does not fold. Placeholder numbers on the same
-    // scale as the rest - the owner said to make them up.
-    archer: {
-      id: 'archer', name: 'Archer', symbol: 'A', value: 8, hp: 16, attack: 15, defense: 7, attackRange: 3,
-      display: { white: '🏹︎', black: '🏹︎' },
-      move: 6
-    },
-    shieldman: {
-      id: 'shieldman', name: 'Shieldman', symbol: 'S', value: 9, hp: 30, attack: 8, defense: 18, attackRange: 1,
-      display: { white: '🛡︎', black: '🛡︎' },
-      move: 5
-    },
-    pawn: {
-      id: 'pawn', name: 'Pawn', symbol: 'P', value: 5, hp: 20, attack: 14, defense: 10, attackRange: 1,
-      display: { white: '♙', black: '♟' },
-      move: 6
-    }
-  },
-  /**
-   * The ability catalogue, and how a side gets at it. Mirrors
-   * `DEFAULT_CONFIG['abilities']` in config_loader.py, byte for byte.
-   *
-   * Keyed by a **stable id** throughout - never by position - because a
-   * side's saved loadout, path and cooldowns are written by id, and a
-   * reordered list would re-point every one of them. `cost` is in whichever
-   * purse the ability draws on: points for a pool ability, CP for a path's.
-   *
-   * A path shares its id with its own passive on purpose: the path IS its
-   * passive. Different namespaces - `paths` is a list, `catalogue` a map.
-   */
-  abilities: {
-    slots: 4,
-    pool: ['dash', 'focus', 'bulwark', 'sap', 'arc-bolt', 'mire', 'mend', 'rally'],
-    paths: [
-      {
-        id: 'bastion',
-        name: 'Bastion',
-        cost: 6,
-        passive: 'bastion',
-        skill: 'anchor',
-        ultimate: 'fortress'
-      },
-      {
-        id: 'onslaught',
-        name: 'Onslaught',
-        cost: 7,
-        passive: 'onslaught',
-        skill: 'cleave',
-        ultimate: 'ruin'
-      },
-      {
-        id: 'tempo',
-        name: 'Tempo',
-        cost: 5,
-        passive: 'tempo',
-        skill: 'surge',
-        ultimate: 'blitz'
-      }
-    ],
-    catalogue: {
-      dash: {
-        id: 'dash',
-        name: 'Dash',
-        target: 'friendly',
-        cost: 3,
-        mov: 2
-      },
-      focus: {
-        id: 'focus',
-        name: 'Focus',
-        target: 'friendly',
-        cost: 5,
-        atk: 2
-      },
-      bulwark: {
-        id: 'bulwark',
-        name: 'Bulwark',
-        target: 'friendly',
-        cost: 1,
-        def: 3
-      },
-      sap: {
-        id: 'sap',
-        name: 'Sap',
-        target: 'enemy',
-        cost: 4,
-        mov: -2,
-        atk: -2,
-        def: -2,
-        damage: 6
-      },
-      'arc-bolt': {
-        id: 'arc-bolt',
-        name: 'Arc Bolt',
-        target: 'enemy',
-        cost: 3,
-        damage: 8
-      },
-      mire: {
-        id: 'mire',
-        name: 'Mire',
-        target: 'enemy',
-        cost: 2,
-        mov: -3
-      },
-      mend: {
-        id: 'mend',
-        name: 'Mend',
-        target: 'friendly',
-        cost: 0,
-        heal: 20,
-        testing: true
-      },
-      rally: {
-        id: 'rally',
-        name: 'Rally',
-        target: 'universal',
-        cost: 0,
-        points: 300,
-        testing: true
-      },
-      bastion: {
-        id: 'bastion',
-        name: 'Bastion',
-        target: 'friendly',
-        cost: 0,
-        def: 1
-      },
-      anchor: {
-        id: 'anchor',
-        name: 'Anchor',
-        target: 'friendly',
-        cost: 4,
-        def: 4
-      },
-      fortress: {
-        id: 'fortress',
-        name: 'Fortress',
-        target: 'universal',
-        cost: 8,
-        points: 4
-      },
-      onslaught: {
-        id: 'onslaught',
-        name: 'Onslaught',
-        target: 'friendly',
-        cost: 0,
-        atk: 1
-      },
-      cleave: {
-        id: 'cleave',
-        name: 'Cleave',
-        target: 'enemy',
-        cost: 5,
-        damage: 10
-      },
-      ruin: {
-        id: 'ruin',
-        name: 'Ruin',
-        target: 'universal',
-        cost: 8,
-        points: 5
-      },
-      tempo: {
-        id: 'tempo',
-        name: 'Tempo',
-        target: 'friendly',
-        cost: 0,
-        mov: 1
-      },
-      surge: {
-        id: 'surge',
-        name: 'Surge',
-        target: 'friendly',
-        cost: 3,
-        mov: 3
-      },
-      blitz: {
-        id: 'blitz',
-        name: 'Blitz',
-        target: 'universal',
-        cost: 8,
-        points: 3
-      }
-    }
-  },
-  setup: {
-    // Three rows on each side of the radius-11 board, spaced so nothing
-    // sits shoulder to shoulder. White's edge row is r=+11; black is the point
-    // mirror (q,r) -> (-q,-r).
-    //   row 1 (r=11): pawn archer shieldman | queen king | shieldman archer pawn
-    //                 - the pair in the middle behind a shield each, an archer
-    //                 outside that, and a pawn on each wing tip
-    //   row 2 (r=10): pawn | rook knight bishop | bishop knight rook | pawn,
-    //                 every other hex with a pawn on each wing tip
-    //   row 3 (r=9) : four pawns, two archers and two shieldmen, every other
-    //                 hex but the middle pair, which straddles the centre line
-    //                 - eight spaced units are one hex wider than the row.
-    // Odd separations are what stay centred here: the row holds an even number
-    // of hexes, so an even gap would put the pair off the middle.
-    //
-    // Then each side's base: its bottom three rows, full - rook knight bishop
-    // bishop knight rook, shieldman archer pawn archer shieldman, and five
-    // pawns. The owner, 25 Sep 2026: "at the start of game, there will be units
-    // in base", by the numbers on the board (the // after each). A hex off the
-    // battlefield is a panel hex: the board builders leave it alone and the
-    // panel deal (`buildReserves`) stands the unit there. Black's is the same
-    // point mirror.
-    white: {
-      '-11,11':  'pawn',
-      '-10,11':  'archer',
-      '-8,11':   'shieldman',
-      '-6,11':   'queen',
-      '-5,11':   'king',
-      '-3,11':   'shieldman',
-      '-1,11':   'archer',
-      '0,11':    'pawn',
-      '-11,10':  'pawn',
-      '-10,10':  'rook',
-      '-8,10':   'knight',
-      '-6,10':   'bishop',
-      '-4,10':   'bishop',
-      '-2,10':   'knight',
-      '0,10':    'rook',
-      '1,10':    'pawn',
-      '-11,9':   'shieldman',
-      '-9,9':    'pawn',
-      '-7,9':    'archer',
-      '-5,9':    'pawn',
-      '-4,9':    'pawn',
-      '-2,9':    'archer',
-      '0,9':     'pawn',
-      '2,9':     'shieldman',
-      '-17,11':  'rook',      // 518
-      '-16,11':  'knight',    // 519
-      '-15,11':  'bishop',    // 520
-      '-14,11':  'bishop',    // 521
-      '-13,11':  'knight',    // 522
-      '-12,11':  'rook',      // 523
-      '-16,10':  'shieldman', // 495
-      '-15,10':  'archer',    // 496
-      '-14,10':  'pawn',      // 497
-      '-13,10':  'archer',    // 498
-      '-12,10':  'shieldman', // 499
-      '-16,9':   'pawn',      // 471
-      '-15,9':   'pawn',      // 472
-      '-14,9':   'pawn',      // 473
-      '-13,9':   'pawn',      // 474
-      '-12,9':   'pawn'       // 475
-    },
-    black: {
-      '11,-11':  'pawn',
-      '10,-11':  'archer',
-      '8,-11':   'shieldman',
-      '6,-11':   'queen',
-      '5,-11':   'king',
-      '3,-11':   'shieldman',
-      '1,-11':   'archer',
-      '0,-11':   'pawn',
-      '11,-10':  'pawn',
-      '10,-10':  'rook',
-      '8,-10':   'knight',
-      '6,-10':   'bishop',
-      '4,-10':   'bishop',
-      '2,-10':   'knight',
-      '0,-10':   'rook',
-      '-1,-10':  'pawn',
-      '11,-9':   'shieldman',
-      '9,-9':    'pawn',
-      '7,-9':    'archer',
-      '5,-9':    'pawn',
-      '4,-9':    'pawn',
-      '2,-9':    'archer',
-      '0,-9':    'pawn',
-      '-2,-9':   'shieldman',
-      '17,-11':  'rook',      // 24
-      '16,-11':  'knight',    // 23
-      '15,-11':  'bishop',    // 22
-      '14,-11':  'bishop',    // 21
-      '13,-11':  'knight',    // 20
-      '12,-11':  'rook',      // 19
-      '16,-10':  'shieldman', // 47
-      '15,-10':  'archer',    // 46
-      '14,-10':  'pawn',      // 45
-      '13,-10':  'archer',    // 44
-      '12,-10':  'shieldman', // 43
-      '16,-9':   'pawn',      // 71
-      '15,-9':   'pawn',      // 70
-      '14,-9':   'pawn',      // 69
-      '13,-9':   'pawn',      // 68
-      '12,-9':   'pawn'       // 67
-    }
-  },
-  rules: {
-    maxTurns: 0,
-    turnTimeLimit: 0,
-    // Fraction of damage lost per ring beyond the first.
-    rangeFalloff: 0.25,
-    // The least a blow that lands may deal, once defence is off it. Must match
-    // DEFAULT_CONFIG in config_loader.py byte for byte.
-    minStrikeDamage: 1,
-    // A side loses when its commander dies; 'elimination' (no units left) is
-    // the other supported objective.
-    objective: 'regicide',
-    // How many units each panel - the base and the reserve, separately - may
-    // start in one turn.
-    panelMoversPerTurn: 3,
-    // How many a side may bring out of its reserve in a phase's postmatch
-    // turn. Stands instead of panelMoversPerTurn for the reserve on that turn.
-    postmatchEntries: 5,
-    // How many units a side may walk home in one setup turn.
-    homecomingsPerSetupTurn: 3,
-    // The CP each side starts the match with.
-    cpAtStart: 5,
-    // The base of the CP award at the start of each phase's postmatch:
-    // Phase N's is N times this, plus both sides' phase scores, plus the gap
-    // for the side behind (match-score.ts, cpAwarded).
-    cpPhaseOffset: 5
-  }
-};
+export const DEFAULT_GAME_CONFIG = SHIPPED_CONFIG;
 
 /**
  * The rules a config may leave out and be read at their default. Each is a
@@ -402,6 +38,134 @@ export type CountedRule = typeof COUNTED_RULES[number];
 export function ruleOf(config: any, key: CountedRule): number {
   const value = config?.rules?.[key];
   return typeof value === 'number' ? value : DEFAULT_GAME_CONFIG.rules[key];
+}
+
+/**
+ * Every field a unit type may carry. Anything else is a typo, and a typo is a
+ * stat left unset. Checked here only, where a config is written: the server
+ * also loads configs rooms saved under older builds, which may lack a field
+ * or carry a retired one (`movement`), so it refuses only a field that is
+ * there and wrong.
+ */
+const UNIT_FIELDS = new Set([
+  'id', 'name', 'symbol', 'display', 'move', 'value', 'hp', 'attack', 'defense',
+  'commander', 'attackRange', 'ability',
+]);
+
+/** The whole numbers every unit type needs besides `defense`, and the least of each. */
+const UNIT_NUMBERS: ReadonlyArray<readonly [string, number]> = [
+  ['hp', 1], ['attack', 0], ['move', 0], ['value', 0],
+];
+
+/** Every field a catalogue entry may carry. */
+const ABILITY_FIELDS = new Set([
+  'id', 'name', 'description', 'target', 'cost', 'cooldown', 'turns', 'uses',
+  'mov', 'atk', 'def', 'damage', 'heal', 'points', 'testing',
+]);
+
+/** A catalogue entry's whole numbers, and the least of each - null for none. */
+const ABILITY_NUMBERS: ReadonlyArray<readonly [string, number | null]> = [
+  ['cost', 0], ['cooldown', 0], ['turns', 1], ['uses', 1],
+  ['mov', null], ['atk', null], ['def', null], ['damage', 0], ['heal', 0], ['points', 0],
+];
+
+/**
+ * What each kind of ability does nothing with - read off the room's casts:
+ * a friendly cast boosts and heals, an enemy one drains and damages, a
+ * universal one pays points, and a passive only ever lends its stats. A
+ * number set on one of these is a number its author expects to matter and
+ * nothing reads, so it is an error rather than a silent no-op: Cleave's
+ * `points` paid nobody, and a universal ultimate's `atk` boosted nothing.
+ */
+const IGNORED_BY: Record<string, string[]> = {
+  passive: ['cost', 'cooldown', 'turns', 'uses', 'damage', 'heal', 'points'],
+  friendly: ['damage', 'points'],
+  enemy: ['heal', 'points'],
+  universal: ['mov', 'atk', 'def', 'damage', 'heal', 'turns'],
+};
+
+const KIND_NAME: Record<string, string> = {
+  passive: 'a passive',
+  friendly: 'a friendly ability',
+  enemy: 'an enemy ability',
+  universal: 'a universal ability',
+};
+
+/**
+ * The numbers in the ability catalogue, and the shape the panels rely on.
+ * Only the client reads abilities, so only the client checks them.
+ */
+function abilityNumberErrors(abilities: any): string[] {
+  const errors: string[] = [];
+  const catalogue = abilities?.catalogue && typeof abilities.catalogue === 'object'
+    ? abilities.catalogue : {};
+  const paths: any[] = Array.isArray(abilities?.paths) ? abilities.paths : [];
+  const pool: unknown[] = Array.isArray(abilities?.pool) ? abilities.pool : [];
+  const passives = new Set(paths.map(path => path?.passive));
+  // Picked two at a time (`partnerOf`), so an odd pool left its last ability
+  // paired with the first path's passive, and an odd slot count a slot
+  // nothing could fill.
+  if (pool.length % 2) {
+    errors.push('"abilities.pool" must hold an even number of abilities - they are picked in pairs');
+  }
+  const slots = abilities?.slots;
+  if (slots !== undefined && (!Number.isInteger(slots) || slots < 0 || slots % 2)) {
+    errors.push('"abilities.slots" must be an even whole number - picks come in pairs');
+  }
+  // One slot each: the room finds an ability by the first slot naming it.
+  const named = [...pool, ...paths.flatMap(path => [path?.passive, path?.skill, path?.ultimate])];
+  for (const id of new Set(named.filter((id, i) => named.indexOf(id) !== i))) {
+    errors.push(`"abilities" names "${id}" in more than one slot`);
+  }
+  for (const [id, a] of Object.entries<any>(catalogue)) {
+    if (!a || typeof a !== 'object') continue;
+    const at = `abilities.catalogue.${id}`;
+    for (const key of Object.keys(a)) {
+      if (!ABILITY_FIELDS.has(key)) errors.push(`${at} has unknown field "${key}"`);
+    }
+    if (!['friendly', 'enemy', 'universal'].includes(a.target)) {
+      errors.push(`${at}.target must be friendly, enemy or universal`);
+    }
+    for (const [field, least] of ABILITY_NUMBERS) {
+      const v = a[field];
+      if (v !== undefined && (!Number.isInteger(v) || (least !== null && v < least))) {
+        errors.push(`${at}.${field} must be an integer${least === null ? '' : ` >= ${least}`}`);
+      }
+    }
+    const kind = passives.has(id) ? 'passive' : a.target;
+    for (const field of IGNORED_BY[kind] ?? []) {
+      if (a[field] !== undefined && a[field] !== 0) {
+        errors.push(`${at}.${field} does nothing on ${KIND_NAME[kind]}`);
+      }
+    }
+    if (a.turns !== undefined && (kind === 'friendly' || kind === 'enemy')
+        && !(a.mov || a.atk || a.def)) {
+      errors.push(`${at}.turns does nothing on an ability that changes no stat`);
+    }
+  }
+  return errors;
+}
+
+/**
+ * What is wrong with a unit type's own ability (`units.<id>.ability`), cast
+ * from the Unit panel onto the unit itself. Mirrors _unit_ability_errors in
+ * config_loader.py.
+ */
+function unitAbilityErrors(unitId: string, ability: unknown, abilities: any): string[] {
+  if (ability === undefined) return [];
+  const at = `units.${unitId}.ability`;
+  if (typeof ability !== 'string') return [`${at} must be a catalogue id`];
+  const catalogue = abilities?.catalogue;
+  // A config with no catalogue plays the shipped one, which is checked on its own.
+  if (!catalogue || typeof catalogue !== 'object') return [];
+  const entry = catalogue[ability];
+  if (!entry) return [`${at} names unknown ability "${ability}"`];
+  const passive = Array.isArray(abilities.paths)
+    && abilities.paths.some((path: any) => path?.passive === ability);
+  if (passive || entry.target !== 'friendly') {
+    return [`${at} must be a friendly ability - it is cast on the unit itself`];
+  }
+  return [];
 }
 
 @Injectable({
@@ -513,6 +277,20 @@ export class ConfigService {
         if (!Number.isInteger(unit?.defense) || unit.defense < 0) {
           errors.push(`units.${unitId}.defense must be an integer >= 0`);
         }
+        // The same for the rest the engines read. A missing attack drew as 0
+        // on the hex and struck for 1; a move of "5" was a TypeError on the
+        // server.
+        for (const [field, least] of UNIT_NUMBERS) {
+          if (!Number.isInteger(unit?.[field]) || unit[field] < least) {
+            errors.push(`units.${unitId}.${field} must be an integer >= ${least}`);
+          }
+        }
+        // A misspelt field is not an extra - it is a stat left unset:
+        // `"atack": 20` loaded, and the unit fought with no attack at all.
+        for (const key of Object.keys(unit ?? {})) {
+          if (!UNIT_FIELDS.has(key)) errors.push(`units.${unitId} has unknown field "${key}"`);
+        }
+        errors.push(...unitAbilityErrors(unitId, unit?.ability, config.abilities));
       }
     }
 
@@ -653,6 +431,7 @@ export class ConfigService {
             errors.push(`"abilities.catalogue.${id}" must carry its own id`);
           }
         }
+        errors.push(...abilityNumberErrors(abilities));
       }
     }
 

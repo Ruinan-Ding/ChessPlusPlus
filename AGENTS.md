@@ -32,7 +32,7 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (274 tests, 25 Sep 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (277 tests, 25 Sep 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
@@ -67,14 +67,23 @@ movement and combat behaviour is read from config data. Adding a unit type must 
 zero engine changes. If you find yourself writing `if unit_id == ...`, the behaviour belongs
 in the config schema instead.
 
-**2. Config lives in three places that must stay identical.** See the `config-sync` skill.
-Any change to config shape touches all three or validation rejects live configs:
+**2. The shipped config is one file, `shared/default-config.json`, and both engines read it.**
+`config_loader.py` loads it as `DEFAULT_CONFIG`; `config.service.ts` imports it as
+`DEFAULT_GAME_CONFIG` (`resolveJsonModule`, with the client's `rootDir` at the repository root so
+it can reach `shared/`). **Changing a number is editing that file and nothing else.** It used to
+be a copy in each engine, kept equal by hand with nothing checking them - the owner's number
+edits would have played one way solo and another online. A change to the config's *shape*
+touches four places - see the `config-sync` skill:
 
 | File | What |
 |---|---|
-| `shared/game-config.schema.json` | JSON Schema (draft-07), the contract |
-| `server/game/engine/config_loader.py` | `DEFAULT_CONFIG` + `_validate_config()` |
-| `client/src/app/services/config.service.ts` | `DEFAULT_GAME_CONFIG` (line ~28) + `validateGameRules()` |
+| `shared/game-config.schema.json` | JSON Schema (draft-07), the contract - and what each field means |
+| `shared/default-config.json` | The shipped values |
+| `server/game/engine/config_loader.py` | `_validate_config()` - also loads configs rooms saved under older builds, so it refuses only what is there and wrong |
+| `client/src/app/services/config.service.ts` | `validateGameRules()` - the setup screen's, and stricter: unknown and missing unit fields, and every ability rule |
+
+The server reads `shared/` from the repository root, so a deployment builds from the root
+(DEPLOYMENT.md).
 
 The whole-number rules a config may leave out (`panelMoversPerTurn`, `postmatchEntries`,
 `homecomingsPerSetupTurn`, `cpAtStart`, `cpPhaseOffset`) are listed once per side in `COUNTED_RULES`, filled in
@@ -1497,8 +1506,7 @@ and `attack` names the hex it strikes from there.
     `MIN_STRIKE_DAMAGE` in both files guarded by prose saying "these must agree", which is
     exactly the sort of pairing that drifts: a client flooring at 1 against a server flooring
     at 0 disagrees about who is still standing, and nothing would have caught it. Changing the
-    dial is now a config edit, validated by the schema, with the `config-sync` skill keeping
-    the three mirrors in step.
+    dial is now a config edit, in the one shipped file both engines read.
   - `MIN_STRIKE_DAMAGE` survives in both files as the **fallback for a config that names no
     floor** — reached only by a caller that hand-built a config without going through
     `load_config()` / `ConfigService`, which a number of tests do.
@@ -1861,12 +1869,47 @@ Both side boxes render the same six slots. Each is live only on its own side's t
 `isSinglePlayer`, so in multiplayer it is permanently disabled — you can see your opponent's
 abilities but never press them. Ability effects are **client-side only**, so activation is
 disabled in multiplayer entirely: nothing about them reaches the server, and a boost the
-server never heard of would desync the board. The Unit panel carries one ability and the
-passive, for whichever unit is selected.
+server never heard of would desync the board. The Unit panel carries the passive and **the
+unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
 
+- **The catalogue's numbers are the numbers.** Every one the owner writes into
+  `shared/default-config.json` is read, and one that would be read by nothing is refused:
+  - `cooldown` - turns a cast cools for (`cooldownOf()`; 3 when unset, `DEFAULT_COOLDOWN`). It
+    was a hard-coded 3 in five places, whatever the catalogue said. A swap's cold start uses
+    the incoming ability's own.
+  - `turns` - how many of **its caster's** turns a mov/atk/def change lasts (1 when unset).
+    Damage, a heal and points happen once. Each cast is its own entry in the unit's `effects`,
+    **with its own caster**, and `beginTurnFor()` counts each down on its own caster's turn and
+    re-sums what is left (`summed()`). It used to drop the unit's whole list on whichever side
+    had cast *first*, so a unit carrying one side's boost and the other's drain lost both at
+    the wrong time.
+  - `uses` - casts a match allows (`usesLeft()`, `spendUse()`, `abilityUses`), counted per
+    side for a panel's ability and per unit for a unit's own; no limit when unset, except a
+    path's ultimate, which is once. It replaced `myUltimateUsed`, which only the universal cast
+    path ever set - an enemy-target ultimate could be cast every three turns all match. Undo
+    gives the use back; an old save's spent ultimate becomes one use of it.
+  - `points` - always **points**, whatever bought the ability (`grantPoints()`). A path's
+    universal ability netted its `points` against its CP cost, so Fortress refunded CP and the
+    points purse never moved.
+  - `validateGameRules()` refuses an unknown field, a number that is not whole or out of range,
+    a `target` that is not one of the three, an odd pool or slot count (picks are pairs), an
+    ability in two slots, and **a number its kind never reads** (`IGNORED_BY`): `damage` or
+    `points` on a friendly ability, `heal` or `points` on an enemy one, stats, `damage`, `heal`
+    or `turns` on a universal one, anything but stats on a passive, `turns` on one that
+    changes no stat. Cleave's `points: 5` used to pay nobody, silently.
+- **A unit type's own ability** is `units.<id>.ability`, a **friendly** catalogue id cast on
+  the unit itself from the Unit panel (both validators refuse any other kind, and a passive).
+  It is the unit's: nothing has to be picked for it, its cooldown is per unit
+  (`unitCooldowns` by uid, ticked on its own side's turns) and so are its `uses`, and in a
+  solo game either side's units use theirs on that side's turn, from that side's purse
+  (`sideOfUnit()`). A unit type with none shows **No ability**. It used to be the pool's first
+  slot for every unit, usable only by the seat's own side, only once that pair was picked, on
+  a cooldown every unit shared. The shipped config gives every unit Dash - what that first
+  slot was - for the owner to replace.
 - **Six slots**: four actives, then the passive (`isPassive()` — index 4) and the ultimate
   (`isUltimate()` — index 5) on their own bottom row. The passive is always on, never cast, no
-  cost and no cooldown; the ultimate costs more and is once per game.
+  cost and no cooldown; the ultimate costs more and is once per game unless its `uses` says
+  otherwise.
 - **The passive is earned**: ★2 (`vetNeeded()`), read off the displayed unit's veterancy. The
   actives are not gated - `vetNeeded()` returns 0 for them, and `abilityHint()` leaves the
   requirement clause out entirely rather than printing an empty one.
@@ -1986,7 +2029,7 @@ passive, for whichever unit is selected.
     while it is still a choice - nothing is said about one already carried.
   - The swap button is **Reselect**, not `+`.
   - **A pick taken back in the turn it was made is free**; a swap in any later turn costs
-    `swapDebt`, and whatever refills the slot comes in on a 3-turn cooldown. The debt exists
+    `swapDebt`, and whatever refills the slot comes in on its own cooldown. The debt exists
     so swapping is not a way to hand yourself a *ready* ability mid-match - but changing your
     mind about a pick nobody has cast yet is not swapping, and charging for it made the
     four-slot cap order-sensitive (Mend arrives paired with Rally, so a damage pair only fit
@@ -2004,9 +2047,10 @@ passive, for whichever unit is selected.
       within a turn it is exactly "what I have cast".
   - **Picking is open through the initialization** - see the opening's rules; only casting is
     not.
-- **Effects are one-turn stat boosts** (`abilityEffects`, arbitrary placeholder numbers): +MOV,
-  +ATK, +DEF. They live in `buffs`, keyed by hex, and expire in `beginTurnFor()` when the side
-  that cast them comes round again. The Unit panel shows boosted-over-base (`statAtk` etc.), so
+- **Effects are stat boosts and drains** (`abilityEffects`, the owner's placeholder numbers):
+  MOV, ATK, DEF. They live in `buffs`, keyed by the unit's uid, one entry per cast, and each
+  lifts after its ability's `turns` of its own caster's turns (see above). The Unit panel shows
+  every entry with the turns it has left, and boosted-over-base (`statAtk` etc.), so
   a +4 on a base 26 reads `30/26`; **+MOV is real steps**, fed to the board as `unitBuffs` and
   into `movesLeft` once a step is staged.
 - **Veterancy is drawn beside the name** in `unitPanelTitle` (`Pawn ★★★ - White`), the same
@@ -2015,8 +2059,11 @@ passive, for whichever unit is selected.
   the unit started, off the unit's own stats, so a boosted move is rejected as illegal and a
   boosted strike lands base damage unless `endTurn()` says otherwise. It sends `moveBonus` (the
   extra steps) and `bonuses` (`{atk, def, targetAtk, targetDef}` - both units, because the
-  counter reads the other side's numbers). `LocalGameService.move()` takes them, clamped;
-  `strikeDamage(..., atkBonus, defBonus)` applies them **after** ring falloff, which is where
+  counter reads the other side's numbers). `LocalGameService.move()` takes them as whole
+  numbers, extra steps never below 0 (`extraSteps()`) - **and no ceiling**: it capped them at
+  10 steps and +/-20, which no config said, so a Surge the owner made 12 was offered on the
+  board and refused as illegal. `strikeDamage(..., atkBonus, defBonus)` applies them **after**
+  ring falloff, which is where
   the hex and the unit panel show them. The server ignores all of it: abilities do not exist
   server-side, so honouring the client's word for a stat is a free upgrade for anyone willing
   to edit a message. Abilities are therefore a solo feature until they live in the engine, and
@@ -2087,7 +2134,7 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
 - `client/src/app/components/setup-config/setup-config.component.html` is still a raw JSON
   `<textarea>` with a "Configuration UI will be added here" placeholder.
 - **The ability catalogue lives in the config** (`abilities`: `slots`, `pool`, `paths`,
-  `catalogue`), in all three mirrors. **The engine still does not read it** — only the client
+  `catalogue`), in the shipped file. **The engine still does not read it** — only the client
   does — so tuning an ability is a config edit and nothing more. This is the *system* half of
   PUNCHLIST 6.15; the numbers themselves are still the owner's placeholders, and two testing
   levers sit in the pool: **Mend** (free, heals 20) and **Rally** (free, hands out 300 points),

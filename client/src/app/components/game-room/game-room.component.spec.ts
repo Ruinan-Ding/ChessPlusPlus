@@ -1,7 +1,7 @@
 import { BehaviorSubject, Subject, of } from 'rxjs';
 import { GameRoomComponent } from './game-room.component';
 import { GameStateService } from '../../services/game-state.service';
-import { ruleOf } from '../../services/config.service';
+import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
 import { turnHeading } from '../../services/phases';
 import { NavigationStateService } from '../../services/navigation-state.service';
 
@@ -896,8 +896,10 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.focusedAbilityCanActivate()).toBeTrue();
 
     c.activateFocusedAbility();
-    // Spent, and the other player can see which one it was.
-    expect(c.myUltimateUsed).toBeTrue();
+    // Spent - its one use of the match - and the other player can see which
+    // one it was.
+    expect(c.usesLeft('mine', ult)).toBe(0);
+    expect(c.focusedAbilityCanActivate()).toBeFalse();
     expect(c.isRecent('mine', ult)).toBeTrue();
     expect(c.isRecent('opponent', ult)).toBeFalse();
   });
@@ -2261,6 +2263,164 @@ describe('GameRoomComponent ability panel', () => {
     // Picked and returned inside one turn is not a pick: nothing for the
     // other player to read, and nothing for the recap to replay.
     expect(c.isRecentPick('mine', TARGETED)).toBeFalse();
+  });
+
+  /**
+   * The catalogue's numbers are the numbers: a cast cools for its own
+   * `cooldown`, a stat change lasts its own `turns` of its caster's, `uses`
+   * caps it per side (or per unit), and a unit type's own ability is the one
+   * its config names. Each was a constant, or a slot, before.
+   */
+  describe('the numbers the catalogue holds', () => {
+    /** The shipped config with `edit` applied, and three units dealt. */
+    const tuned = (edit: (config: any) => void = () => {}) => {
+      const c = room();
+      const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+      edit(config);
+      c.gameState.snapshot.config = config;
+      c.gameState.snapshot.turnNumber = 20;
+      c.gameState.snapshot.boardState = {
+        '0,0': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'wp' },
+        '1,0': { unit_id: 'pawn', color: 'black', hp: 20, max_hp: 20, uid: 'bp' },
+        '2,0': { unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'wr' },
+      };
+      c.persistLocalUiState = () => {};
+      c.playSteps = () => {};
+      c.playAbilitySound = () => {};
+      c.myPoints = 100;
+      c.opponentPoints = 100;
+      return c;
+    };
+    const unit = (key: string, uid: string, unitId: string, color: string) =>
+      ({ key, uid, unitId, name: unitId, color, hp: 20, hpMax: 20, vet: 3 });
+    const WP = unit('0,0', 'wp', 'pawn', 'white');
+    const BP = unit('1,0', 'bp', 'pawn', 'black');
+    const WR = unit('2,0', 'wr', 'rook', 'white');
+
+    /** Pick `id`'s pair if need be, arm it off the panel, and land it on `target`. */
+    const cast = (c: any, side: 'mine' | 'opponent', id: string, target: any): boolean => {
+      const index = c.slotOfAbility(id);
+      if (!c.isPicked(side, index)) c.pickAbility(side, index);
+      c.selectAbility(side, index, side === 'mine' ? c.myCooldowns : c.opponentCooldowns);
+      if (c.pendingAbility?.index !== index) {
+        c.clearAbilityFocus();
+        return false;
+      }
+      c.onHexClicked(target);
+      return true;
+    };
+
+    it("cools a cast for the catalogue's cooldown, not a fixed three", () => {
+      const c = tuned(config => {
+        config.abilities.catalogue.dash.cooldown = 1;
+        config.abilities.catalogue.focus.cooldown = 0;
+      });
+      expect(cast(c, 'mine', 'dash', WP)).toBeTrue();
+      expect(c.myCooldowns[c.slotOfAbility('dash')]).toBe(1);
+      expect(cast(c, 'mine', 'focus', WR)).toBeTrue();
+      expect(c.myCooldowns[c.slotOfAbility('focus')]).toBe(0);
+      // Nothing to wait for, so it is ready again at once.
+      expect(cast(c, 'mine', 'focus', WP)).toBeTrue();
+    });
+
+    it("keeps a stat change for its caster's turns, and lifts each on its own caster's", () => {
+      const c = tuned(config => { config.abilities.catalogue.dash.turns = 2; });
+      expect(cast(c, 'mine', 'dash', WP)).toBeTrue();       // white's +2 MOV, two white turns
+      c.gameState.snapshot.currentTurn = 'bot';
+      expect(cast(c, 'opponent', 'sap', WP)).toBeTrue();    // black's -2 all round, one black turn
+      expect(c.buffs['wp'].mov).toBe(0);
+      expect(c.buffs['wp'].atk).toBe(-2);
+
+      // White's turn counts white's down and leaves black's alone. Both used to
+      // go together, on whichever side had cast first.
+      c.beginTurnFor('white');
+      expect(c.buffs['wp'].effects.map((e: any) => [e.name, e.turns]))
+        .toEqual([['Dash', 1], ['Sap', 1]]);
+      c.beginTurnFor('black');
+      expect(c.buffs['wp'].mov).toBe(2);
+      expect(c.buffs['wp'].atk).toBe(0);
+      expect(c.buffs['wp'].down).toBeFalse();
+      c.beginTurnFor('white');
+      expect(c.buffs['wp']).toBeUndefined();
+    });
+
+    it("stops an ability at its uses, and Undo gives the last one back", () => {
+      const c = tuned(config => {
+        config.abilities.catalogue.dash.uses = 2;
+        config.abilities.catalogue.dash.cooldown = 0;
+      });
+      const dash = c.slotOfAbility('dash');
+      expect(cast(c, 'mine', 'dash', WP)).toBeTrue();
+      expect(cast(c, 'mine', 'dash', WR)).toBeTrue();
+      expect(c.usesLeft('mine', dash)).toBe(0);
+      expect(cast(c, 'mine', 'dash', WP)).toBeFalse();
+      c.undoMove();
+      expect(c.usesLeft('mine', dash)).toBe(1);
+      // Per side: the other side's count is its own.
+      expect(c.usesLeft('opponent', dash)).toBe(2);
+    });
+
+    it("pays a path's ultimate in CP and hands its points out as points", () => {
+      const c = tuned();
+      fundCp(c, 20);
+      c.unlockPath('mine', 0);      // Bastion; Fortress costs 8 CP and hands out 4 points
+      const cp = c.cpOf('mine');
+      const fortress = c.slotOfAbility('fortress');
+      c.selectAbility('mine', fortress, c.myCooldowns);
+      c.activateFocusedAbility();
+      // They were netted in CP: -4 CP, and the points purse never moved.
+      expect(c.cpOf('mine')).toBe(cp - 8);
+      expect(c.myPoints).toBe(104);
+      c.undoMove();
+      expect(c.cpOf('mine')).toBe(cp);
+      expect(c.myPoints).toBe(100);
+      expect(c.usesLeft('mine', fortress)).toBe(1);
+    });
+
+    it("gives a unit type its own ability, cooling per unit, on either side's turn", () => {
+      const c = tuned(config => {
+        config.units.pawn.ability = 'focus';
+        config.units.rook.ability = 'bulwark';
+        delete config.units.king.ability;
+      });
+      const focus = c.slotOfAbility('focus');
+      // Nothing picked: a unit's own ability is not a pool pick.
+      c.selectedUnit = WP;
+      expect(c.displayUnitAbility).toBe(focus);
+      c.selectUnitAbility(focus);
+      expect(c.unitAbilityCanActivate()).toBeTrue();
+      c.activateUnitAbility();
+      expect(c.buffs['wp'].atk).toBe(2);
+      expect(c.unitCooldownOf('wp')).toBe(3);
+      expect(c.myPoints).toBe(95);
+
+      // Per unit: the pawn cooling leaves the rook's own alone.
+      c.selectedUnit = WR;
+      expect(c.displayUnitAbility).toBe(c.slotOfAbility('bulwark'));
+      c.selectUnitAbility(c.slotOfAbility('bulwark'));
+      expect(c.unitAbilityCanActivate()).toBeTrue();
+
+      // Black's pawn uses its own on black's turn, from black's purse.
+      c.gameState.snapshot.currentTurn = 'bot';
+      c.selectedUnit = BP;
+      c.selectUnitAbility(focus);
+      expect(c.unitAbilityCanActivate()).toBeTrue();
+      c.activateUnitAbility();
+      expect(c.opponentPoints).toBe(95);
+      expect(c.unitCooldownOf('bp')).toBe(3);
+
+      // Each side's turn ticks its own units' cooldowns, and Undo hands one back.
+      c.beginTurnFor('white');
+      expect(c.unitCooldownOf('wp')).toBe(2);
+      expect(c.unitCooldownOf('bp')).toBe(3);
+      c.undoMove();
+      expect(c.unitCooldownOf('bp')).toBe(0);
+      expect(c.opponentPoints).toBe(100);
+
+      // A unit type with none has none.
+      c.selectedUnit = unit('3,0', 'wk', 'king', 'white');
+      expect(c.displayUnitAbility).toBeNull();
+    });
   });
 });
 

@@ -1140,6 +1140,22 @@ describe('LocalGameService', () => {
       expect(negative.refusal()).toBe('No ability fires while a side is setting out');
     });
 
+    it('takes the extra steps an ability lent, past the old cap of 10', async () => {
+      // A pawn walks 6; -5,9 to 6,-8 is 17 steps. The engine capped a bonus
+      // at 10, so a Surge the config made 12 was offered on the board and
+      // refused here.
+      const capped = at(11, { ...kings, ...walker('-5,9') });
+      capped.engine.send({ type: 'make_move', from: '-5,9', to: '6,-8', moveBonus: 10 });
+      await flush();
+      expect(capped.seen.find(m => m.type === 'move_made')).toBeUndefined();
+
+      const lent = at(11, { ...kings, ...walker('-5,9') });
+      lent.engine.send({ type: 'make_move', from: '-5,9', to: '6,-8', moveBonus: 12 });
+      await flush();
+      expect(lent.refusal()).toBeUndefined();
+      expect(lent.seen.find(m => m.type === 'move_made')).toBeDefined();
+    });
+
     it('refuses an attack in the opening', async () => {
       // The board never offered one; nothing else said no, so a crafted
       // message could open the match by swinging.

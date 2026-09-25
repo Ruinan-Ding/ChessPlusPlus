@@ -110,6 +110,10 @@
             "type": "integer",
             "minimum": 0,
             "description": "Flat damage reduction applied when this unit is attacked. strike_damage() subtracts it from the incoming attack, floored at 0."
+          },
+          "ability": {
+            "type": "string",
+            "description": "Catalogue id of this unit type's own ability, cast from the Unit panel onto the unit itself - so it must be a 'friendly' one. Paid from its side's purse like the same ability anywhere else; its cooldown and uses are the unit's own. Omitted means the unit has none."
           }
         },
         "additionalProperties": false
@@ -122,14 +126,14 @@
         "slots": {
           "type": "integer",
           "minimum": 0,
-          "description": "How many pool abilities a side may carry at once."
+          "description": "How many pool abilities a side may carry at once. Picks come in pairs, so this is even."
         },
         "pool": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Catalogue ids a side picks its loadout from."
+          "description": "Catalogue ids a side picks its loadout from, in pairs: the first two are one pick, the next two another. An even number of them."
         },
         "paths": {
           "type": "array",
@@ -158,7 +162,7 @@
               },
               "passive": {
                 "type": "string",
-                "description": "Catalogue id, granted free with the path."
+                "description": "Catalogue id, granted free with the path. Always on: only its mov/atk/def mean anything."
               },
               "skill": {
                 "type": "string",
@@ -166,7 +170,7 @@
               },
               "ultimate": {
                 "type": "string",
-                "description": "Catalogue id, once a match."
+                "description": "Catalogue id. Once a match unless its catalogue entry sets `uses`."
               }
             },
             "additionalProperties": false
@@ -203,11 +207,22 @@
               "cost": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Points for a pool ability, CP for a path's."
+                "description": "What a cast costs: points for a pool or a unit's ability, CP for a path's."
               },
               "cooldown": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "description": "How many of its side's turns it cannot be cast again for after a cast. Omitted means 3."
+              },
+              "turns": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "How many of its caster's turns a mov/atk/def change lasts: it lifts as the caster's turn begins, this many times over. Omitted means 1. Damage, healing and points happen once, on the cast."
+              },
+              "uses": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "How many times it can be cast in a match - by a side, or by each unit for a unit's own ability. Omitted means no limit, except a path's ultimate, which is once."
               },
               "mov": {
                 "type": "integer"
@@ -220,16 +235,18 @@
               },
               "damage": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "description": "HP taken off the target. Enemy abilities only."
               },
               "heal": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "description": "HP given back to the target, up to its maximum. Friendly abilities only."
               },
               "points": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Points the cast hands its caster."
+                "description": "Points the cast hands its caster - always points, whichever currency bought the ability. Universal abilities only."
               },
               "testing": {
                 "type": "boolean",

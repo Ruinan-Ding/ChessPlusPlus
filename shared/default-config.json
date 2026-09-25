@@ -1,0 +1,422 @@
+{
+  "version": "1.0",
+  "board": {
+    "radius": 11,
+    "orientation": "edge-up"
+  },
+  "units": {
+    "king": {
+      "id": "king",
+      "name": "King",
+      "symbol": "K",
+      "display": {
+        "white": "♔",
+        "black": "♚"
+      },
+      "move": 6,
+      "value": 40,
+      "hp": 45,
+      "attack": 16,
+      "attackRange": 1,
+      "commander": true,
+      "defense": 15,
+      "ability": "dash"
+    },
+    "queen": {
+      "id": "queen",
+      "name": "Queen",
+      "symbol": "Q",
+      "display": {
+        "white": "♕",
+        "black": "♛"
+      },
+      "move": 6,
+      "value": 30,
+      "hp": 30,
+      "attack": 26,
+      "attackRange": 2,
+      "defense": 12,
+      "ability": "dash"
+    },
+    "rook": {
+      "id": "rook",
+      "name": "Rook",
+      "symbol": "R",
+      "display": {
+        "white": "♖",
+        "black": "♜"
+      },
+      "move": 6,
+      "value": 18,
+      "hp": 40,
+      "attack": 20,
+      "attackRange": 2,
+      "defense": 13,
+      "ability": "dash"
+    },
+    "bishop": {
+      "id": "bishop",
+      "name": "Bishop",
+      "symbol": "B",
+      "display": {
+        "white": "♗",
+        "black": "♝"
+      },
+      "move": 6,
+      "value": 14,
+      "hp": 22,
+      "attack": 22,
+      "attackRange": 3,
+      "defense": 10,
+      "ability": "dash"
+    },
+    "knight": {
+      "id": "knight",
+      "name": "Knight",
+      "symbol": "N",
+      "display": {
+        "white": "♘",
+        "black": "♞"
+      },
+      "move": 6,
+      "value": 12,
+      "hp": 28,
+      "attack": 18,
+      "attackRange": 1,
+      "defense": 11,
+      "ability": "dash"
+    },
+    "archer": {
+      "id": "archer",
+      "name": "Archer",
+      "symbol": "A",
+      "display": {
+        "white": "🏹︎",
+        "black": "🏹︎"
+      },
+      "move": 6,
+      "value": 8,
+      "hp": 16,
+      "attack": 15,
+      "attackRange": 3,
+      "defense": 7,
+      "ability": "dash"
+    },
+    "shieldman": {
+      "id": "shieldman",
+      "name": "Shieldman",
+      "symbol": "S",
+      "display": {
+        "white": "🛡︎",
+        "black": "🛡︎"
+      },
+      "move": 5,
+      "value": 9,
+      "hp": 30,
+      "attack": 8,
+      "attackRange": 1,
+      "defense": 18,
+      "ability": "dash"
+    },
+    "pawn": {
+      "id": "pawn",
+      "name": "Pawn",
+      "symbol": "P",
+      "display": {
+        "white": "♙",
+        "black": "♟"
+      },
+      "move": 6,
+      "value": 5,
+      "hp": 20,
+      "attack": 14,
+      "attackRange": 1,
+      "defense": 10,
+      "ability": "dash"
+    }
+  },
+  "abilities": {
+    "slots": 4,
+    "pool": [
+      "dash",
+      "focus",
+      "bulwark",
+      "sap",
+      "arc-bolt",
+      "mire",
+      "mend",
+      "rally"
+    ],
+    "paths": [
+      {
+        "id": "bastion",
+        "name": "Bastion",
+        "cost": 6,
+        "passive": "bastion",
+        "skill": "anchor",
+        "ultimate": "fortress"
+      },
+      {
+        "id": "onslaught",
+        "name": "Onslaught",
+        "cost": 7,
+        "passive": "onslaught",
+        "skill": "cleave",
+        "ultimate": "ruin"
+      },
+      {
+        "id": "tempo",
+        "name": "Tempo",
+        "cost": 5,
+        "passive": "tempo",
+        "skill": "surge",
+        "ultimate": "blitz"
+      }
+    ],
+    "catalogue": {
+      "dash": {
+        "id": "dash",
+        "name": "Dash",
+        "target": "friendly",
+        "cost": 3,
+        "cooldown": 3,
+        "turns": 1,
+        "mov": 2
+      },
+      "focus": {
+        "id": "focus",
+        "name": "Focus",
+        "target": "friendly",
+        "cost": 5,
+        "cooldown": 3,
+        "turns": 1,
+        "atk": 2
+      },
+      "bulwark": {
+        "id": "bulwark",
+        "name": "Bulwark",
+        "target": "friendly",
+        "cost": 1,
+        "cooldown": 3,
+        "turns": 1,
+        "def": 3
+      },
+      "sap": {
+        "id": "sap",
+        "name": "Sap",
+        "target": "enemy",
+        "cost": 4,
+        "cooldown": 3,
+        "turns": 1,
+        "mov": -2,
+        "atk": -2,
+        "def": -2,
+        "damage": 6
+      },
+      "arc-bolt": {
+        "id": "arc-bolt",
+        "name": "Arc Bolt",
+        "target": "enemy",
+        "cost": 3,
+        "cooldown": 3,
+        "damage": 8
+      },
+      "mire": {
+        "id": "mire",
+        "name": "Mire",
+        "target": "enemy",
+        "cost": 2,
+        "cooldown": 3,
+        "turns": 1,
+        "mov": -3
+      },
+      "mend": {
+        "id": "mend",
+        "name": "Mend",
+        "target": "friendly",
+        "cost": 0,
+        "cooldown": 3,
+        "heal": 20,
+        "testing": true
+      },
+      "rally": {
+        "id": "rally",
+        "name": "Rally",
+        "target": "universal",
+        "cost": 0,
+        "cooldown": 3,
+        "points": 300,
+        "testing": true
+      },
+      "bastion": {
+        "id": "bastion",
+        "name": "Bastion",
+        "target": "friendly",
+        "def": 1
+      },
+      "anchor": {
+        "id": "anchor",
+        "name": "Anchor",
+        "target": "friendly",
+        "cost": 4,
+        "cooldown": 3,
+        "turns": 1,
+        "def": 4
+      },
+      "fortress": {
+        "id": "fortress",
+        "name": "Fortress",
+        "target": "universal",
+        "cost": 8,
+        "cooldown": 3,
+        "uses": 1,
+        "points": 4
+      },
+      "onslaught": {
+        "id": "onslaught",
+        "name": "Onslaught",
+        "target": "friendly",
+        "atk": 1
+      },
+      "cleave": {
+        "id": "cleave",
+        "name": "Cleave",
+        "target": "enemy",
+        "cost": 5,
+        "cooldown": 3,
+        "damage": 10
+      },
+      "ruin": {
+        "id": "ruin",
+        "name": "Ruin",
+        "target": "universal",
+        "cost": 8,
+        "cooldown": 3,
+        "uses": 1,
+        "points": 5
+      },
+      "tempo": {
+        "id": "tempo",
+        "name": "Tempo",
+        "target": "friendly",
+        "mov": 1
+      },
+      "surge": {
+        "id": "surge",
+        "name": "Surge",
+        "target": "friendly",
+        "cost": 3,
+        "cooldown": 3,
+        "turns": 1,
+        "mov": 3
+      },
+      "blitz": {
+        "id": "blitz",
+        "name": "Blitz",
+        "target": "universal",
+        "cost": 8,
+        "cooldown": 3,
+        "uses": 1,
+        "points": 3
+      }
+    }
+  },
+  "setup": {
+    "white": {
+      "-11,11": "pawn",
+      "-10,11": "archer",
+      "-8,11": "shieldman",
+      "-6,11": "queen",
+      "-5,11": "king",
+      "-3,11": "shieldman",
+      "-1,11": "archer",
+      "0,11": "pawn",
+      "-11,10": "pawn",
+      "-10,10": "rook",
+      "-8,10": "knight",
+      "-6,10": "bishop",
+      "-4,10": "bishop",
+      "-2,10": "knight",
+      "0,10": "rook",
+      "1,10": "pawn",
+      "-11,9": "shieldman",
+      "-9,9": "pawn",
+      "-7,9": "archer",
+      "-5,9": "pawn",
+      "-4,9": "pawn",
+      "-2,9": "archer",
+      "0,9": "pawn",
+      "2,9": "shieldman",
+      "-17,11": "rook",
+      "-16,11": "knight",
+      "-15,11": "bishop",
+      "-14,11": "bishop",
+      "-13,11": "knight",
+      "-12,11": "rook",
+      "-16,10": "shieldman",
+      "-15,10": "archer",
+      "-14,10": "pawn",
+      "-13,10": "archer",
+      "-12,10": "shieldman",
+      "-16,9": "pawn",
+      "-15,9": "pawn",
+      "-14,9": "pawn",
+      "-13,9": "pawn",
+      "-12,9": "pawn"
+    },
+    "black": {
+      "11,-11": "pawn",
+      "10,-11": "archer",
+      "8,-11": "shieldman",
+      "6,-11": "queen",
+      "5,-11": "king",
+      "3,-11": "shieldman",
+      "1,-11": "archer",
+      "0,-11": "pawn",
+      "11,-10": "pawn",
+      "10,-10": "rook",
+      "8,-10": "knight",
+      "6,-10": "bishop",
+      "4,-10": "bishop",
+      "2,-10": "knight",
+      "0,-10": "rook",
+      "-1,-10": "pawn",
+      "11,-9": "shieldman",
+      "9,-9": "pawn",
+      "7,-9": "archer",
+      "5,-9": "pawn",
+      "4,-9": "pawn",
+      "2,-9": "archer",
+      "0,-9": "pawn",
+      "-2,-9": "shieldman",
+      "17,-11": "rook",
+      "16,-11": "knight",
+      "15,-11": "bishop",
+      "14,-11": "bishop",
+      "13,-11": "knight",
+      "12,-11": "rook",
+      "16,-10": "shieldman",
+      "15,-10": "archer",
+      "14,-10": "pawn",
+      "13,-10": "archer",
+      "12,-10": "shieldman",
+      "16,-9": "pawn",
+      "15,-9": "pawn",
+      "14,-9": "pawn",
+      "13,-9": "pawn",
+      "12,-9": "pawn"
+    }
+  },
+  "rules": {
+    "rangeFalloff": 0.25,
+    "minStrikeDamage": 1,
+    "maxTurns": 0,
+    "turnTimeLimit": 0,
+    "objective": "regicide",
+    "panelMoversPerTurn": 3,
+    "postmatchEntries": 5,
+    "homecomingsPerSetupTurn": 3,
+    "cpAtStart": 5,
+    "cpPhaseOffset": 5
+  }
+}

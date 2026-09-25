@@ -6,6 +6,7 @@ modules without needing WebSocket or async infrastructure.
 """
 
 import copy
+import json
 
 from django.test import TestCase
 from typing import Any, Dict
@@ -891,6 +892,50 @@ class DealtPanels:
     def tearDown(self):
         panels.PANELS_DEALT = self._dealt_was
         super().tearDown()
+
+
+class SharedDefaultConfigTestCase(TestCase):
+    """
+    One default config for both engines - shared/default-config.json, which
+    the client imports too - and the unit checks that keep a number in it
+    from reaching the engine as something it cannot use.
+    """
+
+    def test_the_default_config_is_the_shared_file(self):
+        from game.engine.config_loader import DEFAULT_CONFIG_PATH
+        self.assertEqual(DEFAULT_CONFIG_PATH.parent.name, 'shared')
+        with open(DEFAULT_CONFIG_PATH, encoding='utf-8') as fh:
+            self.assertEqual(json.load(fh), DEFAULT_CONFIG)
+        self.assertEqual(_validate_config(copy.deepcopy(DEFAULT_CONFIG)), [])
+
+    def test_a_unit_number_that_is_there_must_be_whole(self):
+        """
+        A move of "5" was a TypeError in get_legal_moves - an INTERNAL_ERROR
+        for a plainly bad config. One that is missing still loads: rooms hold
+        configs older builds saved (see the test for those).
+        """
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['units']['pawn']['move'] = '5'
+        config['units']['rook']['hp'] = 0
+        errors = _validate_config(config)
+        self.assertIn('units.rook.hp must be an integer >= 1, got 0', errors)
+        self.assertIn('units.pawn.move must be an integer >= 0, got 5', errors)
+        with self.assertRaises(ValueError):
+            load_config(config)
+
+    def test_a_units_own_ability_is_a_friendly_one_in_the_catalogue(self):
+        """It is cast from the Unit panel onto the unit itself."""
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['units']['queen']['ability'] = 7
+        config['units']['rook']['ability'] = 'sap'        # an enemy ability
+        config['units']['knight']['ability'] = 'bastion'  # a passive
+        config['units']['pawn']['ability'] = 'nope'
+        self.assertEqual(_validate_config(config), [
+            'units.queen.ability must be a catalogue id',
+            'units.rook.ability must be a friendly ability - it is cast on the unit itself',
+            'units.knight.ability must be a friendly ability - it is cast on the unit itself',
+            'units.pawn.ability names unknown ability "nope"',
+        ])
 
 
 #: The owner's base squad for white, by the number the board draws on each hex
