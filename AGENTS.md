@@ -1021,6 +1021,10 @@ Decided so far:
     So each opening turn is spent on units that have not gone yet.
   - **Sending a unit home does not lock anything**: it has left the board, so it is not in
     `initMovedHexes`.
+  - **A board unit gets one of the two, a move or a walk home, never both.** The owner, 25 Sep
+    2026: *"in the 3 turns, each unit on the board may only move once. so they can either move
+    it or send it home."* That is the lock above, checked before the walk home is offered (the
+    board) or taken (`opening_moved_hexes`, before the walk-home branch on the server).
 - **Each phase is scored on its own, and the phases add up.** The header reads
   `🚩 cap - 💀 death = this phase (+ x + y = z)`: the leading total is the **running phase**,
   the parenthetical lists the phases already finished, and `z` is those plus the running one -
@@ -1227,6 +1231,11 @@ Decided so far:
         one move and sends the origin it really set out from, so a `from` matching an earlier
         landing is always a second go. *Found by driving the screen on 22 Sep 2026 with 357
         specs green; see PUNCHLIST 3.15.*
+      - **Moving another unit ends the first one's move, hexes left or not** - the owner, 25
+        Sep 2026: *"when another unit is selected and moved, it would be considered the end of
+        turn for the first moved unit."* So a unit never comes back for what it left unwalked.
+        Their reason: switching back and forth would make the turn's yellow replay hard to
+        follow. Do not loosen it to "any unit, within its MOV in total".
       - **The board's lock keeps a floor** (`movesToSpare`): never fewer than the one
         `movesLeftFor` proves. The count and the lock are two answers to one question, and an
         unbound `boardMovesSpent` of 0 would read as "nothing staged" and unlock the whole

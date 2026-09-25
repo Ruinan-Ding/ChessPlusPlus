@@ -249,7 +249,9 @@ export function decidedOnPoints(bank: PhaseBank | null | undefined): Side | null
  * three phases are in, then the side that took it on points, else overtime -
  * and once turn 50 has been played out, black. The same answers
  * `scheduleEnding` ends the match on, so the header never names a result the
- * engine will not reach.
+ * schedule will not reach. A resignation, a draw or a forfeit can still end it
+ * first, even through Phase 3's postmatch once it is decided: the owner, 25 Sep
+ * 2026 - *"you can draw/forfiet anytime"*.
  */
 export function matchVerdict(bank: PhaseBank | null | undefined, ply: number): Side | 'overtime' | null {
   if (!allBanked(bank)) return null;
