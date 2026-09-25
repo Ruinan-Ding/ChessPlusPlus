@@ -37,6 +37,7 @@ DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + m
 # Live network checks - real sockets against the server above, in a second shell
 python scripts/e2e/match.py    # one full match: lobby, invite, room, moves, rejoin, resign
 python scripts/e2e/edges.py    # races, second tab, token lifetime, disconnect after the result (~90s)
+python scripts/e2e/endings.py  # two matches played out: to turn 50 on passes, and won on points (~1 min)
 
 # Client (from client/)
 ng serve                                              # serve on :4200
