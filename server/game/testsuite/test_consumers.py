@@ -2422,8 +2422,9 @@ class OvertimeTollLiveIntegrationTests(TransactionTestCase):
 class MatchEndingLiveIntegrationTests(TransactionTestCase):
     """
     The schedule's two endings, enforced by the server (engine/scoring.py): a
-    side past the other's margin as Phase 3 banks wins on points, and a match
-    still standing once turn 50 is played out is black's. Both were the
+    side past the other's margin once Phase 3 has banked and its postmatch is
+    played wins on points, and a match still standing once turn 50 is played
+    out is black's. Both were the
     owner's rules long before anything enforced them - the header read them,
     and the match played on.
 
@@ -2443,6 +2444,16 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
             turn_number=ply, current_turn=mover, board_state=board,
             phase_bank=bank or {})
         return state
+
+    async def _pass(self, mover, other):
+        """
+        Pass *mover*'s turn and read the hand-over off both sockets, returning
+        *other*'s copy. Both are sent every turn_passed, so a socket left
+        holding its copy would hand it to the next read as if it were new.
+        """
+        await mover.send_json_to({'type': 'pass_turn'})
+        await _receive_until(mover, 'turn_passed')
+        return await _receive_until(other, 'turn_passed')
 
     async def test_turn_fifty_played_out_goes_to_black(self):
         game, host_comm, opp_comm, white, black = await _start_seated_game()
@@ -2480,13 +2491,23 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
-    async def test_a_side_past_the_margin_as_phase_three_banks_wins_on_points(self):
+    async def test_a_side_past_the_margin_wins_on_points_once_the_postmatch_is_played(self):
+        # Phase 3 banks as its postmatch begins, and the result is known
+        # there, but the postmatch is still played: "phase 3 post match still
+        # happens even if overtime isnt triggered."
         game, host_comm, opp_comm, white, black = await _start_seated_game()
         try:
             # Ply 70 is black's half of turn 35, the last of Phase 3's play.
             state = await self._wind(game, 70, bank={
-                '1': {'white': 9, 'black': 0}, '2': {'white': 0, 'black': 0}})
-            await black.send_json_to({'type': 'pass_turn'})
+                '1': {'white': 12, 'black': 0}, '2': {'white': 0, 'black': 0}})
+            passed = await self._pass(black, white)
+            self.assertIn('3', passed['phaseBank'])
+            self.assertEqual(passed['currentTurn'], state.player_white)
+            # White's half of the postmatch, and black's, which ends it.
+            passed = await self._pass(white, black)
+            self.assertEqual(passed['currentTurn'], state.player_black)
+            passed = await self._pass(black, white)
+            self.assertEqual(passed['currentTurn'], '')
             over = await _receive_until(white, 'game_over')
             self.assertEqual(over['endReason'], 'points')
             self.assertEqual(over['winner'], state.player_white)
@@ -2502,12 +2523,15 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
         game, host_comm, opp_comm, white, black = await _start_seated_game()
         try:
             await self._wind(game, 70, bank={
-                '1': {'white': 5, 'black': 0}, '2': {'white': 0, 'black': 0}})
-            await black.send_json_to({'type': 'pass_turn'})
-            passed = await _receive_until(white, 'turn_passed')
-            # Five clear is not more than five: nobody has it outright.
-            self.assertTrue(passed['currentTurn'])
+                '1': {'white': 10, 'black': 0}, '2': {'white': 0, 'black': 0}})
+            passed = await self._pass(black, white)
             self.assertIn('3', passed['phaseBank'])
+            await self._pass(white, black)
+            passed = await self._pass(black, white)
+            # Ten clear is not more than ten: nobody has it outright, and
+            # the postmatch hands on into overtime.
+            self.assertEqual(passed['turnNumber'], 73)
+            self.assertTrue(passed['currentTurn'])
             stored = await GameState.objects.aget(game_id=game.game_id)
             self.assertEqual(stored.end_reason, '')
         finally:
@@ -2541,11 +2565,13 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
         game, host_comm, opp_comm, white, black = await _start_seated_game()
         try:
             await self._wind(game, 70, bank={
-                '1': {'white': 9, 'black': 0, 'late': True}, '2': {'white': 0, 'black': 0}})
-            await black.send_json_to({'type': 'pass_turn'})
-            passed = await _receive_until(white, 'turn_passed')
-            self.assertTrue(passed['currentTurn'])
+                '1': {'white': 12, 'black': 0, 'late': True}, '2': {'white': 0, 'black': 0}})
+            passed = await self._pass(black, white)
             self.assertNotIn('late', passed['phaseBank']['3'])
+            await self._pass(white, black)
+            passed = await self._pass(black, white)
+            self.assertEqual(passed['turnNumber'], 73)
+            self.assertTrue(passed['currentTurn'])
             stored = await GameState.objects.aget(game_id=game.game_id)
             self.assertEqual(stored.end_reason, '')
         finally:
@@ -2626,7 +2652,7 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
     SHUFFLED_ASIDE = '7,8'  # one step that gets it no nearer
     LANDS_ON = '1,9'        # the one hex a crossing may stop on (see below)
     KNIGHT_AT = '-12,6'     # rbl3, white's base knight
-    WRAP_OPEN_PLY = 53      # turn 27: Phase 3 before its halftime, 27 points
+    WRAP_OPEN_PLY = 7       # turn 4: Phase 1's first, 14 points (4 turns + its 10)
 
     async def _history(self, game):
         state = await GameState.objects.aget(game_id=game.game_id)
@@ -2704,7 +2730,7 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
             tip = panels.wrap_tips('white', radius)['reserve']
             before = economy.points_of(
                 'white', self.WRAP_OPEN_PLY, state.move_history, state.config_snapshot)
-            self.assertEqual(before, 27)
+            self.assertEqual(before, 14)
 
             await white.send_json_to({'type': 'panel_move', 'from': self.KNIGHT_AT, 'to': tip})
             wrapped = await _receive_until(white, 'game_state_update')
@@ -2714,9 +2740,9 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
 
             after = economy.points_of(
                 'white', self.WRAP_OPEN_PLY, wrapped['moveHistory'], wrapped['config'])
-            self.assertEqual(after, 15)
+            self.assertEqual(after, 2)
 
-            # The queen is worth 30, and there are 15 left.
+            # The queen is worth 30, and there are 2 left.
             await white.send_json_to({'type': 'panel_move', 'from': '-13,3', 'to': '10,1'})
             err = await _receive_until(white, 'error')
             self.assertEqual(err['code'], 'INVALID_MOVE')

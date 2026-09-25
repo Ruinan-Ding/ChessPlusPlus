@@ -1315,26 +1315,26 @@ describe('GameBoardComponent reach preview', () => {
         return board.doomState(anyBoard().cellsByKey.get('0,0'));
       };
       // Turn 44 is the last of the first stretch. This turn costs him 1 and
-      // his next costs 2, so three HP is exactly two turns' worth and the
+      // his next costs 3, so four HP is exactly two turns' worth and the
       // skull is owed. `toll * DOOM_WARNING_TURNS` answered 2 here and said
       // nothing - a king who dies at the end of turn 45 with no warning at all.
-      expect(doom(3, 2 * 44 - 1)).toBe('early');
-      expect(doom(4, 2 * 44 - 1)).toBe('');
+      expect(doom(4, 2 * 44 - 1)).toBe('early');
+      expect(doom(5, 2 * 44 - 1)).toBe('');
       expect(doom(1, 2 * 44 - 1)).toBe('imminent');
 
-      // The last turn of the match takes three, so three is imminent rather
-      // than two turns clear, and the warning reaches back to six.
-      expect(doom(3, 2 * 50 - 1)).toBe('imminent');
-      expect(doom(6, 2 * 50 - 1)).toBe('early');
-      expect(doom(7, 2 * 50 - 1)).toBe('');
+      // The last turn of the match takes five, so five is imminent rather
+      // than two turns clear, and the warning reaches back to ten.
+      expect(doom(5, 2 * 50 - 1)).toBe('imminent');
+      expect(doom(10, 2 * 50 - 1)).toBe('early');
+      expect(doom(11, 2 * 50 - 1)).toBe('');
 
       // Read off HIS next toll, not the mover's. White pays at the end of an
       // odd hand-over, so a white king asked on ply 88 - black's half of turn
       // 44 - pays next at the end of turn 45, which is the stretch that takes
-      // two. Four HP is two of those and the skull is owed; reading the
-      // mover's ply instead answered 1 + 2 and said nothing at all.
-      expect(doom(4, 2 * 44)).toBe('early');
-      expect(doom(5, 2 * 44)).toBe('');
+      // three. Six HP is two of those and the skull is owed; reading the
+      // mover's ply instead answered 1 + 3 and said nothing at all.
+      expect(doom(6, 2 * 44)).toBe('early');
+      expect(doom(7, 2 * 44)).toBe('');
     });
 
     it('names the panel a blow landed in, so the mending can tell base from reserve', () => {

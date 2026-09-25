@@ -34,8 +34,8 @@ import { PhaseBank, bankEndedPhases, scheduleEnding } from './match-score';
  * It mirrors the server's rules: movement (see hex-rules), combat with
  * counter-attacks, and the regicide win condition. Endings are resign, draw,
  * losing your commander, and the schedule's two: a side past the other's
- * margin as Phase 3 banks, and turn 50 played out with both kings standing,
- * which is black's (match-score.ts). Anything the engine learns has to land
+ * margin once Phase 3 has banked and its postmatch is played, and turn 50
+ * played out with both kings standing, which is black's (match-score.ts). Anything the engine learns has to land
  * here too, or offline play quietly diverges from online play.
  *
  * **What it checks, and what it takes on trust.** The server re-derives every
@@ -1014,9 +1014,10 @@ export class LocalGameService {
    * 1. **The board.** `beaten` is every side that has lost on it: both is a
    *    draw, one is the other's win by the objective.
    * 2. **The schedule.** The phase the hand-over closed banks
-   *    (`bankEndedPhases`), and then a side past the other's margin as
-   *    Phase 3 banks wins on points, and a match still standing once turn 50
-   *    is played out is black's (`scheduleEnding`).
+   *    (`bankEndedPhases`), and then a side past the other's margin once
+   *    Phase 3 has banked and its postmatch is played wins on points, and a
+   *    match still standing once turn 50 is played out is black's
+   *    (`scheduleEnding`).
    * 3. **The turn limit**, `rules.maxTurns`, checked against the turn just
    *    played - the server checks it before it counts the next one, and
    *    mirroring anything else leaves the two a ply apart.
@@ -1065,7 +1066,7 @@ export class LocalGameService {
    *
    * **Real damage, not a mark.** A king on the toll or less dies of it, which
    * is the owner's rule - and it is what eventually settles a deathmatch
-   * neither side is winning on points. How much climbs 1, 2, 3 through
+   * neither side is winning on points. How much climbs 1, 3, 5 through
    * overtime's three stretches, so a match that will not end has its ending
    * brought forward rather than merely waited for. It lands after everything else the turn did, so a blow
    * struck this turn is resolved before the toll rather than after it, and a
@@ -1088,7 +1089,7 @@ export class LocalGameService {
     const g = this.game!;
     // Still the ply just played: it is bumped after this. How much it costs is
     // the ply's business - overtime runs in three stretches and the toll
-    // climbs 1, 2, 3 through them - and `overtimeTollAt` answers 0 outside
+    // climbs 1, 3, 5 through them - and `overtimeTollAt` answers 0 outside
     // overtime, so it is the "not yet" gate as well as the amount. A
     // `turnNumber < OVERTIME_FIRST_PLY` test beside it would be a second
     // place holding the schedule, and the two could come to disagree.

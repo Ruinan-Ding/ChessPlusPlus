@@ -32,7 +32,8 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (255 tests, 24 Sep 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (265 tests, 25 Sep 2026)
+python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
 python scripts/e2e/match.py    # one full match: lobby, invite, room, moves, rejoin, resign
@@ -42,6 +43,9 @@ python scripts/e2e/endings.py  # two matches played out: to turn 50 on passes, a
 # Client (from client/)
 ng serve                                              # serve on :4200
 ng test
+
+# CI (.github/workflows/tests.yml) runs both suites, the migrations check and the production
+# build on every push and pull request.
 ```
 
 `DJANGO_DEBUG=true` is required for **every** local `manage.py` invocation. Without it
@@ -73,16 +77,28 @@ Any change to config shape touches all three or validation rejects live configs:
 | `client/src/app/services/config.service.ts` | `DEFAULT_GAME_CONFIG` (line ~28) + `validateGameRules()` |
 
 The whole-number rules a config may leave out (`panelMoversPerTurn`, `postmatchEntries`,
-`homecomingsPerSetupTurn`, `cpPerPhase`) are listed once per side in `COUNTED_RULES`, filled in
+`homecomingsPerSetupTurn`, `cpAtStart`, `cpPhaseOffset`) are listed once per side in `COUNTED_RULES`, filled in
 at their defaults by both normalisers, and read through `ruleOf(config, key)` /
 `rule_of(config, key)` - never as a module constant, because one server process plays every
 room and each room may carry its own config. `postmatchEntries` was `phaseInitEntries` until
-the phase's extra turn moved from its start to its end; the old key is not migrated. Neither
-runtime validator rejects a rule key it does not know, so a room saved with the old name reads
-the new one at its default (5) and carries the stale key along unread. The schema itself does
+the phase's extra turn moved from its start to its end, and `cpPhaseOffset` replaced
+`cpPerPhase` when CP became earned; neither old key is migrated. Neither
+runtime validator rejects a rule key it does not know, so a room saved with an old name reads
+the new one at its default and carries the stale key along unread. The schema itself does
 say `additionalProperties: false` on `rules`, but nothing loads the schema at runtime. The overtime schedule (`OVERTIME_STAGES` in
 `phases.ts` / `phases.py`) is still code, for that reason: it is read by functions that take
 only a ply, and making it per-room means handing them the room's schedule.
+
+**The scoring rules are mirrored too, and a test holds the two copies together.** The capture
+zones, the phase bank, deaths, the endings, the CP award, the points the schedule pays and the
+overtime conversion are written in `match-score.ts` / `hex-rules.ts` / `phases.ts` and again in
+`scoring.py` / `phases.py`. Each side's own tests pin their own numbers, so a rule changed on one
+side alone used to pass both. `server/scripts/make_scoring_parity.py` writes fixed cases (a fixed
+seed) with the server's answers to `client/src/app/services/scoring-parity.json` - there because
+the client's `rootDir` is `src` - and `test_scoring_parity.py` and `scoring-parity.spec.ts` assert
+each engine against it. **Regenerate only when the rules changed on purpose, in both engines**:
+the script writes the server's answers as the truth, and rerunning it to quiet a failing server
+test is the one way to use it wrongly.
 
 **3. Movement is a single `move` stat per unit** (an adjacent-hex step budget), not a pattern
 list. `move_validator.get_legal_moves()` floods outward through the six hex neighbours, through
@@ -341,7 +357,7 @@ Decided so far:
     - **Everything standing in a base mends 1 HP** (`BASE_HEAL_PER_TURN`), never past its
       `max_hp` - the squad dealt there at the start as much as a unit that walked home.
       **A reserve does not mend**: it is a staging area, not a hospital.
-    - **In overtime, the commander of the side that just played loses HP** - 1, 2 or 3,
+    - **In overtime, the commander of the side that just played loses HP** - 1, 3 or 5,
       depending which of overtime's three stretches the turn is in (`overtimeTollAt()` in
       `phases.ts`).
 
@@ -839,12 +855,30 @@ Decided so far:
   the opponent's to its left, yours to its right - as flag, capture hexes, skull, deaths, total.
   **Cap is what you hold right now**, read off the board every time and gone the moment you walk
   away; it is not banked and it is *not* ability points. **Death accumulates**: losing a unit
-  costs you its config `value` (a pawn is 5), so a total can be negative. `phaseScore(side)` in
-  `game-room.component.ts`.
+  costs you its config `value` (a pawn is 5) - **except one killed in a base** (a red panel,
+  `BASE_PANELS`), which costs nothing; one killed in a reserve (green) costs as on the board.
+  *The owner, 24 Sep 2026: "killing things in base (red panel) should not count towards
+  victory points ... in green panel it ... counts towards victory points".* `deathsOf()` /
+  `deaths_of()` skip a blow into a base (`intoPanel` with a base `panel`); a base never strikes
+  back, so that blow only ever kills the unit standing in it.
+  - **A phase's total never goes below 0** (`phaseTotal()` in `match-score.ts`, `phase_total()`
+    in `engine/scoring.py`): deaths can wipe out what a side holds but not push it under, so
+    `4 - 18` reads `= 0` and banks 0. *The owner, 24 Sep 2026: "the total points racked
+    shouldnt go negative by death. max is 0".* The bank and the header's live figure both go
+    through it, so the two cannot disagree about the floor; the header's own numbers are
+    `standings()` / `phaseScore(side)` in `game-room.component.ts`.
+  - **A phase's total is multiplied by its number** - x1 in Phase 1, **x2 in Phase 2, x3 in
+    Phase 3** - in the same `phaseTotal()`, after the floor (4 - 18 in Phase 3 is 0, not -42).
+    *The owner, 24 Sep 2026: "the total victory points for each phase is multiplied by 2 on
+    phase 2, multipled by 3 on phase 3".* The bank holds the multiplied figure, so the match
+    total, the margins and the CP award all read it. The header shows the sum it made:
+    `(🚩 5 - 💀 0) x2 = 10` in Phases 2 and 3 (`Standing.multiplier`, off `Phase.multiplier`
+    in `PHASES`), the plain `🚩 5 - 💀 0 = 5` in Phase 1 - and on a postmatch, which scores
+    nothing to multiply. The margins went up the same day, to 10 and 5 (below).
   - **The initialization banks no VP; each of the three phases does.** The opening is not in
-    `SCORING_PHASES`, so its running `cap - death` is shown but contributes nothing to the
-    match total, and nothing is banked when it ends. Confirmed by the owner - do not "fix" the
-    opening into a scoring phase.
+    `SCORING_PHASES`, so it reads a flat 0 and contributes nothing to the match total, and
+    nothing is banked when it ends. Confirmed by the owner - do not "fix" the opening into a
+    scoring phase.
 - **A full turn is white's hand-over and black's together.** The engine counts a turn per
   hand-over (`turnNumber` goes up on every one, and white plays the odd numbers), but every
   rule below is written in **full turns** - so turn 50 is hand-overs 99 and 100.
@@ -859,9 +893,9 @@ Decided so far:
   | Phase 1 | 4-13 / 14 | halftime after turn 8; turn 14 is its **postmatch turn** |
   | Phase 2 | 15-24 / 25 | halftime after turn 19; postmatch turn 25 |
   | Phase 3 | 26-35 / 36 | halftime after turn 30; postmatch turn 36 |
-  | Overtime 1 | 37-44 | first hand-over is 73 (`OVERTIME_FIRST_PLY`); toll **-1**, purse **+1** a turn, **1** board move |
-  | Overtime 2 | 45-49 | toll **-2**, purse **+3** a turn, **2** board moves |
-  | Overtime 3 | 50 | the last turn; toll **-3**, purse **+5**, **3** board moves, and anything still standing is black's |
+  | Overtime 1 | 37-44 | first hand-over is 73 (`OVERTIME_FIRST_PLY`); toll **-1**, **1** board move, no points |
+  | Overtime 2 | 45-49 | toll **-3**, **2** board moves, no points |
+  | Overtime 3 | 50 | the last turn; toll **-5**, **3** board moves, no points, and anything still standing is black's |
 
   A halftime splits a ten-turn phase evenly. These are full turns, so the opening is six
   hand-overs and each phase is twenty-two.
@@ -886,7 +920,8 @@ Decided so far:
     move the inization part to the end of the phase. that way you dont have 3 inization turns
     then start right away at phase 1 initialization"*. It is the same turn with the same
     allowances, only moved. Every phase still spans eleven turns, so which phase a ply
-    belongs to, the CP a phase hands out and overtime's start at turn 37 did not move with it.
+    belongs to and overtime's start at turn 37 did not move with it. The CP did, a day later -
+    it is now earned at the start of each postmatch (see the currencies below).
 
   **The history header counts down to the next change**, in full turns:
   `Turn 1 - 2 Until Phase 1`. A change lands at the *end* of the turn it is counted to, so
@@ -1119,12 +1154,17 @@ Decided so far:
   beat is written at its 1x length and divided by it, so the recap keeps its shape and only
   its speed changes. Currently **1.5** - the owner's "about 50% faster".
 - **The third phase ending settles the match, or sends it to overtime** (`decidedOnPoints()` /
-  `decided_on_points()`, shown by `matchVerdict`). White must finish **more than 5** clear to
-  take it outright; black only **more than 3** (`OVERTIME_MARGIN`, in `match-score.ts` and
-  `scoring.py`) - black is allowed the wider gap because white moves first. Anything closer
-  than that is overtime. "Ending" is the end of Phase 3's play: the hand-over into its
-  postmatch (turn 36, ply 71), when the third phase banks, one turn before overtime begins.
-  **Both engines end the match there** (`endReason: 'points'`) - the postmatch is not played.
+  `decided_on_points()`, shown by `matchVerdict`). White must finish **more than 10** clear to
+  take it outright; black only **more than 5** (`OVERTIME_MARGIN`, in `match-score.ts` and
+  `scoring.py`, keyed by the side behind) - black is allowed the wider gap because white moves
+  first. Anything closer than that is overtime. *The owner, 24 Sep 2026: "10 ahead for white
+  and 5 ahead for black to trigger overtime"* - it was 5 and 3, before the phases were
+  multiplied. The third phase banks on the hand-over into its postmatch (turn 36,
+  ply 71), so the result is known - and the header names it - from there. **But the postmatch
+  is still played**, and both engines end the match as it ends, on the hand-over into turn 37
+  (`OVERTIME_FIRST_PLY`, ply 73; `endReason: 'points'`). *The owner, 24 Sep 2026: "phase 3
+  post match still happens even if overtime isnt triggered."* Until then a points match ended
+  as the postmatch began, and its CP award never came.
   - **Never on a late phase** (see the bank above). The first version checked every hand-over
     and the first test that wound a game straight to overtime ended it on points off the dealt
     board; the second only asked on the hand-over into Phase 3's postmatch, which still let a
@@ -1132,12 +1172,13 @@ Decided so far:
     declare. The late mark answers both, and `matchVerdict` and `scheduleEnding` now read the
     one `decidedOnPoints`, so the header and the ending cannot disagree.
   - **Overtime runs in three stretches and the toll climbs through them** (`OVERTIME_STAGES`
-    in `phases.ts`, mirrored in `phases.py`): turns **37-44 take -1**, **45-49 take -2**, and
-    the **last turn, 50, takes -3**. A match with both kings still standing at the end of it
-    **goes to black** - the same verdict `matchVerdict` already gave, now with an escalation
-    behind it that makes reaching it unlikely. *The owner: "overtime is broken into 3 parts,
-    overtime 1 takes -1 damage. on turn 45 it turns to overtime 2, taking -2 damage, and on
-    the very last turn -3 damage. and if both survives, black wins."*
+    in `phases.ts`, mirrored in `phases.py`): turns **37-44 take -1**, **45-49 take -3**, and
+    the **last turn, 50, takes -5** - 28 off a king who sits through all of it, of the 45 he
+    starts with. A match with both kings still standing at the end of it **goes to black** -
+    the same verdict `matchVerdict` already gave, now with an escalation behind it that makes
+    reaching it unlikely. *The owner: "overtime is broken into 3 parts, overtime 1 takes -1
+    damage. on turn 45 it turns to overtime 2 ... and if both survives, black wins."* Raised
+    from -2 and -3 on 24 Sep 2026: *"the 3 and 5 is DAMAGE TAKEN TO KING."*
     - **Counted forward from overtime's first turn, not written down.** `OVERTIME_FIRST_TURN`
       and `OVERTIME_LAST_TURN` are both read off the schedule, so a phase that moves carries
       all of overtime with it. `OVERTIME_LAST_TURN` used to be the literal `50` declared in
@@ -1201,7 +1242,7 @@ Decided so far:
     king's HP - see the toll. A per-turn points bleed (`overtimeTicks`) used to run beside it
     and was removed at the owner's word: *"loses just HP, if i said points i misspoke."*
   - **The toll is shown on the board as well as in the header**: the king of whoever just paid
-    takes a red **`-1`, `-2` or `-3`** over its icon - the stretch's own number - and a hit pop
+    takes a red **`-1`, `-3` or `-5`** over its icon - the stretch's own number - and a hit pop
     (`markOvertimeToll()` in
     `game-board.component.ts`, derived from the turn that ended - white plays the odd
     hand-overs, so which side paid is arithmetic and needs no input from the room). The HP
@@ -1226,7 +1267,7 @@ Decided so far:
       a kill earlier in the turn tinted the next unit's own `+1` in the victim's colour.
     - **Only the toll's own kill, and the ply is the test that proves it.** `kingHex` records
       the hex, the HP *and* the ply he was last seen on; the mark is owed only when the HP was
-      down to the **stretch's own toll** (`overtimeTollAt(ended)`, which is 1, 2 or 3) **and**
+      down to the **stretch's own toll** (`overtimeTollAt(ended)`, which is 1, 3 or 5) **and**
       that ply is the one that just ended. The toll takes him
       during the commit of that ply, so his last sighting is always that ply; a king cut down
       by a blow vanished earlier and is stamped with it. HP alone cannot separate them — a
@@ -1440,29 +1481,41 @@ and `attack` names the hex it strikes from there.
 ## Points
 
 Placeholder numbers, but a real economy now, and **derived rather than tallied**. Every source and
-sink of a point is on the move history, so both engines add them up from it:
+sink of a point is on the move history or the schedule, so both engines add them up from those.
+The owner's rules and their history are under *Two currencies* in the phases section; this is
+the ledger:
 
 | | |
 |---|---|
-| a side's turn begins | +1 (`beginTurnFor`; `hand_overs_by(color, ply)` counts them) |
-| a kill | +1 to the killer; a counter-swing that kills the attacker pays the defender's side |
+| a side's turn begins | its rate - 1, then 2 from Phase 2's halftime, 3 from Phase 3's, nothing in overtime - and a phase's grant (10, 20, 30) on the side's first turn of it (`turnPointsBy`) |
+| overtime begins | the side's banked victory points, once, on its own first overtime turn (`vpAsPoints`) |
+| a kill on the board | +the dead unit's `value` to the killer; a counter-swing that kills the attacker pays the defender's side its `value` |
+| a kill in a panel | nothing, base or reserve, whoever dies |
 | walking home | +the unit's `value` |
 | the wrap | −the unit's `value` (on the `panelMove` record's `price`) |
 | a pool ability | −its `abilityCosts` entry — solo only, and **not** on the record |
 
-A cast that kills pays nothing; only a turn's own action ever did. A round trip — wrap out, walk
-home — is points-neutral, which is what the refund is for.
+The first two rows are `scheduledPoints()` in `match-score.ts` / `scheduled_points()` in
+`scoring.py`; a unit's worth is read by `unitValue()` / `unit_value()` and nowhere else. A cast
+that kills pays nothing; only a turn's own action ever did. A round trip — wrap out, walk home —
+is points-neutral, which is what the refund is for.
 
-- **Server**: `points_of(color, ply, history, config)` in `server/game/engine/economy.py`. The
-  wrap is priced against it, so it has to be right.
+- **Server**: `points_of(color, ply, history, config, bank)` in `server/game/engine/economy.py`,
+  *bank* being the state row's `phase_bank`. The wrap is priced against it, so it has to be
+  right.
 - **Client**: `pointsFromHistory(color)` in the room mirrors it. **`reconcilePoints` resets both
-  purses from the record on every `move_made`, `turn_passed` and `game_state_update` in a
-  networked room** — and the live tally still moves in between, so a wrap staged this turn shows
-  its price at once. This replaced a per-browser tally that was restored from disk only for a solo
-  room (a networked reload started both purses at nothing) and that only ever charged or refunded
-  this room's *own* player, so the other player's wraps and walks home never reached your screen.
-- **Not in a solo room.** Pool abilities spend points there and are not recorded, so resetting to
-  the record would hand back every point spent on one. Solo keeps its tally.
+  purses from the record on every `game_started`, `move_made`, `turn_passed` and
+  `game_state_update`, solo and networked alike** — and the live tally still moves in between, so
+  a wrap staged this turn shows its price at once. Nothing else pays a point: not the start of a
+  turn (`beginTurnFor` only ticks cooldowns), not a kill on its way in. So a new way to earn one
+  is one line in the record's sum, and a held move - one of an Overtime 2 or 3 turn's several,
+  which arrives as a `game_state_update` rather than a `move_made` - is paid like any other.
+- **The one thing the record does not hold is abilities**, which are solo only: a pool ability
+  is bought with points, and Rally hands 300 out. `chargeFor()` keeps that apart as
+  `myAbilityPoints` / `opponentAbilityPoints`, persisted with the solo state, and
+  `reconcilePoints` adds it on - so the reset gives back nothing spent. A networked room casts
+  nothing and adds 0. (Solo used to keep a tally alone and pay each source by hand, which is how
+  a held move's kill went unpaid.)
 - Cooldowns still tick at the start of a side's turn and are still client-side; see Ability
   panels.
 
@@ -1780,28 +1833,79 @@ passive, for whichever unit is selected.
   rather than of the slot number, so moving a path's slots cannot quietly change what they
   cost):
   - **CP** buys the *special* abilities - the three paths and everything inside them: passive,
-    skill, ultimate. `rules.cpPerPhase` (100, the owner's placeholder) is awarded **at the start of
-    each of the five phases** - the opening, the three phases and overtime - so a match hands
-    out 500 in all.
+    skill, ultimate. **Each side starts with `rules.cpAtStart` (5)** - *the owner, 24 Sep
+    2026: "at the start of the game, user has 5cp"* - **and earns the rest at the start of
+    each postmatch** (turns 14, 25 and 36), off the phase that has just banked (`cpAwarded()`
+    in `match-score.ts`, `cp_awarded()` in `engine/scoring.py`; `cpOf()` adds the start).
+    Phase N pays each side `N x rules.cpPhaseOffset` (**5, 10, 15** - lowered from 10, 20, 30
+    the same day) plus both sides' scores for the phase, and the side that scored less the gap
+    between them as well. *The owner:* the higher total gets `phase_x + (mine + theirs)`, the
+    lower `phase_x + (mine + theirs) + abs(mine - theirs)`. So a hard-fought phase pays both
+    sides more, and the side behind is paid up to level: Phase 2 banking white 12, black 4 -
+    the bank's figures, already doubled - pays white 10 + 16 = 26 and black 34.
+    - **Nothing else awards CP.** The 5 a side starts with buys the cheapest path (Tempo, 5)
+      and no other before turn 14. Choosing is open on a setup turn, so an award can be spent
+      in the postmatch it arrives on. It used to be a flat `rules.cpPerPhase` (100) as each of
+      the five phases began.
+    - **Only the phase's own scores are compared**, not the match's: the side behind in that
+      phase is paid its gap even when it leads overall (the owner's call). A tie pays both the
+      same. A late phase still awards.
+    - The server has the formula but spends nothing yet - abilities are solo (6.15) - so the
+      Python copy is kept in step for when they are not.
   - **Points** buy the eight-ability pool, and stay the board's currency besides: the wrap
-    crossing charges them and coming home refunds them. A side banks **one at the start of
-    each of its own turns** - and **3 a turn through Overtime 2 and 5 on the last turn**
-    (`pointsPerTurnAt()`, off `OVERTIME_STAGES`). *The owner: "on overtime 2, we get +3 points
-    every turn. on the turn we get +5 points."* The toll takes and the purse gives, and they
-    climb together: the pressure to finish arrives with the means to.
-    - **Three places hand that point out and all three read the one table.** `beginTurnFor()`
-      pays it live as a side starts; `pointsFromHistory()` re-derives the whole purse from the
-      record on every commit; `economy.points_of()` is the server's copy, which the wrap is
-      priced against. A flat `1` in any of them is invisible for 44 turns and then makes the
-      purse jump every time a commit overwrites the live tally.
-    - Besides the turn: **+1 a kill** (and the defender is paid when a counter kills the
-      attacker), **+the unit's value** when it walks home, **-the price** of a wrap crossing.
-      A cast that kills pays nobody. All of it derived from the record, never a stored tally.
+    crossing charges them and coming home refunds them. A side banks points **at the start of
+    each of its own turns, at a rate that steps up at each phase's halftime**: 1 a turn to
+    turn 19, **2 from Phase 2's halftime (turn 20), 3 from Phase 3's (turn 31)**, and
+    **nothing in overtime** (`turnPointsBy()`, off `POINT_RATES`, which reads
+    `Phase.points` in `PHASES` - a phase's own rate from its halftime, the one before it until
+    then). *The owner, 24 Sep 2026: "regular points are multipled by x ... phase 1 is 1 points,
+    phase 2 is 2 points. phase 3 is 3 points"*, *"OT stops gaining points"*, and *"1x, 2x, 3x
+    regular point accumation now happens at the start of half time of each phase instead of
+    start of a phase."* Overtime used to pay 1, 3 and 5 a turn.
+    - **And a grant as each phase begins: 10 for Phase 1, 20 for Phase 2, 30 for Phase 3**
+      (`Phase.grant`), paid on the side's own first turn of the phase, on top of the rate.
+      *The owner, 24 Sep 2026: "at the start of each phase (not start of each postmatch), +10
+      regular points for phase 1, 20 for phase 2, 30 for phase 3."* `turnPointsBy()` /
+      `turn_points_by()` add it, so rate and grant come from one sum. A side that passes every
+      turn has 59 in rates and 60 in grants by turn 36: 119.
+    - **At the start of overtime a side's victory points turn into points**: its whole banked
+      total, paid once as its own first overtime turn begins - white on hand-over 73, black on
+      74 (`vpAsPoints()` in `match-score.ts`, `vp_as_points()` in `scoring.py`). *The owner, 24
+      Sep 2026: "at the start of the overtime, all your accumlated victory points turn into
+      regular points."* The bank is not emptied - it is the record of how the phases
+      finished - but nothing is decided on it any more, and the header hides the score for
+      all of overtime (`showScore`), so on screen the victory points are simply gone.
+      **A match won on points never converts**: it ends *on* the hand-over into overtime's
+      first ply, the one moment the arithmetic would read a turn as begun, so `vpAsPoints`
+      answers 0 once `decidedOnPoints` does. The same finished position keeps its score up
+      (`showScore`) and shows no toll warning (`tollBind`). `pointsFromHistory()` and
+      `economy.points_of(..., bank)` add it to the record's sum, through `scheduledPoints()`;
+      the server's copy has nothing to price with it yet, since no wrap is open in overtime.
+    - **Two places add that point up and both read the one table.** `pointsFromHistory()`
+      re-derives the whole purse from the record on every hand-over, solo included;
+      `economy.points_of()` is the server's copy, which the wrap is priced against
+      (`turnPointsBy()` / `turn_points_by()` walk the rates). The scoring parity tests hold the
+      two to the same answers.
+    - Besides the turn: **+the dead unit's value for a kill on the board** (and the defender
+      is paid the attacker's value when a counter kills it) - *the owner, 24 Sep 2026:
+      "anytime a unit is killed, i get the amount of regular points which the one i killed is
+      worth"*, where it was 1 - **+the unit's value** when it walks home, **-the price** of a
+      wrap crossing. **A blow into a panel pays nobody**, base or reserve, whoever dies of it:
+      *"in green panel it doesnt award points if the unit in there kills or gets killed for
+      any player."* A cast that kills pays nobody either. `killRewards()` is the one place the
+      room reads a kill's pay, for `pointsFromHistory()`, mirroring `points_of()`. All of it
+      derived from the record, never a stored tally.
   - Everything goes through `purseFor()` / `chargeFor()` / `purseName()`, so a cost, a grant, a
     hint and an Undo all read the same currency off one place.
-  - `cpOf(side)` is **derived** - `rules.cpPerPhase x phases so far, less `myCpSpent`` - rather
-    than tallied, so a reload cannot collect a phase's award twice. Only what has been spent is
-    persisted. Spend through `spendCp()`; a negative amount hands some back (Undo does).
+  - `cpOf(side)` is **derived** - `cpAtStart` plus `cpAwarded(bank, color, cpPhaseOffset)` off
+    the engine's phase bank, less `myCpSpent` - rather than tallied, so a reload cannot collect
+    a phase's award twice. Only what has been spent is persisted. Spend through `spendCp()`; a
+    negative amount hands some back (Undo does).
+    - **A solo save's spend is stamped with the CP scheme it was made under** (`CP_SCHEME`,
+      `cpScheme` in the saved UI state). One from before CP was earned carries no stamp, and its
+      spend is dropped on restore: it came out of 100 a phase, and read against what is earned
+      now it left the purse deep in debt (`CP: -125`). What it bought stays bought. Bump the
+      stamp if CP is reworked again.
   - **The Abilities panel head names whichever currency is in play**
     (`abilityPurseLabel()`): `CP: y` while a path or one of its abilities is open, `Points: x`
     otherwise - including with nothing open at all.

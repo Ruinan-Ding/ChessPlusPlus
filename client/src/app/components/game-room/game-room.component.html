@@ -15,9 +15,10 @@
       <!-- Their standing, the turn, then yours. Both scores take an equal
            share of the row so the turn itself stays on the centre line. -->
       <span class="phase-score theirs" *ngIf="showScore && phaseScore('opponent') as them"
-        title="Victory points: capture hexes held, less what this phase's losses cost."
-      >🚩 <span class="cap">{{ them.cap }}</span> &minus;
-        💀 <span class="death">{{ them.death }}</span> =
+        title="Victory points: capture hexes held, less what this phase's losses cost - never below 0, doubled in Phase 2 and tripled in Phase 3."
+      ><ng-container *ngIf="them.multiplier > 1">(</ng-container>🚩 <span class="cap">{{ them.cap }}</span> &minus;
+        💀 <span class="death">{{ them.death }}</span><ng-container
+          *ngIf="them.multiplier > 1">) &times;<span class="multiplier">{{ them.multiplier }}</span></ng-container> =
         <span class="phase-total">{{ them.total }}</span><ng-container
           *ngIf="them.banked.length"> (<ng-container
             *ngFor="let banked of them.banked; let i = index">+ <span
@@ -27,9 +28,10 @@
         *ngIf="state.turnTimeLimit > 0"> - {{ formattedTurnTime }}</ng-container><span
         class="verdict" *ngIf="stageLabel"> - {{ stageLabel }}</span></span>
       <span class="phase-score ours" *ngIf="showScore && phaseScore('mine') as us"
-        title="Victory points: capture hexes held, less what this phase's losses cost."
-      >🚩 <span class="cap">{{ us.cap }}</span> &minus;
-        💀 <span class="death">{{ us.death }}</span> =
+        title="Victory points: capture hexes held, less what this phase's losses cost - never below 0, doubled in Phase 2 and tripled in Phase 3."
+      ><ng-container *ngIf="us.multiplier > 1">(</ng-container>🚩 <span class="cap">{{ us.cap }}</span> &minus;
+        💀 <span class="death">{{ us.death }}</span><ng-container
+          *ngIf="us.multiplier > 1">) &times;<span class="multiplier">{{ us.multiplier }}</span></ng-container> =
         <span class="phase-total">{{ us.total }}</span><ng-container
           *ngIf="us.banked.length"> (<ng-container
             *ngFor="let banked of us.banked; let i = index">+ <span
@@ -209,7 +211,7 @@
                     [class.blank]="!canGoBack('opponent')"
                     [class.tally]="!canGoBack('opponent')"
                     [disabled]="!canGoBack('opponent')"
-                    [title]="canGoBack('opponent') ? '' : 'CP - what a path and its abilities cost, awarded each phase.'"
+                    [title]="canGoBack('opponent') ? '' : cpTitle"
                     (click)="goBack('opponent')"
             >{{ canGoBack('opponent') ? 'Back' : ('CP: ' + cpOf('opponent')) }}</button>
           </div>
@@ -395,7 +397,7 @@
                     [class.blank]="!canGoBack('mine')"
                     [class.tally]="!canGoBack('mine')"
                     [disabled]="!canGoBack('mine')"
-                    [title]="canGoBack('mine') ? '' : 'CP - what a path and its abilities cost, awarded each phase.'"
+                    [title]="canGoBack('mine') ? '' : cpTitle"
                     (click)="goBack('mine')"
             >{{ canGoBack('mine') ? 'Back' : ('CP: ' + cpOf('mine')) }}</button>
           </div>

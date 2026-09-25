@@ -118,9 +118,10 @@ def _settle_hand_over(state, board, history, beaten) -> HandOver:
        draw, one is the other's win by the room's objective.
     2. **The schedule.** The phase the hand-over closed banks
        (``scoring.bank_ended_phases``), and then a side past the other's margin
-       as Phase 3 banks wins on points, and a match still standing once turn
-       50 is played out is black's (``scoring.schedule_ending``). Both were the
-       owner's rules long before anything enforced them.
+       once Phase 3 has banked and its postmatch is played wins on points, and
+       a match still standing once turn 50 is played out is black's
+       (``scoring.schedule_ending``). Both were the owner's rules long before
+       anything enforced them.
     3. **The turn limit**, ``rules.maxTurns``, checked against the turn just
        played.
 
@@ -2377,7 +2378,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_MOVE', 'That unit is not yours')
                 return
 
-            points = economy.points_of(my_color, ply, history, config)
+            points = economy.points_of(my_color, ply, history, config, state.phase_bank)
             targets = panels.panel_move_targets(
                 config, radius, history, dict(state.board_state), from_key, ply, points,
                 orientation)

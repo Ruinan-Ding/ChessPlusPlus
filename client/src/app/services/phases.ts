@@ -41,6 +41,38 @@ export interface Phase {
    * `phaseSpan`; the ten are still `turns`.
    */
   postmatch?: boolean;
+  /**
+   * Points a side banks at the start of each of its own turns - the board's
+   * currency, for the pool abilities and the wrap crossing, not the match
+   * score. `turnPointsBy` is the one place that adds them up.
+   *
+   * The phase's number - 1, 2, 3 - and **from its halftime**, not its first
+   * turn: a phase's first half still pays the rate before it (`POINT_RATES`).
+   * A phase with no halftime pays from its start: the opening the regular 1,
+   * and **overtime nothing**. *The owner, 24 Sep 2026: "regular points are
+   * multipled by x ... phase 1 is 1 points, phase 2 is 2 points. phase 3 is 3
+   * points"*, *"OT stops gaining points"*, and then *"1x, 2x, 3x regular point
+   * accumation now happens at the start of half time of each phase instead of
+   * start of a phase."*
+   */
+  points: number;
+  /**
+   * Points a side is handed as the phase begins, on top of the turn's rate -
+   * paid on its own first turn of the phase, the way a turn's point is: 10
+   * for Phase 1, 20 for Phase 2, 30 for Phase 3, nothing for the opening or
+   * overtime. *The owner, 24 Sep 2026: "at the start of each phase (not start
+   * of each postmatch), +10 regular points for phase 1, 20 for phase 2, 30 for
+   * phase 3."*
+   */
+  grant: number;
+  /**
+   * What the phase's victory points are multiplied by as it scores
+   * (`phaseTotal` in match-score.ts): 1, 2, 3 for Phases 1-3. *The owner, 24
+   * Sep 2026: "the total victory points for each phase is multiplied by 2 on
+   * phase 2, multipled by 3 on phase 3".* 1 on the two phases that score
+   * nothing, so reading it there changes nothing.
+   */
+  multiplier: number;
 }
 
 /** Hand-overs to a full turn: white plays, then black. */
@@ -52,11 +84,11 @@ export function turnOf(ply: number): number {
 }
 
 export const PHASES: Phase[] = [
-  { name: 'Initialization', turns: 3 },
-  { name: 'Phase 1', turns: 10, halftime: true, postmatch: true },
-  { name: 'Phase 2', turns: 10, halftime: true, postmatch: true },
-  { name: 'Phase 3', turns: 10, halftime: true, postmatch: true },
-  { name: 'Overtime', turns: Infinity },
+  { name: 'Initialization', turns: 3, points: 1, grant: 0, multiplier: 1 },
+  { name: 'Phase 1', turns: 10, halftime: true, postmatch: true, points: 1, grant: 10, multiplier: 1 },
+  { name: 'Phase 2', turns: 10, halftime: true, postmatch: true, points: 2, grant: 20, multiplier: 2 },
+  { name: 'Phase 3', turns: 10, halftime: true, postmatch: true, points: 3, grant: 30, multiplier: 3 },
+  { name: 'Overtime', turns: Infinity, points: 0, grant: 0, multiplier: 1 },
 ];
 
 /**
@@ -141,8 +173,10 @@ export function isScoringPhase(ply: number): boolean {
  *
  * It belongs to the phase it closes, not the one after: `phaseIndexAt` still
  * answers the closing phase's index for it, so whatever reads "which phase is
- * this" - the CP a phase hands out, the deaths a phase is charged - reads the
- * closing phase there. The score is the one thing that has to know better,
+ * this" - the deaths a phase is charged, the phase's rate of points - reads
+ * the closing phase there. It is also where CP arrives: each postmatch pays
+ * the award for the phase just banked (`cpAwarded`, off the bank, not the
+ * index). The score is the one thing that has to know better,
  * in two places: `bankEndedPhases` (match-score.ts, run by the engines on
  * each hand-over), which banks the phase as its postmatch begins, and the
  * room's `standings`, which reads the postmatch as nought so the phase just
@@ -197,10 +231,11 @@ export function noAttackMessage(ply: number): string {
  * of that side's turn.
  *
  * Real damage, and a commander on that much HP dies of it. The toll climbs so
- * that a match neither side can win on the board still ends: the last turn
- * takes three, and a king who walks into it on three or less does not walk
- * out. A match still standing after it goes to black, and both engines end
- * it there - see `scheduleEnding` in match-score.ts.
+ * that a match neither side can win on the board still ends: **1 a turn, then
+ * 3, then 5 on the last turn**, and a king who walks into it on five or less
+ * does not walk out. *The owner, 24 Sep 2026: "the 3 and 5 is DAMAGE TAKEN TO
+ * KING"*. A match still standing after it goes to black,
+ * and both engines end it there - see `scheduleEnding` in match-score.ts.
  *
  * `turns` are full turns - white's hand-over and black's - counted forward
  * from overtime's first, which gives turns 37-44, 45-49 and 50 on the shipped
@@ -226,16 +261,6 @@ export interface OvertimeStage {
   /** HP off that side's commander at the end of each of its turns. */
   toll: number;
   /**
-   * Points a side banks at the start of each of its turns in the stretch,
-   * in place of `POINTS_PER_TURN`.
-   *
-   * The toll takes and this gives, and they climb together: the pressure to
-   * finish comes with the means to. Points are the board's currency - the
-   * pool abilities, the wrap crossing - not the match score, which overtime
-   * still does not touch.
-   */
-  points: number;
-  /**
    * How many units a side may move on the **main board** in one of its turns,
    * in place of `BOARD_MOVES_PER_TURN`.
    *
@@ -249,9 +274,9 @@ export interface OvertimeStage {
 }
 
 export const OVERTIME_STAGES: OvertimeStage[] = [
-  { name: 'Overtime 1', turns: 8, toll: 1, points: 1, moves: 1 },
-  { name: 'Overtime 2', turns: 5, toll: 2, points: 3, moves: 2 },
-  { name: 'Overtime 3', turns: 1, toll: 3, points: 5, moves: 3 },
+  { name: 'Overtime 1', turns: 8, toll: 1, moves: 1 },
+  { name: 'Overtime 2', turns: 5, toll: 3, moves: 2 },
+  { name: 'Overtime 3', turns: 1, toll: 5, moves: 3 },
 ];
 
 /** Overtime's first full turn, and its last. Both read off the schedule. */
@@ -303,21 +328,13 @@ export function overtimeTollAt(ply: number): number {
  *
  * What the board's skull warns on. With a toll that climbs, "will he live
  * through the next two" stopped being `toll * 2`: a king on 3 HP is safe in
- * the first stretch, on his last turn in the second, and already dead in the
- * third.
+ * the first stretch and dies on his first turn of the second.
  */
 export function overtimeTollOver(ply: number, turns: number): number {
   let sum = 0;
   for (let i = 0; i < turns; i++) sum += overtimeTollAt(ply + i * PLIES_PER_TURN);
   return sum;
 }
-
-/**
- * What a side banks at the start of one of its own turns, everywhere the
- * schedule is still running. Overtime's stretches pay more - see
- * `OVERTIME_STAGES` - and `pointsPerTurnAt` is the one place to ask.
- */
-export const POINTS_PER_TURN = 1;
 
 /**
  * How many units a side may move on the main board in one of its turns,
@@ -336,40 +353,52 @@ export function boardMovesPerTurn(ply: number): number {
   return overtimeStageAt(ply)?.moves ?? BOARD_MOVES_PER_TURN;
 }
 
-/** What the turn at `ply` pays the side playing it. */
-export function pointsPerTurnAt(ply: number): number {
-  return overtimeStageAt(ply)?.points ?? POINTS_PER_TURN;
-}
+/**
+ * What each phase pays, as first hand-overs: `from` is where its points rate
+ * starts - the opening from its first turn, each numbered phase from its
+ * **halftime**, overtime from its first turn - and `start` is its first turn,
+ * where its `grant` is paid. On the shipped schedule the rates are 1 from turn
+ * 1, 1 from turn 9, 2 from turn 20, 3 from turn 31 and nothing from turn 37.
+ * Read off the schedule rather than written down, so a phase that moves
+ * carries its rate with it; worked out once, the schedule being fixed.
+ */
+const POINT_RATES: { from: number; rate: number; start: number; grant: number }[] = PHASES.map(
+  (phase, index) => {
+    const first = phaseStartTurn(index);
+    // The first turn not before the halftime, by `beforeHalftime`'s own test
+    // (`turn < first + turns / 2`) - so an odd phase breaks where it does.
+    const turn = phase.halftime ? Math.ceil(first + phase.turns / 2) : first;
+    return {
+      from: (turn - 1) * PLIES_PER_TURN + 1, rate: phase.points,
+      start: (first - 1) * PLIES_PER_TURN + 1, grant: phase.grant,
+    };
+  });
 
 /**
  * What a side's own turns have paid it in points by `ply` - the hand-over
- * about to be played, which counts, since a turn pays at its start.
+ * about to be played, which counts, since a turn pays at its start: each
+ * turn's rate, and each phase's `grant` once the side has begun a turn in it.
  *
- * **Not `handOversBy(color, ply) * POINTS_PER_TURN` any more.** The rate
- * climbs through overtime, so this walks the stretches and counts how many of
- * that side's hand-overs fall in each, which is a difference of two
- * `handOversBy` at the stretch's ends - the same shape `panelMoversSince`
- * uses to count a side's turns between two plies.
+ * The rate changes at each halftime (`POINT_RATES`), so this walks the rates
+ * and counts how many of that side's hand-overs fall under each, which is a
+ * difference of two `handOversBy` at its ends - the same shape
+ * `panelMoversSince` uses to count a side's turns between two plies.
+ * Overtime pays nothing, however long a position built past it runs.
  *
- * Past the last stretch it keeps paying at the last rate, for the reason the
- * toll keeps taking at it: the match ends as turn 50 is played out, but a
- * position built past it must not quietly stop settling up.
+ * What one turn pays - the room's live award - is this at the turn's ply less
+ * this at the ply before, so the grant and the rate come from one sum.
  */
 export function turnPointsBy(color: 'white' | 'black', ply: number): number {
   const played = Math.max(0, ply);
-  // Everything on the schedule pays the flat rate.
-  let start = OVERTIME_FIRST_PLY - 1;
-  let points = handOversBy(color, Math.min(played, start)) * POINTS_PER_TURN;
-  for (const stage of OVERTIME_STAGES) {
-    if (played <= start) return points;
-    const end = start + stage.turns * PLIES_PER_TURN;
-    points += (handOversBy(color, Math.min(played, end))
-      - handOversBy(color, start)) * stage.points;
-    start = end;
-  }
-  const last = OVERTIME_STAGES[OVERTIME_STAGES.length - 1];
-  if (played <= start) return points;
-  return points + (handOversBy(color, played) - handOversBy(color, start)) * last.points;
+  const begun = handOversBy(color, played);
+  let points = 0;
+  POINT_RATES.forEach(({ from, rate, start, grant }, i) => {
+    if (grant && begun > handOversBy(color, start - 1)) points += grant;
+    if (played < from) return;
+    const to = i + 1 < POINT_RATES.length ? Math.min(played, POINT_RATES[i + 1].from - 1) : played;
+    points += (handOversBy(color, to) - handOversBy(color, from - 1)) * rate;
+  });
+  return points;
 }
 
 /**
@@ -539,7 +568,7 @@ function buildMilestones(): Milestone[] {
   // Overtime's own gear changes, including the one into it: the loop above
   // returns before the phase that runs out the match, so this is where all
   // three stretches are announced. The toll climbs twice inside overtime, and
-  // a turn where the damage doubles is as much a change to count down to as a
+  // a turn where the damage goes up is as much a change to count down to as a
   // halftime is.
   //
   // Each is announced at the end of the turn BEFORE it opens, which is what

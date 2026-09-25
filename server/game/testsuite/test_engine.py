@@ -247,7 +247,7 @@ class ConfigLoaderTestCase(TestCase):
         self.assertEqual(
             {k: loaded['rules'][k] for k in COUNTED_RULES},
             {'panelMoversPerTurn': 3, 'postmatchEntries': 5,
-             'homecomingsPerSetupTurn': 3, 'cpPerPhase': 100})
+             'homecomingsPerSetupTurn': 3, 'cpAtStart': 5, 'cpPhaseOffset': 5})
         for key in COUNTED_RULES:
             for value in (-1, 1.5, True, None):
                 bad = copy.deepcopy(DEFAULT_CONFIG)
@@ -1661,7 +1661,7 @@ class PhaseScheduleTestCase(TestCase):
             phases.OVERTIME_LAST_TURN - phases.OVERTIME_FIRST_TURN + 1,
             sum(stage['turns'] for stage in phases.OVERTIME_STAGES))
         tolls = [phases.overtime_toll_at(2 * t - 1) for t in range(37, 51)]
-        self.assertEqual(tolls, [1] * 8 + [2] * 5 + [3])
+        self.assertEqual(tolls, [1] * 8 + [3] * 5 + [5])
 
     def test_the_toll_is_nothing_before_overtime_and_never_stops_after(self):
         """
@@ -1679,9 +1679,9 @@ class PhaseScheduleTestCase(TestCase):
         self.assertEqual(phases.overtime_toll_at(73), 1)
         # Both hand-overs of a turn share its stretch: they change at a turn
         # boundary, so the two sides of turn 45 pay the same.
-        self.assertEqual(phases.overtime_toll_at(2 * 45 - 1), 2)
-        self.assertEqual(phases.overtime_toll_at(2 * 45), 2)
-        self.assertEqual(phases.overtime_toll_at(1000), 3)
+        self.assertEqual(phases.overtime_toll_at(2 * 45 - 1), 3)
+        self.assertEqual(phases.overtime_toll_at(2 * 45), 3)
+        self.assertEqual(phases.overtime_toll_at(1000), 5)
 
     def test_overtime_widens_the_turn_to_two_moves_then_three(self):
         """
@@ -1791,27 +1791,32 @@ class OvertimeTollTestCase(TestCase):
 
     def test_the_toll_climbs_through_overtime_s_three_stretches(self):
         """
-        1 in the first stretch, 2 in the second, 3 on the last turn - the same
-        table the client reads, taken here through the board itself.
+        1 in the first stretch, 3 in the second, 5 on the last turn - the same
+        table the client reads, taken here through the board itself. *The
+        owner, 24 Sep 2026: "the 3 and 5 is DAMAGE TAKEN TO KING"* - it was 1,
+        2 and 3.
 
         A constant would have shipped a deathmatch that never ends: the whole
-        point of the escalation is that a king who reaches turn 50 on three or
+        point of the escalation is that a king who reaches turn 50 on five or
         less does not come out of it.
         """
-        for ply, expected in ((73, 1), (2 * 44 - 1, 1), (2 * 45 - 1, 2),
-                              (2 * 49 - 1, 2), (2 * 50 - 1, 3)):
+        for ply, expected in ((73, 1), (2 * 44 - 1, 1), (2 * 45 - 1, 3),
+                              (2 * 49 - 1, 3), (2 * 50 - 1, 5)):
             board = self._board(10)
             overtime_toll(board, self._cfg(), 'white', ply)
             self.assertEqual(board.get(0, 3)['hp'], 10 - expected,
                              f'ply {ply} should have taken {expected}')
 
-    def test_the_last_turn_kills_a_king_the_first_stretch_would_not(self):
-        board = self._board(3)
-        # Turn 37 leaves him standing on 2 ...
+    def test_the_last_turn_kills_a_king_the_stretches_before_it_would_not(self):
+        board = self._board(5)
+        # Turn 37 leaves him standing on 4, and a turn of Overtime 2 on 2 ...
         self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 73))
+        self.assertEqual(board.get(0, 3)['hp'], 4)
+        board = self._board(5)
+        self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 2 * 45 - 1))
         self.assertEqual(board.get(0, 3)['hp'], 2)
-        # ... but turn 50 takes three, and three is all he had.
-        board = self._board(3)
+        # ... but turn 50 takes five, and five is all he had.
+        board = self._board(5)
         self.assertEqual(
             overtime_toll(board, self._cfg(), 'white', 2 * 50 - 1), 'white')
         self.assertIsNone(board.get(0, 3))
@@ -2100,39 +2105,101 @@ class PointsTestCase(TestCase):
         self.assertEqual([economy.points_of('black', p, [], config) for p in (1, 2, 3, 4)],
                          [0, 1, 1, 2])
 
-    def test_overtime_pays_more_a_turn_as_it_closes(self):
+    def test_each_phase_pays_its_number_a_turn_from_its_halftime(self):
         """
-        1, 3 and 5 through overtime's three stretches - the purse climbing with
-        the toll, so the pressure to finish comes with the means to.
+        1 a turn to Phase 2's halftime, 2 from it, 3 from Phase 3's, and
+        nothing in overtime - and each phase's grant as it begins: 10, 20, 30.
+        *The owner, 24 Sep 2026: "1x, 2x, 3x regular point accumation now
+        happens at the start of half time of each phase instead of start of a
+        phase"*, *"OT stops gaining points"*, and *"at the start of each phase
+        (not start of each postmatch), +10 regular points for phase 1, 20 for
+        phase 2, 30 for phase 3."*
 
-        A flat ``hand_overs_by`` was right everywhere up to turn 44, which is
-        why the sums below straddle that boundary rather than sitting inside
-        one stretch.
+        The sums straddle each halftime and each phase's start, which is where
+        a rate or a grant read off the wrong turn would show.
         """
         config = self._cfg()
-        # 44 turns at one apiece, and the rate has not moved yet.
-        self.assertEqual(economy.points_of('white', 2 * 44 - 1, [], config), 44)
-        # Turn 45 pays three.
-        self.assertEqual(economy.points_of('white', 2 * 45 - 1, [], config), 47)
-        self.assertEqual(economy.points_of('white', 2 * 49 - 1, [], config), 59)
-        # The last turn pays five: 44 + 5x3 + 5.
-        self.assertEqual(economy.points_of('white', 2 * 50 - 1, [], config), 64)
-        # Black is paid at the start of its OWN turn, one hand-over behind.
-        self.assertEqual(economy.points_of('black', 2 * 45 - 1, [], config), 44)
-        self.assertEqual(economy.points_of('black', 2 * 45, [], config), 47)
-        # And the rates themselves, straight off the table.
-        self.assertEqual([phases.points_per_turn_at(2 * t - 1)
-                          for t in (1, 36, 37, 44, 45, 49, 50, 500)],
-                         [1, 1, 1, 1, 3, 3, 5, 5])
+        white = [economy.points_of('white', 2 * t - 1, [], config)
+                 for t in (3, 4, 8, 9, 14, 15, 19, 20, 26, 30, 31, 36, 37, 50)]
+        # The rates: 19 at one apiece, 11 x 2 (to 41), 6 x 3 (to 59). The
+        # grants: 10 on turn 4, 20 on turn 15, 30 on turn 26. Then nothing.
+        self.assertEqual(white, [3, 14, 18, 19, 24, 45, 49, 51, 93, 101, 104, 119, 119, 119])
+        # Black is paid at the start of its OWN turn, one hand-over behind -
+        # grant and all.
+        self.assertEqual(economy.points_of('black', 2 * 4 - 1, [], config), 3)
+        self.assertEqual(economy.points_of('black', 2 * 4, [], config), 14)
+        self.assertEqual(economy.points_of('black', 2 * 20 - 1, [], config), 49)
+        self.assertEqual(economy.points_of('black', 2 * 20, [], config), 51)
+        # And what one of white's turns pays: the sum at its ply less the sum
+        # before it - the rate, and on a phase's first turn its grant too.
+        def pay(turn):
+            return (phases.turn_points_by('white', 2 * turn - 1)
+                    - phases.turn_points_by('white', 2 * turn - 2))
+        self.assertEqual([pay(t) for t in (1, 8, 9, 16, 19, 20, 30, 31, 36, 37, 50, 500)],
+                         [1, 1, 1, 1, 1, 2, 2, 3, 3, 0, 0, 0])
+        self.assertEqual([pay(t) for t in (4, 15, 26)], [1 + 10, 1 + 20, 2 + 30])
 
-    def test_a_point_for_a_kill_and_the_defender_is_paid_for_a_counter_kill(self):
+    def test_the_victory_points_turn_into_points_as_overtime_begins(self):
+        """
+        *The owner, 24 Sep 2026: "at the start of the overtime, all your
+        accumlated victory points turn into regular points."* Paid like a
+        turn's own point - as the side's first overtime turn begins, white on
+        hand-over 73 and black on 74 - and once.
+        """
+        config = self._cfg()
+        # 14 against 4: ten clear, not more, so it goes to overtime.
+        bank = {'1': {'white': 5, 'black': 1}, '2': {'white': 9, 'black': 0},
+                '3': {'white': 0, 'black': 3}}
+        before = economy.points_of('white', 72, [], config, bank)
+        self.assertEqual(before, 119)
+        self.assertEqual(economy.points_of('white', 73, [], config, bank), 119 + 14)
+        self.assertEqual(economy.points_of('white', 99, [], config, bank), 119 + 14)
+        # Black's first overtime turn is the hand-over after white's.
+        self.assertEqual(economy.points_of('black', 73, [], config, bank), 119)
+        self.assertEqual(economy.points_of('black', 74, [], config, bank), 119 + 4)
+        # No bank, nothing to convert.
+        self.assertEqual(economy.points_of('white', 73, [], config), 119)
+        # And a match won on points ends ON hand-over 73, never reaching
+        # overtime: its finished position converts nothing.
+        won = {'1': {'white': 30, 'black': 0}, '2': {'white': 0, 'black': 0},
+               '3': {'white': 0, 'black': 0}}
+        self.assertEqual(economy.points_of('white', 73, [], config, won), 119)
+
+    def test_a_kill_pays_the_dead_unit_s_worth_and_a_counter_kill_pays_the_defender(self):
+        """
+        *The owner, 24 Sep 2026: "anytime a unit is killed, i get the amount of
+        regular points which the one i killed is worth"* - it was 1 a kill.
+        """
         config = self._cfg()
         history = [
-            {'color': 'white', 'defender_eliminated': True},
-            {'color': 'black', 'attacker_eliminated': True},
+            {'color': 'white', 'unit_id': 'pawn', 'captured': 'queen', 'defender_eliminated': True},
+            {'color': 'black', 'unit_id': 'knight', 'attacker_eliminated': True},
         ]
-        # Ply 1 plus white's kill, plus black's attacker dying to white's counter.
-        self.assertEqual(economy.points_of('white', 1, history, config), 3)
+        # Ply 1's point, the queen white took (30), and the knight black lost
+        # attacking into white's counter (12).
+        self.assertEqual(economy.points_of('white', 1, history, config), 1 + 30 + 12)
+        self.assertEqual(economy.points_of('black', 1, history, config), 0)
+
+    def test_a_kill_in_a_panel_pays_nobody(self):
+        """
+        *The owner: killing in a base "should not ... award points for the
+        killer. in green panel it doesnt award points if the unit in there
+        kills or gets killed for any player."* What it does to the victory
+        points is ScoringTestCase's.
+        """
+        config = self._cfg()
+        into = {'intoPanel': True, 'panelAttack': True, 'color': 'white'}
+        history = [
+            # Into black's base: its queen dies.
+            {**into, 'panel': 'tr', 'unit_id': 'pawn', 'captured': 'queen',
+             'defender_eliminated': True},
+            # Into black's reserve: its pawn dies ...
+            {**into, 'panel': 'tl', 'unit_id': 'knight', 'captured': 'pawn',
+             'defender_eliminated': True},
+            # ... and a reserve unit's counter kills white's knight.
+            {**into, 'panel': 'tl', 'unit_id': 'knight', 'attacker_eliminated': True},
+        ]
+        self.assertEqual(economy.points_of('white', 1, history, config), 1)
         self.assertEqual(economy.points_of('black', 1, history, config), 0)
 
     def test_a_cast_that_kills_pays_nothing(self):
@@ -2216,6 +2283,76 @@ class ScoringTestCase(TestCase):
         self.assertNotIn('2', scoring.bank_ended_phases(bank, self.PAWN, board, history, 48))
         self.assertIn('2', scoring.bank_ended_phases(bank, self.PAWN, board, history, 49))
 
+    def test_a_phase_never_banks_below_nothing(self):
+        # The owner, 24 Sep 2026: "the total points racked shouldnt go
+        # negative by death. max is 0". Deaths can take a phase down to 0 and
+        # no further; cap still counts in full against what is left.
+        from game.engine import scoring
+        self.assertEqual(scoring.phase_total(7, 5, 1), 2)
+        self.assertEqual(scoring.phase_total(7, 7, 1), 0)
+        self.assertEqual(scoring.phase_total(4, 18, 1), 0)
+        self.assertEqual(scoring.phase_total(0, 0, 1), 0)
+        # The floor comes before the phase's multiplier: 0 in Phase 3, not -42.
+        self.assertEqual(scoring.phase_total(4, 18, 3), 0)
+        # A white pawn lost in Phase 1 with nothing held: 0, not -5.
+        history = [{'color': 'black', 'unit_id': 'pawn', 'captured': 'pawn',
+                    'defender_eliminated': True, 'turn': 8}]
+        bank = scoring.bank_ended_phases({}, self.PAWN, {}, history, 27)
+        self.assertEqual(bank, {'1': {'white': 0, 'black': 0}})
+
+    def test_cp_is_awarded_off_each_banked_phase_with_the_gap_to_the_side_behind(self):
+        # The owner, 24 Sep 2026: the side with the higher total gets
+        # phase_x + (mine + theirs), the lower that plus abs(mine - theirs),
+        # with phase_x 10, 20, 30. Nothing before a phase banks.
+        from game.engine import scoring
+        self.assertEqual(scoring.cp_awarded({}, 'white', 10), 0)
+        one = {'1': {'white': 12, 'black': 4}}
+        self.assertEqual(scoring.cp_awarded(one, 'white', 10), 26)   # 10 + 16
+        self.assertEqual(scoring.cp_awarded(one, 'black', 10), 34)   # 10 + 16 + 8
+        # Level scores award the two the same: Phase 2 adds 20 + 6 to each.
+        two = {**one, '2': {'white': 3, 'black': 3}}
+        self.assertEqual(scoring.cp_awarded(two, 'white', 10), 52)
+        self.assertEqual(scoring.cp_awarded(two, 'black', 10), 60)
+        # Phase 3, nothing scored: its offset alone, 30.
+        three = {**two, '3': {'white': 0, 'black': 0}}
+        self.assertEqual(scoring.cp_awarded(three, 'white', 10), 82)
+        # Only the phase's own scores are compared: black leads the match
+        # here, and white, behind in Phase 2, is paid its gap.
+        behind = {'1': {'white': 0, 'black': 20}, '2': {'white': 2, 'black': 6}}
+        self.assertEqual(scoring.cp_awarded(behind, 'white', 10), (10 + 20 + 20) + (20 + 8 + 4))
+        self.assertEqual(scoring.cp_awarded(behind, 'black', 10), (10 + 20) + (20 + 8))
+        # The offset is the config's; a late phase still awards.
+        self.assertEqual(scoring.cp_awarded(one, 'white', 5), 21)
+        late = {'1': {'white': 2, 'black': 2, 'late': True}}
+        self.assertEqual(scoring.cp_awarded(late, 'black', 10), 14)
+
+    def test_a_phase_s_score_is_multiplied_by_its_number(self):
+        # The owner, 24 Sep 2026: "the total victory points for each phase is
+        # multiplied by 2 on phase 2, multipled by 3 on phase 3".
+        from game.engine import scoring
+        self.assertEqual([scoring.phase_total(7, 5, p) for p in (1, 2, 3)], [2, 4, 6])
+        # Banked that way: one pawn in the middle holds 7, every phase.
+        board = {'0,0': {'unit_id': 'pawn', 'color': 'white'}}
+        bank = scoring.bank_ended_phases({}, self.PAWN, board, [], 27)
+        bank = scoring.bank_ended_phases(bank, self.PAWN, board, [], 49)
+        bank = scoring.bank_ended_phases(bank, self.PAWN, board, [], 71)
+        self.assertEqual([bank[p]['white'] for p in ('1', '2', '3')], [7, 14, 21])
+
+    def test_a_unit_killed_in_a_base_costs_nothing_and_in_a_reserve_counts(self):
+        # The owner, 24 Sep 2026: "killing things in base (red panel) should
+        # not count towards victory points ... in green panel it ... counts
+        # towards victory points".
+        from game.engine import scoring
+        blow = {'intoPanel': True, 'panelAttack': True, 'color': 'white', 'unit_id': 'pawn',
+                'captured': 'pawn', 'defender_eliminated': True, 'turn': 8}
+        self.assertEqual(scoring.deaths_of(self.PAWN, [{**blow, 'panel': 'tr'}], 'black', 1), 0)
+        self.assertEqual(scoring.deaths_of(self.PAWN, [{**blow, 'panel': 'tl'}], 'black', 1), 5)
+        # A reserve's counter that kills the attacker counts against the
+        # attacker's side.
+        counter = {'intoPanel': True, 'panel': 'tl', 'color': 'white', 'unit_id': 'pawn',
+                   'attacker_eliminated': True, 'turn': 8}
+        self.assertEqual(scoring.deaths_of(self.PAWN, [counter], 'white', 1), 5)
+
     def test_the_margins_decide_on_points_or_send_it_to_overtime(self):
         from game.engine import scoring
 
@@ -2224,23 +2361,26 @@ class ScoringTestCase(TestCase):
                 '1': {'white': white, 'black': black},
                 '2': {'white': 0, 'black': 0}, '3': {'white': 0, 'black': 0}})
 
-        # White has to be more than 5 clear; black only more than 3.
-        self.assertEqual(settle(6, 0), 'white')
-        self.assertIsNone(settle(5, 0))
-        self.assertEqual(settle(0, 4), 'black')
-        self.assertIsNone(settle(0, 3))
+        # White has to be more than 10 clear; black only more than 5.
+        self.assertEqual(settle(11, 0), 'white')
+        self.assertIsNone(settle(10, 0))
+        self.assertEqual(settle(0, 6), 'black')
+        self.assertIsNone(settle(0, 5))
         # Nothing is decided on two phases of three.
         self.assertIsNone(scoring.decided_on_points({'1': {'white': 99, 'black': 0}}))
 
     def test_points_end_it_as_phase_three_banks_and_turn_fifty_ends_it_for_black(self):
         from game.engine import scoring
-        clear = {'1': {'white': 9, 'black': 0}, '2': {'white': 0, 'black': 0},
+        clear = {'1': {'white': 12, 'black': 0}, '2': {'white': 0, 'black': 0},
                  '3': {'white': 0, 'black': 0}}
         level = {**clear, '1': {'white': 0, 'black': 0}}
-        # All three in and white past the margin: the hand-over into Phase 3's
-        # postmatch, ply 71, is the first that can say so, and ends it.
-        self.assertEqual(scoring.schedule_ending(clear, 71), ('white', 'points'))
-        self.assertIsNone(scoring.schedule_ending(level, 71))
+        # All three in and white past the margin: known from the hand-over
+        # into Phase 3's postmatch (ply 71), but the postmatch is played, and
+        # the match ends on the hand-over out of it, into turn 37 (ply 73).
+        self.assertIsNone(scoring.schedule_ending(clear, 71))
+        self.assertIsNone(scoring.schedule_ending(clear, 72))
+        self.assertEqual(scoring.schedule_ending(clear, 73), ('white', 'points'))
+        self.assertIsNone(scoring.schedule_ending(level, 73))
         # Turn 50 is played out first: its hand-overs are 99 and 100, and a
         # level match ends on the hand-over into turn 51, black's.
         self.assertIsNone(scoring.schedule_ending(level, 100))
@@ -2259,9 +2399,9 @@ class ScoringTestCase(TestCase):
                          {'1': True, '2': True, '3': True})
         # A bank with a late phase in it decides nothing on points, however
         # clear it reads - and a late Phase 1 spoils an on-time Phase 3.
-        clear_but_late = {'1': {'white': 9, 'black': 0, 'late': True},
+        clear_but_late = {'1': {'white': 12, 'black': 0, 'late': True},
                           '2': {'white': 0, 'black': 0}, '3': {'white': 0, 'black': 0}}
         self.assertIsNone(scoring.decided_on_points(clear_but_late))
-        self.assertIsNone(scoring.schedule_ending(clear_but_late, 71))
+        self.assertIsNone(scoring.schedule_ending(clear_but_late, 73))
         # Turn 50 still ends it: that rule needs no score.
         self.assertEqual(scoring.schedule_ending(clear_but_late, 101), ('black', 'overtime'))

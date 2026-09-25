@@ -37,7 +37,7 @@ Four places where a straight transliteration would be wrong, and are not:
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional
+from typing import Dict, List, NamedTuple, Optional
 
 #: Hand-overs to a full turn: white plays, then black.
 PLIES_PER_TURN = 2
@@ -46,12 +46,36 @@ PLIES_PER_TURN = 2
 #: match; ``halftime`` breaks a phase evenly in two; ``postmatch`` closes a
 #: phase with one postmatch turn after its play, which its ``turns`` do not
 #: count.
+#:
+#: ``points`` is what a side banks at the start of each of its own turns - the
+#: board's currency, not the match score. The phase's number, 1, 2, 3, and
+#: **from its halftime**, not its first turn: a phase's first half still pays
+#: the rate before it (:data:`_POINT_RATES`). A phase with no halftime pays
+#: from its start: the opening the regular 1, overtime nothing. *The owner,
+#: 24 Sep 2026: "regular points are multipled by x"*, *"OT stops gaining
+#: points"*, and *"1x, 2x, 3x regular point accumation now happens at the
+#: start of half time of each phase instead of start of a phase."*
+#:
+#: ``grant`` is what a side is handed as the phase begins, on top of the
+#: rate - paid on its own first turn of the phase: 10, 20, 30 for Phases 1-3.
+#: *The owner, 24 Sep 2026: "at the start of each phase (not start of each
+#: postmatch), +10 regular points for phase 1, 20 for phase 2, 30 for phase 3."*
+#:
+#: ``multiplier`` is what the phase's victory points are multiplied by as it
+#: scores (:func:`scoring.phase_total`): 1, 2, 3 for Phases 1-3, and 1 on the
+#: two that score nothing. *The owner, 24 Sep 2026: "the total victory points
+#: for each phase is multiplied by 2 on phase 2, multipled by 3 on phase 3".*
 PHASES: List[Dict] = [
-    {'name': 'Initialization', 'turns': 3, 'halftime': False, 'postmatch': False},
-    {'name': 'Phase 1', 'turns': 10, 'halftime': True, 'postmatch': True},
-    {'name': 'Phase 2', 'turns': 10, 'halftime': True, 'postmatch': True},
-    {'name': 'Phase 3', 'turns': 10, 'halftime': True, 'postmatch': True},
-    {'name': 'Overtime', 'turns': math.inf, 'halftime': False, 'postmatch': False},
+    {'name': 'Initialization', 'turns': 3, 'halftime': False, 'postmatch': False,
+     'points': 1, 'grant': 0, 'multiplier': 1},
+    {'name': 'Phase 1', 'turns': 10, 'halftime': True, 'postmatch': True,
+     'points': 1, 'grant': 10, 'multiplier': 1},
+    {'name': 'Phase 2', 'turns': 10, 'halftime': True, 'postmatch': True,
+     'points': 2, 'grant': 20, 'multiplier': 2},
+    {'name': 'Phase 3', 'turns': 10, 'halftime': True, 'postmatch': True,
+     'points': 3, 'grant': 30, 'multiplier': 3},
+    {'name': 'Overtime', 'turns': math.inf, 'halftime': False, 'postmatch': False,
+     'points': 0, 'grant': 0, 'multiplier': 1},
 ]
 
 # How many units a side may bring out of its reserve in a postmatch, and walk
@@ -79,7 +103,8 @@ SCORING_PHASES = [1, 2, 3]
 #: Overtime's three stretches, and what each takes off a commander at the end
 #: of that side's turn. Real damage, and a commander on that much HP dies of
 #: it. The toll climbs so that a match neither side can win on the board still
-#: ends: the last turn takes three.
+#: ends: 1 a turn, then 3, then 5 on the last turn. *The owner, 24 Sep 2026:
+#: "the 3 and 5 is DAMAGE TAKEN TO KING"*.
 #:
 #: The stretches are named and the phase they sit in is not: ``phase_at`` still
 #: answers ``Overtime`` for all fourteen turns, while ``stage_at`` answers
@@ -93,25 +118,16 @@ SCORING_PHASES = [1, 2, 3]
 #: at its end now - either way one more turn a phase) moved overtime from turn
 #: 34 to turn 37, and the literal stayed put and quietly shortened overtime by
 #: three turns.
-#: ``points`` is what a side banks at the START of each of its turns in the
-#: stretch, in place of :data:`POINTS_PER_TURN`. The toll takes and this gives,
-#: and they climb together: the pressure to finish comes with the means to.
-#: Points are the board's currency - the pool abilities, the wrap crossing -
-#: not the match score, which overtime still does not touch.
 #: ``moves`` is how many units a side may move on the MAIN BOARD in one of its
 #: turns, in place of :data:`BOARD_MOVES_PER_TURN`. Each is a whole board action
 #: - a walk and, if it ends in reach, a swing - so a stretch that allows three
 #: allows three blows. Panel deployments are not counted: a crossing, a walk
 #: inside a panel and a setup turn's walk home have allowances of their own.
 OVERTIME_STAGES: List[Dict] = [
-    {'name': 'Overtime 1', 'turns': 8, 'toll': 1, 'points': 1, 'moves': 1},
-    {'name': 'Overtime 2', 'turns': 5, 'toll': 2, 'points': 3, 'moves': 2},
-    {'name': 'Overtime 3', 'turns': 1, 'toll': 3, 'points': 5, 'moves': 3},
+    {'name': 'Overtime 1', 'turns': 8, 'toll': 1, 'moves': 1},
+    {'name': 'Overtime 2', 'turns': 5, 'toll': 3, 'moves': 2},
+    {'name': 'Overtime 3', 'turns': 1, 'toll': 5, 'moves': 3},
 ]
-
-#: What a side banks at the start of one of its own turns, everywhere the
-#: schedule is still running.
-POINTS_PER_TURN = 1
 
 #: How many units a side may move on the main board in one of its turns,
 #: everywhere the schedule is still running: **one**, which is what "the turn's
@@ -196,40 +212,32 @@ def board_moves_per_turn(ply: int) -> int:
     return stage['moves'] if stage else BOARD_MOVES_PER_TURN
 
 
-def points_per_turn_at(ply: int) -> int:
-    """What the turn at *ply* pays the side playing it."""
-    stage = overtime_stage_at(ply)
-    return stage['points'] if stage else POINTS_PER_TURN
 
 
 def turn_points_by(color: str, ply: int) -> int:
     """
     What *color*'s own turns have paid it in points by *ply* - the hand-over
-    about to be played, which counts, since a turn pays at its start.
+    about to be played, which counts, since a turn pays at its start: each
+    turn's rate, and each phase's ``grant`` once the side has begun a turn in
+    it.
 
-    **Not ``hand_overs_by(color, ply) * POINTS_PER_TURN`` any more.** The rate
-    climbs through overtime, so this walks the stretches and counts how many of
-    that side's hand-overs fall in each, as a difference of two
-    ``hand_overs_by`` at the stretch's ends.
-
-    Past the last stretch it keeps paying at the last rate, for the reason the
-    toll keeps taking at it: the match ends as turn 50 is played out, but a
-    position built past it must not quietly stop settling up.
+    The rate changes at each halftime (:data:`_POINT_RATES`), so this walks the
+    rates and counts how many of that side's hand-overs fall under each, as a
+    difference of two ``hand_overs_by`` at its ends. Overtime pays nothing,
+    however long a position built past it runs.
     """
     played = max(0, int(ply))
-    start = OVERTIME_FIRST_PLY - 1
-    points = hand_overs_by(color, min(played, start)) * POINTS_PER_TURN
-    for stage in OVERTIME_STAGES:
-        if played <= start:
-            return points
-        end = start + stage['turns'] * PLIES_PER_TURN
-        points += (hand_overs_by(color, min(played, end))
-                   - hand_overs_by(color, start)) * stage['points']
-        start = end
-    if played <= start:
-        return points
-    return points + ((hand_overs_by(color, played) - hand_overs_by(color, start))
-                     * OVERTIME_STAGES[-1]['points'])
+    begun = hand_overs_by(color, played)
+    rates = _POINT_RATES
+    points = 0
+    for i, r in enumerate(rates):
+        if r.grant and begun > hand_overs_by(color, r.start - 1):
+            points += r.grant
+        if played < r.rate_from:
+            continue
+        to = min(played, rates[i + 1].rate_from - 1) if i + 1 < len(rates) else played
+        points += (hand_overs_by(color, to) - hand_overs_by(color, r.rate_from - 1)) * r.rate
+    return points
 
 
 def is_initialization(ply: int) -> bool:
@@ -264,8 +272,10 @@ def is_postmatch(ply: int) -> bool:
     second mover a free look at the first's deployment.
 
     It belongs to the phase it closes, not the one after: the phase's index
-    still answers for it, so turn 14 is Phase 1's, and the CP a phase hands out
-    is not handed out again on it. What it does not do is *score*. Both
+    still answers for it, so turn 14 is Phase 1's. It is also where CP
+    arrives: each postmatch pays the award for the phase just banked
+    (:func:`scoring.cp_awarded`, off the bank). What it does not do is
+    *score*. Both
     engines bank a phase on the hand-over into its postmatch
     (:func:`scoring.bank_ended_phases`), because the postmatch rearranges
     units - crossings, walks home - and those must not count towards the
@@ -332,6 +342,33 @@ def phase_start_turn(index: int) -> int:
     for i in range(index):
         turn += phase_span(PHASES[i])
     return int(turn)
+
+
+#: What each phase pays, as first hand-overs: ``from`` is where its points rate
+#: starts - the opening from its first turn, each numbered phase from its
+#: **halftime**, overtime from its first turn - and ``start`` is its first
+#: turn, where its ``grant`` is paid. 1 from turn 1, 1 from turn 9, 2 from turn
+#: 20, 3 from turn 31, nothing from turn 37 on the shipped schedule. The first
+#: turn not before the halftime is taken by :func:`before_halftime`'s own test
+#: (``turn < first + turns / 2``, float division), so an odd phase breaks where
+#: it does. Fixed at import, like :data:`OVERTIME_FIRST_PLY`, and immutable, so
+#: no caller can change it under the next. Mirrors ``POINT_RATES`` in the
+#: client.
+class _PointRate(NamedTuple):
+    rate_from: int
+    rate: int
+    start: int
+    grant: int
+
+
+def _point_rate(index: int, phase: Dict) -> _PointRate:
+    first = phase_start_turn(index)
+    turn = math.ceil(first + phase['turns'] / 2) if phase['halftime'] else first
+    return _PointRate(rate_from=(turn - 1) * PLIES_PER_TURN + 1, rate=phase['points'],
+                      start=(first - 1) * PLIES_PER_TURN + 1, grant=phase['grant'])
+
+
+_POINT_RATES = tuple(_point_rate(i, p) for i, p in enumerate(PHASES))
 
 
 def before_halftime(ply: int) -> bool:

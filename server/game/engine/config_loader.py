@@ -401,8 +401,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "postmatchEntries": 5,
         # How many units a side may walk home in one setup turn.
         "homecomingsPerSetupTurn": 3,
-        # The CP each side is handed at the start of every phase.
-        "cpPerPhase": 100
+        # The CP each side starts the match with.
+        "cpAtStart": 5,
+        # The base of the CP award at the start of each phase's postmatch:
+        # Phase N's is N times this, plus both sides' phase scores, plus the
+        # gap for the side behind (engine/scoring.py, cp_awarded).
+        "cpPhaseOffset": 5
     }
 }
 
@@ -416,8 +420,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 #: phaseInitEntries loads, ignores it, and reads postmatchEntries at its
 #: default. The schema's additionalProperties would refuse it, but nothing
 #: runs the schema at runtime.
+#:
+#: cpPhaseOffset replaced cpPerPhase - a flat 100 at the start of every phase -
+#: when CP became something a phase's play earns. The same holds: a snapshot
+#: still carrying cpPerPhase loads and ignores it.
 COUNTED_RULES = (
-    'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpPerPhase')
+    'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart',
+    'cpPhaseOffset')
 
 
 def rule_of(config: Optional[Dict[str, Any]], key: str) -> Any:

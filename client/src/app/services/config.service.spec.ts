@@ -87,9 +87,10 @@ describe('ConfigService validation, against the server\'s', () => {
     expect(config.rules.panelMoversPerTurn).toBe(3);
     expect(config.rules.postmatchEntries).toBe(5);
     expect(config.rules.homecomingsPerSetupTurn).toBe(3);
-    expect(config.rules.cpPerPhase).toBe(100);
+    expect(config.rules.cpAtStart).toBe(5);
+    expect(config.rules.cpPhaseOffset).toBe(5);
 
-    for (const key of ['panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpPerPhase']) {
+    for (const key of ['panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart', 'cpPhaseOffset']) {
       const bad: any = minimal();
       bad.rules[key] = -1;
       expect(service.validateGameRules(bad).valid).withContext(key).toBeFalse();

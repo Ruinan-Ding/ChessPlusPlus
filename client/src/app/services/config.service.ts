@@ -329,8 +329,12 @@ export const DEFAULT_GAME_CONFIG = {
     postmatchEntries: 5,
     // How many units a side may walk home in one setup turn.
     homecomingsPerSetupTurn: 3,
-    // The CP each side is handed at the start of every phase.
-    cpPerPhase: 100
+    // The CP each side starts the match with.
+    cpAtStart: 5,
+    // The base of the CP award at the start of each phase's postmatch:
+    // Phase N's is N times this, plus both sides' phase scores, plus the gap
+    // for the side behind (match-score.ts, cpAwarded).
+    cpPhaseOffset: 5
   }
 };
 
@@ -342,9 +346,11 @@ export const DEFAULT_GAME_CONFIG = {
  * it rather than closing it. The old key is not carried over: nothing here
  * rejects a rule key it does not know, so a config that still says
  * `phaseInitEntries` loads, and reads `postmatchEntries` at its default.
+ * `cpPhaseOffset` replaced `cpPerPhase` - a flat 100 every phase - the same
+ * way, when CP became something a phase's play earns.
  */
 export const COUNTED_RULES = [
-  'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpPerPhase',
+  'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart', 'cpPhaseOffset',
 ] as const;
 export type CountedRule = typeof COUNTED_RULES[number];
 

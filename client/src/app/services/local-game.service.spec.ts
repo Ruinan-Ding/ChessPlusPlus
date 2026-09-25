@@ -240,11 +240,11 @@ describe('LocalGameService', () => {
     await flush();
     expect(last('move_made').turnNumber).toBe(2 * 45);
 
-    // **The toll was taken once, not once per move.** Overtime 2 takes 2, so a
-    // two-move turn costs 2 and not 4 - and Overtime 3, the stretch that
+    // **The toll was taken once, not once per move.** Overtime 2 takes 3, so a
+    // two-move turn costs 3 and not 6 - and Overtime 3, the stretch that
     // allows three, is where charging it per move would hurt most. The held
     // move must leave it alone: the toll is what the END of a turn costs.
-    expect(kingOf(last('move_made').boardState).hp).toBe(hpBefore - 2);
+    expect(kingOf(last('move_made').boardState).hp).toBe(hpBefore - 3);
     // And the held message took none of it at all.
     expect(kingOf(held.boardState).hp).toBe(hpBefore);
   });
@@ -727,9 +727,9 @@ describe('LocalGameService', () => {
 
   /**
    * The schedule's two endings, which this engine enforces the way the server
-   * does (match-score.ts): a side past the other's margin as Phase 3 banks
-   * wins on points, and a match still standing once turn 50 is played out is
-   * black's. Both kings stand on the rim of a side zone each - the same four
+   * does (match-score.ts): a side past the other's margin once Phase 3 has
+   * banked and its postmatch is played wins on points, and a match still
+   * standing once turn 50 is played out is black's. Both kings stand on the rim of a side zone each - the same four
    * hexes apiece - so whatever the board banks, it banks level.
    */
   describe('the schedule\'s endings', () => {
@@ -799,31 +799,46 @@ describe('LocalGameService', () => {
       }));
     });
 
-    it('ends the match on points as Phase 3 banks', async () => {
-      const g = at(70, { 1: { white: 9, black: 0 }, 2: { white: 0, black: 0 } });
-      g.engine.send({ type: 'pass_turn' });
-      await flush();
-      expect(g.find('turn_passed').phaseBank[3]).toEqual({ white: 4, black: 4 });
+    /** Pass `n` hand-overs in a row. */
+    const passes = async (g: { engine: LocalGameService }, n: number) => {
+      for (let i = 0; i < n; i++) {
+        g.engine.send({ type: 'pass_turn' });
+        await flush();
+      }
+    };
+
+    it("plays Phase 3's postmatch out, then ends the match on points", async () => {
+      // Phase 3 banks as its postmatch begins and the result is known there,
+      // but the postmatch is still played - "phase 3 post match still happens
+      // even if overtime isnt triggered" - and the match ends as it does.
+      const g = at(70, { 1: { white: 12, black: 0 }, 2: { white: 0, black: 0 } });
+      await passes(g, 1);   // black's half of turn 35: into the postmatch
+      // Four hexes apiece, tripled in Phase 3.
+      expect(g.find('turn_passed').phaseBank[3]).toEqual({ white: 12, black: 12 });
+      expect(g.find('turn_passed').currentTurn).toBe('Solo');
+      await passes(g, 1);   // white's half of the postmatch
+      expect(g.find('game_over')).toBeUndefined();
+      await passes(g, 1);   // black's: out of it, into turn 37
+      expect(g.seen.filter(m => m.type === 'turn_passed')[2].currentTurn).toBe('');
       expect(g.find('game_over')).toEqual(jasmine.objectContaining({
         winner: 'Solo', endReason: 'points',
       }));
     });
 
     it('plays a close match on into overtime', async () => {
-      // Five clear is not more than five.
-      const g = at(70, { 1: { white: 5, black: 0 }, 2: { white: 0, black: 0 } });
-      g.engine.send({ type: 'pass_turn' });
-      await flush();
+      // Ten clear is not more than ten.
+      const g = at(70, { 1: { white: 10, black: 0 }, 2: { white: 0, black: 0 } });
+      await passes(g, 3);
       expect(g.find('game_over')).toBeUndefined();
-      expect(g.find('turn_passed').currentTurn).toBe('Solo');
+      expect(g.seen.filter(m => m.type === 'turn_passed')[2].currentTurn).toBe('Solo');
     });
 
     it('decides nothing on points while a phase was banked late', async () => {
       // Phase 1 banked after its moment, off the wrong board: Phase 3 banks on
-      // time, white reads nine clear, and the match still goes on.
-      const g = at(70, { 1: { white: 9, black: 0, late: true }, 2: { white: 0, black: 0 } });
-      g.engine.send({ type: 'pass_turn' });
-      await flush();
+      // time, white reads nine clear, and the match still goes on past the
+      // postmatch.
+      const g = at(70, { 1: { white: 12, black: 0, late: true }, 2: { white: 0, black: 0 } });
+      await passes(g, 3);
       expect(g.find('turn_passed').phaseBank[3].late).toBeUndefined();
       expect(g.find('game_over')).toBeUndefined();
     });
@@ -831,7 +846,7 @@ describe('LocalGameService', () => {
     it('does not end a match on a Phase 3 bank taken late', async () => {
       // A game saved past the moment banks Phase 3 at its next hand-over, off
       // a board that no longer shows how Phase 3 finished - and plays on.
-      const g = at(80, { 1: { white: 9, black: 0 }, 2: { white: 0, black: 0 } });
+      const g = at(80, { 1: { white: 12, black: 0 }, 2: { white: 0, black: 0 } });
       g.engine.send({ type: 'pass_turn' });
       await flush();
       expect(g.find('turn_passed').phaseBank[3]).toBeDefined();

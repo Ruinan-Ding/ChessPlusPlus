@@ -3,13 +3,14 @@ The match's score, and how the schedule ends it. Mirrors
 ``client/src/app/services/match-score.ts`` - keep the two in step.
 
 Three numbered phases each bank a score: the capture hexes a side holds as
-the phase's play ends, less what its units were worth that died in the phase.
-The three are summed, and the match ends in one of two ways the owner set
-out:
+the phase's play ends, less what its units were worth that died in the phase -
+never less than 0, and times the phase's number (:func:`phase_total`). The
+three are summed, and the match ends in one of two ways the owner set out:
 
-* **On points, when Phase 3 banks.** A side more than the other's margin
-  clear takes it outright (:data:`OVERTIME_MARGIN`). Anything closer goes to
-  overtime.
+* **On points, once Phase 3's postmatch is played.** Phase 3 banks as its
+  postmatch begins; a side more than the other's margin clear then takes it
+  outright (:data:`OVERTIME_MARGIN`) as the postmatch ends. Anything closer
+  goes to overtime.
 * **At the end of turn 50.** Overtime is a deathmatch until a king falls, and
   *"if both survives, black wins."*
 
@@ -36,12 +37,18 @@ import math
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .board import HEX_DIRECTIONS, coord_key, hex_distance, parse_coord
-from .phases import OVERTIME_LAST_TURN, SCORING_PHASES, is_postmatch, phase_index_at, turn_of
+from .panels import BASE_PANELS
+from .phases import (
+    OVERTIME_FIRST_PLY, OVERTIME_LAST_TURN, PHASES, SCORING_PHASES, hand_overs_by, is_postmatch,
+    phase_index_at, turn_of, turn_points_by,
+)
 
-#: How far behind a side may finish the third phase and still force overtime.
-#: Black is allowed the wider gap because white moves first: white has to be
-#: more than 5 clear to take it outright, black only more than 3.
-OVERTIME_MARGIN = {'white': 3, 'black': 5}
+#: How far behind a side may finish the third phase and still force overtime,
+#: keyed by the side behind. Black is allowed the wider gap because white
+#: moves first: **white has to be more than 10 clear to take it outright,
+#: black only more than 5**. *The owner, 24 Sep 2026: "10 ahead for white and
+#: 5 ahead for black to trigger overtime"*.
+OVERTIME_MARGIN = {'white': 5, 'black': 10}
 
 #: How far out the outer four capture zones sit, as a share of the radius.
 ZONE_COLS = 7 / 11
@@ -126,6 +133,34 @@ def capture_score(claims: Dict[str, str], color: str) -> int:
     return sum(1 for owner in claims.values() if owner == color)
 
 
+def unit_value(config: Optional[Dict[str, Any]], unit_id: Any) -> int:
+    """
+    What a unit is worth, by its config ``value``; 0 for no unit, or one the
+    config has no value for. The one reading of it - a kill's pay, a death's
+    cost and a walk home's refund all go through here. Mirrors ``unitValue``
+    in match-score.ts.
+    """
+    if not unit_id:
+        return 0
+    units = (config or {}).get('units') or {}
+    return int((units.get(unit_id) or {}).get('value') or 0)
+
+
+def phase_total(cap: int, deaths: int, multiplier: int) -> int:
+    """
+    What a scoring phase scores: the capture hexes held, less what its losses
+    cost, **never below 0**, and **times the phase's ``multiplier``** - x1 in
+    Phase 1, x2 in Phase 2, x3 in Phase 3 (``PHASES``).
+
+    *The owner, 24 Sep 2026: "the total points racked shouldnt go negative by
+    death. max is 0"* and *"the total victory points for each phase is
+    multiplied by 2 on phase 2, multipled by 3 on phase 3"*. The floor comes
+    first: 4 - 18 in Phase 3 is 0, not -42. Everything downstream - the
+    match total, the margins, the CP award - reads the multiplied figure.
+    """
+    return max(0, cap - deaths) * multiplier
+
+
 def cap_of(board_state: Dict[str, Any], radius: int, color: str) -> int:
     """What *color* is holding on *board_state*, right now."""
     return capture_score(capture_claims(board_state, radius), color)
@@ -139,14 +174,13 @@ def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
     it happened in and no other, so summing the three never charges one twice.
     The defender belongs to whoever was not moving; a counter-attack kills the
     mover's own unit.
+
+    **A unit killed in a base (the red panels, ``BASE_PANELS``) costs
+    nothing.** *The owner, 24 Sep 2026: "killing things in base (red panel)
+    should not count towards victory points"* - while one killed in a reserve
+    (green) still does. Neither pays the killer any points
+    (:func:`economy.points_of`).
     """
-    units = (config or {}).get('units', {}) or {}
-
-    def value(unit_id: Any) -> int:
-        if not unit_id:
-            return 0
-        return (units.get(unit_id) or {}).get('value') or 0
-
     total = 0
     for move in history or []:
         if phase is not None:
@@ -155,10 +189,12 @@ def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
             turn = move.get('turn')
             if not isinstance(turn, int) or phase_index_at(turn) != phase:
                 continue
+        if move.get('intoPanel') and move.get('panel') in BASE_PANELS:
+            continue
         if move.get('defender_eliminated') and move.get('color') != color:
-            total += value(move.get('captured'))
+            total += unit_value(config, move.get('captured'))
         if move.get('attacker_eliminated') and move.get('color') == color:
-            total += value(move.get('unit_id'))
+            total += unit_value(config, move.get('unit_id'))
     return total
 
 
@@ -198,7 +234,9 @@ def bank_ended_phases(bank: Optional[Dict[str, Any]], config: Dict[str, Any],
         if claims is None:
             claims = capture_claims(board_state, radius)
         entry: Dict[str, Any] = {
-            color: capture_score(claims, color) - deaths_of(config, history, color, phase)
+            color: phase_total(capture_score(claims, color),
+                               deaths_of(config, history, color, phase),
+                               PHASES[phase]['multiplier'])
             for color in ('white', 'black')
         }
         # Already over before this hand-over: its moment has passed.
@@ -206,6 +244,68 @@ def bank_ended_phases(bank: Optional[Dict[str, Any]], config: Dict[str, Any],
             entry['late'] = True
         out[str(phase)] = entry
     return out
+
+
+def cp_awarded(bank: Optional[Dict[str, Any]], color: str, offset: int) -> int:
+    """
+    The CP *color* has been awarded so far: one award per phase banked,
+    landing as the phase's postmatch begins - which is when a phase banks, so
+    the bank is all this needs. CP comes from nothing else.
+
+    Phase N's award is ``N x offset`` (``rules.cpPhaseOffset``: 5, 10, 15),
+    plus both sides' scores for the phase, plus - for the side that scored
+    less - the gap between them. *The owner, 24 Sep 2026:* the side with the
+    higher total gets ``phase_x + (mine + theirs)``, the lower
+    ``phase_x + (mine + theirs) + abs(mine - theirs)``. Phase 2 banking white
+    12, black 4 awards white 10 + 16 = 26 and black 26 + 8 = 34. The 5 each
+    side starts with (``rules.cpAtStart``) is not an award and is not here.
+
+    Only the phase's own scores are compared, not the match's. A late phase
+    still awards. Nothing on the server spends CP yet - abilities are solo
+    (PUNCHLIST 6.15) - so this is the mirror the client's ``cpAwarded`` keeps
+    in step with, ready for when they are not.
+    """
+    other = 'black' if color == 'white' else 'white'
+    total = 0
+    for phase in SCORING_PHASES:
+        entry = (bank or {}).get(str(phase))
+        if not entry:
+            continue
+        mine, theirs = entry[color], entry[other]
+        total += phase * offset + mine + theirs + max(0, theirs - mine)
+    return total
+
+
+def vp_as_points(bank: Optional[Dict[str, Any]], color: str, ply: int) -> int:
+    """
+    What *color*'s victory points are worth as points by *ply*: its whole
+    banked total, paid into its purse as its first overtime turn begins, and
+    nothing before. *The owner, 24 Sep 2026: "at the start of the overtime,
+    all your accumlated victory points turn into regular points."*
+
+    Paid the way a turn's own point is - white on hand-over 73, black on 74 -
+    so it asks whether the side has begun an overtime turn. The bank is not
+    emptied: it is the record of how the three phases finished. Mirrors
+    ``vpAsPoints`` in the client.
+    """
+    begun = hand_overs_by(color, ply) - hand_overs_by(color, OVERTIME_FIRST_PLY - 1)
+    # A match decided on points ends ON the hand-over into overtime's first
+    # ply, which is the one moment the arithmetic above would read as begun.
+    if begun <= 0 or decided_on_points(bank):
+        return 0
+    return sum(((bank or {}).get(str(phase)) or {}).get(color, 0) for phase in SCORING_PHASES)
+
+
+def scheduled_points(bank: Optional[Dict[str, Any]], color: str, ply: int) -> int:
+    """
+    What the schedule has paid *color* in points by *ply*: every turn begun
+    at its rate, each phase's grant (:func:`phases.turn_points_by`), and the
+    banked victory points once its first overtime turn begins
+    (:func:`vp_as_points`). The purse is this plus what the record adds and
+    takes away (:func:`economy.points_of`). Mirrors ``scheduledPoints`` in
+    match-score.ts.
+    """
+    return turn_points_by(color, ply) + vp_as_points(bank, color, ply)
 
 
 def decided_on_points(bank: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -236,12 +336,15 @@ def schedule_ending(bank: Optional[Dict[str, Any]], ply: int) -> Optional[Tuple[
     banks, or on turn 50, has already decided it.
 
     * ``'points'``: all three phases are in, none of them late, and one side is
-      past the other's margin. That is first true on the hand-over into
-      Phase 3's postmatch, which is where a match ends on it.
+      past the other's margin - **once Phase 3's postmatch has been played**,
+      on the hand-over into turn 37 (``OVERTIME_FIRST_PLY``). The result is
+      known as the postmatch begins, but the postmatch is still played: *the
+      owner, 24 Sep 2026: "phase 3 post match still happens even if overtime
+      isnt triggered."*
     * ``'overtime'``: turn 50 has been played out - the hand-over is into
       turn 51 - with both kings standing. Black's.
     """
-    points = decided_on_points(bank)
+    points = decided_on_points(bank) if ply >= OVERTIME_FIRST_PLY else None
     if points:
         return points, 'points'
     if turn_of(ply) > OVERTIME_LAST_TURN:

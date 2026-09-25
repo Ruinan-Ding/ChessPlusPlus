@@ -16,15 +16,16 @@ import {
   hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
 } from '../../services/hex-rules';
 import {
-  PhaseBank, capOf, deathsOf, matchVerdict,
+  PhaseBank, capOf, cpAwarded, deathsOf, decidedOnPoints, matchVerdict, phaseTotal,
+  scheduledPoints, unitValue,
 } from '../../services/match-score';
 import { buildPlayback } from '../../services/playback';
 import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
 import { homecomingsAt, openingMovedHexes } from '../../services/history-rules';
 import {
-  SCORING_PHASES, boardMovesPerTurn, handOversBy,
+  OVERTIME_FIRST_TURN, PHASES, SCORING_PHASES, boardMovesPerTurn, handOversBy,
   isInitialization, isOvertime, isPostmatch, isSetupTurn, phaseIndexAt,
-  pointsPerTurnAt, stageAt, turnHeading, turnOf, turnPointsBy,
+  stageAt, turnHeading, turnOf,
 } from '../../services/phases';
 import { AudioService } from '../../services/audio.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
@@ -84,11 +85,28 @@ interface AbilityEffect {
   testing?: boolean;
 }
 
+/**
+ * The CP scheme a solo save's spend belongs to. Earned CP - the start plus
+ * each postmatch's award (`cpOf`) - replaced a flat 100 a phase on 24 Sep
+ * 2026; a save from before it carries no mark, and its spend is dropped.
+ * Bump it if CP is reworked again.
+ */
+const CP_SCHEME = 'earned';
+
 interface LocalUiState {
   myPoints: number;
   opponentPoints: number;
   myCpSpent: number;
   opponentCpSpent: number;
+  /**
+   * Which CP scheme the spend was made under (`CP_SCHEME`). A save without it
+   * predates earned CP: its spend came out of 100 a phase, and read against
+   * what is earned now it would leave the purse deep in debt.
+   */
+  cpScheme?: string;
+  /** What abilities have done to each purse - see `myAbilityPoints`. */
+  myAbilityPoints?: number;
+  opponentAbilityPoints?: number;
   // **Written by catalogue id, never by slot.** Inside the component these
   // are slot numbers - the template, the glows and the cooldown arrays all
   // work in positions - but a position only means anything next to the
@@ -182,8 +200,13 @@ interface Standing {
   cap: number;
   /** What this phase's losses have cost. */
   death: number;
-  /** This phase so far. */
+  /**
+   * This phase so far: `cap - death`, never below 0, times `multiplier`
+   * (`phaseTotal`).
+   */
   total: number;
+  /** The phase's number in Phases 2 and 3 - what `total` is multiplied by - else 1. */
+  multiplier: number;
   /** Phases already finished, in order. */
   banked: number[];
   /** Those plus this one - the match score. */
@@ -632,6 +655,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       opponentPoints: this.opponentPoints,
       myCpSpent: this.myCpSpent,
       opponentCpSpent: this.opponentCpSpent,
+      cpScheme: CP_SCHEME,
+      myAbilityPoints: this.myAbilityPoints,
+      opponentAbilityPoints: this.opponentAbilityPoints,
       unitCooldowns: this.cooldownsById(this.unitCooldowns),
       opponentCooldowns: this.cooldownsById(this.opponentCooldowns),
       myCooldowns: this.cooldownsById(this.myCooldowns),
@@ -666,8 +692,21 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       const state = JSON.parse(raw) as Partial<LocalUiState>;
       if (Number.isFinite(state.myPoints)) this.myPoints = state.myPoints!;
       if (Number.isFinite(state.opponentPoints)) this.opponentPoints = state.opponentPoints!;
-      if (Number.isFinite(state.myCpSpent)) this.myCpSpent = state.myCpSpent!;
-      if (Number.isFinite(state.opponentCpSpent)) this.opponentCpSpent = state.opponentCpSpent!;
+      // A spend made under the old flat CP is forgiven rather than carried
+      // into a purse that no longer earns it: what it bought is kept, and the
+      // purse starts again from what is earned now.
+      if (state.cpScheme === CP_SCHEME) {
+        if (Number.isFinite(state.myCpSpent)) this.myCpSpent = state.myCpSpent!;
+        if (Number.isFinite(state.opponentCpSpent)) this.opponentCpSpent = state.opponentCpSpent!;
+      }
+      // The purses themselves are re-summed from the record on the next state
+      // the engine hands over (`reconcilePoints`); what abilities did to them
+      // is the one part the record cannot give back. A save from before it was
+      // kept apart has none, and its purse comes back as the record alone.
+      if (Number.isFinite(state.myAbilityPoints)) this.myAbilityPoints = state.myAbilityPoints!;
+      if (Number.isFinite(state.opponentAbilityPoints)) {
+        this.opponentAbilityPoints = state.opponentAbilityPoints!;
+      }
       if (state.unitCooldowns) this.unitCooldowns = this.cooldownsBySlot(state.unitCooldowns);
       if (state.opponentCooldowns) {
         this.opponentCooldowns = this.cooldownsBySlot(state.opponentCooldowns);
@@ -750,6 +789,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.addSystemMessage(`${actualMessage.playerWhite} (White) moves first.`);
         this.myPoints = 0;
         this.opponentPoints = 0;
+        this.myAbilityPoints = 0;
+        this.opponentAbilityPoints = 0;
         this.myCpSpent = 0;
         this.opponentCpSpent = 0;
         this.standingsCache = null;
@@ -786,6 +827,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.unitAbilityFocus = null;
         this.pendingAbility = null;
         this.beginTurnFor('white');
+        this.reconcilePoints();
         this.playTurnSoundIfNeeded(null);
         this.startTurnClock();
         this.cdr.markForCheck();
@@ -831,13 +873,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
               : undefined,
           }];
         }
-        if (m.defender_eliminated) this.awardPoints(m.color, 1);
-        if (m.attacker_eliminated) this.awardPoints(other, 1);
-        // The turn point belongs to whoever plays next, banked as they start.
+        // Whoever plays next starts their turn.
         this.beginTurnFor(other);
-        // Then, in a networked room, the history's own sum over the top - which
-        // is also the only way a walk home by the OTHER player pays them back
-        // on this screen. See reconcilePoints.
+        // And both purses are the record's sum - the kill this move made, the
+        // turn it hands over, a walk home by the OTHER player - which is the
+        // only way any of it reaches this screen. See reconcilePoints.
         this.reconcilePoints();
         this.playTurnSoundIfNeeded(previousMoveTurn);
         this.startTurnClock();
@@ -913,7 +953,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // A reload in a networked room used to start both purses at nothing:
         // points were kept in this browser's memory and restored from disk only
         // for a solo room. And a crossing or a walk by the other player arrives
-        // here, where nothing ever charged them for a wrap.
+        // here, where nothing ever charged them for a wrap - as does a held
+        // move, one of an Overtime 2 or 3 turn's several, and any kill it made.
         this.reconcilePoints();
         // No restoreLocalUiState() here. It reads points, CP, cooldowns,
         // loadouts and the staged turn back off disk, which is right exactly
@@ -1685,7 +1726,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * the numbers would sit there frozen and mean nothing.
    */
   get showScore(): boolean {
-    return !isOvertime(this.gameState.snapshot.turnNumber);
+    // A match decided on points ends on the hand-over into overtime's first
+    // turn, and its finished position is the one place overtime's ply is not
+    // overtime: the score is the result, so it stays up.
+    return !isOvertime(this.gameState.snapshot.turnNumber) || !!decidedOnPoints(this.phaseBank);
   }
 
   /** Whether a hex is off the battlefield - where the panels start. */
@@ -1987,16 +2031,23 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     { settled: Record<string, number>; key: string; hp: Record<string, number> } | null = null;
 
   /**
-   * The CP a side has: what the phases have handed out so far, less what it
-   * has spent. Abilities are bought with this and nothing else - the points
-   * beside the Abilities tab stay the board's currency, for wrap crossings
-   * and the refund for coming home.
+   * The CP a side has: what the phases have awarded so far, less what it has
+   * spent. The path abilities are bought with this and nothing else - the
+   * points beside the Abilities tab stay the board's currency, for wrap
+   * crossings and the refund for coming home.
+   *
+   * **Each side starts with `rules.cpAtStart` (5)**, and the rest is earned
+   * at the start of each postmatch (turns 14, 25 and 36), off the phase that
+   * just banked: `cpAwarded` in match-score.ts, off the engine's bank. *The
+   * owner, 24 Sep 2026: "cp should be awarded at the start of post match"*
+   * and *"at the start of the game, user has 5cp."*
    */
   cpOf(side: 'mine' | 'opponent'): number {
-    const phases = phaseIndexAt(this.gameState.snapshot.turnNumber) + 1;
-    // rules.cpPerPhase, handed out five times over a match - the opening, the
-    // three phases and overtime.
-    return ruleOf(this.gameState.snapshot.config, 'cpPerPhase') * phases - (side === 'mine' ? this.myCpSpent : this.opponentCpSpent);
+    const mine = this.gameState.myColor(this.username) || 'white';
+    const color = side === 'mine' ? mine : (mine === 'white' ? 'black' : 'white');
+    const config = this.gameState.snapshot.config;
+    const awarded = ruleOf(config, 'cpAtStart') + cpAwarded(this.phaseBank, color, ruleOf(config, 'cpPhaseOffset'));
+    return awarded - (side === 'mine' ? this.myCpSpent : this.opponentCpSpent);
   }
 
   get myCp(): number { return this.cpOf('mine'); }
@@ -2026,10 +2077,20 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return side === 'mine' ? this.myPoints : this.opponentPoints;
   }
 
-  /** Charge a slot's currency. A negative amount hands it back. */
+  /**
+   * Charge a slot's currency. A negative amount hands it back. Points an
+   * ability takes or gives are kept apart as well (`myAbilityPoints`): no
+   * record holds them, and the purse is re-summed from the record.
+   */
   private chargeFor(side: 'mine' | 'opponent', index: number, amount: number): void {
     if (this.isPathSlot(index)) { this.spendCp(side, amount); return; }
-    if (side === 'mine') this.myPoints -= amount; else this.opponentPoints -= amount;
+    if (side === 'mine') {
+      this.myPoints -= amount;
+      this.myAbilityPoints -= amount;
+    } else {
+      this.opponentPoints -= amount;
+      this.opponentAbilityPoints -= amount;
+    }
   }
 
   /** What buys that slot, named for a hint - and counted, so "1 point" reads. */
@@ -2087,10 +2148,30 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.cdr.markForCheck();
   }
 
-  /** History header carries the turn and where it sits in the schedule. */
+  /**
+   * History header carries the turn and where it sits in the schedule.
+   *
+   * Except once the match is decided on points: it ends as Phase 3's
+   * postmatch does, so there is no overtime left to count down to, and the
+   * schedule's countdown beside a YOU WIN would name a stage the match never
+   * reaches. Its last turn says so instead, and so does the record of it once
+   * it is over - `decidedOnPoints`, not `matchVerdict`, which also names
+   * black once turn 50 has been played out.
+   */
   get historyTitle(): string {
-    const turn = this.gameState.snapshot.turnNumber;
-    return turn ? turnHeading(turn) : 'History';
+    const ply = this.gameState.snapshot.turnNumber;
+    if (!ply) return 'History';
+    if (decidedOnPoints(this.phaseBank)) {
+      return `Turn ${Math.min(turnOf(ply), OVERTIME_FIRST_TURN - 1)} - Last Turn`;
+    }
+    return turnHeading(ply);
+  }
+
+  /** The CP purse's tooltip, with the room's own starting CP in it. */
+  get cpTitle(): string {
+    const start = ruleOf(this.gameState.snapshot.config, 'cpAtStart');
+    return `CP - what a path and its abilities cost. ${start} to start, then earned at the start of `
+      + 'each postmatch from the phase scores of both sides, and the side that scored less gets the gap too.';
   }
 
   /** The board's number for a "q,r" coord, falling back to the raw coord. */
@@ -3204,7 +3285,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * for a while would drag the other back off with it.
    */
   get tollBind(): boolean {
-    return true;
+    // Except on the finished position of a match won on points, which sits on
+    // overtime's first ply without ever having been in overtime.
+    return !decidedOnPoints(this.phaseBank);
   }
 
   /** The boosts the board may act on - none of them in a server game. */
@@ -3357,9 +3440,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * been played out (match-score.ts).
    *
    * **Enforced now, not just read.** Both engines end the match on the same
-   * rules as the hand-over lands (`points`, `overtime`), so this names the
-   * result the match is about to end on rather than one it would play past.
-   * Readable from turn 36: Phase 3 banks as its postmatch begins.
+   * rules (`points`, `overtime`), so this names the result the match will end
+   * on rather than one it would play past. Readable from turn 36: Phase 3
+   * banks as its postmatch begins, and a points match ends once that
+   * postmatch has been played.
    */
   get matchVerdict(): 'white' | 'black' | 'overtime' | null {
     return matchVerdict(this.phaseBank, this.gameState.snapshot.turnNumber);
@@ -3430,10 +3514,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // the running score and the one a phase banks are the same sum.
     const idle = isInitialization(turn) || isPostmatch(turn);
     const radius: number = snapshot.config?.board?.radius ?? 11;
+    // A turn that scores nothing shows no multiplier either: a postmatch's
+    // `(0 - 0) x3 = 0` said nothing. The opening and overtime carry 1.
+    const multiplier = idle ? 1 : PHASES[phase].multiplier;
     const build = (color: 'white' | 'black'): Standing => {
       const cap = idle ? 0 : capOf(board, radius, color);
       const death = idle ? 0 : deathsOf(snapshot.config, history, color, phase);
-      const total = cap - death;
+      const total = phaseTotal(cap, death, multiplier);
       const banked = SCORING_PHASES
         .filter(index => this.phaseBank[index])
         .map(index => this.phaseBank[index][color]);
@@ -3443,7 +3530,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // "loses just HP, if i said points i misspoke."*
       const running = SCORING_PHASES.includes(phase) ? total : 0;
       const match = banked.reduce((sum, value) => sum + value, 0) + running;
-      return { cap, death, total, banked, match, leading: false };
+      return { cap, death, total, multiplier, banked, match, leading: false };
     };
     const white = build('white');
     const black = build('black');
@@ -3460,15 +3547,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /**
    * A side's standing: the capture hexes it holds right now against what its
-   * losses have cost it. Cap is read off the board every time rather than
+   * losses have cost it, the phases the engine has banked, and the match
+   * total they come to. Cap is read off the board every time rather than
    * banked - it is what you are holding, and it drops the moment you walk
-   * away - while deaths only ever add up.
-   *
-   * One record rather than two loose numbers because the match is meant to
-   * run in phases: each one ends by taking a snapshot of exactly this, and
-   * the snapshots are summed to decide the winner. This is the shape a phase
-   * would keep, so adding them is a list and a bank step, not a rewrite.
-   * ponytail: one live phase - nothing is banked and nothing is summed yet.
+   * away - while deaths only ever add up. The phase's total never goes below
+   * 0, however much its deaths outweigh its cap (`phaseTotal`).
    */
   phaseScore(side: 'mine' | 'opponent'): Standing {
     return this.standings()[side];
@@ -3480,20 +3563,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * against this sum, so a purse that disagrees offers a crossing the server
    * then refuses.
    *
-   * A point for every turn begun, one for a kill (a counter-attack that kills
-   * the attacker pays the defender's side), the unit's value back for walking
-   * home, and the unit's value spent on the wrap. A cast that kills pays
-   * nothing - only a turn's own action ever did.
+   * Every turn begun at its rate, each phase's grant, the banked victory
+   * points once overtime begins, a board kill's worth (`killRewards`), the
+   * unit's value back for walking home, and the unit's value spent on the
+   * wrap. A cast that kills pays nothing - only a turn's own action ever did.
    */
   pointsFromHistory(color: 'white' | 'black'): number {
     const snapshot = this.gameState.snapshot;
-    const units = snapshot.config?.units ?? {};
-    const other = color === 'white' ? 'black' : 'white';
-    // One a turn through the schedule, and 1, 3, 5 through overtime's three
-    // stretches. `beginTurnFor` hands the same point out live as a side
-    // starts; this is the record's own sum, and the two must agree or the
-    // purse jumps every time a commit resets it.
-    let points = turnPointsBy(color, snapshot.turnNumber);
+    // What the schedule has paid - the rates, the phase grants and the
+    // victory points at overtime (`scheduledPoints`). `beginTurnFor` hands the
+    // same out live as a side starts; this is the record's own sum, and the
+    // two must agree or the purse jumps every time a commit resets it.
+    let points = scheduledPoints(this.phaseBank, color, snapshot.turnNumber);
     for (const move of (snapshot.moveHistory ?? []) as any[]) {
       if (!move || move.panelEffect || move.entered) continue;
       if (move.panelMove) {
@@ -3501,17 +3582,37 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         continue;
       }
       if (move.withdrawn) {
-        if (move.color === color) points += Number(units[move.unit_id]?.value) || 0;
+        if (move.color === color) points += unitValue(snapshot.config, move.unit_id);
         continue;
       }
-      if (move.defender_eliminated && move.color === color) points += 1;
-      if (move.attacker_eliminated && move.color === other) points += 1;
+      for (const kill of this.killRewards(move)) if (kill.color === color) points += kill.amount;
     }
     return points;
   }
 
   /**
-   * In a networked room, set both purses from the history.
+   * What a record's kills pay, and to whom: the dead unit's config `value` to
+   * the side that killed it - the mover for its defender, the defender's side
+   * for an attacker its counter killed. *The owner, 24 Sep 2026: "anytime a
+   * unit is killed, i get the amount of regular points which the one i killed
+   * is worth"*.
+   *
+   * **A blow into a panel pays nobody**, whoever dies of it: a base's kills
+   * count for nothing at all, a reserve's only against the victory points
+   * (`deathsOf`). Mirrors `points_of` in economy.py.
+   */
+  private killRewards(move: any): { color: string; amount: number }[] {
+    if (!move || move.intoPanel) return [];
+    const config = this.gameState.snapshot.config;
+    const other = move.color === 'white' ? 'black' : 'white';
+    const out: { color: string; amount: number }[] = [];
+    if (move.defender_eliminated) out.push({ color: move.color, amount: unitValue(config, move.captured) });
+    if (move.attacker_eliminated) out.push({ color: other, amount: unitValue(config, move.unit_id) });
+    return out;
+  }
+
+  /**
+   * Set both purses from the history, and what abilities did to them.
    *
    * Points were a running tally in each browser: kept in memory, saved to disk
    * and restored only for a solo room - so a reload in a networked one started
@@ -3521,16 +3622,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * each committed event resets the tally to the record's sum; between them
    * the tally still moves, so a wrap staged this turn shows its price at once.
    *
-   * Not in a solo room. Pool abilities are bought with points there, and
-   * abilities are not recorded - resetting to the record would give back
-   * every point spent on one.
+   * **Solo too**, so nothing that earns a point needs a hook of its own - a
+   * held Overtime 2 move, which arrives as a state update, is paid like any
+   * other. The one thing solo has that the record does not is abilities: a
+   * pool ability is bought with points and not recorded, and Rally hands 300
+   * out. Those are kept apart (`myAbilityPoints`) and added on, so the reset
+   * gives back nothing spent. A networked room casts nothing, and adds 0.
    */
   private reconcilePoints(): void {
-    if (this.isSinglePlayer) return;
     const mine = (this.gameState.myColor(this.username) || 'white') as 'white' | 'black';
     const theirs = mine === 'white' ? 'black' : 'white';
-    this.myPoints = this.pointsFromHistory(mine);
-    this.opponentPoints = this.pointsFromHistory(theirs);
+    this.myPoints = this.pointsFromHistory(mine) + this.myAbilityPoints;
+    this.opponentPoints = this.pointsFromHistory(theirs) + this.opponentAbilityPoints;
   }
 
   private awardPoints(color: string, amount: number): void {
@@ -3541,8 +3644,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * A side's turn begins: it banks a point and its abilities tick down one.
-   * Called for whoever is *about* to play, never for the side just finished.
+   * A side's turn begins: its abilities tick down one. Called for whoever is
+   * *about* to play, never for the side just finished. What the turn pays is
+   * not handed out here: every caller re-sums the purses from the record
+   * straight after (`reconcilePoints`), which counts it.
    */
   private beginTurnFor(color: string): void {
     if (!color) return;
@@ -3555,13 +3660,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.abilityUsed = {};
     this.pickedThisTurn = [];
     this.swapArmed = null;
-    // What a turn pays is the schedule's business - overtime's stretches pay
-    // 1, 3 and 5. The snapshot has already moved on to the hand-over this side
-    // is about to play, which is the one being paid for. Its twin is
-    // `pointsFromHistory`, which re-derives the whole purse on every commit:
-    // a flat 1 here would be overwritten by the real sum a moment later and
-    // the purse would visibly jump.
-    this.awardPoints(color, pointsPerTurnAt(this.gameState.snapshot.turnNumber));
     const mine = this.gameState.myColor(this.username);
     const isMine = mine ? color === mine : color === 'white';
     // The glow is for the other player's turn: it lifts when whoever cast it
@@ -3820,6 +3918,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   /** Ability points per side. */
   myPoints = 0;
   opponentPoints = 0;
+  /**
+   * What abilities have done to each purse, net: pool abilities bought with
+   * points, and points an ability hands out (Rally). The one part of a purse
+   * no record holds, so `reconcilePoints` adds it to the record's sum rather
+   * than losing it. Persisted with the solo state; 0 in a networked room,
+   * which casts nothing.
+   */
+  myAbilityPoints = 0;
+  opponentAbilityPoints = 0;
 
   /**
    * CP already spent on abilities. What a side *has* is derived from this and

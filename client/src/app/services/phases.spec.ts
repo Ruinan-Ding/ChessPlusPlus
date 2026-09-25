@@ -3,7 +3,7 @@ import {
   isPostmatch, isSetupTurn, isWrapOpen, MILESTONES, noAttackMessage,
   OVERTIME_FIRST_PLY, OVERTIME_FIRST_TURN, OVERTIME_LAST_TURN, OVERTIME_STAGES,
   overtimeTollAt, overtimeTollOver, PHASES, phaseAt, phaseIndexAt,
-  pointsPerTurnAt, stageAt, turnHeading, turnOf, turnPointsBy,
+  stageAt, turnHeading, turnOf, turnPointsBy,
 } from './phases';
 
 /**
@@ -348,13 +348,15 @@ describe("overtime's three stretches", () => {
     ]);
   });
 
-  it('climbs the toll 1, 2, 3 through them', () => {
+  it('climbs the toll 1, 3, 5 through them', () => {
+    // The owner, 24 Sep 2026: "the 3 and 5 is DAMAGE TAKEN TO KING" - it was
+    // 1, 2 and 3.
     expect([37, 44].map(t => overtimeTollAt(ply(t)))).toEqual([1, 1]);
-    expect([45, 49].map(t => overtimeTollAt(ply(t)))).toEqual([2, 2]);
-    expect(overtimeTollAt(ply(50))).toBe(3);
+    expect([45, 49].map(t => overtimeTollAt(ply(t)))).toEqual([3, 3]);
+    expect(overtimeTollAt(ply(50))).toBe(5);
     // Both hand-overs of a turn are in the same stretch: a stretch changes at
     // a turn boundary, so the two sides of turn 45 pay the same.
-    expect(overtimeTollAt(ply(45, 'black'))).toBe(2);
+    expect(overtimeTollAt(ply(45, 'black'))).toBe(3);
   });
 
   it("takes nothing before overtime, which is also the engines' gate", () => {
@@ -372,32 +374,37 @@ describe("overtime's three stretches", () => {
     // rather than quietly stop. `null` there would have been a king who
     // bleeds for fourteen turns and then becomes immortal.
     expect(isOvertime(ply(500))).toBeTrue();
-    expect(overtimeTollAt(ply(51))).toBe(3);
-    expect(overtimeTollAt(ply(500))).toBe(3);
+    expect(overtimeTollAt(ply(51))).toBe(5);
+    expect(overtimeTollAt(ply(500))).toBe(5);
   });
 
-  it('pays 1, 3 and 5 a turn through the three stretches', () => {
-    // The toll takes and the purse gives, and they climb together: the
-    // pressure to finish comes with the means to. These are POINTS - the
-    // board's currency, what the pool abilities and the wrap crossing are
-    // bought with - not the match score, which overtime still does not touch.
-    expect([1, 20, 36, 37, 44].map(t => pointsPerTurnAt(ply(t)))).toEqual([1, 1, 1, 1, 1]);
-    expect([45, 49].map(t => pointsPerTurnAt(ply(t)))).toEqual([3, 3]);
-    expect(pointsPerTurnAt(ply(50))).toBe(5);
-    // Past the last turn it keeps paying, for the reason the toll keeps taking.
-    expect(pointsPerTurnAt(ply(500))).toBe(5);
+  it("pays each phase's number a turn from its halftime, and nothing in overtime", () => {
+    // The owner, 24 Sep 2026: "1x, 2x, 3x regular point accumation now happens
+    // at the start of half time of each phase instead of start of a phase",
+    // and "OT stops gaining points." These are POINTS - the board's currency,
+    // what the pool abilities and the wrap crossing are bought with - not the
+    // match score. A phase's first half still pays the rate before it. What
+    // one of white's turns pays is the sum at its ply less the sum before it.
+    const pay = (t: number) => turnPointsBy('white', ply(t)) - turnPointsBy('white', ply(t) - 1);
+    expect([1, 8, 9, 16, 19].map(pay)).toEqual([1, 1, 1, 1, 1]);
+    expect([20, 25, 27, 30].map(pay)).toEqual([2, 2, 2, 2]);
+    expect([31, 36].map(pay)).toEqual([3, 3]);
+    expect([37, 44, 45, 50, 500].map(pay)).toEqual([0, 0, 0, 0, 0]);
+    // And a phase's first turn carries its grant on top: 10, 20, 30.
+    expect([4, 15, 26].map(pay)).toEqual([1 + 10, 1 + 20, 2 + 30]);
   });
 
   it("adds a side's turns up at the rate each one paid", () => {
-    // Flat all the way to the end of overtime's first stretch: 44 turns, 44
-    // points. `handOversBy * POINTS_PER_TURN` was right up to exactly here.
-    expect(turnPointsBy('white', ply(44))).toBe(44);
-    expect(turnPointsBy('black', ply(44, 'black'))).toBe(44);
-    // Then turn 45 pays three, not one.
-    expect(turnPointsBy('white', ply(45))).toBe(47);
-    expect(turnPointsBy('white', ply(49))).toBe(59);
-    // And the last turn pays five: 44 + 5x3 + 5.
-    expect(turnPointsBy('white', ply(50))).toBe(64);
+    // The rates: 19 at one apiece, 11 x 2 (to 41), 6 x 3 (to 59). The grants,
+    // as each phase begins: 10 on turn 4, 20 on turn 15, 30 on turn 26. And
+    // not a point more through overtime.
+    expect([3, 4, 8, 9, 14, 15, 19, 20, 26, 30, 31, 36, 37, 50].map(t => turnPointsBy('white', ply(t))))
+      .toEqual([3, 14, 18, 19, 24, 45, 49, 51, 93, 101, 104, 119, 119, 119]);
+    // A side is paid its grant on its OWN first turn of the phase.
+    expect(turnPointsBy('black', ply(4))).toBe(3);
+    expect(turnPointsBy('black', ply(4, 'black'))).toBe(14);
+    expect(turnPointsBy('black', ply(19, 'black'))).toBe(49);
+    expect(turnPointsBy('black', ply(20, 'black'))).toBe(51);
     // A side is paid at the START of its own turn, so black has nothing until
     // its first hand-over - the rule the flat version already kept.
     expect(turnPointsBy('black', 1)).toBe(0);
@@ -411,9 +418,9 @@ describe("overtime's three stretches", () => {
     // on the same HP is warned about at different distances in each stretch.
     expect(overtimeTollOver(ply(37), 2)).toBe(2);
     // Turn 44 is the last of the first stretch: this turn costs 1, his next
-    // costs 2. Multiplying either one would have answered 2 or 4.
-    expect(overtimeTollOver(ply(44), 2)).toBe(3);
-    expect(overtimeTollOver(ply(49), 2)).toBe(5);
+    // costs 3. Multiplying either one would have answered 2 or 6.
+    expect(overtimeTollOver(ply(44), 2)).toBe(4);
+    expect(overtimeTollOver(ply(49), 2)).toBe(8);
     expect(overtimeTollOver(ply(37), 1)).toBe(1);
     // Asked from before overtime it still looks forward: turn 36 pays nothing
     // and turn 37 pays one. Not a gate - `doomState` asks `isOvertime` before

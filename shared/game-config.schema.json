@@ -323,10 +323,15 @@
           "minimum": 0,
           "description": "How many units a side may walk home in one setup turn. Overtime has no count; the turn's board-move allowance caps it there. Default 3."
         },
-        "cpPerPhase": {
+        "cpAtStart": {
           "type": "integer",
           "minimum": 0,
-          "description": "CP handed to each side at the start of every phase, to buy abilities with. Default 100."
+          "description": "The CP each side starts the match with, to buy the path abilities with before the first postmatch award. Default 5."
+        },
+        "cpPhaseOffset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The base of the CP each side is awarded at the start of a phase's postmatch: Phase N's award is N times this (5, 10 and 15 at the default), plus both sides' scores for the phase, plus the gap between them for the side that scored less. Default 5."
         }
       },
       "additionalProperties": false

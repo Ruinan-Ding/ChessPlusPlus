@@ -8,12 +8,14 @@ the hundred plies is played: two matches, start to finish.
 
 * **Turn 50.** Both sides pass every turn. Each phase banks 0-0 on the
   hand-over into its postmatch - the deal claims no capture hex - so Phase 3
-  settles nothing and the match runs into overtime, where the toll takes 21
-  off each king (8 x 1, 5 x 2, 1 x 3) and leaves both standing: black's.
+  settles nothing and the match runs into overtime, where the toll takes 28
+  off each king (8 x 1, 5 x 3, 1 x 5) and leaves both standing: black's.
   A player drops and rejoins partway, and gets the bank back with the state.
 * **Points.** White steps one unit into a capture zone on the first turn and
-  both sides pass the rest. It holds 5 hexes as each phase banks, 15 clear
-  when Phase 3 does - more than 5 - so the match ends there, on turn 36.
+  both sides pass the rest. It holds 5 hexes as each phase banks, which the
+  phase's number multiplies - 5, 10, 15 - so 30 clear when Phase 3 does, more
+  than the 10 white needs. Phase 3's postmatch is still played, and
+  the match ends as it does, on the hand-over into turn 37.
 
 Exits non-zero if any check fails.
 """
@@ -119,8 +121,11 @@ def play_out(m, first_move=None, rejoin_at=None):
     return said, over, None
 
 
-def banks_where_expected(label, said, last, entry):
-    """Each phase banks on the hand-over into its postmatch, and never moves after."""
+def banks_where_expected(label, said, last, entry_for):
+    """
+    Each phase banks on the hand-over into its postmatch, as *entry_for* of
+    the phase's number says, and never moves after.
+    """
     for ply, phase in BANKS_AT.items():
         if ply > last + 1:
             continue
@@ -129,7 +134,7 @@ def banks_where_expected(label, said, last, entry):
         check(f'{label}: Phase {phase} is not banked before its postmatch', phase not in before, before)
         if after is not None:
             check(f'{label}: Phase {phase} banks on the hand-over into turn {(ply + 1) // 2}',
-                  after.get(phase) == entry, after.get(phase))
+                  after.get(phase) == entry_for(int(phase)), after.get(phase))
     moved = [(p, phase) for ply, phase in BANKS_AT.items() if ply in said
              for p in sorted(said) if p > ply
              and said[p]['phaseBank'].get(phase) != said[ply]['phaseBank'].get(phase)]
@@ -143,9 +148,9 @@ def fifty():
     ctx['fifty'] = m
     check('turn 50: the match runs until black passes the last ply, 100', last == 100, last)
     zero = {'white': 0, 'black': 0}
-    banks_where_expected('turn 50', said, last, zero)
-    check('turn 50: a close Phase 3 settles nothing - turn 37 is handed on',
-          said.get(71, {}).get('currentTurn') == m['start']['playerWhite'], said.get(71, {}).get('currentTurn'))
+    banks_where_expected('turn 50', said, last, lambda phase: zero)
+    check("turn 50: a close Phase 3 settles nothing - its postmatch hands on to turn 37",
+          said.get(73, {}).get('currentTurn') == m['start']['playerWhite'], said.get(73, {}).get('currentTurn'))
     resync = m.get('resync', {})
     check('turn 50: a player who rejoins mid-match gets the bank with the state',
           resync.get('phaseBank') == {'1': zero} and resync.get('turnNumber') == 41,
@@ -159,8 +164,8 @@ def fifty():
           king_hp(first, 'white') == KING_HP - 1 and king_hp(first, 'black') == KING_HP,
           (king_hp(first, 'white'), king_hp(first, 'black')))
     last_board = said[100]['boardState']
-    check('turn 50: the toll has taken 21 off white and 18 off black before the last ply',
-          king_hp(last_board, 'white') == KING_HP - 21 and king_hp(last_board, 'black') == KING_HP - 18,
+    check('turn 50: the toll has taken 28 off white and 23 off black before the last ply',
+          king_hp(last_board, 'white') == KING_HP - 28 and king_hp(last_board, 'black') == KING_HP - 23,
           (king_hp(last_board, 'white'), king_hp(last_board, 'black')))
     check('turn 50: both kings standing at the end is black\'s, on overtime',
           over.get('endReason') == 'overtime' and over.get('winner') == m['start']['playerBlack'], over)
@@ -183,15 +188,17 @@ def points():
     ctx['points'] = m
     check('points: white steps into the capture zone on the first turn',
           said.get(2, {}).get('type') == 'move_made' and said[2]['boardState'].get(to), said.get(2, {}).get('type'))
-    check('points: the match ends on the hand-over into Phase 3\'s postmatch, ply 71', last == 70, last)
-    banks_where_expected('points', said, last, {'white': HOLDS, 'black': 0})
-    check('points: white, 15 clear, takes it on points',
+    check("points: Phase 3's postmatch is still played",
+          said.get(72, {}).get('currentTurn') == m['start']['playerBlack'], said.get(72, {}).get('currentTurn'))
+    check('points: the match ends as the postmatch does, on the hand-over into turn 37', last == 72, last)
+    banks_where_expected('points', said, last, lambda phase: {'white': HOLDS * phase, 'black': 0})
+    check('points: white, 30 clear, takes it on points',
           over.get('endReason') == 'points' and over.get('winner') == m['start']['playerWhite'], over)
     m['black'].send({'type': 'request_game_state', 'gameId': m['game']})
     st = m['black'].until(lambda x: x.get('type') in ('game_state_update', 'game_state'), 'game state')
     bank = st.get('phaseBank', {})
     check('points: the finished state holds Phase 3 banked as it ended, none of it late',
-          bank.get('3') == {'white': HOLDS, 'black': 0} and not any(e.get('late') for e in bank.values()),
+          bank.get('3') == {'white': HOLDS * 3, 'black': 0} and not any(e.get('late') for e in bank.values()),
           bank)
 step('points', points)
 

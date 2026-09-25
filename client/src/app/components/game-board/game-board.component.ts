@@ -3283,8 +3283,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * quietly dropping out of the score.
    *
    * The number on the mark is the *stretch's*, not a fixed `-1`: overtime runs
-   * in three and the toll climbs 1, 2, 3 through them, so the last turn of the
-   * match writes `-3`.
+   * in three and the toll climbs 1, 3, 5 through them, so the last turn of the
+   * match writes `-5`.
    *
    * Derived from the turn that just ended rather than announced by the room:
    * white plays the odd hand-overs, so which side paid is arithmetic.
@@ -4393,7 +4393,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // turn and can be a stretch further along with a heavier toll.
     const due = sideOfPly(this.turnNumber) === hex.piece.color
       ? this.turnNumber : this.turnNumber + 1;
-    // Not `toll * DOOM_WARNING_TURNS`: the toll climbs 1, 2, 3 through
+    // Not `toll * DOOM_WARNING_TURNS`: the toll climbs 1, 3, 5 through
     // overtime's three stretches, so what two more turns cost has to be summed
     // over the turns he will actually live through. A king on 3 HP is two
     // turns clear in the first stretch, on his last in the second, and already

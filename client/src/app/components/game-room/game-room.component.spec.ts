@@ -1,6 +1,8 @@
 import { BehaviorSubject, Subject, of } from 'rxjs';
 import { GameRoomComponent } from './game-room.component';
 import { GameStateService } from '../../services/game-state.service';
+import { ruleOf } from '../../services/config.service';
+import { turnHeading } from '../../services/phases';
 import { NavigationStateService } from '../../services/navigation-state.service';
 
 /**
@@ -23,11 +25,21 @@ describe('GameRoomComponent ability panel', () => {
    * held in a field - two awards of 100 by Phase 1 - so a test that wants a
    * side on a particular balance sets what it has already spent.
    */
+  /**
+   * `cp` to spend, whatever the turn. Nothing is awarded before Phase 1's
+   * postmatch, so a spend below nothing stands in for what the phases would
+   * have paid.
+   */
+  const fundCp = (c: any, cp: number) => {
+    // Less the CP a side starts with, so `cp` is exactly what it has.
+    c.myCpSpent = ruleOf(c.gameState.snapshot.config, 'cpAtStart') - cp;
+  };
+
   const giveCp = (c: any, cp: number) => {
     // Turn 5, in Phase 1's play. Any turn of it would do but the postmatch at
     // its end (turn 14): nothing is cast on a turn given to setting out.
     c.gameState.snapshot.turnNumber = 10;
-    c.myCpSpent = 200 - cp;
+    fundCp(c, cp);
   };
 
   const room = (): any => {
@@ -89,71 +101,101 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.panelPositions).toEqual({});
   });
 
-  it('pays overtime’s turns at the stretch’s rate, both ways round', () => {
-    // Two places hand out the turn point and they must agree: `beginTurnFor`
-    // pays it live as a side starts, and `pointsFromHistory` re-derives the
-    // whole purse from the record on every commit. A flat 1 in either one is
-    // invisible until overtime, where the rates part company - and then the
-    // purse jumps every time a commit overwrites the live tally.
+  it('pays each turn at its rate, and puts it in the purse with the record', () => {
+    // One place hands the turn's pay out: the record's sum, which every
+    // hand-over lays over both purses (`reconcilePoints`). It used to be paid
+    // live as well, and a second copy is a second thing to get wrong.
     const c = room();
     c.gameState.snapshot.config = { units: {} };
     c.gameState.snapshot.moveHistory = [];
 
-    // Turn 44 is the last of Overtime 1: 44 turns at one apiece.
-    c.gameState.snapshot.turnNumber = 2 * 44 - 1;
-    expect(c.pointsFromHistory('white')).toBe(44);
-    // Turn 45 is Overtime 2, which pays three.
-    c.gameState.snapshot.turnNumber = 2 * 45 - 1;
-    expect(c.pointsFromHistory('white')).toBe(47);
-    // The last turn pays five: 44 + 5x3 + 5.
+    // Turn 19 is the last before Phase 2's halftime: 19 at one apiece, and
+    // Phases 1 and 2's grants, 10 and 20.
+    c.gameState.snapshot.turnNumber = 2 * 19 - 1;
+    expect(c.pointsFromHistory('white')).toBe(19 + 30);
+    // The halftime (turn 20) pays two; Phase 3's (turn 31) three, with its 30.
+    c.gameState.snapshot.turnNumber = 2 * 20 - 1;
+    expect(c.pointsFromHistory('white')).toBe(21 + 30);
+    c.gameState.snapshot.turnNumber = 2 * 31 - 1;
+    expect(c.pointsFromHistory('white')).toBe(44 + 60);
+    // And overtime pays nothing: 59 in rates and 60 in grants by turn 36.
     c.gameState.snapshot.turnNumber = 2 * 50 - 1;
-    expect(c.pointsFromHistory('white')).toBe(64);
+    expect(c.pointsFromHistory('white')).toBe(119);
 
-    // And the live award reads the same table. The snapshot has already moved
-    // on to the hand-over the side is about to play, which is the one paid for.
-    const paid = (ply: number) => {
-      c.gameState.snapshot.turnNumber = ply;
-      c.myPoints = 0;
-      c.beginTurnFor('white');
-      return c.myPoints;
+    // Beginning a turn pays nothing by itself; the re-sum after it does.
+    c.gameState.snapshot.turnNumber = 2 * 4 - 1;
+    c.myPoints = 0;
+    c.beginTurnFor('white');
+    expect(c.myPoints).toBe(0);
+    c.reconcilePoints();
+    expect(c.myPoints).toBe(4 + 10);
+  });
+
+  it('turns the banked victory points into points as overtime begins', () => {
+    // The owner, 24 Sep 2026: "at the start of the overtime, all your
+    // accumlated victory points turn into regular points." Once, as a side's
+    // first overtime turn begins - white on hand-over 73, black on 74.
+    const c = room();
+    c.gameState.snapshot.config = { units: {} };
+    c.gameState.snapshot.moveHistory = [];
+    // 14 against 4: ten clear, not more, so it goes to overtime.
+    c.gameState.snapshot.phaseBank = {
+      1: { white: 5, black: 1 }, 2: { white: 9, black: 0 }, 3: { white: 0, black: 3 },
     };
-    expect(paid(1)).toBe(1);
-    expect(paid(2 * 44 - 1)).toBe(1);
-    expect(paid(2 * 45 - 1)).toBe(3);
-    expect(paid(2 * 50 - 1)).toBe(5);
+    const history = (ply: number, color: 'white' | 'black') => {
+      c.gameState.snapshot.turnNumber = ply;
+      return c.pointsFromHistory(color);
+    };
+    expect(history(72, 'white')).toBe(119);
+    expect(history(73, 'white')).toBe(119 + 14);
+    expect(history(99, 'white')).toBe(119 + 14);
+    expect(history(73, 'black')).toBe(119);
+    expect(history(74, 'black')).toBe(119 + 4);
+
+    // A match won on points ends ON hand-over 73 and never reaches overtime:
+    // its finished position converts nothing.
+    c.gameState.snapshot.phaseBank = {
+      1: { white: 30, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 },
+    };
+    expect(history(73, 'white')).toBe(119);
   });
 
   it('adds up points from the history exactly the way the server does', () => {
     // The server prices the wrap against this sum (engine/economy.py), so a
     // purse that disagrees offers a crossing the server then refuses.
     const c = room();
-    c.gameState.snapshot.config = { units: { knight: { value: 12 } } };
+    c.gameState.snapshot.config = { units: { knight: { value: 12 }, queen: { value: 30 }, pawn: { value: 5 } } };
     c.gameState.snapshot.turnNumber = 21;
     c.gameState.snapshot.moveHistory = [];
-    // A point for each of white's eleven turns begun by ply 21.
-    expect(c.pointsFromHistory('white')).toBe(11);
-    expect(c.pointsFromHistory('black')).toBe(10);
+    // A point for each of white's eleven turns begun by ply 21, and Phase 1's
+    // 10 as it began.
+    expect(c.pointsFromHistory('white')).toBe(21);
+    expect(c.pointsFromHistory('black')).toBe(20);
 
     const wrap = { panelMove: true, price: 12, unit: { color: 'white' } };
     const home = { withdrawn: true, color: 'white', unit_id: 'knight', unit: {} };
     c.gameState.snapshot.moveHistory = [wrap];
-    expect(c.pointsFromHistory('white')).toBe(-1);
+    expect(c.pointsFromHistory('white')).toBe(9);
     // A round trip costs nothing.
     c.gameState.snapshot.moveHistory = [wrap, home];
-    expect(c.pointsFromHistory('white')).toBe(11);
+    expect(c.pointsFromHistory('white')).toBe(21);
 
-    // A kill pays its maker; the attacker dying to a counter pays the defender;
-    // a cast that kills pays nobody.
+    // A kill pays its maker the dead unit's worth; the attacker dying to a
+    // counter pays the defender its worth; a cast that kills pays nobody; and
+    // a blow into a panel pays nobody either, base or reserve.
+    const into = { intoPanel: true, panelAttack: true };
     c.gameState.snapshot.moveHistory = [
-      { color: 'white', defender_eliminated: true },
-      { color: 'black', attacker_eliminated: true },
-      { panelEffect: true, color: 'white', defender_eliminated: true },
+      { color: 'white', unit_id: 'pawn', captured: 'queen', defender_eliminated: true },
+      { color: 'black', unit_id: 'knight', attacker_eliminated: true },
+      { panelEffect: true, color: 'white', captured: 'queen', defender_eliminated: true },
+      { ...into, panel: 'tr', color: 'white', unit_id: 'pawn', captured: 'queen', defender_eliminated: true },
+      { ...into, panel: 'tl', color: 'white', unit_id: 'knight', attacker_eliminated: true },
     ];
-    expect(c.pointsFromHistory('white')).toBe(13);
-    expect(c.pointsFromHistory('black')).toBe(10);
+    expect(c.pointsFromHistory('white')).toBe(21 + 30 + 12);
+    expect(c.pointsFromHistory('black')).toBe(20);
   });
 
-  it('resets both purses from the history in a networked room, and leaves solo alone', () => {
+  it('resets both purses from the history, and keeps what abilities did in solo', () => {
     const networked = room();
     networked.isSinglePlayer = false;
     networked.gameState.snapshot.config = { units: {} };
@@ -164,15 +206,25 @@ describe('GameRoomComponent ability panel', () => {
     expect(networked.myPoints).toBe(2);
     expect(networked.opponentPoints).toBe(1);
 
-    // Solo buys abilities with points, and abilities are not recorded:
-    // resetting to the record would hand back every point spent on one.
+    // Solo is summed from the record too. It buys abilities with points, and
+    // abilities are not recorded - so what they did is kept apart and added
+    // on, and the reset hands back nothing spent on one.
     const solo = room();
     solo.gameState.snapshot.config = { units: {} };
     solo.gameState.snapshot.turnNumber = 3;
     solo.gameState.snapshot.moveHistory = [];
-    solo.myPoints = 99;
+    solo.myPoints = 99;               // a stale tally
     solo.reconcilePoints();
-    expect(solo.myPoints).toBe(99);
+    expect(solo.myPoints).toBe(2);
+    const pool = solo.abilityIds.findIndex((_: string, i: number) => !solo.isPathSlot(i));
+    (solo as any).chargeFor('mine', pool, 5);
+    expect(solo.myAbilityPoints).toBe(-5);
+    solo.reconcilePoints();
+    expect(solo.myPoints).toBe(2 - 5);
+    // A refund hands it back through the same door.
+    (solo as any).chargeFor('mine', pool, -5);
+    solo.reconcilePoints();
+    expect(solo.myPoints).toBe(2);
   });
 
   it('puts the panels and the toll in play in every room, and keeps abilities solo', () => {
@@ -627,6 +679,28 @@ describe('GameRoomComponent ability panel', () => {
     localStorage.removeItem('cpp.localGame.ui.v2');
   });
 
+  it('forgives a CP spend saved before CP was earned, and keeps one saved since', () => {
+    // A save from the flat 100-a-phase days spent out of a purse that no
+    // longer exists; read against what is earned now it would sit in debt.
+    const c = room();
+    c.gameId = 'local';
+    localStorage.setItem('cpp.localGame.ui.v2', JSON.stringify({ myCpSpent: 150, opponentCpSpent: 90 }));
+    (c as any).restoreLocalUiState();
+    expect(c.myCpSpent).toBe(0);
+    expect(c.opponentCpSpent).toBe(0);
+
+    c.myCpSpent = 4;
+    c.myAbilityPoints = -7;
+    (c as any).persistLocalUiState();
+    const fresh = room();
+    fresh.gameId = 'local';
+    (fresh as any).restoreLocalUiState();
+    expect(fresh.myCpSpent).toBe(4);
+    // And what abilities did to the points purse, the part no record holds.
+    expect(fresh.myAbilityPoints).toBe(-7);
+    localStorage.removeItem('cpp.localGame.ui.v2');
+  });
+
   it('drops an ability the catalogue no longer has, rather than pointing at nothing', () => {
     const c = room();
     c.gameId = 'local';
@@ -774,6 +848,7 @@ describe('GameRoomComponent ability panel', () => {
 
   it('replays what the turn took up, not only what it spent', () => {
     const c = room();
+    fundCp(c, 10);
     const beats: any[] = [];
     // playSteps is what reaches the board; capture what a turn hands it.
     c.pickAbility('mine', TARGETED);
@@ -813,6 +888,7 @@ describe('GameRoomComponent ability panel', () => {
 
   it('glows an ultimate once it is used, like every other cast', () => {
     const c = room();
+    fundCp(c, 10);
     c.unlockPath('mine', 0);
     const ult = c.abilityPaths[0].ultimate;
     giveCp(c, 20);
@@ -828,6 +904,7 @@ describe('GameRoomComponent ability panel', () => {
 
   it('lights the passive a path is named by, and only that', () => {
     const c = room();
+    fundCp(c, 10);
     const path = c.abilityPaths[0];
     // The skill and the ultimate arrive with it and speak for themselves.
     c.unlockPath('mine', 0);
@@ -909,6 +986,7 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.abilityNote('mine')).toContain('Not carried');
 
     c.clearAbilityFocus();
+    fundCp(c, 10);
     c.focusPath('mine', 0);
     expect(c.abilityNote('mine')).toContain('Pick to take the path');
 
@@ -918,15 +996,36 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.abilityNote('mine')).toBe('The game has not started yet.');
   });
 
-  it("hands out the config's CP each phase", () => {
-    // rules.cpPerPhase - 100 unless the room says otherwise. Turn 10 is in
-    // Phase 1, the second award.
+  it('starts each side on 5 CP and earns the rest at the start of each postmatch', () => {
+    // The owner, 24 Sep 2026: "at the start of the game, user has 5cp", and
+    // "cp should be awarded at the start of post match" - phase_x (5, 10, 15)
+    // plus both sides' scores for the phase, plus the gap for whoever scored
+    // less. The engine's bank is the record of the awards.
     const c = room();
-    c.gameState.snapshot.turnNumber = 10;
     c.myCpSpent = 0;
-    expect(c.cpOf('mine')).toBe(200);
-    c.gameState.snapshot.config = { rules: { cpPerPhase: 30 } };
-    expect(c.cpOf('mine')).toBe(60);
+    c.opponentCpSpent = 0;
+    c.gameState.snapshot.turnNumber = 26;   // turn 13, the last of Phase 1's play
+    c.gameState.snapshot.phaseBank = {};
+    expect(c.cpOf('mine')).toBe(5);
+    expect(c.cpOf('opponent')).toBe(5);
+
+    // Phase 1 banks as its postmatch begins: this seat (white) 12, black 4.
+    c.gameState.snapshot.turnNumber = 27;
+    c.gameState.snapshot.phaseBank = { 1: { white: 12, black: 4 } };
+    expect(c.cpOf('mine')).toBe(5 + 21);       // 5 + 16
+    expect(c.cpOf('opponent')).toBe(5 + 29);   // 5 + 16, and the 8 it was behind
+
+    // Phase 2's adds its own, on top: 10 + 6 each.
+    c.gameState.snapshot.turnNumber = 49;
+    c.gameState.snapshot.phaseBank = { 1: { white: 12, black: 4 }, 2: { white: 3, black: 3 } };
+    expect(c.cpOf('mine')).toBe(5 + 21 + 16);
+    expect(c.cpOf('opponent')).toBe(5 + 29 + 16);
+
+    // Both numbers are the room's config, and what is spent comes off.
+    c.gameState.snapshot.config = { rules: { cpAtStart: 0, cpPhaseOffset: 7 } };
+    expect(c.cpOf('mine')).toBe(23 + 20);      // (7 + 16) + (14 + 6)
+    c.myCpSpent = 7;
+    expect(c.cpOf('mine')).toBe(23 + 20 - 7);
   });
 
   it('shows a path in full before it is taken, and takes it only on confirm', () => {
@@ -1032,9 +1131,13 @@ describe('GameRoomComponent ability panel', () => {
     const c = room();
     c.gameState.snapshot.turnNumber = 1;   // the opening
 
-    // Choosing is what the opening is for: pairs and paths are both open.
+    // Choosing is what the opening is for: pairs and paths are both open. A
+    // path wants CP, though, and nothing awards any before turn 14 - the
+    // opening does not refuse it, the purse does.
     expect(c.canChooseAbilities('mine')).toBeTrue();
     expect(c.canPick('mine', TARGETED)).toBeTrue();
+    expect(c.canUnlockPath('mine', 0)).toBeFalse();
+    fundCp(c, 10);
     expect(c.canUnlockPath('mine', 0)).toBeTrue();
     c.pickAbility('mine', TARGETED);
     expect(c.myLoadout).toEqual([TARGETED, TARGETED_PAIR]);
@@ -1142,13 +1245,14 @@ describe('GameRoomComponent ability panel', () => {
       ...c.gameState.snapshot.moveHistory,
       { color: 'black', unit_id: 'pawn', captured: null, attacker_eliminated: true, turn: 8 },
     ];
-    // Which puts a side with no board and a dead pawn under water.
-    expect(score('opponent')).toEqual({ cap: 0, death: 5, total: -5 });
+    // A side with no board and a dead pawn stops at 0 - the phase never goes
+    // under, however much its deaths outweigh its cap (phaseTotal).
+    expect(score('opponent')).toEqual({ cap: 0, death: 5, total: 0 });
 
     // Read off the record rather than tallied as it went: the same history
     // gives the same number however this client got here.
     c.gameState.snapshot.boardState = {};
-    expect(score('mine')).toEqual({ cap: 0, death: 5, total: -5 });
+    expect(score('mine')).toEqual({ cap: 0, death: 5, total: 0 });
 
     // A loss belongs to the phase it happened in and no other, or summing the
     // phases would charge it again in every later one.
@@ -1164,8 +1268,10 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.turnNumber = 52;   // turn 26, Phase 3's first played
 
     // Nothing banked yet reads as the phase alone - no parenthetical to draw.
+    // Seven held, tripled in Phase 3.
     expect(c.phaseScore('mine').banked).toEqual([]);
-    expect(c.phaseScore('mine').match).toBe(7);
+    expect(c.phaseScore('mine').multiplier).toBe(3);
+    expect(c.phaseScore('mine').match).toBe(21);
 
     // Phases 1 and 2, as they finished.
     c.gameState.snapshot.phaseBank = { 1: { white: 4, black: 9 }, 2: { white: 6, black: 1 } };
@@ -1175,16 +1281,16 @@ describe('GameRoomComponent ability panel', () => {
     expect(us.banked).toEqual([4, 6]);
     expect(them.banked).toEqual([9, 1]);
     // The running phase counts towards the match before it has ended.
-    expect(us.match).toBe(17);
+    expect(us.match).toBe(31);
     expect(them.match).toBe(10);
     expect(us.leading).toBeTrue();
     expect(them.leading).toBeFalse();
 
     // Level pegging lights neither, so a glow always means a lead.
-    c.gameState.snapshot.phaseBank = { 1: { white: 0, black: 7 } };
+    c.gameState.snapshot.phaseBank = { 1: { white: 0, black: 21 } };
     (c as any).standingsCache = null;
-    expect(c.phaseScore('mine').match).toBe(7);
-    expect(c.phaseScore('opponent').match).toBe(7);
+    expect(c.phaseScore('mine').match).toBe(21);
+    expect(c.phaseScore('opponent').match).toBe(21);
     expect(c.phaseScore('mine').leading).toBeFalse();
     expect(c.phaseScore('opponent').leading).toBeFalse();
   });
@@ -1223,12 +1329,12 @@ describe('GameRoomComponent ability panel', () => {
     (c as any).standingsCache = null;
     expect(c.matchVerdict).toBeNull();
 
-    // White has to be more than 5 clear; black only more than 3, because
+    // White has to be more than 10 clear; black only more than 5, because
     // white moves first.
-    expect(settle(6, 0)).toBe('white');
-    expect(settle(5, 0)).toBe('overtime');
-    expect(settle(0, 4)).toBe('black');
-    expect(settle(0, 3)).toBe('overtime');
+    expect(settle(11, 0)).toBe('white');
+    expect(settle(10, 0)).toBe('overtime');
+    expect(settle(0, 6)).toBe('black');
+    expect(settle(0, 5)).toBe('overtime');
     expect(settle(0, 0)).toBe('overtime');
   });
 
@@ -1309,10 +1415,17 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.turnNumber = 28;   // black's half reads the same
     expect(c.phaseScore('mine').match).toBe(2);
 
-    // And the next phase counts live again, with Phase 1's loss left behind.
+    // A postmatch shows no multiplier: it scores nothing to multiply.
+    c.gameState.snapshot.turnNumber = 49;   // turn 25, Phase 2's postmatch
+    (c as any).standingsCache = null;
+    expect(c.phaseScore('mine').multiplier).toBe(1);
+
+    // And the next phase counts live again, with Phase 1's loss left behind -
+    // doubled, because it is Phase 2.
     c.gameState.snapshot.turnNumber = 29;
-    expect(c.phaseScore('mine')).toEqual(jasmine.objectContaining({ cap: 7, death: 0, total: 7 }));
-    expect(c.phaseScore('mine').match).toBe(9);
+    expect(c.phaseScore('mine')).toEqual(
+      jasmine.objectContaining({ cap: 7, death: 0, total: 14, multiplier: 2 }));
+    expect(c.phaseScore('mine').match).toBe(16);
   });
 
   it('reads the verdict from Phase 3\'s postmatch, a turn before overtime', () => {
@@ -1322,7 +1435,7 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.config = { board: { radius: 11 }, units: {} };
     c.gameState.snapshot.boardState = {};
     c.gameState.snapshot.moveHistory = [];
-    const two = { 1: { white: 9, black: 0 }, 2: { white: 0, black: 0 } };
+    const two = { 1: { white: 12, black: 0 }, 2: { white: 0, black: 0 } };
 
     c.gameState.snapshot.turnNumber = 70;   // turn 35, the last of Phase 3's play
     c.gameState.snapshot.phaseBank = two;
@@ -1353,7 +1466,7 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.boardState = {};
     c.gameState.snapshot.moveHistory = [];
     c.gameState.snapshot.phaseBank = {
-      1: { white: 9, black: 0, late: true }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 },
+      1: { white: 12, black: 0, late: true }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 },
     };
     c.gameState.snapshot.turnNumber = 80;   // turn 40, overtime
     expect(c.matchVerdict).toBe('overtime');
@@ -1392,6 +1505,111 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.phaseBank).toEqual(bank);
     c.gameState.applyGameStarted({ playerWhite: 'me', playerBlack: 'Opponent' });
     expect(c.phaseBank).toEqual({});
+  });
+
+  it("pays a kill at the dead unit's worth on the move that made it, and a blow into a panel nothing", () => {
+    // Through the real state service: the move lands in the record and the
+    // purses are re-summed from it, solo included.
+    const c = room();
+    c.isSinglePlayer = true;
+    c.gameState = new GameStateService();
+    c.gameState.applyGameStarted({
+      playerWhite: 'me', playerBlack: 'Opponent', currentTurn: 'me', turnNumber: 9,
+      config: { board: { radius: 11 }, units: { pawn: { value: 5 }, queen: { value: 30 } } },
+      boardState: {},
+    });
+    c.myPoints = 0;
+    c.opponentPoints = 0;
+
+    // White takes black's queen on the board: its worth, 30, on top of five
+    // turns and Phase 1's 10. Black is at five turns and the 10.
+    c.handleWebSocketMessage({
+      type: 'move_made', turnNumber: 10, currentTurn: 'Opponent', boardState: {},
+      move: { color: 'white', unit_id: 'pawn', captured: 'queen', defender_eliminated: true, from: '0,0', to: '0,1' },
+    });
+    expect(c.myPoints).toBe(15 + 30);
+    expect(c.opponentPoints).toBe(15);
+
+    // Black kills a pawn in white's reserve: nobody is paid for it. White's
+    // sixth turn begins, at its one.
+    c.handleWebSocketMessage({
+      type: 'move_made', turnNumber: 11, currentTurn: 'me', boardState: {},
+      move: {
+        color: 'black', unit_id: 'pawn', captured: 'pawn', defender_eliminated: true, from: '1,0', to: '1,1',
+        intoPanel: true, panelAttack: true, panel: 'br',
+      },
+    });
+    expect(c.myPoints).toBe(16 + 30);
+    expect(c.opponentPoints).toBe(15);
+  });
+
+  it('pays a kill made by a held overtime move, which lands as a state update', () => {
+    // Overtime 2 and 3 allow several board moves a turn; all but the last are
+    // held, and come back as game_state_update rather than move_made. The
+    // held move is in the record the update carries, so the re-sum pays it.
+    const config = { board: { radius: 11 }, units: { pawn: { value: 5 }, queen: { value: 30 } } };
+    const held = { color: 'white', unit_id: 'pawn', captured: 'queen', defender_eliminated: true };
+    const c = room();
+    c.isSinglePlayer = true;
+    c.gameState = new GameStateService();
+    c.gameState.applyGameStarted({
+      playerWhite: 'me', playerBlack: 'Opponent', currentTurn: 'me', turnNumber: 89, config, boardState: {},
+    });
+    c.myPoints = 0;
+    c.opponentPoints = 0;
+    c.handleWebSocketMessage({
+      type: 'game_state_update', turnNumber: 89, currentTurn: 'me', config, boardState: {},
+      moveHistory: [held],
+    });
+    // 119 by turn 36 and nothing since, and the queen's 30.
+    expect(c.myPoints).toBe(119 + 30);
+    // The same state again - a refresh - pays it once, not twice.
+    c.handleWebSocketMessage({
+      type: 'game_state_update', turnNumber: 89, currentTurn: 'me', config, boardState: {},
+      moveHistory: [held],
+    });
+    expect(c.myPoints).toBe(119 + 30);
+  });
+
+  it('keeps the score up and the toll off on the finished position of a points win', () => {
+    // A match decided on points ends ON hand-over 73, overtime's first ply.
+    const c = room();
+    const decided = { 1: { white: 30, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+    c.gameState.snapshot.turnNumber = 73;
+    c.gameState.snapshot.phaseBank = decided;
+    expect(c.showScore).toBeTrue();
+    expect(c.tollBind).toBeFalse();
+    // A close match there is in overtime, score down and the toll on.
+    c.gameState.snapshot.phaseBank = { ...decided, 1: { white: 10, black: 0 } };
+    expect(c.showScore).toBeFalse();
+    expect(c.tollBind).toBeTrue();
+  });
+
+  it('calls the last turn the last once the match is decided on points', () => {
+    const c = room();
+    const decided = { 1: { white: 12, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+    c.gameState.snapshot.phaseBank = decided;
+    // Phase 3's postmatch: the match ends as it does, so there is no overtime
+    // to count down to - and the record of it says the same once it is over.
+    c.gameState.snapshot.turnNumber = 71;
+    expect(c.historyTitle).toBe('Turn 36 - Last Turn');
+    c.gameState.snapshot.turnNumber = 73;
+    expect(c.historyTitle).toBe('Turn 36 - Last Turn');
+
+    // A close match counts on down to overtime, and turn 50's black win is
+    // not a points win.
+    c.gameState.snapshot.phaseBank = { ...decided, 1: { white: 10, black: 0 } };
+    c.gameState.snapshot.turnNumber = 71;
+    expect(c.historyTitle).toBe(turnHeading(71));
+    c.gameState.snapshot.turnNumber = 101;
+    expect(c.historyTitle).toBe(turnHeading(101));
+  });
+
+  it("names the room's own starting CP in the purse's tooltip", () => {
+    const c = room();
+    expect(c.cpTitle).toContain('5 to start');
+    c.gameState.snapshot.config = { rules: { cpAtStart: 12 } };
+    expect(c.cpTitle).toContain('12 to start');
   });
 
   it('says how a match the schedule ended was ended', () => {
