@@ -254,9 +254,10 @@ Decided so far:
   - **Each side opens with its base squad; both reserves open empty.** The owner, 25 Sep
     2026: *"at the start of game, there will be units in base"*, by the numbers on the board
     (Show Hex), as white: rooks on 518 and 523, knights on 519 and 522, bishops on 520 and 521,
-    shieldmen on 495 and 499, archers on 496 and 498, pawns on 497 and 471-475 - the base's
-    bottom three rows, full - and *"the same to black side"*, the point mirror (19-24,
-    43-47, 67-71).
+    shieldmen on 495, 499 and 472, archers on 496, 498 and 474, pawns on 497, 471, 473 and 475
+    - the base's bottom three rows, full - and *"the same to black side"*, the point mirror
+    (19-24, 43-47, 67-71). 472 and 474 were pawns until the owner's *"turn 474 into an archer
+    and 472 to a shiledman. mirror that on black"* the same day (black's 70 and 68).
     - **The config's `setup` places them.** A side's setup is one map of hexes, battlefield
       and panels alike, so the starting position reads the way the board is numbered: an
       entry on the battlefield is the board's (`build_initial_board` / `buildBoard`), one on a

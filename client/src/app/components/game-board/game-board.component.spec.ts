@@ -2484,7 +2484,7 @@ describe('GameBoardComponent setup deal', () => {
   const WHITE_BASE_BY_NUMBER: Record<number, string> = {
     518: 'rook', 519: 'knight', 520: 'bishop', 521: 'bishop', 522: 'knight', 523: 'rook',
     495: 'shieldman', 496: 'archer', 497: 'pawn', 498: 'archer', 499: 'shieldman',
-    471: 'pawn', 472: 'pawn', 473: 'pawn', 474: 'pawn', 475: 'pawn',
+    471: 'pawn', 472: 'shieldman', 473: 'pawn', 474: 'archer', 475: 'pawn',
   };
   let board: any;
 

@@ -939,11 +939,12 @@ class SharedDefaultConfigTestCase(TestCase):
 
 
 #: The owner's base squad for white, by the number the board draws on each hex
-#: (Show Hex), 25 Sep 2026. Black's is the point mirror.
+#: (Show Hex), 25 Sep 2026 - 472 a shieldman and 474 an archer since. Black's is
+#: the point mirror.
 WHITE_BASE_BY_NUMBER = {
     518: 'rook', 519: 'knight', 520: 'bishop', 521: 'bishop', 522: 'knight', 523: 'rook',
     495: 'shieldman', 496: 'archer', 497: 'pawn', 498: 'archer', 499: 'shieldman',
-    471: 'pawn', 472: 'pawn', 473: 'pawn', 474: 'pawn', 475: 'pawn',
+    471: 'pawn', 472: 'shieldman', 473: 'pawn', 474: 'archer', 475: 'pawn',
 }
 
 
