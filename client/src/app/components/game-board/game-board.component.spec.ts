@@ -436,6 +436,52 @@ describe('GameBoardComponent reach preview', () => {
     expect(zoned.length).toBe(5 * 19);
   });
 
+  it('draws a dark line along every edge where a panel meets the battlefield', () => {
+    // The owner, 26 Sep 2026: "try to draw a darker line on between the
+    // reserve/base and the board edge".
+    board.radius = 11;
+    board.ngOnChanges({ radius: new SimpleChange(4, 11, false) });
+    (board as any).cdr.detectChanges();
+
+    // 22 edges down each of the four panels' inner sides, counted off the
+    // server's grid.
+    expect(board.panelSeams.length).toBe(88);
+    const lines = fixture.nativeElement.querySelectorAll('line.panel-seam');
+    expect(lines.length).toBe(88);
+    expect(getComputedStyle(lines[0]).pointerEvents).toBe('none');
+
+    // Each runs corner to corner along an edge a panel hex and a battlefield
+    // hex share: both its ends are corners of both hexes.
+    const corners = (hex: any) => hex.points.split(' ').map((p: string) => p.split(',').map(Number));
+    const isCorner = (hex: any, x: number, y: number) =>
+      corners(hex).some(([cx, cy]: number[]) => Math.hypot(cx - x, cy - y) < 0.05);
+    for (const seam of board.panelSeams) {
+      const touching = board.cells.filter(hex =>
+        isCorner(hex, seam.x1, seam.y1) && isCorner(hex, seam.x2, seam.y2));
+      expect(touching.length).withContext(JSON.stringify(seam)).toBe(2);
+      expect(touching.filter(hex => hex.filler).length).withContext(JSON.stringify(seam)).toBe(1);
+    }
+  });
+
+  it('writes what a zone hex is worth on every empty one', () => {
+    // The owner, 26 Sep 2026: "make the hex capture zone near my base 3x. the
+    // middle hex worth 2x. side hex worth 1x" - which a player has to be able
+    // to read off the board, not only find out from the score.
+    board.radius = 11;
+    board.ngOnChanges({ radius: new SimpleChange(4, 11, false) });
+    (board as any).cdr.detectChanges();   // OnPush: the fixture alone would not redraw
+
+    const labels: Element[] = [...fixture.nativeElement.querySelectorAll('.zone-worth')];
+    const worths = labels.map(l => l.textContent!.trim());
+    // Every zone hex but the middle one, where the archer stands.
+    expect(worths.length).toBe(5 * 19 - 1);
+    const X = '×';
+    const count = (w: number) => worths.filter(t => t === `${X}${w}`).length;
+    expect([count(3), count(2), count(1)]).toEqual([38, 18, 38]);
+    // And never in the way of a click on the hex.
+    expect(getComputedStyle(labels[0]).pointerEvents).toBe('none');
+  });
+
   it('splits a hovered unit into where it can stand and where it can only strike', () => {
     board.onHexHover(cell('0,0'));
 
@@ -1848,8 +1894,16 @@ describe('GameBoardComponent reach preview', () => {
         board.entryBind = true;
         const king = board.cells.find(c => c.piece?.color === 'black')!;
         anyBoard().oweMark(king.piece!.uid, '-1');
+        const sounded: Array<{ toll: boolean; heal: boolean }> = [];
+        board.upkeepSettled.subscribe(upkeep => sounded.push(upkeep));
         await anyBoard().settleUpkeep();
         anyBoard().cdr.detectChanges();
+        // Told to the room once, with both in it, for it to sound one after
+        // the other (the room's onUpkeepSettled).
+        expect(sounded).toEqual([{ toll: true, heal: true }]);
+        // A turn that owes nothing says nothing.
+        await anyBoard().settleUpkeep();
+        expect(sounded.length).toBe(1);
 
         const marks = [...fixture.nativeElement.querySelectorAll('text.heal-mark')]
           .map((t: Element) => [t.textContent, t.getAttribute('class')]);

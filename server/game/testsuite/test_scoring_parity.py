@@ -31,9 +31,9 @@ class ScoringParityTestCase(SimpleTestCase):
         with open(FIXTURES, encoding='utf-8') as f:
             cls.fixtures = json.load(f)
 
-    def test_the_capture_zones(self):
-        for radius, hexes in self.fixtures['zones'].items():
-            self.assertEqual(sorted(scoring.capture_zone_hexes(int(radius))), hexes, radius)
+    def test_the_capture_zones_and_what_each_hex_is_worth(self):
+        for radius, worths in self.fixtures['zones'].items():
+            self.assertEqual(dict(scoring.capture_zone_values(int(radius))), worths, radius)
 
     def test_the_points_and_the_toll_every_ply(self):
         for ply, white, black, toll in self.fixtures['plies']:
@@ -56,6 +56,9 @@ class ScoringParityTestCase(SimpleTestCase):
             ending = scoring.schedule_ending(bank, ply)
             with self.subTest(case=i):
                 self.assertEqual(dict(scoring.capture_claims(board, radius)), expect['claims'])
+                self.assertEqual(
+                    [scoring.cap_of(board, radius, side) for side in ('white', 'black')],
+                    expect['cap'])
                 self.assertEqual(
                     scoring.bank_ended_phases(bank, config, board, history, ply), expect['bank'])
                 self.assertEqual(

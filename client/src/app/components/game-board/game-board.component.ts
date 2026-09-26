@@ -13,8 +13,8 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
-  attackTiers, captureClaims, captureZoneHexes, computeAttackZone, computeLegalMoves,
-  computeMoveCosts, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
+  attackTiers, captureClaims, captureZoneHexes, captureZoneValues, computeAttackZone,
+  computeLegalMoves, computeMoveCosts, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
   BASE_PANELS, HEX_DIRS, PANELS_DEALT,
 } from '../../services/hex-rules';
 import {
@@ -578,6 +578,18 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [class.held-white]="captureClaim.get(hex.key) === 'white'"
             [class.held-black]="captureClaim.get(hex.key) === 'black'"
           />
+          <!-- What a hex of this zone is worth to whoever holds it (ZONE_WORTH:
+               3 in each side's half, 2 in the middle, 1 at the sides), on
+               every empty one. In the bottom of the hex, clear of the move dot
+               and the hex number in the middle; a unit's plate covers the
+               hex, so the empty hexes around it carry the number. -->
+          <text
+            *ngIf="hex.zoneClass === 'zone' && !hex.piece"
+            [attr.x]="hex.cx"
+            [attr.y]="hex.cy + 18"
+            [attr.transform]="textTransform(hex.cx, hex.cy)"
+            class="zone-worth"
+          >&times;{{ zoneWorthAt(hex) }}</text>
           <!-- The way onto the battlefield on the three reserve hexes it can
                be taken from, and the two ends of the wrap. Under the unit
                group below, so a unit standing on the hex covers its middle
@@ -698,6 +710,13 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             </g>
           </ng-container>
         </g>
+        <!-- The edge of the battlefield, where the bases and reserves meet it
+             (panelSeams): over every hex, so no neighbour paints half of it
+             out, and under the labels and the arrows of a move. -->
+        <line *ngFor="let seam of panelSeams"
+              [attr.x1]="seam.x1" [attr.y1]="seam.y1"
+              [attr.x2]="seam.x2" [attr.y2]="seam.y2"
+              class="panel-seam" />
         <ng-container *ngFor="let arrow of movementArrowSegments">
           <line [attr.x1]="arrow.x1" [attr.y1]="arrow.y1"
                 [attr.x2]="arrow.x2" [attr.y2]="arrow.y2"
@@ -928,6 +947,16 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       transition: fill 0.1s;
     }
 
+    /* The battlefield's edge against the panels: the hex lines' brown, much
+       darker and three times as heavy. Round caps join the segments into one
+       line round each corner. */
+    .panel-seam {
+      stroke: #3b2410;
+      stroke-width: 3;
+      stroke-linecap: round;
+      pointer-events: none;
+    }
+
     /* Each side's home ground - the three rows up to and including its pawn
        wall. Yours green and theirs red, the same language the turn indicator
        uses, and both pale enough that a piece still reads on top of them.
@@ -967,6 +996,22 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
        either of them, which is the same as nobody standing there. */
     .zone-wash.held-white { fill: #ff8c1a; fill-opacity: 0.68; }
     .zone-wash.held-black { fill: #7b4fbf; fill-opacity: 0.58; }
+
+    /* A zone hex's worth. Small, with a pale halo so it reads on the plain
+       blue and on either side's colour alike. */
+    .zone-worth {
+      fill: #1e3a66;
+      font-size: 10px;
+      font-weight: 800;
+      text-anchor: middle;
+      dominant-baseline: central;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.8);
+      stroke-width: 2.5;
+      stroke-linejoin: round;
+      pointer-events: none;
+      user-select: none;
+    }
 
     .hex-cell:not(.hex-filler):hover {
       fill: #e8cf9f;
@@ -1828,6 +1873,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   @Output() playbackStep = new EventEmitter<AnimStep>();
   /** Nothing left to play - the room starts its clock again. */
   @Output() playbackDone = new EventEmitter<void>();
+  /**
+   * The turn's last beat as it lands (`settleUpkeep`), so the room can sound
+   * it: whether overtime's toll struck a king, and whether anything in a base
+   * mended. Both can land in the same beat.
+   */
+  @Output() upkeepSettled = new EventEmitter<{ toll: boolean; heal: boolean }>();
 
   /** The unit in flight: a copy drawn over the board while its hex is empty. */
   mover: { points: string; symbol: string; dark: boolean; x: number; y: number } | null = null;
@@ -2609,6 +2660,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   /** Which side holds each capture hex; missing means nobody, or cancelled. */
   captureClaim = new Map<string, 'white' | 'black'>();
 
+  /** What a hex of the zone `hex` is in is worth; 0 off the zones. */
+  zoneWorthAt(hex: HexCell): number {
+    return captureZoneValues(this.radius).get(hex.key) ?? 0;
+  }
+
   /**
    * The arrow on a hex: a triangle pushed out to the edge it points at, so it
    * still shows around the plate of a unit standing there rather than hiding
@@ -2748,6 +2804,37 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     return this.config?.board?.orientation === 'vertex-up' ? 'vertex-up' : 'edge-up';
   }
 
+  /**
+   * Where the bases and reserves meet the battlefield: one segment on every
+   * edge a panel hex shares with a battlefield hex, drawn dark so the edge of
+   * the board reads at a glance. The owner, 26 Sep 2026: "try to draw a
+   * darker line on between the reserve/base and the board edge".
+   */
+  panelSeams: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+  /** The board shape `panelSeams` was built for - it depends on nothing else. */
+  private panelSeamsFor = '';
+
+  private buildPanelSeams(): void {
+    const stamp = `${this.radius}|${this.orientation}`;
+    if (stamp === this.panelSeamsFor) return;
+    this.panelSeamsFor = stamp;
+    const seams: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+    for (const cell of this.cells) {
+      if (!cell.filler) continue;
+      for (const [dq, dr] of HEX_DIRS) {
+        const next = this.cellsByKey.get(`${cell.q + dq},${cell.r + dr}`);
+        if (!next || next.filler) continue;
+        // The edge the two share: a side's length (HEX_SIZE), square to the
+        // line between their centres and halfway along it.
+        const dx = next.cx - cell.cx, dy = next.cy - cell.cy;
+        const half = HEX_SIZE / 2 / Math.hypot(dx, dy);
+        const mx = (cell.cx + next.cx) / 2, my = (cell.cy + next.cy) / 2;
+        seams.push({ x1: mx - dy * half, y1: my + dx * half, x2: mx + dy * half, y2: my - dx * half });
+      }
+    }
+    this.panelSeams = seams;
+  }
+
   private buildCells(): void {
     const r = this.radius;
     const orientation = this.orientation;
@@ -2849,6 +2936,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     });
 
     this.cellsByKey = new Map(this.cells.map(c => [c.key, c]));
+    this.buildPanelSeams();
     this.strikeBounds = { white: new Set(), black: new Set() };
     for (const cell of this.cells) {
       // Where each commander stands, on what, and when. Once a king is off the
@@ -3188,6 +3276,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (!this.pendingUpkeep.size) return;
     const owed = [...this.pendingUpkeep];
     this.pendingUpkeep.clear();
+    // One of each kind for the room to sound, however many units mended.
+    this.upkeepSettled.emit({
+      toll: owed.some(([, text]) => text.charAt(0) === '-'),
+      heal: owed.some(([, text]) => text.charAt(0) !== '-'),
+    });
     // Where each of them is standing *now*: a unit that walked during the
     // turn is marked where it ended up, not where the mending noticed it.
     const at = new Map<string, string>();

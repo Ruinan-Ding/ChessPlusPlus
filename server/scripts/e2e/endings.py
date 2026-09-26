@@ -12,10 +12,11 @@ the hundred plies is played: two matches, start to finish.
   off each king (8 x 1, 5 x 3, 1 x 5) and leaves both standing: black's.
   A player drops and rejoins partway, and gets the bank back with the state.
 * **Points.** White steps one unit into a capture zone on the first turn and
-  both sides pass the rest. It holds 5 hexes as each phase banks, which the
-  phase's number multiplies - 5, 10, 15 - so 30 clear when Phase 3 does, more
-  than the 10 white needs. Phase 3's postmatch is still played, and
-  the match ends as it does, on the hand-over into turn 37.
+  both sides pass the rest. It holds 5 hexes of the zone in white's own half,
+  3 a hex, as each phase banks, which the phase's number multiplies - 15, 30,
+  45 - so 90 clear when Phase 3 does, more than the 10 white needs. Phase 3's
+  postmatch is still played, and the match ends as it does, on the hand-over
+  into turn 37.
 
 Exits non-zero if any check fails.
 """
@@ -37,8 +38,9 @@ OVERTIME_PLY = 73
 KING_HP = 45
 # (-4,9) is a white unit on the deal; one step up puts it on the edge of the
 # capture zone round (-3,6), where it holds its own hex and the four zone hexes
-# beside it: (-3,8), (-5,8), (-4,7), (-3,7).
-INTO_ZONE, HOLDS = ('-4,9', '-4,8'), 5
+# beside it: (-3,8), (-5,8), (-4,7), (-3,7). That zone is in white's own half,
+# 3 a hex (ZONE_WORTH in scoring.py), so the five are worth 15.
+INTO_ZONE, HOLDS = ('-4,9', '-4,8'), 5 * 3
 
 
 def seat(label):
@@ -192,7 +194,7 @@ def points():
           said.get(72, {}).get('currentTurn') == m['start']['playerBlack'], said.get(72, {}).get('currentTurn'))
     check('points: the match ends as the postmatch does, on the hand-over into turn 37', last == 72, last)
     banks_where_expected('points', said, last, lambda phase: {'white': HOLDS * phase, 'black': 0})
-    check('points: white, 30 clear, takes it on points',
+    check(f'points: white, {HOLDS * 6} clear, takes it on points',
           over.get('endReason') == 'points' and over.get('winner') == m['start']['playerWhite'], over)
     m['black'].send({'type': 'request_game_state', 'gameId': m['game']})
     st = m['black'].until(lambda x: x.get('type') in ('game_state_update', 'game_state'), 'game state')

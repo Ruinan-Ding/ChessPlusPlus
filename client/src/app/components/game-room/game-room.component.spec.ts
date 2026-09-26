@@ -1220,7 +1220,9 @@ describe('GameRoomComponent ability panel', () => {
   it('scores the header off the board it holds and the history of its dead', () => {
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
-    c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
+    // The right-hand zone, 1 a hex, so what is held is the count of hexes
+    // (the middle one is 2 a hex).
+    c.gameState.snapshot.boardState = { '7,0': { unit_id: 'pawn', color: 'white' } };
     c.gameState.snapshot.moveHistory = [];
     // Hand-over 8 is turn 4, the first of Phase 1, and every loss below is
     // taken in it. A full turn is two hand-overs, so the numbers here are
@@ -1231,7 +1233,7 @@ describe('GameRoomComponent ability panel', () => {
       return { cap: s.cap, death: s.death, total: s.total };
     };
 
-    // The middle of the middle patch: its own hex and the six around it.
+    // The middle of the patch: its own hex and the six around it.
     expect(score('mine')).toEqual({ cap: 7, death: 0, total: 7 });
     expect(score('opponent')).toEqual({ cap: 0, death: 0, total: 0 });
 
@@ -1265,7 +1267,9 @@ describe('GameRoomComponent ability panel', () => {
   it('sums the phases behind the running one, and glows the lead', () => {
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
-    c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
+    // The right-hand zone, 1 a hex, so what is held is the count of hexes
+    // (the middle one is 2 a hex).
+    c.gameState.snapshot.boardState = { '7,0': { unit_id: 'pawn', color: 'white' } };
     c.gameState.snapshot.moveHistory = [];
     c.gameState.snapshot.turnNumber = 52;   // turn 26, Phase 3's first played
 
@@ -1399,7 +1403,9 @@ describe('GameRoomComponent ability panel', () => {
   it('reads nought on a postmatch, and counts the phase it banked once', () => {
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
-    c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
+    // The right-hand zone, 1 a hex, so what is held is the count of hexes
+    // (the middle one is 2 a hex).
+    c.gameState.snapshot.boardState = { '7,0': { unit_id: 'pawn', color: 'white' } };
     c.gameState.snapshot.moveHistory = [
       { color: 'black', unit_id: 'pawn', captured: 'pawn', defender_eliminated: true, turn: 8 },
     ];
@@ -1773,18 +1779,52 @@ describe('GameRoomComponent ability panel', () => {
     }
   });
 
-  it('scores nothing in the opening, and stops scoring in overtime', () => {
+  it('sounds the toll and a base mending one after the other, never on top', () => {
+    // The owner, 26 Sep 2026: "try to add a sound effect for damage taken to
+    // king during over time and heal sound in base. they may collide when
+    // they both happen".
+    const c = room();
+    const played: Array<{ notes: number[]; step: number; delay: number }> = [];
+    c.audioService.playTone = (notes: number[], step: number, options: any = {}) =>
+      played.push({ notes, step, delay: options.delay ?? 0 });
+
+    // Each alone plays at once, and the two are different sounds.
+    c.onUpkeepSettled({ toll: true, heal: false });
+    c.onUpkeepSettled({ toll: false, heal: true });
+    const [toll, heal] = played;
+    expect([toll.delay, heal.delay]).toEqual([0, 0]);
+    expect(toll.notes).not.toEqual(heal.notes);
+
+    // Both at once: the toll first, and the mend only once it has finished.
+    played.length = 0;
+    c.onUpkeepSettled({ toll: true, heal: true });
+    expect(played.map(p => p.notes)).toEqual([toll.notes, heal.notes]);
+    expect(played[0].delay).toBe(0);
+    expect(played[1].delay).toBeGreaterThan(toll.notes.length * toll.step);
+
+    // Nothing owed, nothing played.
+    played.length = 0;
+    c.onUpkeepSettled({ toll: false, heal: false });
+    expect(played).toEqual([]);
+  });
+
+  it('shows what the opening holds without counting it, and stops scoring in overtime', () => {
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
-    // A unit sat in the middle of a capture zone, which would otherwise cap.
-    c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
+    // A unit sat in the middle of a capture zone.
+    // The right-hand zone, 1 a hex, so what is held is the count of hexes
+    // (the middle one is 2 a hex).
+    c.gameState.snapshot.boardState = { '7,0': { unit_id: 'pawn', color: 'white' } };
     c.gameState.snapshot.moveHistory = [];
 
-    // The opening caps nothing and kills nobody, so it reads a flat nought.
+    // The owner, 26 Sep 2026: "its ok to show capture points during
+    // initialization because it wont tally anyways". The opening shows what
+    // is held, and none of it reaches the match total or leads.
     c.gameState.snapshot.turnNumber = 1;
     (c as any).standingsCache = null;
     expect(c.phaseScore('mine')).toEqual(jasmine.objectContaining(
-      { cap: 0, death: 0, total: 0 }));
+      { cap: 7, death: 0, total: 7, multiplier: 1, banked: [], match: 0, leading: false }));
+    expect(c.phaseScore('opponent').leading).toBeFalse();
     expect(c.showScore).toBeTrue();
 
     // Phase 1 counts it.
@@ -2240,12 +2280,14 @@ describe('GameRoomComponent ability panel', () => {
   it('scores the staged board, so walking out of a zone shows before committing', () => {
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
-    c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
+    // The right-hand zone, 1 a hex, so what is held is the count of hexes
+    // (the middle one is 2 a hex).
+    c.gameState.snapshot.boardState = { '7,0': { unit_id: 'pawn', color: 'white' } };
     expect(c.phaseScore('mine').cap).toBe(7);
 
     // A step away is staged, not sent. The board being drawn is the staged
     // one, and the score reads the same board the player is looking at.
-    c.stagedActions = [{ from: '0,0', to: '4,0', board: { '4,0': { unit_id: 'pawn', color: 'white' } } } as any];
+    c.stagedActions = [{ from: '7,0', to: '4,0', board: { '4,0': { unit_id: 'pawn', color: 'white' } } } as any];
     expect(c.phaseScore('mine').cap).toBe(0);
 
     // Taking it back puts the hexes back.

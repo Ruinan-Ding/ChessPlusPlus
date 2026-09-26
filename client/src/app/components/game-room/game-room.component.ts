@@ -277,6 +277,9 @@ const ABILITIES_SOLO_ONLY = 'Unavailable: abilities are single-player only for n
  */
 const BASE_HEAL_PER_TURN = 1;
 
+/** Seconds of quiet between the toll's knell and the mend's chime when a turn ends on both. */
+const UPKEEP_SOUND_GAP = 0.08;
+
 /** A unit that walked home, and the hex it stopped on. */
 export interface WithdrawnUnit {
   at: string;
@@ -3688,20 +3691,22 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     }
 
     const mineColor = this.gameState.myColor(this.username) || 'white';
-    // Nothing is scored in the opening: no unit can be killed and no zone is
-    // capped, so the header reads a flat 0 - 0 = 0 rather than counting hexes
-    // towards a phase that banks nothing.
+    // The opening shows what each side holds, and banks none of it. *The
+    // owner, 26 Sep 2026: "its ok to show capture points during
+    // initialization because it wont tally anyways"* - it read a flat
+    // 0 - 0 = 0 before. It is not a scoring phase, so its total never reaches
+    // the match total below and nothing banks when it ends.
     //
-    // Nor in a postmatch, for a sharper reason. `phaseIndexAt` still calls it
-    // the closing phase's, and the engine banked that phase as the postmatch
-    // began (`bankEndedPhases` in match-score.ts) - so its cap and its deaths
-    // read live here as well would count the phase twice, once in the bank
-    // and once as the running total. And what the board holds by then is the
-    // postmatch's reshuffling, which scores for nobody.
+    // A postmatch still reads 0, for a sharper reason. `phaseIndexAt` still
+    // calls it the closing phase's, and the engine banked that phase as the
+    // postmatch began (`bankEndedPhases` in match-score.ts) - so its cap and
+    // its deaths read live here as well would count the phase twice, once in
+    // the bank and once as the running total. And what the board holds by
+    // then is the postmatch's reshuffling, which scores for nobody.
     //
     // The live figures are the engines' own derivations (match-score.ts), so
     // the running score and the one a phase banks are the same sum.
-    const idle = isInitialization(turn) || isPostmatch(turn);
+    const idle = isPostmatch(turn);
     const radius: number = snapshot.config?.board?.radius ?? 11;
     // A turn that scores nothing shows no multiplier either: a postmatch's
     // `(0 - 0) x3 = 0` said nothing. The opening and overtime carry 1.
@@ -3735,9 +3740,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * A side's standing: the capture hexes it holds right now against what its
-   * losses have cost it, the phases the engine has banked, and the match
-   * total they come to. Cap is read off the board every time rather than
+   * A side's standing: what the capture hexes it holds right now are worth
+   * (3, 2 or 1 a hex, by zone) against what its losses have cost it, the
+   * phases the engine has banked, and the match total they come to. Cap is
+   * read off the board every time rather than
    * banked - it is what you are holding, and it drops the moment you walk
    * away - while deaths only ever add up. The phase's total never goes below
    * 0, however much its deaths outweigh its cap (`phaseTotal`).
@@ -5251,6 +5257,32 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   private playAttackSound(): void {
     this.playTone([120, 260, 110], 0.06);
+  }
+
+  /**
+   * The turn's last beat: overtime's toll on a king, a base mending, or both.
+   * The owner, 26 Sep 2026: "try to add a sound effect for damage taken to
+   * king during over time and heal sound in base. they may collide when they
+   * both happen". So one sound a kind, however many units mend, and when both
+   * land in the same beat the toll plays first and the mend once it has
+   * finished, rather than the two on top of each other.
+   */
+  onUpkeepSettled(upkeep: { toll: boolean; heal: boolean }): void {
+    const after = upkeep.toll ? this.playTollSound() + UPKEEP_SOUND_GAP : 0;
+    if (upkeep.heal) this.playHealSound(after);
+  }
+
+  /** A king paying overtime's toll: a low knell, falling. Returns its length in seconds. */
+  private playTollSound(): number {
+    const notes = [147, 110, 82];
+    const step = 0.14;
+    this.audioService.playTone(notes, step, { type: 'triangle' });
+    return notes.length * step;
+  }
+
+  /** A base mending: a soft chime, rising - above the buff's, and brighter. */
+  private playHealSound(delay = 0): void {
+    this.audioService.playTone([784, 988, 1175], 0.07, { type: 'triangle', delay });
   }
 
   private playTone(frequencies: number[], duration: number): void {

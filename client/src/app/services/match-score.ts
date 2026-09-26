@@ -2,9 +2,10 @@
  * The match's score, and how the schedule ends it. Mirrors
  * server/game/engine/scoring.py - keep the two in step.
  *
- * Three numbered phases each bank a score: the capture hexes a side holds as
- * the phase's play ends, less what its units were worth that died in the
- * phase - never less than 0, and times the phase's number (`phaseTotal`).
+ * Three numbered phases each bank a score: what the capture hexes a side holds
+ * are worth as the phase's play ends (`ZONE_WORTH`: 3, 2 or 1 a hex, by zone),
+ * less what its units were worth that died in the phase - never less than 0,
+ * and times the phase's number (`phaseTotal`).
  * The three are summed, and the match ends in one of two ways the owner set
  * out:
  *
@@ -61,9 +62,10 @@ export function unitValue(config: any, unitId: string | null | undefined): numbe
 }
 
 /**
- * What scoring phase `phase` scores: the capture hexes held, less what its
- * losses cost, **never below 0**, and **times the phase's `multiplier`** - x1
- * in Phase 1, x2 in Phase 2, x3 in Phase 3 (`PHASES`).
+ * What scoring phase `phase` scores: what the capture hexes held are worth
+ * (`cap`, `captureScore`), less what its losses cost, **never below 0**, and
+ * **times the phase's `multiplier`** - x1 in Phase 1, x2 in Phase 2, x3 in
+ * Phase 3 (`PHASES`).
  *
  * *The owner, 24 Sep 2026: "the total points racked shouldnt go negative by
  * death. max is 0"*, so losses can wipe out what a side holds but cannot push
@@ -81,7 +83,7 @@ export function phaseTotal(cap: number, deaths: number, multiplier: number): num
 
 /** What a side is holding on `board`, right now. */
 export function capOf(board: Record<string, any> | null | undefined, radius: number, color: Side): number {
-  return captureScore(captureClaims(board ?? {}, radius), color);
+  return captureScore(captureClaims(board ?? {}, radius), color, radius);
 }
 
 /**
@@ -146,8 +148,8 @@ export function bankEndedPhases(
     out ??= { ...(bank ?? {}) };
     claims ??= captureClaims(board ?? {}, radius);
     out[phase] = {
-      white: phaseTotal(captureScore(claims, 'white'), deathsOf(config, history, 'white', phase), PHASES[phase].multiplier),
-      black: phaseTotal(captureScore(claims, 'black'), deathsOf(config, history, 'black', phase), PHASES[phase].multiplier),
+      white: phaseTotal(captureScore(claims, 'white', radius), deathsOf(config, history, 'white', phase), PHASES[phase].multiplier),
+      black: phaseTotal(captureScore(claims, 'black', radius), deathsOf(config, history, 'black', phase), PHASES[phase].multiplier),
       // Already over before this hand-over: its moment has passed.
       ...(phaseOver(phase, ply - 1) ? { late: true } : {}),
     };

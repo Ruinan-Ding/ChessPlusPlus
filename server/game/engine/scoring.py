@@ -2,8 +2,9 @@
 The match's score, and how the schedule ends it. Mirrors
 ``client/src/app/services/match-score.ts`` - keep the two in step.
 
-Three numbered phases each bank a score: the capture hexes a side holds as
-the phase's play ends, less what its units were worth that died in the phase -
+Three numbered phases each bank a score: what the capture hexes a side holds
+are worth as the phase's play ends (:data:`ZONE_WORTH`: 3, 2 or 1 a hex, by
+zone), less what its units were worth that died in the phase -
 never less than 0, and times the phase's number (:func:`phase_total`). The
 three are summed, and the match ends in one of two ways the owner set out:
 
@@ -55,6 +56,13 @@ ZONE_COLS = 7 / 11
 ZONE_ROWS = 6 / 11
 #: Rings of hexes around each zone's centre: 2 makes a 19-hex patch.
 ZONE_SPREAD = 2
+#: What one hex of each zone is worth to the side holding it. *The owner, 26
+#: Sep 2026: "make the hex capture zone near my base 3x. the middle hex worth
+#: 2x. side hex worth 1x"* - the zone in each side's own half 3 a hex (412 and
+#: 130 on the shipped board), the middle one 2 (271), the two at the sides 1
+#: (264 and 278). Black's is the mirror of white's, and a zone is worth the
+#: same to whichever side holds it.
+ZONE_WORTH = {'base': 3, 'middle': 2, 'side': 1}
 
 #: What a scoring phase finished on, keyed ``"1"``-``"3"``: each side's
 #: score, and ``"late": True`` on a phase banked after its moment.
@@ -66,13 +74,15 @@ def _js_round(x: float) -> int:
     return math.floor(x + 0.5)
 
 
-_zone_cache: Dict[int, frozenset] = {}
+_zone_cache: Dict[int, Dict[str, int]] = {}
 
 
-def capture_zone_hexes(radius: int) -> frozenset:
+def capture_zone_values(radius: int) -> Dict[str, int]:
     """
-    The five capture zones as one set of ``"q,r"`` keys: a patch in the middle
-    and four around it, the same size and the same distance out. Depends on
+    The five capture zones, as what each of their hexes is worth: ``"q,r"`` ->
+    points a hex (:data:`ZONE_WORTH`). A patch in the middle and four around
+    it, the same size and the same distance out. On a board small enough for
+    two patches to overlap, a hex in both is worth the higher. Depends on
     nothing but the radius, so it is worked out once per radius.
     """
     cached = _zone_cache.get(radius)
@@ -81,22 +91,27 @@ def capture_zone_hexes(radius: int) -> frozenset:
     cols = max(ZONE_SPREAD + 1, _js_round(radius * ZONE_COLS))
     pairs = max(1, _js_round((radius * ZONE_ROWS) / 2))
     centres = [
-        (0, 0),
-        (cols, 0), (-cols, 0),
-        (pairs, -2 * pairs), (-pairs, 2 * pairs),
+        (0, 0, ZONE_WORTH['middle']),
+        (cols, 0, ZONE_WORTH['side']), (-cols, 0, ZONE_WORTH['side']),
+        (pairs, -2 * pairs, ZONE_WORTH['base']), (-pairs, 2 * pairs, ZONE_WORTH['base']),
     ]
-    hexes = set()
-    for cq, cr in centres:
+    out: Dict[str, int] = {}
+    for cq, cr, worth in centres:
         for dq in range(-ZONE_SPREAD, ZONE_SPREAD + 1):
             lo = max(-ZONE_SPREAD, -dq - ZONE_SPREAD)
             hi = min(ZONE_SPREAD, -dq + ZONE_SPREAD)
             for dr in range(lo, hi + 1):
                 q, r = cq + dq, cr + dr
                 if hex_distance((q, r), (0, 0)) <= radius:
-                    hexes.add(coord_key(q, r))
-    out = frozenset(hexes)
+                    key = coord_key(q, r)
+                    out[key] = max(worth, out.get(key, 0))
     _zone_cache[radius] = out
     return out
+
+
+def capture_zone_hexes(radius: int) -> frozenset:
+    """Every capture hex, as one set of ``"q,r"`` keys."""
+    return frozenset(capture_zone_values(radius))
 
 
 def capture_claims(board_state: Dict[str, Any], radius: int) -> Dict[str, str]:
@@ -105,7 +120,7 @@ def capture_claims(board_state: Dict[str, Any], radius: int) -> Dict[str, str]:
     it and the zone hexes beside it; a hex both sides reach is held by neither.
     Only decided hexes are returned.
     """
-    zone = capture_zone_hexes(radius)
+    zone = capture_zone_values(radius)
     claimed: Dict[str, str] = {}
 
     def claim(key: str, color: str) -> None:
@@ -128,9 +143,10 @@ def capture_claims(board_state: Dict[str, Any], radius: int) -> Dict[str, str]:
     return {key: color for key, color in claimed.items() if color != 'contested'}
 
 
-def capture_score(claims: Dict[str, str], color: str) -> int:
-    """A point a hex a side holds."""
-    return sum(1 for owner in claims.values() if owner == color)
+def capture_score(claims: Dict[str, str], color: str, radius: int) -> int:
+    """What the hexes a side holds are worth: each its zone's worth (:data:`ZONE_WORTH`)."""
+    worth = capture_zone_values(radius)
+    return sum(worth.get(key, 0) for key, owner in claims.items() if owner == color)
 
 
 def unit_value(config: Optional[Dict[str, Any]], unit_id: Any) -> int:
@@ -148,9 +164,10 @@ def unit_value(config: Optional[Dict[str, Any]], unit_id: Any) -> int:
 
 def phase_total(cap: int, deaths: int, multiplier: int) -> int:
     """
-    What a scoring phase scores: the capture hexes held, less what its losses
-    cost, **never below 0**, and **times the phase's ``multiplier``** - x1 in
-    Phase 1, x2 in Phase 2, x3 in Phase 3 (``PHASES``).
+    What a scoring phase scores: what the capture hexes held are worth
+    (*cap*, :func:`capture_score`), less what its losses cost, **never below
+    0**, and **times the phase's ``multiplier``** - x1 in Phase 1, x2 in
+    Phase 2, x3 in Phase 3 (``PHASES``).
 
     *The owner, 24 Sep 2026: "the total points racked shouldnt go negative by
     death. max is 0"* and *"the total victory points for each phase is
@@ -163,7 +180,7 @@ def phase_total(cap: int, deaths: int, multiplier: int) -> int:
 
 def cap_of(board_state: Dict[str, Any], radius: int, color: str) -> int:
     """What *color* is holding on *board_state*, right now."""
-    return capture_score(capture_claims(board_state, radius), color)
+    return capture_score(capture_claims(board_state, radius), color, radius)
 
 
 def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
@@ -234,7 +251,7 @@ def bank_ended_phases(bank: Optional[Dict[str, Any]], config: Dict[str, Any],
         if claims is None:
             claims = capture_claims(board_state, radius)
         entry: Dict[str, Any] = {
-            color: phase_total(capture_score(claims, color),
+            color: phase_total(capture_score(claims, color, radius),
                                deaths_of(config, history, color, phase),
                                PHASES[phase]['multiplier'])
             for color in ('white', 'black')

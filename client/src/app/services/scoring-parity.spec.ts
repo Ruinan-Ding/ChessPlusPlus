@@ -1,7 +1,7 @@
 import fixtures from './scoring-parity.json';
-import { captureClaims, captureZoneHexes } from './hex-rules';
+import { captureClaims, captureZoneValues } from './hex-rules';
 import {
-  PhaseBank, bankEndedPhases, cpAwarded, decidedOnPoints, deathsOf, phaseTotal, scheduleEnding,
+  PhaseBank, bankEndedPhases, capOf, cpAwarded, decidedOnPoints, deathsOf, phaseTotal, scheduleEnding,
   scheduledPoints, vpAsPoints,
 } from './match-score';
 import { overtimeTollAt, turnPointsBy } from './phases';
@@ -22,9 +22,9 @@ import { overtimeTollAt, turnPointsBy } from './phases';
 describe('scoring parity with the server', () => {
   const sides = ['white', 'black'] as const;
 
-  it('draws the same capture zones', () => {
-    for (const [radius, hexes] of Object.entries(fixtures.zones)) {
-      expect([...captureZoneHexes(Number(radius))].sort()).withContext(radius).toEqual(hexes);
+  it('draws the same capture zones, each hex worth the same', () => {
+    for (const [radius, worths] of Object.entries(fixtures.zones)) {
+      expect(Object.fromEntries(captureZoneValues(Number(radius)))).withContext(radius).toEqual(worths);
     }
   });
 
@@ -49,6 +49,7 @@ describe('scoring parity with the server', () => {
       const claims = Object.fromEntries([...captureClaims(c.board, c.config.board.radius)].sort());
       const actual = {
         claims,
+        cap: sides.map(side => capOf(c.board, c.config.board.radius, side)),
         bank: bankEndedPhases(bank, c.config, c.board, c.history, c.ply),
         deaths: sides.map(side => [1, 2, 3, undefined].map(p => deathsOf(c.config, c.history, side, p))),
         decided: decidedOnPoints(bank),

@@ -2,9 +2,9 @@
 
     venv/Scripts/python.exe scripts/make_scoring_parity.py     # from server/
 
-The match's arithmetic - the capture zones, the phase bank, deaths, the
-schedule's endings, the CP award, the points the schedule pays and the
-overtime conversion - is written twice, in ``game/engine/scoring.py`` and
+The match's arithmetic - the capture zones and what their hexes are worth,
+the phase bank, deaths, the schedule's endings, the CP award, the points the
+schedule pays and the overtime conversion - is written twice, in ``game/engine/scoring.py`` and
 ``phases.py`` and in the client's ``match-score.ts``, ``hex-rules.ts`` and
 ``phases.ts``. Each side's own tests pin their own numbers, so a rule changed
 on one side alone passes both. This file is the check that the two agree:
@@ -81,6 +81,7 @@ def answers(case):
     ending = scoring.schedule_ending(bank, ply)
     return {
         'claims': dict(sorted(scoring.capture_claims(board, radius).items())),
+        'cap': [scoring.cap_of(board, radius, side) for side in ('white', 'black')],
         'bank': scoring.bank_ended_phases(bank, config, board, history, ply),
         'deaths': [[scoring.deaths_of(config, history, side, p) for p in (1, 2, 3, None)]
                    for side in ('white', 'black')],
@@ -99,7 +100,7 @@ def main():
     for case in cases:
         case['expect'] = answers(case)
     fixtures = {
-        'zones': {str(r): sorted(scoring.capture_zone_hexes(r)) for r in (5, 8, 11)},
+        'zones': {str(r): dict(sorted(scoring.capture_zone_values(r).items())) for r in (5, 8, 11)},
         'plies': [[p, phases.turn_points_by('white', p), phases.turn_points_by('black', p),
                    phases.overtime_toll_at(p)] for p in range(0, 111)],
         'totals': [[m, cap, d, scoring.phase_total(cap, d, m)]

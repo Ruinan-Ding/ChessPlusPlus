@@ -16,7 +16,7 @@
       <!-- Their standing, the turn, then yours. Both scores take an equal
            share of the row so the turn itself stays on the centre line. -->
       <span class="phase-score theirs" *ngIf="showScore && phaseScore('opponent') as them"
-        title="Victory points: capture hexes held, less what this phase's losses cost - never below 0, doubled in Phase 2 and tripled in Phase 3."
+        title="Victory points: what the capture hexes held are worth - 3 a hex in the zone in each side's half, 2 in the middle, 1 at the sides - less what this phase's losses cost, never below 0, doubled in Phase 2 and tripled in Phase 3. The opening shows what is held but banks none of it."
       ><ng-container *ngIf="them.multiplier > 1">(</ng-container>🚩 <span class="cap">{{ them.cap }}</span> &minus;
         💀 <span class="death">{{ them.death }}</span><ng-container
           *ngIf="them.multiplier > 1">) &times;<span class="multiplier">{{ them.multiplier }}</span></ng-container> =
@@ -29,7 +29,7 @@
         *ngIf="state.turnTimeLimit > 0"> - {{ formattedTurnTime }}</ng-container><span
         class="verdict" *ngIf="stageLabel"> - {{ stageLabel }}</span></span>
       <span class="phase-score ours" *ngIf="showScore && phaseScore('mine') as us"
-        title="Victory points: capture hexes held, less what this phase's losses cost - never below 0, doubled in Phase 2 and tripled in Phase 3."
+        title="Victory points: what the capture hexes held are worth - 3 a hex in the zone in each side's half, 2 in the middle, 1 at the sides - less what this phase's losses cost, never below 0, doubled in Phase 2 and tripled in Phase 3. The opening shows what is held but banks none of it."
       ><ng-container *ngIf="us.multiplier > 1">(</ng-container>🚩 <span class="cap">{{ us.cap }}</span> &minus;
         💀 <span class="death">{{ us.death }}</span><ng-container
           *ngIf="us.multiplier > 1">) &times;<span class="multiplier">{{ us.multiplier }}</span></ng-container> =
@@ -604,6 +604,7 @@
           [playback]="playback"
           (playbackStep)="onPlaybackStep($event)"
           (playbackDone)="onPlaybackDone()"
+          (upkeepSettled)="onUpkeepSettled($event)"
           (moveMade)="onPlayerMove($event)"
           (attackMade)="onPlayerAttack($event)"
           (hexSelected)="onHexSelected($event)"

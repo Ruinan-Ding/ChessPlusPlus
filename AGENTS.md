@@ -85,6 +85,13 @@ touches four places - see the `config-sync` skill:
 The server reads `shared/` from the repository root, so a deployment builds from the root
 (DEPLOYMENT.md).
 
+**Most match rules are not config yet.** The schedule, points, scoring, stage rules, combat
+switches and panel numbers are constants in both engines. `CONFIG_BLUEPRINT.md` is the owner's
+checklist of every match rule - one line each, today's value in bold, hexes by the number Show
+Hex draws - and the plan for making them config. Nothing reads it. **Keep it current**: a rule
+changed in the code changes its line there, and goes under "New since the last review".
+Units and abilities are kept out of it on purpose.
+
 The whole-number rules a config may leave out (`panelMoversPerTurn`, `postmatchEntries`,
 `homecomingsPerSetupTurn`, `cpAtStart`, `cpPhaseOffset`) are listed once per side in `COUNTED_RULES`, filled in
 at their defaults by both normalisers, and read through `ruleOf(config, key)` /
@@ -392,6 +399,14 @@ Decided so far:
     turns over) and **paid** in one beat of their own once the recap has played out;
     `runPlayback` awaits it before `playbackDone`. Marking them where they were noticed put
     them on screen underneath the recap, while the turn's blows were still being struck.
+
+    **The beat is sounded too**: the board's `upkeepSettled` tells the room whether it held a
+    toll, a mend or both, and the room's `onUpkeepSettled` plays one sound a kind - a low
+    falling knell for the toll, a rising chime for a base mending - however many units mended.
+    When both land together the chime is scheduled on the audio clock (`playTone`'s `delay`)
+    to start once the knell has finished. *The owner, 26 Sep 2026: "try to add a sound effect
+    for damage taken to king during over time and heal sound in base. they may collide when
+    they both happen".*
 
     **Every commit plays, empty or not.** `recapRunning` goes up on every End Turn - the
     amber `.committing-mine` / `.committing-theirs` wash - and the board is handed the recap
@@ -856,18 +871,29 @@ Decided so far:
   the server toss, since the server owns the seating. Anything the server does not recognise
   is a coin flip, so a client that sends nothing gets what it always got.
 - **Five capture zones.** The five 19-hex patches on the battlefield - one in the middle, four
-  around it - are territory. A unit standing in one claims the hex under it and the zone hexes
-  beside it, so the middle of a patch is worth seven and its rim rather less. Adjacency stops at
-  the zone's edge; the open board around a zone is worth nothing. **A hex both sides reach is
-  held by neither**, which is what cancels two lines of units meeting in a zone: their claims
-  overlap along the seam and every hex in the overlap goes neutral - a cancelled hex reads
-  exactly like an empty one, to the score and on the board. Geometry and claims are
-  `captureZoneHexes()` / `captureClaims()` in `hex-rules.ts`, read by the board (which colours
-  them, white's amber and black's violet) and by the room (which scores them), so the two can
-  never disagree. **The server has them too** (`capture_zone_hexes()` / `capture_claims()` in
-  `engine/scoring.py`, ported onto `board.py`'s own geometry), because it banks each phase's score and ends the
-  match on it - see the scoring below. Its `_js_round` is `Math.round`, not Python's `round`,
-  which rounds a half to even.
+  around it - are territory, **worth 3, 2 or 1 a hex held** (`ZONE_WORTH`): the zone in each
+  side's own half 3 (hexes 412 and 130 on the shipped board), the middle one 2 (271), the two at
+  the sides 1 (264 and 278), the same to whichever side holds it. *The owner, 26 Sep 2026: "make
+  the hex capture zone near my base 3x. the middle hex worth 2x. side hex worth 1x".* The board
+  writes the worth (x3, x2, x1) at the bottom of every empty zone hex. A unit standing in one
+  claims the hex under it and the zone hexes beside it, so the middle of a patch holds seven hexes
+  and its rim fewer. Adjacency stops at the zone's edge; the open board around a zone is worth
+  nothing. **A hex both sides reach is held by neither**, which is what cancels two lines of units
+  meeting in a zone: their claims overlap along the seam and every hex in the overlap goes
+  neutral, and a cancelled hex reads exactly like an empty one, to the score and on the board.
+  Geometry, worth and claims are `captureZoneValues()` / `captureClaims()` / `captureScore()` in
+  `hex-rules.ts`, read by the board (which colours them, white's amber and black's violet) and by
+  the room (which scores them), so the two can never disagree. **The server has them too**
+  (`capture_zone_values()` / `capture_claims()` / `capture_score()` in `engine/scoring.py`, ported
+  onto `board.py`'s own geometry), because it banks each phase's score and ends the match on it -
+  see the scoring below. Its `_js_round` is `Math.round`, not Python's `round`, which rounds a
+  half to even.
+- **The battlefield's edge is drawn dark where the panels meet it.** `panelSeams` in
+  `game-board.component.ts`: one segment on every edge a panel hex shares with a battlefield
+  hex (88 on the shipped board), dark brown and three times the hex lines' weight, drawn over
+  every hex so no neighbour paints half of it out, and under the labels. Rebuilt only when
+  the board's shape changes. *The owner, 26 Sep 2026: "try to draw a darker line on between
+  the reserve/base and the board edge".*
 - **Each side's home rows are tinted.** The three rows nearest a side's edge - its setup area, up
   to and including the pawn wall, so `r = 9, 10, 11` for white and the mirror for black - carry a
   pale wash: green for the seat's own, red for the opponent's. `homeOf()` in
@@ -878,7 +904,8 @@ Decided so far:
 - **The header score is `cap - death`, and it is called VICTORY POINTS (VP)** - the owner's
   word for it. Not to be confused with the *points* that buy abilities and wrap crossings,
   which are a separate pool entirely. Each side's standing shows beside the turn indicator -
-  the opponent's to its left, yours to its right - as flag, capture hexes, skull, deaths, total.
+  the opponent's to its left, yours to its right - as flag, what the capture hexes held are
+  worth, skull, deaths, total.
   **Cap is what you hold right now**, read off the board every time and gone the moment you walk
   away; it is not banked and it is *not* ability points. **Death accumulates**: losing a unit
   costs you its config `value` (a pawn is 5) - **except one killed in a base** (a red panel,
@@ -902,9 +929,9 @@ Decided so far:
     in `PHASES`), the plain `🚩 5 - 💀 0 = 5` in Phase 1 - and on a postmatch, which scores
     nothing to multiply. The margins went up the same day, to 10 and 5 (below).
   - **The initialization banks no VP; each of the three phases does.** The opening is not in
-    `SCORING_PHASES`, so it reads a flat 0 and contributes nothing to the match total, and
-    nothing is banked when it ends. Confirmed by the owner - do not "fix" the opening into a
-    scoring phase.
+    `SCORING_PHASES`, so what the header shows for it contributes nothing to the match total,
+    and nothing is banked when it ends. Confirmed by the owner - do not "fix" the opening into
+    a scoring phase.
 - **A full turn is white's hand-over and black's together.** The engine counts a turn per
   hand-over (`turnNumber` goes up on every one, and white plays the odd numbers), but every
   rule below is written in **full turns** - so turn 50 is hand-overs 99 and 100.
@@ -1058,10 +1085,12 @@ Decided so far:
   is drawn only once something is banked; before that `z` would just repeat the number beside
   it. Whoever is ahead on `z` has it **glowing**; level pegging lights neither, so a glow
   always means a lead.
-  - **The opening reads a flat `🚩 0 - 💀 0 = 0`.** Nothing can be killed in it and nothing
-    caps, so `cap` is forced to 0 rather than counting hexes towards a phase that banks
-    nothing (`standings()`). What the owner asked for, verbatim.
-  - **So does a postmatch's running score**, for a different reason: it scores nothing, like
+  - **The opening shows what each side holds, and none of it counts.** `🚩 7 - 💀 0 = 7` for
+    a unit in a side zone, but its total never reaches `z`, never glows, and never banks
+    (`standings()`: the opening is not in `SCORING_PHASES`). *The owner, 26 Sep 2026: "its ok
+    to show capture points during initialization because it wont tally anyways"* - it read a
+    flat `🚩 0 - 💀 0 = 0` before, which the owner had asked for then.
+  - **A postmatch's running score reads a flat `🚩 0 - 💀 0 = 0`**: it scores nothing, like
     the opening, but it sits *inside* the phase it closes (`phaseIndexAt()` puts turn 14 in
     Phase 1), and that phase has already banked by then - see below. Left live, its cap and
     deaths would be the running phase and the phase just banked would be counted twice in
@@ -1070,9 +1099,11 @@ Decided so far:
   - **Overtime draws no numbers at all** (`showScore`, `isOvertime()`). It scores nothing - it
     is a deathmatch until a king falls or turn 50 runs out - so a frozen score on screen would
     only mislead. The turn indicator still says `OVERTIME`.
-  - The shape across a match, as the owner set it out: opening `🚩 0 - 💀 0 = 0`; Phase 1
-    `🚩 7 - 💀 0 = 7`; Phase 2 `🚩 7 - 💀 0 = 7 (+ 7 = 14)`; Phase 3
-    `🚩 7 - 💀 0 = 7 (+ 7 + 7 = 21)`; overtime, nothing.
+  - The shape across a match, as the owner set it out (one unit holding 7 in a side zone):
+    opening `🚩 7 - 💀 0 = 7`, counted nowhere; Phase 1 `🚩 7 - 💀 0 = 7`; Phase 2
+    `🚩 7 - 💀 0 = 7 (+ 7 = 14)`; Phase 3 `🚩 7 - 💀 0 = 7 (+ 7 + 7 = 21)`; overtime, nothing.
+    (The owner's example predates the phase multipliers, which make Phase 2 read
+    `(🚩 7 - 💀 0) x2 = 14 (+ 7 = 21)` and Phase 3 `(🚩 7 - 💀 0) x3 = 21 (+ 7 + 14 = 42)`.)
   - **Every number in the header has its own colour**, so the eye can pick out the one it
     wants without counting symbols - and each is **mirrored** across the two sides, yours
     saturated and theirs muted, so a glance still says whose row it is:

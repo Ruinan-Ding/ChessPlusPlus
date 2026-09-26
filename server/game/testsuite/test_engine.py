@@ -2428,17 +2428,37 @@ class ScoringTestCase(TestCase):
 
     def test_a_unit_claims_its_hex_and_the_zone_hexes_beside_it(self):
         from game.engine import scoring
-        # In the middle of a zone: its own hex and all six around it.
+        # In the middle of a zone: its own hex and all six around it - seven
+        # hexes of the middle zone, 2 apiece.
         alone = {'0,0': {'unit_id': 'pawn', 'color': 'white'}}
-        self.assertEqual(scoring.cap_of(alone, 11, 'white'), 7)
-        # On a zone's rim: only the zone hexes beside it count.
+        self.assertEqual(scoring.cap_of(alone, 11, 'white'), 14)
+        # On a zone's rim: only the zone hexes beside it count - four of the
+        # left-hand zone, 1 apiece.
         rim = {'-5,0': {'unit_id': 'pawn', 'color': 'white'}}
         self.assertEqual(scoring.cap_of(rim, 11, 'white'), 4)
         # Two sides touching cancel the hexes both reach: the two they stand
         # on and the two beside both, which leaves three apiece.
         touching = {**alone, '1,0': {'unit_id': 'pawn', 'color': 'black'}}
-        self.assertEqual(scoring.cap_of(touching, 11, 'white'), 3)
-        self.assertEqual(scoring.cap_of(touching, 11, 'black'), 3)
+        self.assertEqual(scoring.cap_of(touching, 11, 'white'), 6)
+        self.assertEqual(scoring.cap_of(touching, 11, 'black'), 6)
+
+    def test_each_zone_is_worth_what_the_owner_set(self):
+        # The owner, 26 Sep 2026: "make the hex capture zone near my base 3x.
+        # the middle hex worth 2x. side hex worth 1x" - black's the mirror.
+        from game.engine import scoring
+        number = {cell['key']: i + 1 for i, cell in enumerate(panels.grid_coords(11))}
+        worth = scoring.capture_zone_values(11)
+        self.assertEqual(
+            {number[key]: worth[key] for key in ('0,0', '7,0', '-7,0', '3,-6', '-3,6')},
+            {412: 3, 130: 3, 271: 2, 264: 1, 278: 1})
+        # Every hex of a zone is worth what its centre is.
+        self.assertEqual({w: list(worth.values()).count(w) for w in (1, 2, 3)},
+                         {1: 38, 2: 19, 3: 38})
+        # One unit on a centre holds seven hexes of that zone, for either side.
+        for key, held in (('-3,6', 21), ('3,-6', 21), ('0,0', 14), ('7,0', 7), ('-7,0', 7)):
+            for color in ('white', 'black'):
+                board = {key: {'unit_id': 'pawn', 'color': color}}
+                self.assertEqual(scoring.cap_of(board, 11, color), held, (key, color))
 
     def test_a_loss_is_charged_to_the_phase_it_happened_in(self):
         from game.engine import scoring
@@ -2461,12 +2481,12 @@ class ScoringTestCase(TestCase):
                     'defender_eliminated': True, 'turn': 8}]
         # Handed to ply 26 or before, Phase 1 is still being played.
         self.assertEqual(scoring.bank_ended_phases({}, self.PAWN, board, history, 26), {})
-        # Handed to ply 27 - its postmatch - it is over: 7 held, 5 lost.
+        # Handed to ply 27 - its postmatch - it is over: 14 held, 5 lost.
         bank = scoring.bank_ended_phases({}, self.PAWN, board, history, 27)
-        self.assertEqual(bank, {'1': {'white': 2, 'black': 0}})
+        self.assertEqual(bank, {'1': {'white': 9, 'black': 0}})
         # The postmatch reshuffles the board; the bank is the play's and stays.
         later = scoring.bank_ended_phases(bank, self.PAWN, {}, history, 29)
-        self.assertEqual(later, {'1': {'white': 2, 'black': 0}})
+        self.assertEqual(later, {'1': {'white': 9, 'black': 0}})
         # Phase 2 waits for its own postmatch.
         self.assertNotIn('2', scoring.bank_ended_phases(bank, self.PAWN, board, history, 48))
         self.assertIn('2', scoring.bank_ended_phases(bank, self.PAWN, board, history, 49))
@@ -2519,12 +2539,12 @@ class ScoringTestCase(TestCase):
         # multiplied by 2 on phase 2, multipled by 3 on phase 3".
         from game.engine import scoring
         self.assertEqual([scoring.phase_total(7, 5, p) for p in (1, 2, 3)], [2, 4, 6])
-        # Banked that way: one pawn in the middle holds 7, every phase.
+        # Banked that way: one pawn in the middle holds 14, every phase.
         board = {'0,0': {'unit_id': 'pawn', 'color': 'white'}}
         bank = scoring.bank_ended_phases({}, self.PAWN, board, [], 27)
         bank = scoring.bank_ended_phases(bank, self.PAWN, board, [], 49)
         bank = scoring.bank_ended_phases(bank, self.PAWN, board, [], 71)
-        self.assertEqual([bank[p]['white'] for p in ('1', '2', '3')], [7, 14, 21])
+        self.assertEqual([bank[p]['white'] for p in ('1', '2', '3')], [14, 28, 42])
 
     def test_a_unit_killed_in_a_base_costs_nothing_and_in_a_reserve_counts(self):
         # The owner, 24 Sep 2026: "killing things in base (red panel) should
