@@ -12,12 +12,23 @@ What earns a point, and what spends one - mirroring every `awardPoints` in
 game-room.component.ts:
 
 =====================  ==============================================
-a side's turn begins    +1 (``beginTurnFor``)
-a kill                  +1 to the side that made it; a counter-attack
-                        that kills the attacker pays the defender's side
+a side's turn begins    its rate, and a phase's grant on its first turn
+                        of the phase (``beginTurnFor``)
+overtime begins         its banked victory points, once
+a kill on the board     +the dead unit's ``value`` to the side that made
+                        it; a counter-attack that kills the attacker pays
+                        the defender's side
+a kill in a panel       nothing, base or reserve, whoever dies
 walking home            +the unit's ``value`` (the homecoming refund)
 the wrap                -the unit's ``value`` (the crossing's price)
 =====================  ==============================================
+
+*The owner, 24 Sep 2026: "anytime a unit is killed, i get the amount of
+regular points which the one i killed is worth"* - and a panel's kills pay
+nobody: *"killing things in base (red panel) should not ...
+award points for the killer. in green panel it doesnt award points if the
+unit in there kills or gets killed for any player."* A cast that kills still
+pays nothing: casts are not on the record.
 
 A round trip - wrap out, walk home - is points-neutral, which is the point of
 the refund.
@@ -29,9 +40,9 @@ move to the server, their casts belong in this sum.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, Optional
 
-from .phases import turn_points_by
+from .scoring import scheduled_points, unit_value
 
 
 def points_of(
@@ -39,6 +50,7 @@ def points_of(
     ply: int,
     history: Iterable[Dict[str, Any]],
     config: Dict[str, Any],
+    bank: Optional[Dict[str, Any]] = None,
 ) -> int:
     """
     What *color* has to spend at *ply*, the hand-over about to be played.
@@ -47,15 +59,16 @@ def points_of(
     very first move of the match and black has none until its own turn starts -
     the same moment `beginTurnFor` handed the point out.
 
-    **How much a turn pays is the schedule's business**, not a literal here:
-    overtime's stretches pay 1, 3 and 5. :func:`phases.turn_points_by` is the
-    one place that knows, and the client's `beginTurnFor` - which hands the
-    same point out live, before this sum resets the tally - reads the same
-    table through `pointsPerTurnAt`.
+    **What the schedule pays is its own business**, not a literal here: the
+    turn's rate, a phase's grant and the victory points at overtime all come
+    from :func:`scoring.scheduled_points`, and the client's `beginTurnFor` -
+    which hands the same out live, before this sum resets the tally - reads
+    the same sum through `scheduledPoints`.
     """
-    units = (config or {}).get('units') or {}
     other = 'black' if color == 'white' else 'white'
-    points = turn_points_by(color, ply)
+    # *bank* is the state row's phase_bank: from its first overtime turn a
+    # side is paid what it banked.
+    points = scheduled_points(bank, color, ply)
     for move in history or []:
         if not isinstance(move, dict):
             continue
@@ -69,11 +82,14 @@ def points_of(
             continue
         if move.get('withdrawn'):
             if move.get('color') == color:
-                points += int((units.get(move.get('unit_id')) or {}).get('value', 0) or 0)
+                points += unit_value(config, move.get('unit_id'))
+            continue
+        # A blow into a panel pays nobody, whichever side dies of it.
+        if move.get('intoPanel'):
             continue
         if move.get('defender_eliminated') and move.get('color') == color:
-            points += 1
-        # The attacker died of the counter: the point goes to the defender.
+            points += unit_value(config, move.get('captured'))
+        # The attacker died of the counter: its worth goes to the defender.
         if move.get('attacker_eliminated') and move.get('color') == other:
-            points += 1
+            points += unit_value(config, move.get('unit_id'))
     return points

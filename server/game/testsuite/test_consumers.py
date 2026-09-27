@@ -4,6 +4,7 @@ from io import StringIO
 from unittest.mock import patch
 
 from django.core.management import call_command
+from django.db.models import F
 
 from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
@@ -14,7 +15,7 @@ from datetime import timedelta
 from django.utils import timezone
 
 from game.consumers import STALE_AFTER
-from game.models import GameChallenge, GameRoom, GameState, PlayerConnection
+from game.models import GameChallenge, GameRoom, GameState, PlayerConnection, PlayerReadyStatus
 from game.engine import economy, panels
 from game.engine.game_logic import board_moves_at
 from game.engine.config_loader import DEFAULT_CONFIG
@@ -191,6 +192,118 @@ class GameStateOptimisticConcurrencyTests(TestCase):
         self.assertEqual(refreshed.end_reason, 'timeout')  # not clobbered back to in-progress
         self.assertEqual(refreshed.winner, 'bob')
         self.assertEqual(refreshed.board_state, {})
+
+    async def _write_from(self, snapshot, history, turn_number=None):
+        """A write the way every commit path makes one: conditional on the
+        turn and the revision of the snapshot it was built from."""
+        return await self.consumer._update_game_state(
+            game_id=self.game.game_id,
+            board_state={},
+            current_turn=snapshot.current_turn,
+            turn_number=turn_number or snapshot.turn_number,
+            move_history=history,
+            expected_turn_number=snapshot.turn_number,
+            expected_revision=snapshot.revision,
+        )
+
+    async def test_two_writes_in_one_ply_cannot_both_land(self):
+        # Two deployments read at the same ply - two tabs, say. Neither hands
+        # the turn over, so the turn number matched both, and the second write
+        # replaced the history the first had just recorded.
+        a = await GameState.objects.aget(game_id=self.game.game_id)
+        b = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertTrue(await self._write_from(a, [{'deployed': 'A'}]))
+        self.assertFalse(await self._write_from(b, [{'deployed': 'B'}]))
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(refreshed.move_history, [{'deployed': 'A'}])
+        self.assertEqual(refreshed.revision, a.revision + 1)
+
+    async def test_a_clock_that_read_before_a_deployment_cannot_erase_it(self):
+        timer_read = await GameState.objects.aget(game_id=self.game.game_id)
+        deploying = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertTrue(await self._write_from(deploying, [{'deployed': 'A'}]))
+        # The timer's pass hands the turn over, from the board it read first.
+        self.assertFalse(await self._write_from(timer_read, [], turn_number=2))
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(refreshed.turn_number, 1)
+        self.assertEqual(refreshed.move_history, [{'deployed': 'A'}])
+
+    async def test_a_resign_racing_a_deployment_retries_and_lands(self):
+        stale = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertTrue(await self._write_from(stale, [{'deployed': 'A'}]))
+        # From the snapshot before the deployment, the ending loses...
+        self.assertFalse(await self.consumer._end_game(self.game.game_id, stale, 'bob', 'resign'))
+        # ...and the retrying path reads again and lands, keeping the deployment.
+        self.assertTrue(await self.consumer._end_game_with_retry(self.game.game_id, 'bob', 'resign'))
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(refreshed.end_reason, 'resign')
+        self.assertEqual(refreshed.move_history, [{'deployed': 'A'}])
+
+    async def test_the_deployment_commit_is_conditional_on_what_it_read(self):
+        sent = []
+
+        async def capture(consumer, code, message):
+            sent.append(code)
+
+        async def quiet(*args, **kwargs):
+            pass
+
+        self.consumer.game_id = self.game.game_id
+        self.consumer.channel_layer = None  # broadcast_to_group is patched out
+        a = await GameState.objects.aget(game_id=self.game.game_id)
+        b = await GameState.objects.aget(game_id=self.game.game_id)
+        with patch('game.consumers.send_error', capture), \
+                patch('game.consumers.broadcast_to_group', quiet):
+            self.assertTrue(await self.consumer._commit_deployment(a, {}, {'deployed': 'A'}, 'crossing'))
+            self.assertFalse(await self.consumer._commit_deployment(b, {}, {'deployed': 'B'}, 'crossing'))
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(refreshed.move_history, [{'deployed': 'A'}])
+        self.assertEqual(sent, ['STATE_CHANGED'])
+
+    async def test_a_clock_that_loses_to_a_deployment_still_passes_the_turn(self):
+        from game import consumers as _consumers
+        real_update = self.consumer._update_game_state
+        raced = []
+
+        async def deployment_lands_first(**kwargs):
+            # Between the timer's read and its write, somebody deploys.
+            if not raced:
+                raced.append(True)
+                await GameState.objects.filter(game_id=self.game.game_id).aupdate(
+                    move_history=[{'deployed': 'A'}], revision=F('revision') + 1)
+            return await real_update(**kwargs)
+
+        async def quiet(*args, **kwargs):
+            pass
+
+        async def nobody_there(*args, **kwargs):
+            return False
+
+        self.consumer.channel_layer = None  # broadcast_to_group is patched out
+        self.consumer._update_game_state = deployment_lands_first
+        self.consumer._any_player_connected = nobody_there
+        with patch('game.consumers.broadcast_to_group', quiet):
+            await self.consumer._start_turn_timer(
+                self.game.game_id, 0.01, turn_number=1, current_turn='alice')
+            await _consumers._pending_turn_timers[self.game.game_id]
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        # Giving up on the lost write left the turn with no clock at all.
+        self.assertEqual(refreshed.turn_number, 2)
+        self.assertEqual(refreshed.current_turn, 'bob')
+        self.assertEqual(refreshed.move_history, [{'deployed': 'A'}])
+
+    async def test_a_lost_write_in_a_running_game_is_not_called_game_over(self):
+        sent = []
+
+        async def capture(consumer, code, message):
+            sent.append(code)
+
+        self.consumer.game_id = self.game.game_id
+        with patch('game.consumers.send_error', capture):
+            await self.consumer._refuse_lost_write('crossing')
+            await GameState.objects.filter(game_id=self.game.game_id).aupdate(end_reason='resign')
+            await self.consumer._refuse_lost_write('crossing')
+        self.assertEqual(sent, ['STATE_CHANGED', 'GAME_OVER'])
 
     async def test_end_game_second_caller_on_same_turn_is_rejected(self):
         """Two concurrent end-game paths (e.g. resign racing a timeout) on the
@@ -1169,6 +1282,78 @@ class RoomAccessGuardTests(TransactionTestCase):
             await opp.disconnect()
             await outsider.disconnect()
 
+    async def test_a_refused_join_proves_nothing(self):
+        # The join used to take the name it was offered before checking the
+        # token, and a refusal left it there - after which a leave in that
+        # name resigned the named player's match and closed their room.
+        game = await self._room()
+        host = await self._joined(game.game_id, 'alice', 'host-tok')
+        opp = await self._joined(game.game_id, 'bob', 'opp-tok')
+        stranger = await self._join(game.game_id, 'alice', 'not-the-token')
+        try:
+            await _both_ready_then_start(host, opp, game.game_id)
+            await _receive_until(host, 'game_started')
+            err = await _receive_until(stranger, 'error')
+            self.assertEqual(err['code'], 'INVALID_TOKEN')
+
+            for message in (
+                {'type': 'player_unready', 'username': 'alice', 'gameId': game.game_id},
+                {'type': 'change_game_mode', 'mode': 'custom', 'gameId': game.game_id},
+                {'type': 'request_reveal_mode', 'action': 'enable', 'gameId': game.game_id},
+                {'type': 'start_game', 'gameId': game.game_id},
+                {'type': 'resign'},
+            ):
+                await stranger.send_json_to(message)
+                refused = await _receive_until(stranger, 'error')
+                self.assertNotEqual(refused['code'], 'INTERNAL_ERROR', message['type'])
+            await stranger.send_json_to(
+                {'type': 'leave_game_room', 'username': 'alice', 'gameId': game.game_id})
+            # One socket's messages are handled in order, so the answer to
+            # this one says the leave before it has been dealt with.
+            await stranger.send_json_to({'type': 'heartbeat'})
+            await _receive_until(stranger, 'heartbeat_ack')
+
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.end_reason, '')
+            room = await GameRoom.objects.aget(game_id=game.game_id)
+            self.assertNotEqual(room.status, 'closed')
+            self.assertEqual(room.game_mode, 'default')
+            self.assertTrue(await PlayerReadyStatus.objects.filter(
+                game_id=game.game_id, username='alice', is_ready=True).aexists())
+        finally:
+            await stranger.disconnect()
+            await host.disconnect()
+            await opp.disconnect()
+
+    async def test_the_right_name_without_the_token_holds_no_seat(self):
+        # A socket the lobby knows as the host has proved the name, not the
+        # seat: only the room's token does that.
+        game = await self._room()
+        lobby = WebsocketCommunicator(URLRouter(websocket_urlpatterns), "/ws/game/lobby/")
+        try:
+            await lobby.connect()
+            await lobby.send_json_to({'type': 'join_lobby', 'username': 'alice', 'secret': 'a-secret'})
+            await _receive_until(lobby, 'user_list')
+
+            for message in (
+                {'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id},
+                {'type': 'change_game_mode', 'mode': 'custom', 'gameId': game.game_id},
+                {'type': 'start_game', 'gameId': game.game_id},
+            ):
+                await lobby.send_json_to(message)
+                err = await _receive_until(lobby, 'error')
+                self.assertEqual(err['code'], 'NOT_IN_GAME_ROOM', message['type'])
+            await lobby.send_json_to(
+                {'type': 'leave_game_room', 'username': 'alice', 'gameId': game.game_id})
+            await lobby.send_json_to({'type': 'heartbeat'})
+            await _receive_until(lobby, 'heartbeat_ack')
+
+            room = await GameRoom.objects.aget(game_id=game.game_id)
+            self.assertEqual(room.status, 'waiting')
+            self.assertFalse(await PlayerReadyStatus.objects.filter(game_id=game.game_id).aexists())
+        finally:
+            await lobby.disconnect()
+
     async def test_chat_needs_a_name_and_a_room(self):
         game = await self._room()
         # Connected to the room's own URL, having shown no token: connect()
@@ -1518,13 +1703,13 @@ async def _start_seated_game():
 
 class DealtPanels:
     """
-    Deal the panel squads for the duration of a test.
+    Deal the placeholder panel squads for the duration of a test.
 
-    A new game now opens with all four panels empty while the owner clears the
-    placeholder squads out (``panels.PANELS_DEALT``). Everything that *works* a
-    panel is still here and still has to be right for the day they come back,
-    so these turn the deal back on rather than going away - a rule nobody
-    exercises while it is being changed is a rule that rots.
+    A new game stands in its panels what the config's setup puts there - the
+    owner's base squads. These tests were written against the placeholder
+    squads (one of each of five unit types, every third hex, all four panels),
+    so they turn those on instead (``panels.PANELS_DEALT``) and keep their
+    fixtures.
     """
 
     def setUp(self):
@@ -1698,13 +1883,15 @@ class PanelAttackLiveIntegrationTests(DealtPanels, TransactionTestCase):
     RESERVE_QUEEN = '-9,-3'
     BESIDE_BASE = '11,-3'      # beside rtr1, black's base rook
     BASE_ROOK = '12,-4'
-    #: Ply 9: the first of Phase 1's *play*, and white's. These tests used to
-    #: strike on ply 1, which is the opening - where nobody attacks. Nothing
-    #: enforced that until the server had a phase schedule, so they passed while
-    #: striking a blow the game's own rules forbid. Ply 7 is no good either now:
-    #: turn 4 is Phase 1's own initialization turn, which refuses a blow for the
-    #: same reason the opening does.
-    PAST_OPENING = 9
+    #: Ply 7: turn 4, the first of Phase 1's *play*, and white's. These tests
+    #: used to strike on ply 1, which is the opening - where nobody attacks.
+    #: Nothing enforced that until the server had a phase schedule, so they
+    #: passed while striking a blow the game's own rules forbid. For a while
+    #: they struck on ply 9 instead, because turn 4 was Phase 1's own
+    #: initialization turn and refused a blow for the same reason the opening
+    #: does; that turn has since moved to the end of the phase as its
+    #: postmatch, and play starts the moment the opening ends.
+    PAST_OPENING = 7
 
     async def _stand_pawn(self, game, at):
         state = await GameState.objects.aget(game_id=game.game_id)
@@ -1735,6 +1922,95 @@ class PanelAttackLiveIntegrationTests(DealtPanels, TransactionTestCase):
             # Unlike a crossing, a blow IS the turn's board action.
             self.assertEqual(state.turn_number, self.PAST_OPENING + 1)
             self.assertTrue(state.move_history[-1]['intoPanel'])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    #: Turn 45, Overtime 2: two board moves a turn.
+    OVERTIME_TWO = 89
+
+    async def _stand_pawn_in_overtime(self, game, at):
+        await self._stand_pawn(game, at)
+        state = await GameState.objects.aget(game_id=game.game_id)
+        await GameState.objects.filter(game_id=game.game_id).aupdate(
+            turn_number=self.OVERTIME_TWO, current_turn=state.player_white)
+
+    @staticmethod
+    def _white_king_hp(board):
+        return next(u['hp'] for u in board.values()
+                    if u['unit_id'] == 'king' and u['color'] == 'white')
+
+    async def test_an_overtime_blow_can_hold_the_seat_for_the_next_unit(self):
+        # A blow into a panel ended the turn outright, so the room sent it
+        # alone - and every other move an overtime turn had staged was lost.
+        from game.engine.phases import overtime_toll_at
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await self._stand_pawn_in_overtime(game, self.BESIDE_RESERVE)
+            before = await GameState.objects.aget(game_id=game.game_id)
+            await white.send_json_to({
+                'type': 'panel_attack', 'more': True,
+                'from': self.BESIDE_RESERVE, 'to': self.BESIDE_RESERVE,
+                'attack': self.RESERVE_QUEEN,
+            })
+            held = await _receive_until(white, 'game_state_update')
+            self.assertEqual(held['turnNumber'], self.OVERTIME_TWO)
+            self.assertTrue(held['moveHistory'][-1]['intoPanel'])
+            # The toll is the END of a turn's cost: none yet.
+            self.assertEqual(self._white_king_hp(held['boardState']),
+                             self._white_king_hp(before.board_state))
+
+            await white.send_json_to({'type': 'make_move', 'from': '-5,9', 'to': '-5,8'})
+            made = await _receive_until(white, 'move_made')
+            self.assertEqual(made['turnNumber'], self.OVERTIME_TWO + 1)
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(board_moves_at(state.move_history, self.OVERTIME_TWO, 'white'), 2)
+            # And taken once, for the two moves together.
+            self.assertEqual(
+                self._white_king_hp(state.board_state),
+                self._white_king_hp(before.board_state) - overtime_toll_at(self.OVERTIME_TWO))
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_blow_after_a_held_move_ends_the_turn(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await self._stand_pawn_in_overtime(game, self.BESIDE_RESERVE)
+            await white.send_json_to(
+                {'type': 'make_move', 'from': '-5,9', 'to': '-5,8', 'more': True})
+            await _receive_until(white, 'game_state_update')
+            await white.send_json_to({
+                'type': 'panel_attack',
+                'from': self.BESIDE_RESERVE, 'to': self.BESIDE_RESERVE,
+                'attack': self.RESERVE_QUEEN,
+            })
+            made = await _receive_until(white, 'move_made')
+            self.assertTrue(made['move']['intoPanel'])
+            self.assertEqual(made['turnNumber'], self.OVERTIME_TWO + 1)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_blow_is_one_of_the_turns_moves(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await self._stand_pawn_in_overtime(game, self.BESIDE_RESERVE)
+            for move in ({'from': '-5,9', 'to': '-5,8'}, {'from': '-4,9', 'to': '-4,8'}):
+                await white.send_json_to({'type': 'make_move', 'more': True, **move})
+            await _receive_until(white, 'game_state_update')
+            await _receive_until(white, 'move_made')
+            # Both of Overtime 2's moves are spent, and the seat has gone.
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                turn_number=self.OVERTIME_TWO,
+                current_turn=(await GameState.objects.aget(game_id=game.game_id)).player_white)
+            await white.send_json_to({
+                'type': 'panel_attack', 'more': True,
+                'from': self.BESIDE_RESERVE, 'to': self.BESIDE_RESERVE,
+                'attack': self.RESERVE_QUEEN,
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['message'], 'That side has had all 2 of its moves this turn')
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
@@ -1796,8 +2072,9 @@ class PanelAttackLiveIntegrationTests(DealtPanels, TransactionTestCase):
             })
             err = await _receive_until(white, 'error')
             self.assertEqual(err['code'], 'INVALID_MOVE')
-            # Refused for its range, not for the opening: this is ply 7.
-            self.assertNotIn('opening', err.get('message', ''))
+            # Refused for its range, not for a setup turn: this is ply 7, turn
+            # 4, which plays now that the extra turn closes the phase instead.
+            self.assertEqual(err.get('message'), 'That hex is out of attack range')
 
             state = await GameState.objects.aget(game_id=game.game_id)
             self.assertEqual(state.turn_number, self.PAST_OPENING)
@@ -1943,8 +2220,9 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
 
     Turn numbers throughout are plies. Turn 8 (ply 15) is Phase 1's played
     first half - the wrap's window. Turn 11 (ply 21) is its halftime half -
-    the way in. Turn 4 (ply 7) is Phase 1's own initialization - both, plus
-    the three walks home. Turn 37 (ply 73) is overtime - the way home alone.
+    the way in. Turn 14 (ply 27) is Phase 1's postmatch - the way in still,
+    plus the three walks home. Turn 37 (ply 73) is overtime - the way home
+    alone.
     """
 
     ARCHER_AT = '7,7'          # rbr4, white's reserve archer
@@ -2044,9 +2322,10 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
 
     async def test_the_walks_home_are_read_off_the_rooms_config(self):
         # rules.homecomingsPerSetupTurn: a room that says one stops the second.
+        # Ply 27 is turn 14, Phase 1's postmatch.
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
         try:
-            await self._wind_to(game, 7)
+            await self._wind_to(game, 27)
             state = await GameState.objects.aget(game_id=game.game_id)
             config = dict(state.config_snapshot)
             config['rules'] = {**config['rules'], 'homecomingsPerSetupTurn': 1}
@@ -2077,7 +2356,7 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
         """
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
         try:
-            await self._wind_to(game, 7)
+            await self._wind_to(game, 27)
             # One walk per doorway, then a fourth that routes through the
             # first doorway - its own unit standing there is passed over.
             walks = [('-11,11', '-12,11'), ('-11,10', '-12,10'),
@@ -2091,14 +2370,14 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
                 if reply['type'] == 'error':
                     errors.append(reply['message'])
                 else:
-                    self.assertEqual(reply['turnNumber'], 7)
+                    self.assertEqual(reply['turnNumber'], 27)
 
             self.assertEqual(errors, ['That is all who may walk home this turn'])
             state = await GameState.objects.aget(game_id=game.game_id)
-            gone = panels.homecomings_at(state.move_history, 7, 'white')
+            gone = panels.homecomings_at(state.move_history, 27, 'white')
             self.assertEqual(len(gone), 3)
-            # Still white's, still turn 4: three walks took no hand-over.
-            self.assertEqual(state.turn_number, 7)
+            # Still white's, still turn 14: three walks took no hand-over.
+            self.assertEqual(state.turn_number, 27)
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
@@ -2279,19 +2558,31 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
-    async def test_nobody_attacks_in_a_phase_initialization(self):
+    async def test_nobody_attacks_in_the_postmatch(self):
         """
-        Turn 4 refuses a blow for the same reason the opening does - and says
-        which turn refused it, since "the opening" by then is over.
+        Turn 14 refuses a blow for the same reason the opening does - and says
+        which turn refused it, since "the opening" by then is over. Both roads
+        to a blow: a board move that swings, and a swing into a panel.
         """
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
         try:
-            await self._wind_to(game, 7)
+            await self._wind_to(game, 27)
             await white.send_json_to({
                 'type': 'make_move', 'from': '-5,9', 'to': '-5,9', 'attack': '-5,8',
             })
             err = await _receive_until(white, 'error')
-            self.assertEqual(err['message'], 'Nobody attacks in a phase initialization')
+            self.assertEqual(err['message'], 'Nobody attacks in the postmatch')
+
+            await white.send_json_to({
+                'type': 'panel_attack', 'from': '-8,-3', 'to': '-8,-3', 'attack': '-9,-3',
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['message'], 'Nobody attacks in the postmatch')
+
+            # Neither took the turn or wrote anything down.
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.turn_number, 27)
+            self.assertEqual(state.move_history, [])
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
@@ -2402,6 +2693,224 @@ class OvertimeTollLiveIntegrationTests(TransactionTestCase):
             await opp_comm.disconnect()
 
 
+class MatchEndingLiveIntegrationTests(TransactionTestCase):
+    """
+    The schedule's two endings, enforced by the server (engine/scoring.py): a
+    side past the other's margin once Phase 3 has banked and its postmatch is
+    played wins on points, and a match still standing once turn 50 is played
+    out is black's. Both were the
+    owner's rules long before anything enforced them - the header read them,
+    and the match played on.
+
+    Each test winds the stored game to the ply it needs, with the side whose
+    ply it is to play and whatever bank the earlier phases would have left.
+    """
+
+    async def _wind(self, game, ply, bank=None, black_king_hp=None):
+        state = await GameState.objects.aget(game_id=game.game_id)
+        board = dict(state.board_state)
+        if black_king_hp is not None:
+            king_at = next(k for k, v in board.items()
+                           if v['unit_id'] == 'king' and v['color'] == 'black')
+            board[king_at] = {**board[king_at], 'hp': black_king_hp}
+        mover = state.player_white if ply % 2 else state.player_black
+        await GameState.objects.filter(game_id=game.game_id).aupdate(
+            turn_number=ply, current_turn=mover, board_state=board,
+            phase_bank=bank or {})
+        return state
+
+    async def _pass(self, mover, other):
+        """
+        Pass *mover*'s turn and read the hand-over off both sockets, returning
+        *other*'s copy. Both are sent every turn_passed, so a socket left
+        holding its copy would hand it to the next read as if it were new.
+        """
+        await mover.send_json_to({'type': 'pass_turn'})
+        await _receive_until(mover, 'turn_passed')
+        return await _receive_until(other, 'turn_passed')
+
+    async def test_turn_fifty_played_out_goes_to_black(self):
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            state = await self._wind(game, 99)
+            # White's half of turn 50 is played, and the match goes on.
+            await white.send_json_to({'type': 'pass_turn'})
+            passed = await _receive_until(black, 'turn_passed')
+            self.assertEqual(passed['currentTurn'], state.player_black)
+
+            # Black's half ends it, with both kings standing: black's.
+            await black.send_json_to({'type': 'pass_turn'})
+            over = await _receive_until(white, 'game_over')
+            self.assertEqual(over['endReason'], 'overtime')
+            self.assertEqual(over['winner'], state.player_black)
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(stored.end_reason, 'overtime')
+            self.assertEqual(stored.turn_number, 101)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_king_the_last_toll_kills_still_loses_by_regicide(self):
+        # The board decides before the schedule does: black's king on the
+        # toll's 3 dies of it at the end of turn 50, and that is white's win,
+        # not black's by default.
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            state = await self._wind(game, 100, black_king_hp=3)
+            await black.send_json_to({'type': 'pass_turn'})
+            over = await _receive_until(white, 'game_over')
+            self.assertEqual(over['endReason'], 'regicide')
+            self.assertEqual(over['winner'], state.player_white)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_side_past_the_margin_wins_on_points_once_the_postmatch_is_played(self):
+        # Phase 3 banks as its postmatch begins, and the result is known
+        # there, but the postmatch is still played: "phase 3 post match still
+        # happens even if overtime isnt triggered."
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            # Ply 70 is black's half of turn 35, the last of Phase 3's play.
+            state = await self._wind(game, 70, bank={
+                '1': {'white': 12, 'black': 0}, '2': {'white': 0, 'black': 0}})
+            passed = await self._pass(black, white)
+            self.assertIn('3', passed['phaseBank'])
+            self.assertEqual(passed['currentTurn'], state.player_white)
+            # White's half of the postmatch, and black's, which ends it.
+            passed = await self._pass(white, black)
+            self.assertEqual(passed['currentTurn'], state.player_black)
+            passed = await self._pass(black, white)
+            self.assertEqual(passed['currentTurn'], '')
+            over = await _receive_until(white, 'game_over')
+            self.assertEqual(over['endReason'], 'points')
+            self.assertEqual(over['winner'], state.player_white)
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            # Phase 3 banked on the way: the dealt board is the same for both
+            # sides, so it came to a draw and white's nine carried it.
+            self.assertEqual(stored.phase_bank['3']['white'], stored.phase_bank['3']['black'])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_close_match_goes_on_into_overtime(self):
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            await self._wind(game, 70, bank={
+                '1': {'white': 10, 'black': 0}, '2': {'white': 0, 'black': 0}})
+            passed = await self._pass(black, white)
+            self.assertIn('3', passed['phaseBank'])
+            await self._pass(white, black)
+            passed = await self._pass(black, white)
+            # Ten clear is not more than ten: nobody has it outright, and
+            # the postmatch hands on into overtime.
+            self.assertEqual(passed['turnNumber'], 73)
+            self.assertTrue(passed['currentTurn'])
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(stored.end_reason, '')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_hand_over_that_leaves_no_commander_standing_is_a_draw(self):
+        # The board decides first, and both sides beaten is nobody's win - not
+        # the first colour in the list's. A board with no commander on it at
+        # all is the plainest way there.
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            state = await GameState.objects.aget(game_id=game.game_id)
+            pawn_at, pawn = next(
+                (k, v) for k, v in state.board_state.items()
+                if v['unit_id'] == 'pawn' and v['color'] == 'white')
+            q, r = (int(n) for n in pawn_at.split(','))
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                board_state={pawn_at: pawn}, turn_number=9, current_turn=state.player_white)
+            await white.send_json_to({'type': 'make_move', 'from': pawn_at, 'to': f'{q},{r - 1}'})
+            over = await _receive_until(black, 'game_over')
+            self.assertEqual(over['endReason'], 'draw_mutual')
+            self.assertEqual(over['winner'], '')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_late_phase_decides_nothing_on_points(self):
+        # Phase 1 banked after its moment - off a board that no longer showed
+        # how it finished - is shown, but a match is not ended on it.
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            await self._wind(game, 70, bank={
+                '1': {'white': 12, 'black': 0, 'late': True}, '2': {'white': 0, 'black': 0}})
+            passed = await self._pass(black, white)
+            self.assertNotIn('late', passed['phaseBank']['3'])
+            await self._pass(white, black)
+            passed = await self._pass(black, white)
+            self.assertEqual(passed['turnNumber'], 73)
+            self.assertTrue(passed['currentTurn'])
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(stored.end_reason, '')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_move_that_plays_turn_fifty_out_ends_it_the_same(self):
+        # A move hands over through _commit_turn, not the pass's settlement:
+        # both have to ask the schedule.
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            state = await self._wind(game, 100)
+            board = state.board_state
+            # Any black pawn with an empty hex straight ahead of it.
+            frm, to = next(
+                (k, f"{int(k.split(',')[0])},{int(k.split(',')[1]) + 1}")
+                for k, v in board.items()
+                if v['unit_id'] == 'pawn' and v['color'] == 'black'
+                and f"{int(k.split(',')[0])},{int(k.split(',')[1]) + 1}" not in board)
+            await black.send_json_to({'type': 'make_move', 'from': frm, 'to': to})
+            made = await _receive_until(white, 'move_made')
+            self.assertEqual(made['currentTurn'], '')
+            over = await _receive_until(white, 'game_over')
+            self.assertEqual(over['endReason'], 'overtime')
+            self.assertEqual(over['winner'], state.player_black)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_rematch_starts_with_no_phases_banked(self):
+        # The state row is reused on a rematch; the last match's bank is not.
+        from game.consumers import GameConsumer
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            state = await self._wind(game, 40, bank={'1': {'white': 3, 'black': 1}})
+            await GameConsumer()._create_game_state(
+                game.game_id, state.board_state, state.player_white,
+                state.player_white, state.player_black, state.config_snapshot)
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(stored.phase_bank, {})
+            self.assertEqual(stored.turn_number, 1)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_the_bank_rides_on_the_hand_over_into_a_postmatch(self):
+        game, host_comm, opp_comm, white, black = await _start_seated_game()
+        try:
+            # Ply 26 is black's half of turn 13, the last of Phase 1's play.
+            await self._wind(game, 26)
+            await black.send_json_to({'type': 'pass_turn'})
+            passed = await _receive_until(white, 'turn_passed')
+            self.assertEqual(set(passed['phaseBank']), {'1'})
+            stored = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(stored.phase_bank, passed['phaseBank'])
+
+            # And a reconnecting screen gets it back with the rest of the state.
+            await white.send_json_to({'type': 'request_game_state'})
+            full = await _receive_until(white, 'game_state_update')
+            self.assertEqual(full['phaseBank'], passed['phaseBank'])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+
 class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
     """
     Walking a unit inside its panel, and the wrap, against a live consumer.
@@ -2417,7 +2926,7 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
     SHUFFLED_ASIDE = '7,8'  # one step that gets it no nearer
     LANDS_ON = '1,9'        # the one hex a crossing may stop on (see below)
     KNIGHT_AT = '-12,6'     # rbl3, white's base knight
-    WRAP_OPEN_PLY = 53      # turn 27: Phase 3 before its halftime, 27 points
+    WRAP_OPEN_PLY = 7       # turn 4: Phase 1's first, 14 points (4 turns + its 10)
 
     async def _history(self, game):
         state = await GameState.objects.aget(game_id=game.game_id)
@@ -2495,7 +3004,7 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
             tip = panels.wrap_tips('white', radius)['reserve']
             before = economy.points_of(
                 'white', self.WRAP_OPEN_PLY, state.move_history, state.config_snapshot)
-            self.assertEqual(before, 27)
+            self.assertEqual(before, 14)
 
             await white.send_json_to({'type': 'panel_move', 'from': self.KNIGHT_AT, 'to': tip})
             wrapped = await _receive_until(white, 'game_state_update')
@@ -2505,9 +3014,9 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
 
             after = economy.points_of(
                 'white', self.WRAP_OPEN_PLY, wrapped['moveHistory'], wrapped['config'])
-            self.assertEqual(after, 15)
+            self.assertEqual(after, 2)
 
-            # The queen is worth 30, and there are 15 left.
+            # The queen is worth 30, and there are 2 left.
             await white.send_json_to({'type': 'panel_move', 'from': '-13,3', 'to': '10,1'})
             err = await _receive_until(white, 'error')
             self.assertEqual(err['code'], 'INVALID_MOVE')
@@ -2529,30 +3038,84 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
+    async def _step_once(self, game, white, uid, plan_rules=None):
+        """
+        Send `uid` one cheapest step inside its panel, from where it stands.
+
+        `plan_rules` lays rules over the room's for *choosing* the step only,
+        so a test can ask for a step the room's own rules then refuse - rather
+        than one this helper already knew was refused, which proves nothing
+        about the server.
+        """
+        state = await GameState.objects.aget(game_id=game.game_id)
+        config = state.config_snapshot
+        radius = config['board']['radius']
+        occupancy = panels.panel_occupancy(
+            config, radius, state.move_history, ply=state.turn_number)
+        frm = next(k for k, u in occupancy.items() if u['uid'] == uid)
+        plan = {**config, 'rules': {**config['rules'], **(plan_rules or {})}}
+        targets = panels.panel_move_targets(
+            plan, radius, state.move_history, state.board_state, frm,
+            state.turn_number, points=0)
+        # Planned rules are asked for so the step is a real one; with nowhere
+        # to go, the stand-in step below would be refused for being no step at
+        # all, and a refusal the test reads as the room's rule would be that.
+        assert targets or plan_rules is None, (uid, frm, plan_rules)
+        to = min(targets, key=lambda k: (targets[k]['cost'], k)) if targets else frm
+        await white.send_json_to({'type': 'panel_move', 'from': frm, 'to': to})
+        return frm
+
     async def test_a_fourth_reserve_unit_may_not_start_moving(self):
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
         try:
-            async def step_once(uid):
-                state = await GameState.objects.aget(game_id=game.game_id)
-                config = state.config_snapshot
-                radius = config['board']['radius']
-                occupancy = panels.panel_occupancy(
-                    config, radius, state.move_history, ply=state.turn_number)
-                frm = next(k for k, u in occupancy.items() if u['uid'] == uid)
-                targets = panels.panel_move_targets(
-                    config, radius, state.move_history, state.board_state, frm,
-                    state.turn_number, points=0)
-                to = min(targets, key=lambda k: (targets[k]['cost'], k)) if targets else frm
-                await white.send_json_to({'type': 'panel_move', 'from': frm, 'to': to})
-                return frm
-
             for uid in ('rbr0', 'rbr1', 'rbr2'):
-                await step_once(uid)
+                await self._step_once(game, white, uid)
                 await _receive_until(white, 'game_state_update')
             # The three movers are spent, and rbr3 is not one of them.
-            await step_once('rbr3')
+            await self._step_once(game, white, 'rbr3')
             err = await _receive_until(white, 'error')
             self.assertEqual(err['code'], 'INVALID_MOVE')
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_postmatch_starts_the_whole_reserve(self):
+        """
+        Ply 27 is turn 14, Phase 1's postmatch, where the reserve's cap is
+        rules.postmatchEntries - five - instead of the three above. The dealt
+        reserve is five strong, so every one of them may start.
+        """
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await GameState.objects.filter(game_id=game.game_id).aupdate(turn_number=27)
+            for uid in ('rbr0', 'rbr1', 'rbr2', 'rbr3', 'rbr4'):
+                await self._step_once(game, white, uid)
+                reply = await _receive_until(white, ('game_state_update', 'error'))
+                self.assertEqual(reply['type'], 'game_state_update', (uid, reply))
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_postmatch_reads_its_reserve_allowance_off_the_rooms_config(self):
+        # A room that says one stops the second, where the default would let
+        # five go - the room's own config, not the shipped number.
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            state = await GameState.objects.aget(game_id=game.game_id)
+            config = dict(state.config_snapshot)
+            config['rules'] = {**config['rules'], 'postmatchEntries': 1}
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                turn_number=27, config_snapshot=config)
+
+            await self._step_once(game, white, 'rbr0')
+            await _receive_until(white, 'game_state_update')
+            # Planned as if the room allowed the default five, so the step
+            # asked for is a real one and only the room's one refuses it.
+            await self._step_once(game, white, 'rbr1', plan_rules={'postmatchEntries': 5})
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['code'], 'INVALID_MOVE')
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual([m['unit']['uid'] for m in state.move_history], ['rbr0'])
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
@@ -2642,9 +3205,10 @@ class OpeningRulesLiveIntegrationTests(TransactionTestCase):
             (frm, to), = await self._pawn_steps(game, 1)
             await white.send_json_to({'type': 'make_move', 'from': frm, 'to': to})
             await _receive_until(white, 'move_made')
-            # Wind on to ply 9, the first of Phase 1's play and white's again.
+            # Wind on to ply 7, turn 4: the first of Phase 1's play, straight
+            # after the opening, and white's again.
             await GameState.objects.filter(game_id=game.game_id).aupdate(
-                turn_number=9, current_turn=(await GameState.objects.aget(
+                turn_number=7, current_turn=(await GameState.objects.aget(
                     game_id=game.game_id)).player_white)
             q, r = (int(n) for n in to.split(','))
             await white.send_json_to({'type': 'make_move', 'from': to, 'to': f'{q},{r - 1}'})

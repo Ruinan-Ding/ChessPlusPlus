@@ -1,6 +1,6 @@
 import {
-  attackTiers, captureClaims, captureScore, captureZoneHexes, computeAttackZone,
-  computeLegalMoves, computeMoveCosts, inHomeRows, strikeDamage, HOME_ROWS,
+  ZONE_WORTH, attackTiers, captureClaims, captureScore, captureZoneHexes, captureZoneValues,
+  computeAttackZone, computeLegalMoves, computeMoveCosts, inHomeRows, strikeDamage, HOME_ROWS,
   MIN_STRIKE_DAMAGE,
 } from './hex-rules';
 
@@ -195,15 +195,35 @@ describe('capture zones', () => {
     expect(zone.has('3,0')).toBeFalse();
   });
 
-  it('pays seven for the middle of a patch and less on its rim', () => {
+  it('holds seven hexes from the middle of a patch and fewer from its rim', () => {
+    // The middle zone, 2 a hex.
     const middle = captureClaims({ '0,0': { unit_id: 'u', color: 'white' } }, R);
-    expect(captureScore(middle, 'white')).toBe(7);
-    expect(captureScore(middle, 'black')).toBe(0);
+    expect(middle.size).toBe(7);
+    expect(captureScore(middle, 'white', R)).toBe(14);
+    expect(captureScore(middle, 'black', R)).toBe(0);
 
     // On the rim three of the six neighbours are outside the patch, and
     // adjacency stops at its edge - the open board is worth nothing.
     const rim = captureClaims({ '2,0': { unit_id: 'u', color: 'white' } }, R);
-    expect(captureScore(rim, 'white')).toBe(4);
+    expect(rim.size).toBe(4);
+    expect(captureScore(rim, 'white', R)).toBe(8);
+  });
+
+  it("makes the zone in each side's half worth 3 a hex, the middle 2 and the sides 1", () => {
+    // The owner, 26 Sep 2026: "make the hex capture zone near my base 3x. the
+    // middle hex worth 2x. side hex worth 1x" - hexes 412 and 130, 271, and
+    // 264 and 278 on the shipped board.
+    expect(ZONE_WORTH).toEqual({ base: 3, middle: 2, side: 1 });
+    const worth = captureZoneValues(R);
+    expect(['-3,6', '3,-6', '0,0', '7,0', '-7,0'].map(k => worth.get(k))).toEqual([3, 3, 2, 1, 1]);
+    // A whole patch is worth what its centre is.
+    const count = (w: number) => [...worth.values()].filter(v => v === w).length;
+    expect([count(3), count(2), count(1)]).toEqual([38, 19, 38]);
+    // Worth the same to either side.
+    for (const color of ['white', 'black'] as const) {
+      const near = captureClaims({ '-3,6': { unit_id: 'u', color } }, R);
+      expect(captureScore(near, color, R)).withContext(color).toBe(21);
+    }
   });
 
   it('is worth nothing at all outside a zone', () => {
@@ -220,11 +240,12 @@ describe('capture zones', () => {
     }, R);
     // 0,0 is next to white's hex and next to black's, so neither holds it.
     expect(claims.get('0,0')).toBeUndefined();
-    // What each still holds on its own side of the seam - six of seven each.
+    // What each still holds on its own side of the seam - six of seven each,
+    // 2 apiece in the middle zone.
     expect(claims.get('-1,0')).toBe('white');
     expect(claims.get('1,0')).toBe('black');
-    expect(captureScore(claims, 'white')).toBe(6);
-    expect(captureScore(claims, 'black')).toBe(6);
+    expect(captureScore(claims, 'white', R)).toBe(12);
+    expect(captureScore(claims, 'black', R)).toBe(12);
   });
 
   it('leaves a gap of one alone: claims that do not touch do not cancel', () => {
@@ -233,9 +254,9 @@ describe('capture zones', () => {
       '2,0': { unit_id: 'u', color: 'black' },
     }, R);
     // Three apart, so nothing overlaps - white keeps all seven, and black
-    // keeps the four of its own that are still inside the patch.
-    expect(captureScore(claims, 'white')).toBe(7);
-    expect(captureScore(claims, 'black')).toBe(4);
+    // keeps the four of its own that are still inside the patch, 2 apiece.
+    expect(captureScore(claims, 'white', R)).toBe(14);
+    expect(captureScore(claims, 'black', R)).toBe(8);
   });
 
   it('cancels both units outright when they stand next to each other', () => {
@@ -254,8 +275,9 @@ describe('capture zones', () => {
       '1,0': { unit_id: 'u', color: 'white' },
     }, R);
     // Seven each, less the four hexes they share: their own two and the two
-    // either side of the pair.
-    expect(captureScore(claims, 'white')).toBe(10);
+    // either side of the pair - ten hexes, 2 apiece.
+    expect(claims.size).toBe(10);
+    expect(captureScore(claims, 'white', R)).toBe(20);
   });
 });
 

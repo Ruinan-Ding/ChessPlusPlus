@@ -422,7 +422,7 @@ def overtime_toll(
     Only a commander **on the board** pays, which is the only place one ever
     stands: he is never dealt into a panel and never walks home.
     **How much is the ply's business, not this function's.** Overtime runs in
-    three stretches and the toll climbs 1, 2, 3 through them, so the amount
+    three stretches and the toll climbs 1, 3, 5 through them, so the amount
     comes from :func:`phases.overtime_toll_at` rather than a constant here.
     Outside overtime it answers ``0``, which is also the "not yet" gate: a
     separate ``ply < OVERTIME_FIRST_PLY`` check beside it would be a second

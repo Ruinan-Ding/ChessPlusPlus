@@ -17,9 +17,10 @@ from datetime import timedelta
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 
-from typing import Optional, Any, Dict, cast, Union
+from typing import Optional, Any, Dict, NamedTuple, cast, Union
 from .models import (
     GameRoom,
     GameChallenge,
@@ -54,6 +55,7 @@ from .engine.phases import (
     board_moves_per_turn, is_entry_open,
     is_homecoming_open, is_initialization, is_setup_turn, no_attack_message,
 )
+from .engine.scoring import bank_ended_phases, schedule_ending
 
 logger = logging.getLogger('game')
 
@@ -93,13 +95,75 @@ def _ending_name(config: Dict[str, Any]) -> str:
     return 'regicide' if objective == 'regicide' else 'elimination'
 
 
-def _settle_pass(state) -> tuple:
-    """
-    What a passed turn does to the board and to the match.
+class HandOver(NamedTuple):
+    """What a hand-over leaves: the board, the phase bank, and the result."""
+    board_state: Dict[str, Any]
+    phase_bank: Dict[str, Any]
+    #: Username of the winner, or '' - for a draw, and while the match goes on.
+    winner: str
+    #: '' while the match goes on.
+    end_reason: str
 
-    Returns ``(board_state, winner, end_reason)``. Shared by the pass a player
-    asks for and the pass a clock makes when time runs out, which were written
-    out twice and would otherwise each need the toll added.
+
+def _settle_hand_over(state, board, history, beaten) -> HandOver:
+    """
+    How a hand-over ends the turn, and whether it ends the match. **Every
+    hand-over runs through this** - a move and a blow into a panel
+    (``_commit_turn``), a pass and the clock's pass (``_settle_pass``) - once
+    the turn has done everything it does to *board*, the toll included, with
+    *history* holding the turn's own record.
+
+    In order, each only if nothing before it ended the match:
+
+    1. **The board.** *beaten* is every side that has lost on it: both is a
+       draw, one is the other's win by the room's objective.
+    2. **The schedule.** The phase the hand-over closed banks
+       (``scoring.bank_ended_phases``), and then a side past the other's margin
+       once Phase 3 has banked and its postmatch is played wins on points, and
+       a match still standing once turn 50 is played out is black's
+       (``scoring.schedule_ending``). Both were the owner's rules long before
+       anything enforced them.
+    3. **The turn limit**, ``rules.maxTurns``, checked against the turn just
+       played.
+
+    The order lived in two places, and the browser engine's three copies of
+    it had already drifted apart (a panel blow that felled both kings gave
+    the match to black). One place per engine now; ``settleHandOver`` in
+    local-game.service.ts is the other.
+    """
+    config = state.config_snapshot or {}
+    winner, end_reason = '', ''
+    if len(beaten) == 2:
+        # A counter-attack can kill the attacker's commander on the
+        # attacker's own turn: nobody won that.
+        end_reason = 'draw_mutual'
+        logger.info(f"Game {state.game_id} drawn: both sides fell in one exchange")
+    elif beaten:
+        loser = beaten[0]
+        winner = state.player_black if loser == 'white' else state.player_white
+        end_reason = _ending_name(config)
+        logger.info(f"Game {state.game_id} decided: {loser} lost")
+
+    board_state = board.to_dict()
+    next_ply = state.turn_number + 1
+    bank = bank_ended_phases(state.phase_bank, config, board_state, history, next_ply)
+    if not end_reason:
+        ending = schedule_ending(bank, next_ply)
+        if ending:
+            color, end_reason = ending
+            winner = state.player_white if color == 'white' else state.player_black
+
+    max_turns = config.get('rules', {}).get('maxTurns', 0)
+    if not end_reason and max_turns > 0 and state.turn_number >= max_turns:
+        end_reason = 'draw_max_turns'
+    return HandOver(board_state, bank, winner, end_reason)
+
+
+def _settle_pass(state) -> HandOver:
+    """
+    What a passed turn does to the board and to the match. Shared by the pass
+    a player asks for and the pass a clock makes when time runs out, which
+    were written out twice and would otherwise each need the toll added.
 
     **A passed turn is still a turn**, so overtime takes its toll on it and the
     board can change though nobody moved. Neither pass used to touch the board
@@ -117,15 +181,10 @@ def _settle_pass(state) -> tuple:
     board = HexBoard.from_dict(radius, state.board_state)
 
     felled = overtime_toll(board, config, mover_color, state.turn_number)
-    winner, end_reason = '', ''
-    if felled and felled in defeated_sides(board, config):
-        winner = state.player_black if felled == 'white' else state.player_white
-        end_reason = _ending_name(config)
-    else:
-        max_turns = config.get('rules', {}).get('maxTurns', 0)
-        if max_turns > 0 and state.turn_number >= max_turns:
-            end_reason = 'draw_max_turns'
-    return board.to_dict(), winner, end_reason
+    beaten = [felled] if felled and felled in defeated_sides(board, config) else []
+    # A pass can be the hand-over that closes a phase, or turn 50: it banks and
+    # ends the match on the same terms a move does.
+    return _settle_hand_over(state, board, list(state.move_history), beaten)
 
 # Global dictionary to track pending disconnect-grace-period tasks.
 # Key: (game_id, username), Value: asyncio.Task
@@ -417,6 +476,12 @@ class GameConsumer(AsyncWebsocketConsumer):
         Every handler that takes a `gameId` off the wire needs this: proving
         "I am who I say I am" says nothing about whether the room named is
         one of mine. Sends the error itself, so callers just return on None.
+
+        **The seat is proved by the room's token, on this socket.** A name
+        matching one of the seats is not proof: a name is whatever a lobby
+        claim or a join message said it was. self.game_id is set only by a
+        join whose token checked out, so it is what says this connection
+        holds a seat in this room.
         """
         game = await self._get_game_by_id(game_id)
         if not game:
@@ -424,6 +489,12 @@ class GameConsumer(AsyncWebsocketConsumer):
             return None
         if self.username not in (game.host, game.opponent):
             await send_error(self, 'NOT_IN_GAME', 'You are not in this game')
+            return None
+        if self.game_id != game_id:
+            # Not NOT_IN_GAME: the room page answers that by leaving for the
+            # lobby, and a message that simply beat its socket's join there
+            # is no reason to throw the player out.
+            await send_error(self, 'NOT_IN_GAME_ROOM', 'Join the game room first')
             return None
         return game
 
@@ -845,11 +916,12 @@ class GameConsumer(AsyncWebsocketConsumer):
             
             logger.info(f"[join_game_room] User {username} attempting to join game {game_id}")
             
-            # Set username if not already set (for new WebSocket connections)
-            if not self.username:
-                self.username = username
-            
-            if self.username != username:
+            # A socket that already has a name may only join as that name. A
+            # fresh one takes the name offered - but only once the token below
+            # has proved it: set up front, a refused join left the name behind,
+            # and every handler that trusts self.username then acted for the
+            # player whose name had merely been typed in.
+            if self.username and self.username != username:
                 await send_error(self, 'INVALID_REQUEST', 'Can only join as yourself')
                 return
             
@@ -881,6 +953,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             # the disconnect grace timer forfeit a match still being played.
             await self._refresh_game_token(game_id)
 
+            self.username = username
             self.game_id = game_id
 
             # Cancel any pending disconnect-forfeit grace timer
@@ -943,9 +1016,17 @@ class GameConsumer(AsyncWebsocketConsumer):
             if not game:
                 logger.warning(f"[leave_game_room] Game {game_id} not found, skipping leave")
                 return
-            
+
             if username != game.host and username != game.opponent:
                 logger.warning(f"[leave_game_room] User {username} not in game {game_id} (host={game.host}, opponent={game.opponent}), ignoring leave request")
+                return
+
+            # A leave forfeits a match and closes the room, so it takes a seat
+            # this socket proved with the room's token - see _require_seat.
+            # Ignored quietly, as above: the page that sends it is on its way
+            # out, and an error would only land in the lobby.
+            if self.game_id != game_id:
+                logger.warning(f"[leave_game_room] {username} never joined {game_id} on this socket, ignoring leave request")
                 return
             
             logger.info(f"[leave_game_room] User {username} leaving game {game_id}")
@@ -1093,12 +1174,11 @@ class GameConsumer(AsyncWebsocketConsumer):
             game_id = data.get('gameId', '').strip()
             
             validate_game_mode(mode)
-            
-            game = await self._get_game_by_id(game_id)
+
+            game = await self._require_seat(game_id)
             if not game:
-                await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
                 return
-            
+
             if self.username != game.host:
                 await send_error(self, 'PERMISSION_DENIED', 'Only the host can change game mode')
                 return
@@ -1194,12 +1274,11 @@ class GameConsumer(AsyncWebsocketConsumer):
             if action not in ['enable', 'disable']:
                 await send_error(self, 'INVALID_ACTION', 'Action must be enable or disable')
                 return
-            
-            game = await self._get_game_by_id(game_id)
+
+            game = await self._require_seat(game_id)
             if not game:
-                await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
                 return
-            
+
             if self.username != game.host:
                 await send_error(self, 'PERMISSION_DENIED', 'Only the host can request reveal mode changes')
                 return
@@ -1297,9 +1376,8 @@ class GameConsumer(AsyncWebsocketConsumer):
         try:
             validate_required_fields(data, ['gameId'])
             game_id = data.get('gameId', '').strip()
-            game = await self._get_game_by_id(game_id)
+            game = await self._require_seat(game_id)
             if not game:
-                await send_error(self, 'GAME_NOT_FOUND', 'Game not found')
                 return
             if self.username != game.host:
                 await send_error(self, 'PERMISSION_DENIED', 'Only the host can start the game')
@@ -1395,6 +1473,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'playerBlack': p_black,
                 'config': config,
                 'turnStartedAt': turn_started_dt.isoformat(),
+                'phaseBank': {},
             })
 
             time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
@@ -1439,48 +1518,59 @@ class GameConsumer(AsyncWebsocketConsumer):
             try:
                 await asyncio.sleep(time_limit)
                 # Timer expiration is an automatic pass, not a game loss.
-                state = await self._get_game_state(game_id)
-                if not state or state.is_finished:
-                    return
-                if state.turn_number != turn_number or state.current_turn != current_turn:
-                    logger.info(f"Stale turn timer for game {game_id} (armed for turn {turn_number}) ignored")
-                    return
+                # Read, settle and write again if the write loses: a
+                # deployment landing in the same ply beats this pass to the
+                # row, but the turn is still over - giving up here left the
+                # turn with no clock at all.
+                applied = False
+                for _attempt in range(3):
+                    state = await self._get_game_state(game_id)
+                    if not state or state.is_finished:
+                        return
+                    if state.turn_number != turn_number or state.current_turn != current_turn:
+                        logger.info(f"Stale turn timer for game {game_id} (armed for turn {turn_number}) ignored")
+                        return
 
-                mover = state.current_turn
-                next_player = state.player_black if mover == state.player_white else state.player_white
-                my_color = 'white' if mover == state.player_white else 'black'
-                # A timeout is a pass, so it ends the game on the same terms
-                # a deliberate pass does - otherwise two idle players run past
-                # maxTurns forever and the draw never arrives. The same terms
-                # include overtime's toll: a king on his last HP must not be
-                # able to sit out the clock instead of paying it.
-                board_state, winner, end_reason = _settle_pass(state)
-                turn_started_dt = timezone.now()
-                applied = await self._update_game_state(
-                    game_id=game_id,
-                    board_state=board_state,
-                    current_turn=next_player if not end_reason else state.current_turn,
-                    turn_number=state.turn_number + 1,
-                    move_history=list(state.move_history),
-                    winner=winner,
-                    end_reason=end_reason,
-                    expected_turn_number=state.turn_number,
-                    turn_started_at=turn_started_dt,
-                )
+                    mover = state.current_turn
+                    next_player = state.player_black if mover == state.player_white else state.player_white
+                    my_color = 'white' if mover == state.player_white else 'black'
+                    # A timeout is a pass, so it ends the game on the same
+                    # terms a deliberate pass does - otherwise two idle players
+                    # run past maxTurns forever and the draw never arrives. The
+                    # same terms include overtime's toll: a king on his last HP
+                    # must not be able to sit out the clock instead of paying it.
+                    settled = _settle_pass(state)
+                    turn_started_dt = timezone.now()
+                    applied = await self._update_game_state(
+                        game_id=game_id,
+                        board_state=settled.board_state,
+                        current_turn=next_player if not settled.end_reason else state.current_turn,
+                        turn_number=state.turn_number + 1,
+                        move_history=list(state.move_history),
+                        winner=settled.winner,
+                        end_reason=settled.end_reason,
+                        expected_turn_number=state.turn_number,
+                        expected_revision=state.revision,
+                        turn_started_at=turn_started_dt,
+                        phase_bank=settled.phase_bank,
+                    )
+                    if applied:
+                        break
                 if not applied:
                     return
                 await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
                     'type': 'turn_passed',
                     'passedBy': mover,
                     'color': my_color,
-                    'boardState': board_state,
-                    'currentTurn': next_player if not end_reason else '',
+                    'boardState': settled.board_state,
+                    'currentTurn': next_player if not settled.end_reason else '',
                     'turnNumber': state.turn_number + 1,
                     'turnStartedAt': turn_started_dt.isoformat(),
                     'timedOut': True,
+                    'phaseBank': settled.phase_bank,
                 })
-                if end_reason:
-                    await self._broadcast_game_over(game_id, winner, end_reason)
+                if settled.end_reason:
+                    await self._broadcast_game_over(game_id, settled.winner, settled.end_reason)
                     return
                 # Only keep the clock running while somebody is still there to
                 # watch it: an abandoned room would otherwise re-arm itself
@@ -1612,6 +1702,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             winner=winner,
             end_reason=end_reason,
             expected_turn_number=state.turn_number,
+            expected_revision=state.revision,
         )
 
     async def _end_game_with_retry(self, game_id: str, winner: str, end_reason: str,
@@ -1637,6 +1728,22 @@ class GameConsumer(AsyncWebsocketConsumer):
             if await self._end_game(game_id, state, winner, end_reason):
                 return True
         return False
+
+    async def _refuse_lost_write(self, what: str):
+        """Tell the sender their conditional write lost, and to what.
+
+        A write loses to a game that ended - or, now that every write is
+        conditional on the revision it read, to one that simply landed first
+        in the same game. GAME_OVER for the second told a player whose match
+        was still running that it had finished; STATE_CHANGED tells them the
+        turn they sent was built on a board that is no longer there.
+        """
+        state = await self._get_game_state(self.game_id)
+        if state is None or state.is_finished:
+            await send_error(self, 'GAME_OVER', f'This game already ended before your {what} was processed')
+        else:
+            await send_error(
+                self, 'STATE_CHANGED', f'The game changed before your {what} was processed - build it again')
 
     async def _broadcast_game_over(self, game_id: str, winner: str, end_reason: str, **extra):
         """Cancel the turn timer and notify both players that the game ended."""
@@ -1704,10 +1811,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             # locks a unit out before it offers it one.
             #
             # Two predicates, deliberately. **Nobody attacks** on any turn given
-            # to setting out, the opening's three and each phase's own; **the
-            # one-move-per-phase lock** is the opening's alone, and handing it
-            # to a single initialization turn would stop a unit that had moved
-            # in some earlier turn of a phase it has nothing to do with.
+            # to setting out, the opening's three and each phase's postmatch;
+            # **the one-move-per-phase lock** is the opening's alone, and
+            # handing it to a single postmatch turn would stop a unit that had
+            # moved in some earlier turn of a phase it has nothing to do with.
             if is_setup_turn(state.turn_number):
                 if data.get('attack'):
                     await send_error(
@@ -1726,40 +1833,10 @@ class GameConsumer(AsyncWebsocketConsumer):
                         self, 'INVALID_MOVE', 'That unit has had its move for the opening')
                     return
 
-            # **How many board moves this side still has.** One everywhere the
-            # schedule is running; two in Overtime 2 and three in Overtime 3
-            # (`board_moves_per_turn`). Counted off the record rather than
-            # inferred from "has the turn ended yet", because the moves arrive
-            # as separate messages and only the last of them ends it.
-            #
-            # Checked here for every board move, the walk home included: with
-            # an allowance above one, a client that sets `more` on all of them
-            # could otherwise play the whole game inside one hand-over.
-            moves_allowed = board_moves_per_turn(state.turn_number)
-            moves_used = board_moves_at(
-                list(state.move_history), state.turn_number, my_color)
-            if moves_used >= moves_allowed:
-                await send_error(
-                    self, 'INVALID_MOVE',
-                    f'That side has had all {moves_allowed} of its moves this turn')
-                return
-            # `more` is the client saying "this is not my last": hold the seat
-            # and let the next message in. Honoured only while a move is still
-            # to come after this one - a `more` on the last of the allowance
-            # ends the turn anyway, since there is nothing it could be holding
-            # the seat open for.
-            holding = bool(data.get('more')) and moves_used + 1 < moves_allowed
-            # **The allowance counts moves; the owner's rule counts units.**
-            # A side with three moves could otherwise play A, then B, then A
-            # again - each message legal on its own, judged from where the unit
-            # stands with a full MOV, so the unit covered twice its budget in
-            # one turn. A unit continuing a walk it began arrives as ONE
-            # message carrying the origin it really set out from, so a `from`
-            # that matches an earlier landing is always a second go.
-            if panels.coord_key(fq, fr) in board_move_landings(
-                    list(state.move_history), state.turn_number, my_color):
-                await send_error(
-                    self, 'INVALID_MOVE', 'That unit has already moved this turn')
+            # Checked here for every board move, the walk home included.
+            holding = await self._claim_board_move(
+                state, my_color, panels.coord_key(fq, fr), data)
+            if holding is None:
                 return
 
             # Walking off the board into your own base. It ends the turn like
@@ -1942,6 +2019,52 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.error(f"Error in _handle_make_move: {e}", exc_info=True)
             await send_error(self, 'INTERNAL_ERROR', 'Failed to process move')
 
+    async def _claim_board_move(self, state, color, from_key, data) -> Optional[bool]:
+        """
+        Whether *color* may make one more of the turn's board moves from
+        *from_key*, and whether this message holds the seat for another.
+
+        Returns that `holding` flag, or None having refused the message. Asked
+        by every message that is one of the turn's board moves - a move, a walk
+        home that is the turn's action, a blow into a panel - so the rule is
+        written once. The blow into a panel used to skip it and end the turn
+        outright, which dropped whatever else an overtime turn had staged.
+
+        **How many board moves this side still has.** One everywhere the
+        schedule is running; two in Overtime 2 and three in Overtime 3
+        (`board_moves_per_turn`). Counted off the record rather than inferred
+        from "has the turn ended yet", because the moves arrive as separate
+        messages and only the last of them ends it - and a client that set
+        `more` on all of them could otherwise play the whole game inside one
+        hand-over.
+
+        `more` is the client saying "this is not my last": hold the seat and
+        let the next message in. Honoured only while a move is still to come
+        after this one - a `more` on the last of the allowance ends the turn
+        anyway, since there is nothing it could be holding the seat open for.
+
+        **The allowance counts moves; the owner's rule counts units.** A side
+        with three moves could otherwise play A, then B, then A again - each
+        message legal on its own, judged from where the unit stands with a full
+        MOV, so the unit covered twice its budget in one turn. A unit
+        continuing a walk it began arrives as ONE message carrying the origin
+        it really set out from, so a `from` that matches an earlier landing is
+        always a second go.
+        """
+        history = list(state.move_history)
+        moves_allowed = board_moves_per_turn(state.turn_number)
+        moves_used = board_moves_at(history, state.turn_number, color)
+        if moves_used >= moves_allowed:
+            await send_error(
+                self, 'INVALID_MOVE',
+                f'That side has had all {moves_allowed} of its moves this turn')
+            return None
+        if from_key in board_move_landings(history, state.turn_number, color):
+            await send_error(
+                self, 'INVALID_MOVE', 'That unit has already moved this turn')
+            return None
+        return bool(data.get('more')) and moves_used + 1 < moves_allowed
+
     async def _commit_turn(self, state, board, move_record, config, next_player) -> bool:
         """
         End the mover's turn: *move_record* has been applied to *board*.
@@ -1964,26 +2087,13 @@ class GameConsumer(AsyncWebsocketConsumer):
         mover_color = 'white' if state.current_turn == state.player_white else 'black'
         overtime_toll(board, config, mover_color, state.turn_number)
 
-        winner = ''
-        end_reason = ''
         # Who lost is a property of the board, not of who moved: a
         # counter-attack can kill the attacker's commander on their own turn.
-        defeated_all = defeated_sides(board, config)
-        if len(defeated_all) == 2:
-            # A counter-attack can kill the attacker's commander on the
-            # attacker's own turn: nobody won that.
-            end_reason = 'draw_mutual'
-            logger.info(f"Game {self.game_id} drawn: both sides fell in one exchange")
-        elif defeated_all:
-            defeated = defeated_all[0]
-            loser = state.player_white if defeated == 'white' else state.player_black
-            winner = state.player_black if defeated == 'white' else state.player_white
-            end_reason = _ending_name(config)
-            logger.info(f"Game {self.game_id} decided: {loser} lost ({defeated})")
-
-        max_turns = config.get('rules', {}).get('maxTurns', 0)
-        if not end_reason and max_turns > 0 and state.turn_number >= max_turns:
-            end_reason = 'draw_max_turns'
+        # The board, the schedule and the turn limit, in that order - see
+        # _settle_hand_over.
+        settled = _settle_hand_over(state, board, new_history, defeated_sides(board, config))
+        board_state, bank = settled.board_state, settled.phase_bank
+        winner, end_reason = settled.winner, settled.end_reason
 
         # Persist updated state - conditional on the game still being at
         # state.turn_number and unfinished, so a turn timer that already
@@ -1992,26 +2102,29 @@ class GameConsumer(AsyncWebsocketConsumer):
         turn_started_dt = timezone.now()
         applied = await self._update_game_state(
             game_id=self.game_id,
-            board_state=board.to_dict(),
+            board_state=board_state,
             current_turn=next_player if not end_reason else state.current_turn,
             turn_number=next_turn_number,
             move_history=new_history,
             winner=winner,
             end_reason=end_reason,
             expected_turn_number=state.turn_number,
+            expected_revision=state.revision,
             turn_started_at=turn_started_dt,
+            phase_bank=bank,
         )
         if not applied:
-            await send_error(self, 'GAME_OVER', 'This game already ended before your move was processed')
+            await self._refuse_lost_write('move')
             return False
 
         await broadcast_to_group(self.channel_layer, self.room_group_name, {
             'type': 'move_made',
             'move': move_record,
-            'boardState': board.to_dict(),
+            'boardState': board_state,
             'currentTurn': next_player if not end_reason else '',
             'turnNumber': next_turn_number,
             'turnStartedAt': turn_started_dt.isoformat(),
+            'phaseBank': bank,
         })
 
         if end_reason:
@@ -2029,8 +2142,10 @@ class GameConsumer(AsyncWebsocketConsumer):
         """
         A board unit walks, optionally, and strikes a unit standing in a panel.
 
-        Unlike a crossing this IS the turn's board action - there is no
-        `make_move` behind it to carry the walk - so it ends the turn.
+        Unlike a crossing this IS one of the turn's board moves - there is no
+        `make_move` behind it to carry the walk - so it ends the turn, unless
+        it comes with `more` in an overtime stretch that allows another move:
+        then it holds the seat exactly as a held `make_move` does.
 
         The client sends `unit`, `panel` and `counters` because the browser
         engine needs all three. None of them is read here: the defender, the
@@ -2080,6 +2195,19 @@ class GameConsumer(AsyncWebsocketConsumer):
                     self, 'INVALID_MOVE', no_attack_message(state.turn_number))
                 return
 
+            # One of the turn's board moves like any other: the same allowance,
+            # the same one-move-per-unit rule, and the same `more`. Ending the
+            # turn outright threw away every other move an overtime turn had
+            # staged alongside it.
+            try:
+                from_norm = panels.coord_key(*panels.parse_key(from_key))
+            except ValueError:
+                await send_error(self, 'INVALID_MOVE', 'Malformed move coordinates')
+                return
+            holding = await self._claim_board_move(state, my_color, from_norm, data)
+            if holding is None:
+                return
+
             outcome = resolve_panel_attack(
                 board, config, list(state.move_history),
                 from_key, to_key, attack_key, my_color, state.turn_number, orientation)
@@ -2088,7 +2216,11 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return
 
             next_player = state.player_black if mover == state.player_white else state.player_white
-            if not await self._commit_turn(state, board, outcome['record'], config, next_player):
+            if holding:
+                if not await self._commit_deployment(
+                        state, board.to_dict(), outcome['record'], 'blow'):
+                    return
+            elif not await self._commit_turn(state, board, outcome['record'], config, next_player):
                 return
 
             logger.info(
@@ -2167,7 +2299,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             # A crossing is a reserve unit's move, so it is held to the same
             # allowance as a walk inside the panel: not locked out of the
             # opening, one of at most three reserve movers this turn - five in a
-            # phase initialization - and only on what it has not already walked.
+            # postmatch - and only on what it has not already walked.
             # Without this a unit shuffled to the gateway first crossed on a
             # full MOV it had half spent.
             allowance = panels.panel_allowance(config, history, unit, state.turn_number)
@@ -2249,11 +2381,11 @@ class GameConsumer(AsyncWebsocketConsumer):
             winner=state.winner,
             end_reason=state.end_reason,
             expected_turn_number=state.turn_number,
+            expected_revision=state.revision,
             turn_started_at=state.turn_started_at,
         )
         if not applied:
-            await send_error(
-                self, 'GAME_OVER', f'This game already ended before your {what} was processed')
+            await self._refuse_lost_write(what)
             return False
 
         await broadcast_to_group(self.channel_layer, self.room_group_name, {
@@ -2270,6 +2402,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'config': state.config_snapshot,
             'turnStartedAt': (state.turn_started_at or timezone.now()).isoformat(),
             'drawOfferedBy': '',
+            'phaseBank': state.phase_bank or {},
         })
         return True
 
@@ -2327,7 +2460,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_MOVE', 'That unit is not yours')
                 return
 
-            points = economy.points_of(my_color, ply, history, config)
+            points = economy.points_of(my_color, ply, history, config, state.phase_bank)
             targets = panels.panel_move_targets(
                 config, radius, history, dict(state.board_state), from_key, ply, points,
                 orientation)
@@ -2400,8 +2533,11 @@ class GameConsumer(AsyncWebsocketConsumer):
             next_player = state.player_black if mover == state.player_white else state.player_white
 
             config = state.config_snapshot
-            # The toll, and whether it ended the match - see _settle_pass.
-            board_state, winner, end_reason = _settle_pass(state)
+            # The toll, the phase bank, and whether either ended the match -
+            # see _settle_pass.
+            settled = _settle_pass(state)
+            board_state, bank = settled.board_state, settled.phase_bank
+            winner, end_reason = settled.winner, settled.end_reason
 
             next_turn_number = state.turn_number + 1
             turn_started_dt = timezone.now()
@@ -2414,10 +2550,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 winner=winner,
                 end_reason=end_reason,
                 expected_turn_number=state.turn_number,
+                expected_revision=state.revision,
                 turn_started_at=turn_started_dt,
+                phase_bank=bank,
             )
             if not applied:
-                await send_error(self, 'GAME_OVER', 'This game already ended before your pass was processed')
+                await self._refuse_lost_write('pass')
                 return
 
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
@@ -2430,6 +2568,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'currentTurn': next_player if not end_reason else '',
                 'turnNumber': next_turn_number,
                 'turnStartedAt': turn_started_dt.isoformat(),
+                'phaseBank': bank,
             })
 
             if end_reason:
@@ -2573,6 +2712,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'config': state.config_snapshot,
                 'turnStartedAt': (state.turn_started_at or timezone.now()).isoformat(),
                 'drawOfferedBy': state.draw_offered_by or '',
+                'phaseBank': state.phase_bank or {},
             })
         except Exception as e:
             logger.error(f"Error in _handle_request_game_state: {e}", exc_info=True)
@@ -2952,8 +3092,16 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'config_snapshot': config_snapshot,
                 'draw_offered_by': '',
                 'turn_started_at': turn_started_at or timezone.now(),
+                # A rematch reuses the row, and must not inherit the last
+                # match's phases.
+                'phase_bank': {},
             },
         )
+        if not _created:
+            # A rematch reuses the row too: a write still holding the last
+            # match's revision must not land on this one.
+            GameState.objects.filter(pk=state.pk).update(revision=F('revision') + 1)  # type: ignore
+            state.refresh_from_db(fields=['revision'])
         return state
 
     @database_sync_to_async
@@ -2966,7 +3114,8 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _update_game_state(self, game_id, board_state, current_turn, turn_number, move_history,
-                            winner='', end_reason='', expected_turn_number=None, turn_started_at=None):
+                            winner='', end_reason='', expected_turn_number=None, turn_started_at=None,
+                            phase_bank=None, expected_revision=None):
         """Update the mutable fields of a GameState after a move or game end.
 
         If expected_turn_number is given, the write is conditional: it only
@@ -2976,15 +3125,27 @@ class GameConsumer(AsyncWebsocketConsumer):
         turn timer already ended the game, or vice versa) from silently
         clobbering whichever result actually landed first.
 
+        **expected_revision is what makes that complete.** Every write bumps
+        the row's revision, so a write conditional on the revision it read
+        loses to any write that landed since - including one in the same ply,
+        which the turn number cannot see: two deployments from two tabs, or a
+        turn timer that read the board before a deployment did. Every caller
+        that holds a state snapshot passes its revision.
+
         Any pending draw offer is cleared by every state write: a move
         invalidates an outstanding offer (matching the client, which already
         clears it locally on move_made), and a finished game has no use for one.
+
+        *phase_bank* is written only when given: a hand-over hands one in, and
+        a deployment - which closes no phase - leaves the stored one alone.
 
         Returns True if the write applied, False if a concurrent write won.
         """
         qs = GameState.objects.filter(game_id=game_id)  # type: ignore
         if expected_turn_number is not None:
             qs = qs.filter(turn_number=expected_turn_number, end_reason='')
+        if expected_revision is not None:
+            qs = qs.filter(revision=expected_revision)
         update_fields = {
             'board_state': board_state,
             'current_turn': current_turn,
@@ -2993,9 +3154,12 @@ class GameConsumer(AsyncWebsocketConsumer):
             'winner': winner,
             'end_reason': end_reason,
             'draw_offered_by': '',
+            'revision': F('revision') + 1,
         }
         if turn_started_at is not None:
             update_fields['turn_started_at'] = turn_started_at
+        if phase_bank is not None:
+            update_fields['phase_bank'] = phase_bank
         rows = qs.update(**update_fields)
         return rows > 0
 

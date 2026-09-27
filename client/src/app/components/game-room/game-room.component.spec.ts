@@ -1,5 +1,8 @@
 import { BehaviorSubject, Subject, of } from 'rxjs';
 import { GameRoomComponent } from './game-room.component';
+import { GameStateService } from '../../services/game-state.service';
+import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
+import { turnHeading } from '../../services/phases';
 import { NavigationStateService } from '../../services/navigation-state.service';
 
 /**
@@ -22,11 +25,21 @@ describe('GameRoomComponent ability panel', () => {
    * held in a field - two awards of 100 by Phase 1 - so a test that wants a
    * side on a particular balance sets what it has already spent.
    */
+  /**
+   * `cp` to spend, whatever the turn. Nothing is awarded before Phase 1's
+   * postmatch, so a spend below nothing stands in for what the phases would
+   * have paid.
+   */
+  const fundCp = (c: any, cp: number) => {
+    // Less the CP a side starts with, so `cp` is exactly what it has.
+    c.myCpSpent = ruleOf(c.gameState.snapshot.config, 'cpAtStart') - cp;
+  };
+
   const giveCp = (c: any, cp: number) => {
-    // Turn 5, Phase 1's first played turn. Not turn 4: that is the phase's own
-    // initialization, and nothing is cast on a turn given to setting out.
+    // Turn 5, in Phase 1's play. Any turn of it would do but the postmatch at
+    // its end (turn 14): nothing is cast on a turn given to setting out.
     c.gameState.snapshot.turnNumber = 10;
-    c.myCpSpent = 200 - cp;
+    fundCp(c, cp);
   };
 
   const room = (): any => {
@@ -88,71 +101,101 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.panelPositions).toEqual({});
   });
 
-  it('pays overtime’s turns at the stretch’s rate, both ways round', () => {
-    // Two places hand out the turn point and they must agree: `beginTurnFor`
-    // pays it live as a side starts, and `pointsFromHistory` re-derives the
-    // whole purse from the record on every commit. A flat 1 in either one is
-    // invisible until overtime, where the rates part company - and then the
-    // purse jumps every time a commit overwrites the live tally.
+  it('pays each turn at its rate, and puts it in the purse with the record', () => {
+    // One place hands the turn's pay out: the record's sum, which every
+    // hand-over lays over both purses (`reconcilePoints`). It used to be paid
+    // live as well, and a second copy is a second thing to get wrong.
     const c = room();
     c.gameState.snapshot.config = { units: {} };
     c.gameState.snapshot.moveHistory = [];
 
-    // Turn 44 is the last of Overtime 1: 44 turns at one apiece.
-    c.gameState.snapshot.turnNumber = 2 * 44 - 1;
-    expect(c.pointsFromHistory('white')).toBe(44);
-    // Turn 45 is Overtime 2, which pays three.
-    c.gameState.snapshot.turnNumber = 2 * 45 - 1;
-    expect(c.pointsFromHistory('white')).toBe(47);
-    // The last turn pays five: 44 + 5x3 + 5.
+    // Turn 19 is the last before Phase 2's halftime: 19 at one apiece, and
+    // Phases 1 and 2's grants, 10 and 20.
+    c.gameState.snapshot.turnNumber = 2 * 19 - 1;
+    expect(c.pointsFromHistory('white')).toBe(19 + 30);
+    // The halftime (turn 20) pays two; Phase 3's (turn 31) three, with its 30.
+    c.gameState.snapshot.turnNumber = 2 * 20 - 1;
+    expect(c.pointsFromHistory('white')).toBe(21 + 30);
+    c.gameState.snapshot.turnNumber = 2 * 31 - 1;
+    expect(c.pointsFromHistory('white')).toBe(44 + 60);
+    // And overtime pays nothing: 59 in rates and 60 in grants by turn 36.
     c.gameState.snapshot.turnNumber = 2 * 50 - 1;
-    expect(c.pointsFromHistory('white')).toBe(64);
+    expect(c.pointsFromHistory('white')).toBe(119);
 
-    // And the live award reads the same table. The snapshot has already moved
-    // on to the hand-over the side is about to play, which is the one paid for.
-    const paid = (ply: number) => {
-      c.gameState.snapshot.turnNumber = ply;
-      c.myPoints = 0;
-      c.beginTurnFor('white');
-      return c.myPoints;
+    // Beginning a turn pays nothing by itself; the re-sum after it does.
+    c.gameState.snapshot.turnNumber = 2 * 4 - 1;
+    c.myPoints = 0;
+    c.beginTurnFor('white');
+    expect(c.myPoints).toBe(0);
+    c.reconcilePoints();
+    expect(c.myPoints).toBe(4 + 10);
+  });
+
+  it('turns the banked victory points into points as overtime begins', () => {
+    // The owner, 24 Sep 2026: "at the start of the overtime, all your
+    // accumlated victory points turn into regular points." Once, as a side's
+    // first overtime turn begins - white on hand-over 73, black on 74.
+    const c = room();
+    c.gameState.snapshot.config = { units: {} };
+    c.gameState.snapshot.moveHistory = [];
+    // 14 against 4: ten clear, not more, so it goes to overtime.
+    c.gameState.snapshot.phaseBank = {
+      1: { white: 5, black: 1 }, 2: { white: 9, black: 0 }, 3: { white: 0, black: 3 },
     };
-    expect(paid(1)).toBe(1);
-    expect(paid(2 * 44 - 1)).toBe(1);
-    expect(paid(2 * 45 - 1)).toBe(3);
-    expect(paid(2 * 50 - 1)).toBe(5);
+    const history = (ply: number, color: 'white' | 'black') => {
+      c.gameState.snapshot.turnNumber = ply;
+      return c.pointsFromHistory(color);
+    };
+    expect(history(72, 'white')).toBe(119);
+    expect(history(73, 'white')).toBe(119 + 14);
+    expect(history(99, 'white')).toBe(119 + 14);
+    expect(history(73, 'black')).toBe(119);
+    expect(history(74, 'black')).toBe(119 + 4);
+
+    // A match won on points ends ON hand-over 73 and never reaches overtime:
+    // its finished position converts nothing.
+    c.gameState.snapshot.phaseBank = {
+      1: { white: 30, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 },
+    };
+    expect(history(73, 'white')).toBe(119);
   });
 
   it('adds up points from the history exactly the way the server does', () => {
     // The server prices the wrap against this sum (engine/economy.py), so a
     // purse that disagrees offers a crossing the server then refuses.
     const c = room();
-    c.gameState.snapshot.config = { units: { knight: { value: 12 } } };
+    c.gameState.snapshot.config = { units: { knight: { value: 12 }, queen: { value: 30 }, pawn: { value: 5 } } };
     c.gameState.snapshot.turnNumber = 21;
     c.gameState.snapshot.moveHistory = [];
-    // A point for each of white's eleven turns begun by ply 21.
-    expect(c.pointsFromHistory('white')).toBe(11);
-    expect(c.pointsFromHistory('black')).toBe(10);
+    // A point for each of white's eleven turns begun by ply 21, and Phase 1's
+    // 10 as it began.
+    expect(c.pointsFromHistory('white')).toBe(21);
+    expect(c.pointsFromHistory('black')).toBe(20);
 
     const wrap = { panelMove: true, price: 12, unit: { color: 'white' } };
     const home = { withdrawn: true, color: 'white', unit_id: 'knight', unit: {} };
     c.gameState.snapshot.moveHistory = [wrap];
-    expect(c.pointsFromHistory('white')).toBe(-1);
+    expect(c.pointsFromHistory('white')).toBe(9);
     // A round trip costs nothing.
     c.gameState.snapshot.moveHistory = [wrap, home];
-    expect(c.pointsFromHistory('white')).toBe(11);
+    expect(c.pointsFromHistory('white')).toBe(21);
 
-    // A kill pays its maker; the attacker dying to a counter pays the defender;
-    // a cast that kills pays nobody.
+    // A kill pays its maker the dead unit's worth; the attacker dying to a
+    // counter pays the defender its worth; a cast that kills pays nobody; and
+    // a blow into a panel pays nobody either, base or reserve.
+    const into = { intoPanel: true, panelAttack: true };
     c.gameState.snapshot.moveHistory = [
-      { color: 'white', defender_eliminated: true },
-      { color: 'black', attacker_eliminated: true },
-      { panelEffect: true, color: 'white', defender_eliminated: true },
+      { color: 'white', unit_id: 'pawn', captured: 'queen', defender_eliminated: true },
+      { color: 'black', unit_id: 'knight', attacker_eliminated: true },
+      { panelEffect: true, color: 'white', captured: 'queen', defender_eliminated: true },
+      { ...into, panel: 'tr', color: 'white', unit_id: 'pawn', captured: 'queen', defender_eliminated: true },
+      { ...into, panel: 'tl', color: 'white', unit_id: 'knight', attacker_eliminated: true },
     ];
-    expect(c.pointsFromHistory('white')).toBe(13);
-    expect(c.pointsFromHistory('black')).toBe(10);
+    expect(c.pointsFromHistory('white')).toBe(21 + 30 + 12);
+    expect(c.pointsFromHistory('black')).toBe(20);
   });
 
-  it('resets both purses from the history in a networked room, and leaves solo alone', () => {
+  it('resets both purses from the history, and keeps what abilities did in solo', () => {
     const networked = room();
     networked.isSinglePlayer = false;
     networked.gameState.snapshot.config = { units: {} };
@@ -163,15 +206,25 @@ describe('GameRoomComponent ability panel', () => {
     expect(networked.myPoints).toBe(2);
     expect(networked.opponentPoints).toBe(1);
 
-    // Solo buys abilities with points, and abilities are not recorded:
-    // resetting to the record would hand back every point spent on one.
+    // Solo is summed from the record too. It buys abilities with points, and
+    // abilities are not recorded - so what they did is kept apart and added
+    // on, and the reset hands back nothing spent on one.
     const solo = room();
     solo.gameState.snapshot.config = { units: {} };
     solo.gameState.snapshot.turnNumber = 3;
     solo.gameState.snapshot.moveHistory = [];
-    solo.myPoints = 99;
+    solo.myPoints = 99;               // a stale tally
     solo.reconcilePoints();
-    expect(solo.myPoints).toBe(99);
+    expect(solo.myPoints).toBe(2);
+    const pool = solo.abilityIds.findIndex((_: string, i: number) => !solo.isPathSlot(i));
+    (solo as any).chargeFor('mine', pool, 5);
+    expect(solo.myAbilityPoints).toBe(-5);
+    solo.reconcilePoints();
+    expect(solo.myPoints).toBe(2 - 5);
+    // A refund hands it back through the same door.
+    (solo as any).chargeFor('mine', pool, -5);
+    solo.reconcilePoints();
+    expect(solo.myPoints).toBe(2);
   });
 
   it('puts the panels and the toll in play in every room, and keeps abilities solo', () => {
@@ -626,6 +679,28 @@ describe('GameRoomComponent ability panel', () => {
     localStorage.removeItem('cpp.localGame.ui.v2');
   });
 
+  it('forgives a CP spend saved before CP was earned, and keeps one saved since', () => {
+    // A save from the flat 100-a-phase days spent out of a purse that no
+    // longer exists; read against what is earned now it would sit in debt.
+    const c = room();
+    c.gameId = 'local';
+    localStorage.setItem('cpp.localGame.ui.v2', JSON.stringify({ myCpSpent: 150, opponentCpSpent: 90 }));
+    (c as any).restoreLocalUiState();
+    expect(c.myCpSpent).toBe(0);
+    expect(c.opponentCpSpent).toBe(0);
+
+    c.myCpSpent = 4;
+    c.myAbilityPoints = -7;
+    (c as any).persistLocalUiState();
+    const fresh = room();
+    fresh.gameId = 'local';
+    (fresh as any).restoreLocalUiState();
+    expect(fresh.myCpSpent).toBe(4);
+    // And what abilities did to the points purse, the part no record holds.
+    expect(fresh.myAbilityPoints).toBe(-7);
+    localStorage.removeItem('cpp.localGame.ui.v2');
+  });
+
   it('drops an ability the catalogue no longer has, rather than pointing at nothing', () => {
     const c = room();
     c.gameId = 'local';
@@ -773,6 +848,7 @@ describe('GameRoomComponent ability panel', () => {
 
   it('replays what the turn took up, not only what it spent', () => {
     const c = room();
+    fundCp(c, 10);
     const beats: any[] = [];
     // playSteps is what reaches the board; capture what a turn hands it.
     c.pickAbility('mine', TARGETED);
@@ -812,6 +888,7 @@ describe('GameRoomComponent ability panel', () => {
 
   it('glows an ultimate once it is used, like every other cast', () => {
     const c = room();
+    fundCp(c, 10);
     c.unlockPath('mine', 0);
     const ult = c.abilityPaths[0].ultimate;
     giveCp(c, 20);
@@ -819,14 +896,17 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.focusedAbilityCanActivate()).toBeTrue();
 
     c.activateFocusedAbility();
-    // Spent, and the other player can see which one it was.
-    expect(c.myUltimateUsed).toBeTrue();
+    // Spent - its one use of the match - and the other player can see which
+    // one it was.
+    expect(c.usesLeft('mine', ult)).toBe(0);
+    expect(c.focusedAbilityCanActivate()).toBeFalse();
     expect(c.isRecent('mine', ult)).toBeTrue();
     expect(c.isRecent('opponent', ult)).toBeFalse();
   });
 
   it('lights the passive a path is named by, and only that', () => {
     const c = room();
+    fundCp(c, 10);
     const path = c.abilityPaths[0];
     // The skill and the ultimate arrive with it and speak for themselves.
     c.unlockPath('mine', 0);
@@ -908,6 +988,7 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.abilityNote('mine')).toContain('Not carried');
 
     c.clearAbilityFocus();
+    fundCp(c, 10);
     c.focusPath('mine', 0);
     expect(c.abilityNote('mine')).toContain('Pick to take the path');
 
@@ -917,15 +998,36 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.abilityNote('mine')).toBe('The game has not started yet.');
   });
 
-  it("hands out the config's CP each phase", () => {
-    // rules.cpPerPhase - 100 unless the room says otherwise. Turn 10 is in
-    // Phase 1, the second award.
+  it('starts each side on 5 CP and earns the rest at the start of each postmatch', () => {
+    // The owner, 24 Sep 2026: "at the start of the game, user has 5cp", and
+    // "cp should be awarded at the start of post match" - phase_x (5, 10, 15)
+    // plus both sides' scores for the phase, plus the gap for whoever scored
+    // less. The engine's bank is the record of the awards.
     const c = room();
-    c.gameState.snapshot.turnNumber = 10;
     c.myCpSpent = 0;
-    expect(c.cpOf('mine')).toBe(200);
-    c.gameState.snapshot.config = { rules: { cpPerPhase: 30 } };
-    expect(c.cpOf('mine')).toBe(60);
+    c.opponentCpSpent = 0;
+    c.gameState.snapshot.turnNumber = 26;   // turn 13, the last of Phase 1's play
+    c.gameState.snapshot.phaseBank = {};
+    expect(c.cpOf('mine')).toBe(5);
+    expect(c.cpOf('opponent')).toBe(5);
+
+    // Phase 1 banks as its postmatch begins: this seat (white) 12, black 4.
+    c.gameState.snapshot.turnNumber = 27;
+    c.gameState.snapshot.phaseBank = { 1: { white: 12, black: 4 } };
+    expect(c.cpOf('mine')).toBe(5 + 21);       // 5 + 16
+    expect(c.cpOf('opponent')).toBe(5 + 29);   // 5 + 16, and the 8 it was behind
+
+    // Phase 2's adds its own, on top: 10 + 6 each.
+    c.gameState.snapshot.turnNumber = 49;
+    c.gameState.snapshot.phaseBank = { 1: { white: 12, black: 4 }, 2: { white: 3, black: 3 } };
+    expect(c.cpOf('mine')).toBe(5 + 21 + 16);
+    expect(c.cpOf('opponent')).toBe(5 + 29 + 16);
+
+    // Both numbers are the room's config, and what is spent comes off.
+    c.gameState.snapshot.config = { rules: { cpAtStart: 0, cpPhaseOffset: 7 } };
+    expect(c.cpOf('mine')).toBe(23 + 20);      // (7 + 16) + (14 + 6)
+    c.myCpSpent = 7;
+    expect(c.cpOf('mine')).toBe(23 + 20 - 7);
   });
 
   it('shows a path in full before it is taken, and takes it only on confirm', () => {
@@ -1031,9 +1133,13 @@ describe('GameRoomComponent ability panel', () => {
     const c = room();
     c.gameState.snapshot.turnNumber = 1;   // the opening
 
-    // Choosing is what the opening is for: pairs and paths are both open.
+    // Choosing is what the opening is for: pairs and paths are both open. A
+    // path wants CP, though, and nothing awards any before turn 14 - the
+    // opening does not refuse it, the purse does.
     expect(c.canChooseAbilities('mine')).toBeTrue();
     expect(c.canPick('mine', TARGETED)).toBeTrue();
+    expect(c.canUnlockPath('mine', 0)).toBeFalse();
+    fundCp(c, 10);
     expect(c.canUnlockPath('mine', 0)).toBeTrue();
     c.pickAbility('mine', TARGETED);
     expect(c.myLoadout).toEqual([TARGETED, TARGETED_PAIR]);
@@ -1044,12 +1150,16 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canUseAbilities('mine')).toBeFalse();
     expect(c.canAfford('mine', TARGETED, 0)).toBeFalse();
 
-    // Nor on Phase 1's own initialization turn, which is a setup turn too.
-    c.gameState.snapshot.turnNumber = 8;   // turn 4, Phase 1 Initialization
+    // Which is the turn straight after the opening now.
+    c.gameState.snapshot.turnNumber = 8;   // turn 4, Phase 1's first played
+    expect(c.canUseAbilities('mine')).toBeTrue();
+
+    // Nor on Phase 1's own postmatch, which is a setup turn too.
+    c.gameState.snapshot.turnNumber = 27;  // turn 14, Phase 1 Postmatch
     expect(c.canChooseAbilities('mine')).toBeTrue();
     expect(c.canUseAbilities('mine')).toBeFalse();
 
-    c.gameState.snapshot.turnNumber = 10;  // turn 5, Phase 1's first played
+    c.gameState.snapshot.turnNumber = 29;  // turn 15, Phase 2's first played
     expect(c.canUseAbilities('mine')).toBeTrue();
   });
 
@@ -1110,7 +1220,9 @@ describe('GameRoomComponent ability panel', () => {
   it('scores the header off the board it holds and the history of its dead', () => {
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
-    c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
+    // The right-hand zone, 1 a hex, so what is held is the count of hexes
+    // (the middle one is 2 a hex).
+    c.gameState.snapshot.boardState = { '7,0': { unit_id: 'pawn', color: 'white' } };
     c.gameState.snapshot.moveHistory = [];
     // Hand-over 8 is turn 4, the first of Phase 1, and every loss below is
     // taken in it. A full turn is two hand-overs, so the numbers here are
@@ -1121,7 +1233,7 @@ describe('GameRoomComponent ability panel', () => {
       return { cap: s.cap, death: s.death, total: s.total };
     };
 
-    // The middle of the middle patch: its own hex and the six around it.
+    // The middle of the patch: its own hex and the six around it.
     expect(score('mine')).toEqual({ cap: 7, death: 0, total: 7 });
     expect(score('opponent')).toEqual({ cap: 0, death: 0, total: 0 });
 
@@ -1137,13 +1249,14 @@ describe('GameRoomComponent ability panel', () => {
       ...c.gameState.snapshot.moveHistory,
       { color: 'black', unit_id: 'pawn', captured: null, attacker_eliminated: true, turn: 8 },
     ];
-    // Which puts a side with no board and a dead pawn under water.
-    expect(score('opponent')).toEqual({ cap: 0, death: 5, total: -5 });
+    // A side with no board and a dead pawn stops at 0 - the phase never goes
+    // under, however much its deaths outweigh its cap (phaseTotal).
+    expect(score('opponent')).toEqual({ cap: 0, death: 5, total: 0 });
 
     // Read off the record rather than tallied as it went: the same history
     // gives the same number however this client got here.
     c.gameState.snapshot.boardState = {};
-    expect(score('mine')).toEqual({ cap: 0, death: 5, total: -5 });
+    expect(score('mine')).toEqual({ cap: 0, death: 5, total: 0 });
 
     // A loss belongs to the phase it happened in and no other, or summing the
     // phases would charge it again in every later one.
@@ -1154,32 +1267,36 @@ describe('GameRoomComponent ability panel', () => {
   it('sums the phases behind the running one, and glows the lead', () => {
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
-    c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
+    // The right-hand zone, 1 a hex, so what is held is the count of hexes
+    // (the middle one is 2 a hex).
+    c.gameState.snapshot.boardState = { '7,0': { unit_id: 'pawn', color: 'white' } };
     c.gameState.snapshot.moveHistory = [];
-    c.gameState.snapshot.turnNumber = 50;   // turn 25, Phase 3
+    c.gameState.snapshot.turnNumber = 52;   // turn 26, Phase 3's first played
 
     // Nothing banked yet reads as the phase alone - no parenthetical to draw.
+    // Seven held, tripled in Phase 3.
     expect(c.phaseScore('mine').banked).toEqual([]);
-    expect(c.phaseScore('mine').match).toBe(7);
+    expect(c.phaseScore('mine').multiplier).toBe(3);
+    expect(c.phaseScore('mine').match).toBe(21);
 
     // Phases 1 and 2, as they finished.
-    c.phaseBank = { 1: { white: 4, black: 9 }, 2: { white: 6, black: 1 } };
+    c.gameState.snapshot.phaseBank = { 1: { white: 4, black: 9 }, 2: { white: 6, black: 1 } };
     (c as any).standingsCache = null;
     const us = c.phaseScore('mine');
     const them = c.phaseScore('opponent');
     expect(us.banked).toEqual([4, 6]);
     expect(them.banked).toEqual([9, 1]);
     // The running phase counts towards the match before it has ended.
-    expect(us.match).toBe(17);
+    expect(us.match).toBe(31);
     expect(them.match).toBe(10);
     expect(us.leading).toBeTrue();
     expect(them.leading).toBeFalse();
 
     // Level pegging lights neither, so a glow always means a lead.
-    c.phaseBank = { 1: { white: 0, black: 7 } };
+    c.gameState.snapshot.phaseBank = { 1: { white: 0, black: 21 } };
     (c as any).standingsCache = null;
-    expect(c.phaseScore('mine').match).toBe(7);
-    expect(c.phaseScore('opponent').match).toBe(7);
+    expect(c.phaseScore('mine').match).toBe(21);
+    expect(c.phaseScore('opponent').match).toBe(21);
     expect(c.phaseScore('mine').leading).toBeFalse();
     expect(c.phaseScore('opponent').leading).toBeFalse();
   });
@@ -1206,24 +1323,24 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.config = { board: { radius: 11 }, units: {} };
     c.gameState.snapshot.boardState = {};
     c.gameState.snapshot.moveHistory = [];
-    c.gameState.snapshot.turnNumber = 67;   // turn 34, the first of overtime
+    c.gameState.snapshot.turnNumber = 73;   // turn 37, the first of overtime
     const settle = (white: number, black: number) => {
-      c.phaseBank = { 1: { white, black }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+      c.gameState.snapshot.phaseBank = { 1: { white, black }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
       (c as any).standingsCache = null;
       return c.matchVerdict;
     };
 
     // Nothing is settled until all three are banked.
-    c.phaseBank = { 1: { white: 99, black: 0 } };
+    c.gameState.snapshot.phaseBank = { 1: { white: 99, black: 0 } };
     (c as any).standingsCache = null;
     expect(c.matchVerdict).toBeNull();
 
-    // White has to be more than 5 clear; black only more than 3, because
+    // White has to be more than 10 clear; black only more than 5, because
     // white moves first.
-    expect(settle(6, 0)).toBe('white');
-    expect(settle(5, 0)).toBe('overtime');
-    expect(settle(0, 4)).toBe('black');
-    expect(settle(0, 3)).toBe('overtime');
+    expect(settle(11, 0)).toBe('white');
+    expect(settle(10, 0)).toBe('overtime');
+    expect(settle(0, 6)).toBe('black');
+    expect(settle(0, 5)).toBe('overtime');
     expect(settle(0, 0)).toBe('overtime');
   });
 
@@ -1232,7 +1349,7 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.config = { board: { radius: 11 }, units: {} };
     c.gameState.snapshot.boardState = {};
     c.gameState.snapshot.moveHistory = [];
-    c.phaseBank = { 1: { white: 4, black: 4 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+    c.gameState.snapshot.phaseBank = { 1: { white: 4, black: 4 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
     const at = (turn: number) => {
       c.gameState.snapshot.turnNumber = turn;
       (c as any).standingsCache = null;
@@ -1242,11 +1359,11 @@ describe('GameRoomComponent ability panel', () => {
 
     // Overtime costs a king an HP a turn and a side nothing at all - the
     // owner's rule, "loses just HP". The score it opens on is the score it
-    // keeps, however long it runs.
-    expect(at(67).match).toBe(4);
-    expect(at(68).match).toBe(4);
-    expect(at(69).match).toBe(4);
-    expect(at(70).match).toBe(4);
+    // keeps, however long it runs. Hand-over 73 is turn 37, its first.
+    expect(at(73).match).toBe(4);
+    expect(at(74).match).toBe(4);
+    expect(at(75).match).toBe(4);
+    expect(at(76).match).toBe(4);
     expect(at(99).match).toBe(4);
 
     // The three phases are what the match is summed from; overtime adds no
@@ -1260,29 +1377,323 @@ describe('GameRoomComponent ability panel', () => {
     expect(at(101).verdict).toBe('black');
   });
 
-  it('banks a phase as the next one begins, once', () => {
+  it('shows the bank the engine keeps, and banks nothing of its own', () => {
+    // The engines bank a phase as its postmatch begins (match-score.ts) and
+    // hand the bank out with every hand-over. The room used to bank as well,
+    // off whatever board it happened to be looking at when a phase ended - so
+    // a reload or a late join banked late, off a board the postmatch had
+    // already reshuffled. It shows the engine's now.
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
     c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
+    c.gameState.snapshot.moveHistory = [];
+    c.gameState.snapshot.phaseBank = {};
+
+    // Into Phase 1's postmatch with no bank on the hand-over: nothing is made up.
+    c.gameState.snapshot.turnNumber = 27;
+    c.beginTurnFor('white');
+    expect(c.phaseBank).toEqual({});
+
+    // The engine's, as it arrived.
+    c.gameState.snapshot.phaseBank = { 1: { white: 3, black: 1 } };
+    expect(c.phaseScore('mine').banked).toEqual([3]);
+    expect(c.phaseScore('opponent').banked).toEqual([1]);
+  });
+
+  it('reads nought on a postmatch, and counts the phase it banked once', () => {
+    const c = room();
+    c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
+    // The right-hand zone, 1 a hex, so what is held is the count of hexes
+    // (the middle one is 2 a hex).
+    c.gameState.snapshot.boardState = { '7,0': { unit_id: 'pawn', color: 'white' } };
     c.gameState.snapshot.moveHistory = [
       { color: 'black', unit_id: 'pawn', captured: 'pawn', defender_eliminated: true, turn: 8 },
     ];
+    // Phase 1, as the engine banked it when its postmatch began: 7 held, 5 lost.
+    c.gameState.snapshot.turnNumber = 27;
+    c.gameState.snapshot.phaseBank = { 1: { white: 2, black: 0 } };
 
-    // Still inside Phase 1: nothing to bank.
-    c.gameState.snapshot.turnNumber = 20;   // turn 10, its halftime half
-    (c as any).bankEndedPhases();
-    expect(c.phaseBank[1]).toBeUndefined();
+    // The postmatch is still Phase 1's by the index, but nothing of it is
+    // live: the phase is in the bank, and read live beside it as well it
+    // would be counted twice - 2 banked and the same 2 running, for 4.
+    const mine = c.phaseScore('mine');
+    expect(mine).toEqual(jasmine.objectContaining({ cap: 0, death: 0, total: 0 }));
+    expect(mine.banked).toEqual([2]);
+    expect(mine.match).toBe(2);
+    c.gameState.snapshot.turnNumber = 28;   // black's half reads the same
+    expect(c.phaseScore('mine').match).toBe(2);
 
-    // Phase 2's initialization turn is the first on which Phase 1's board is
-    // still on screen and the phase itself is over.
-    c.gameState.snapshot.turnNumber = 29;   // turn 15
-    (c as any).bankEndedPhases();
-    expect(c.phaseBank[1]).toEqual({ white: 2, black: 0 });
+    // A postmatch shows no multiplier: it scores nothing to multiply.
+    c.gameState.snapshot.turnNumber = 49;   // turn 25, Phase 2's postmatch
+    (c as any).standingsCache = null;
+    expect(c.phaseScore('mine').multiplier).toBe(1);
 
-    // Banked once and left alone, however the board moves afterwards.
+    // And the next phase counts live again, with Phase 1's loss left behind -
+    // doubled, because it is Phase 2.
+    c.gameState.snapshot.turnNumber = 29;
+    expect(c.phaseScore('mine')).toEqual(
+      jasmine.objectContaining({ cap: 7, death: 0, total: 14, multiplier: 2 }));
+    expect(c.phaseScore('mine').match).toBe(16);
+  });
+
+  it('reads the verdict from Phase 3\'s postmatch, a turn before overtime', () => {
+    // The engines bank Phase 3 as its postmatch begins, like the other two,
+    // so all three are in on turn 36 rather than on overtime's first turn.
+    const c = room();
+    c.gameState.snapshot.config = { board: { radius: 11 }, units: {} };
     c.gameState.snapshot.boardState = {};
-    (c as any).bankEndedPhases();
-    expect(c.phaseBank[1]).toEqual({ white: 2, black: 0 });
+    c.gameState.snapshot.moveHistory = [];
+    const two = { 1: { white: 12, black: 0 }, 2: { white: 0, black: 0 } };
+
+    c.gameState.snapshot.turnNumber = 70;   // turn 35, the last of Phase 3's play
+    c.gameState.snapshot.phaseBank = two;
+    expect(c.matchVerdict).toBeNull();
+
+    c.gameState.snapshot.turnNumber = 71;   // turn 36, Phase 3 Postmatch
+    c.gameState.snapshot.phaseBank = { ...two, 3: { white: 0, black: 0 } };
+    expect(c.matchVerdict).toBe('white');
+    // A decided match says so in the header from that turn - it is the result
+    // the engine has just ended the match on...
+    expect(c.stageLabel).toBe('YOU WIN');
+
+    // ...and a close one is bound for overtime, but the header names the turn
+    // being played until overtime actually arrives with the next.
+    c.gameState.snapshot.phaseBank = { 1: { white: 0, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+    expect(c.matchVerdict).toBe('overtime');
+    expect(c.stageLabel).toBe('PHASE 3 POSTMATCH');
+    c.gameState.snapshot.turnNumber = 73;   // turn 37
+    expect(c.stageLabel).toBe('OVERTIME 1');
+  });
+
+  it('names no points winner off a bank with a late phase in it', () => {
+    // The engines refuse to end a match on a phase banked late, off the wrong
+    // board; the header must not name that result either, or it shows a win
+    // for fourteen turns that the engine then hands the other way.
+    const c = room();
+    c.gameState.snapshot.config = { board: { radius: 11 }, units: {} };
+    c.gameState.snapshot.boardState = {};
+    c.gameState.snapshot.moveHistory = [];
+    c.gameState.snapshot.phaseBank = {
+      1: { white: 12, black: 0, late: true }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 },
+    };
+    c.gameState.snapshot.turnNumber = 80;   // turn 40, overtime
+    expect(c.matchVerdict).toBe('overtime');
+    expect(c.stageLabel).toBe('OVERTIME 1');
+    c.gameState.snapshot.turnNumber = 101;
+    expect(c.matchVerdict).toBe('black');
+  });
+
+  it('takes the bank each hand-over brings', () => {
+    // The live road, through the real state service: the bank rides on the
+    // hand-over, and the room shows the one the message carried.
+    const c = room();
+    c.gameState = new GameStateService();
+    c.gameState.applyGameStarted({
+      playerWhite: 'me', playerBlack: 'Opponent', currentTurn: 'Opponent', turnNumber: 26,
+      config: { board: { radius: 11 }, units: {} }, boardState: {},
+    });
+    expect(c.phaseBank).toEqual({});
+    const bank = { 1: { white: 7, black: 0 } };
+
+    // Black's last move of Phase 1's play hands the postmatch to white.
+    c.handleWebSocketMessage({
+      type: 'move_made', turnNumber: 27, currentTurn: 'me', boardState: {}, phaseBank: bank,
+      move: { color: 'black', unit_id: 'pawn', from: '0,0', to: '0,0' },
+    });
+    expect(c.phaseBank).toEqual(bank);
+
+    // A pass that carries none - an older server - keeps what was there.
+    c.handleWebSocketMessage({
+      type: 'turn_passed', color: 'white', turnNumber: 28, currentTurn: 'Opponent', boardState: {},
+    });
+    expect(c.phaseBank).toEqual(bank);
+
+    // A resync after a reload brings it back whole, and a new match has none.
+    c.gameState.applyFullState({ turnNumber: 40, phaseBank: bank });
+    expect(c.phaseBank).toEqual(bank);
+    c.gameState.applyGameStarted({ playerWhite: 'me', playerBlack: 'Opponent' });
+    expect(c.phaseBank).toEqual({});
+  });
+
+  it("pays a kill at the dead unit's worth on the move that made it, and a blow into a panel nothing", () => {
+    // Through the real state service: the move lands in the record and the
+    // purses are re-summed from it, solo included.
+    const c = room();
+    c.isSinglePlayer = true;
+    c.gameState = new GameStateService();
+    c.gameState.applyGameStarted({
+      playerWhite: 'me', playerBlack: 'Opponent', currentTurn: 'me', turnNumber: 9,
+      config: { board: { radius: 11 }, units: { pawn: { value: 5 }, queen: { value: 30 } } },
+      boardState: {},
+    });
+    c.myPoints = 0;
+    c.opponentPoints = 0;
+
+    // White takes black's queen on the board: its worth, 30, on top of five
+    // turns and Phase 1's 10. Black is at five turns and the 10.
+    c.handleWebSocketMessage({
+      type: 'move_made', turnNumber: 10, currentTurn: 'Opponent', boardState: {},
+      move: { color: 'white', unit_id: 'pawn', captured: 'queen', defender_eliminated: true, from: '0,0', to: '0,1' },
+    });
+    expect(c.myPoints).toBe(15 + 30);
+    expect(c.opponentPoints).toBe(15);
+
+    // Black kills a pawn in white's reserve: nobody is paid for it. White's
+    // sixth turn begins, at its one.
+    c.handleWebSocketMessage({
+      type: 'move_made', turnNumber: 11, currentTurn: 'me', boardState: {},
+      move: {
+        color: 'black', unit_id: 'pawn', captured: 'pawn', defender_eliminated: true, from: '1,0', to: '1,1',
+        intoPanel: true, panelAttack: true, panel: 'br',
+      },
+    });
+    expect(c.myPoints).toBe(16 + 30);
+    expect(c.opponentPoints).toBe(15);
+  });
+
+  /** A networked room at `ply`, with the opponent (black) to move. */
+  const watching = (ply: number) => {
+    const c = room();
+    c.gameState = new GameStateService();
+    c.gameState.applyGameStarted({
+      playerWhite: 'me', playerBlack: 'Opponent', currentTurn: 'Opponent', turnNumber: ply,
+      config: { board: { radius: 11 }, units: {} }, boardState: {},
+    });
+    return c;
+  };
+  const logged = (c: any) => c.gameRoomMessages.map((m: any) => m.content);
+
+  it('draws and logs every unit of an opponent’s overtime turn, not only the last', () => {
+    // Found in Chrome: the first units of a two- or three-unit turn arrive as
+    // state updates, and the arrows and the log were built from the closing
+    // move_made alone - so the first unit's move, here a blow into a panel,
+    // left no arrow and no line.
+    const c = watching(90);
+    const blow = {
+      turn: 90, color: 'black', unit_id: 'pawn', from: '0,-5', to: '0,-4', attacked: true,
+      attackedHex: '-1,-11', damage_dealt: 4, intoPanel: true, panelAttack: true, panel: 'bl',
+      unit: { unit_id: 'rook', color: 'white', uid: 'w-1,-11' }, defenderHp: 36,
+    };
+    c.handleWebSocketMessage({
+      type: 'game_state_update', turnNumber: 90, currentTurn: 'Opponent', boardState: {},
+      config: { board: { radius: 11 }, units: {} }, moveHistory: [blow],
+    });
+    c.handleWebSocketMessage({
+      type: 'move_made', turnNumber: 91, currentTurn: 'me', boardState: {},
+      move: { turn: 90, color: 'black', unit_id: 'knight', from: '2,-5', to: '2,-3' },
+    });
+    expect(c.opponentMovementArrows).toEqual([
+      { from: '0,-5', to: '0,-4' }, { from: '2,-5', to: '2,-3' },
+    ]);
+    expect(c.opponentAttackMarkers).toEqual([{ from: '0,-4', to: '-1,-11' }]);
+    const lines = logged(c).filter((line: string) => line.startsWith('black '));
+    expect(lines.length).toBe(2);
+    expect(lines[0]).toContain('rook survives, 36 HP');
+    expect(lines[1]).toContain('black knight');
+  });
+
+  it('logs a turn that wrapped and then ended as what it did, not as a pass', () => {
+    const c = watching(9);
+    c.handleWebSocketMessage({
+      type: 'game_state_update', turnNumber: 9, currentTurn: 'Opponent', boardState: {},
+      config: { board: { radius: 11 }, units: {} },
+      moveHistory: [{
+        turn: 9, color: 'black', unit_id: 'pawn', from: '12,-1', to: '-11,-1',
+        panelMove: true, panel: 'tr', price: 5, unit: { unit_id: 'pawn', color: 'black', uid: 'b12,-1' },
+      }],
+    });
+    c.handleWebSocketMessage({
+      type: 'turn_passed', color: 'black', turnNumber: 10, currentTurn: 'me', boardState: {},
+    });
+    const lines = logged(c);
+    expect(lines.some((line: string) => line.includes('(wrapped, 5 pts)'))).toBeTrue();
+    expect(lines).toContain('black ended the turn.');
+    expect(lines).not.toContain('black passed the turn.');
+    // The panels' walks get a line, as ever, but no arrow.
+    expect(c.opponentMovementArrows).toEqual([]);
+
+    // A turn that did nothing at all is still a pass.
+    c.handleWebSocketMessage({
+      type: 'turn_passed', color: 'white', turnNumber: 11, currentTurn: 'Opponent', boardState: {},
+    });
+    expect(logged(c)).toContain('white passed the turn.');
+  });
+
+  it('pays a kill made by a held overtime move, which lands as a state update', () => {
+    // Overtime 2 and 3 allow several board moves a turn; all but the last are
+    // held, and come back as game_state_update rather than move_made. The
+    // held move is in the record the update carries, so the re-sum pays it.
+    const config = { board: { radius: 11 }, units: { pawn: { value: 5 }, queen: { value: 30 } } };
+    const held = { color: 'white', unit_id: 'pawn', captured: 'queen', defender_eliminated: true };
+    const c = room();
+    c.isSinglePlayer = true;
+    c.gameState = new GameStateService();
+    c.gameState.applyGameStarted({
+      playerWhite: 'me', playerBlack: 'Opponent', currentTurn: 'me', turnNumber: 89, config, boardState: {},
+    });
+    c.myPoints = 0;
+    c.opponentPoints = 0;
+    c.handleWebSocketMessage({
+      type: 'game_state_update', turnNumber: 89, currentTurn: 'me', config, boardState: {},
+      moveHistory: [held],
+    });
+    // 119 by turn 36 and nothing since, and the queen's 30.
+    expect(c.myPoints).toBe(119 + 30);
+    // The same state again - a refresh - pays it once, not twice.
+    c.handleWebSocketMessage({
+      type: 'game_state_update', turnNumber: 89, currentTurn: 'me', config, boardState: {},
+      moveHistory: [held],
+    });
+    expect(c.myPoints).toBe(119 + 30);
+  });
+
+  it('keeps the score up and the toll off on the finished position of a points win', () => {
+    // A match decided on points ends ON hand-over 73, overtime's first ply.
+    const c = room();
+    const decided = { 1: { white: 30, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+    c.gameState.snapshot.turnNumber = 73;
+    c.gameState.snapshot.phaseBank = decided;
+    expect(c.showScore).toBeTrue();
+    expect(c.tollBind).toBeFalse();
+    // A close match there is in overtime, score down and the toll on.
+    c.gameState.snapshot.phaseBank = { ...decided, 1: { white: 10, black: 0 } };
+    expect(c.showScore).toBeFalse();
+    expect(c.tollBind).toBeTrue();
+  });
+
+  it('calls the last turn the last once the match is decided on points', () => {
+    const c = room();
+    const decided = { 1: { white: 12, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+    c.gameState.snapshot.phaseBank = decided;
+    // Phase 3's postmatch: the match ends as it does, so there is no overtime
+    // to count down to - and the record of it says the same once it is over.
+    c.gameState.snapshot.turnNumber = 71;
+    expect(c.historyTitle).toBe('Turn 36 - Last Turn');
+    c.gameState.snapshot.turnNumber = 73;
+    expect(c.historyTitle).toBe('Turn 36 - Last Turn');
+
+    // A close match counts on down to overtime, and turn 50's black win is
+    // not a points win.
+    c.gameState.snapshot.phaseBank = { ...decided, 1: { white: 10, black: 0 } };
+    c.gameState.snapshot.turnNumber = 71;
+    expect(c.historyTitle).toBe(turnHeading(71));
+    c.gameState.snapshot.turnNumber = 101;
+    expect(c.historyTitle).toBe(turnHeading(101));
+  });
+
+  it("names the room's own starting CP in the purse's tooltip", () => {
+    const c = room();
+    expect(c.cpTitle).toContain('5 to start');
+    c.gameState.snapshot.config = { rules: { cpAtStart: 12 } };
+    expect(c.cpTitle).toContain('12 to start');
+  });
+
+  it('says how a match the schedule ended was ended', () => {
+    const c = room();
+    expect(c.endReasonDetail({ endReason: 'points' }))
+      .toBe('Phase 3 ended with one side past the margin.');
+    expect(c.endReasonDetail({ endReason: 'overtime' }))
+      .toBe('Overtime ran out with both kings standing: black wins.');
   });
 
   it('takes the seat the host picked, and tosses for Random', () => {
@@ -1415,32 +1826,73 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canAfford('mine', 0, 0)).toBeFalse();
     expect(c.abilityBlockedNote).toBe('Unavailable: no abilities during the initialization.');
 
-    // A numbered phase's own initialization turn shuts them for the same
-    // reason, and says which turn refused rather than naming the opening -
-    // which by then ended several turns ago.
-    c.gameState.snapshot.turnNumber = 8;
+    // A numbered phase's own postmatch shuts them for the same reason, and
+    // says which turn refused rather than naming the opening - which by then
+    // ended eleven turns ago. The header names the same stage.
+    c.gameState.snapshot.turnNumber = 27;   // turn 14, Phase 1 Postmatch
     expect(c.canUseAbilities('mine')).toBeFalse();
     expect(c.abilityBlockedNote)
-      .toBe('Unavailable: no abilities during the phase 1 initialization.');
+      .toBe('Unavailable: no abilities during the phase 1 postmatch.');
+    expect(c.stageLabel).toBe('PHASE 1 POSTMATCH');
+    c.gameState.snapshot.turnNumber = 72;   // turn 36, black's half
+    expect(c.abilityBlockedNote)
+      .toBe('Unavailable: no abilities during the phase 3 postmatch.');
 
-    // Past every setup turn they come back, and the note goes back to the turn.
-    c.gameState.snapshot.turnNumber = 10;
-    expect(c.canUseAbilities('mine')).toBeTrue();
-    expect(c.abilityBlockedNote).toBe('Unavailable: not your turn.');
+    // Off a setup turn they come back, and the note goes back to the turn -
+    // on turn 4 as well, which used to be Phase 1's own setup turn.
+    for (const ply of [7, 10, 29]) {
+      c.gameState.snapshot.turnNumber = ply;
+      expect(c.canUseAbilities('mine')).withContext(`ply ${ply}`).toBeTrue();
+      expect(c.abilityBlockedNote).withContext(`ply ${ply}`).toBe('Unavailable: not your turn.');
+    }
   });
 
-  it('scores nothing in the opening, and stops scoring in overtime', () => {
+  it('sounds the toll and a base mending one after the other, never on top', () => {
+    // The owner, 26 Sep 2026: "try to add a sound effect for damage taken to
+    // king during over time and heal sound in base. they may collide when
+    // they both happen".
+    const c = room();
+    const played: Array<{ notes: number[]; step: number; delay: number }> = [];
+    c.audioService.playTone = (notes: number[], step: number, options: any = {}) =>
+      played.push({ notes, step, delay: options.delay ?? 0 });
+
+    // Each alone plays at once, and the two are different sounds.
+    c.onUpkeepSettled({ toll: true, heal: false });
+    c.onUpkeepSettled({ toll: false, heal: true });
+    const [toll, heal] = played;
+    expect([toll.delay, heal.delay]).toEqual([0, 0]);
+    expect(toll.notes).not.toEqual(heal.notes);
+
+    // Both at once: the toll first, and the mend only once it has finished.
+    played.length = 0;
+    c.onUpkeepSettled({ toll: true, heal: true });
+    expect(played.map(p => p.notes)).toEqual([toll.notes, heal.notes]);
+    expect(played[0].delay).toBe(0);
+    expect(played[1].delay).toBeGreaterThan(toll.notes.length * toll.step);
+
+    // Nothing owed, nothing played.
+    played.length = 0;
+    c.onUpkeepSettled({ toll: false, heal: false });
+    expect(played).toEqual([]);
+  });
+
+  it('shows what the opening holds without counting it, and stops scoring in overtime', () => {
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
-    // A unit sat in the middle of a capture zone, which would otherwise cap.
-    c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
+    // A unit sat in the middle of a capture zone.
+    // The right-hand zone, 1 a hex, so what is held is the count of hexes
+    // (the middle one is 2 a hex).
+    c.gameState.snapshot.boardState = { '7,0': { unit_id: 'pawn', color: 'white' } };
     c.gameState.snapshot.moveHistory = [];
 
-    // The opening caps nothing and kills nobody, so it reads a flat nought.
+    // The owner, 26 Sep 2026: "its ok to show capture points during
+    // initialization because it wont tally anyways". The opening shows what
+    // is held, and none of it reaches the match total or leads.
     c.gameState.snapshot.turnNumber = 1;
     (c as any).standingsCache = null;
     expect(c.phaseScore('mine')).toEqual(jasmine.objectContaining(
-      { cap: 0, death: 0, total: 0 }));
+      { cap: 7, death: 0, total: 7, multiplier: 1, banked: [], match: 0, leading: false }));
+    expect(c.phaseScore('opponent').leading).toBeFalse();
     expect(c.showScore).toBeTrue();
 
     // Phase 1 counts it.
@@ -1540,6 +1992,46 @@ describe('GameRoomComponent ability panel', () => {
     expect(home().unit.hp).toBe(6);
     c.gameState.snapshot.turnNumber = 99;
     expect(home().unit.hp).toBe(10);
+  });
+
+  it('stops mending a unit wrapped out of its base into its reserve', () => {
+    // The review's case: struck in the base on ply 8 to 16, wrapped into the
+    // reserve on ply 9 - and drawn at 17, 18, 19 on plies 10, 12, 14, mending
+    // in a reserve, which never mends. panels.py agrees now, and agreed then.
+    const c = room();
+    const pawn = { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'w-12,1' };
+    const wound = { intoPanel: true, panel: 'bl', turn: 8, defenderHp: 16, unit: pawn };
+    const wrap = (turn: number, to: string) =>
+      ({ panelMove: true, panel: 'bl', turn, unit: pawn, from: '-12,1', to });
+    const hpAt = (ply: number) => {
+      c.gameState.snapshot.turnNumber = ply;
+      return c.panelHp['w-12,1'];
+    };
+
+    c.gameState.snapshot.moveHistory = [wound];
+    expect(hpAt(14)).toBe(19);                    // had it stayed
+    c.gameState.snapshot.moveHistory = [wound, wrap(9, '11,1')];
+    expect([10, 12, 14].map(hpAt)).toEqual([16, 16, 16]);
+
+    // A walk inside the base keeps it mending, until the wrap on ply 13:
+    // white's hand-overs 9 and 11 closed with it in the base.
+    c.gameState.snapshot.moveHistory = [
+      wound, wrap(9, '-12,2'), { ...wrap(13, '11,1'), from: '-12,2' },
+    ];
+    expect(hpAt(12)).toBe(18);
+    expect(hpAt(20)).toBe(18);
+  });
+
+  it('stops mending a unit that walked home once it is wrapped out again', () => {
+    const c = room();
+    const unit = { unit_id: 'pawn', color: 'white', hp: 9, max_hp: 20, uid: 'w3,9' };
+    c.gameState.snapshot.moveHistory = [
+      { from: '-11,11', to: '-12,11', color: 'white', turn: 5, withdrawn: true, unit },
+      // Hand-over 7 closes in the base; the wrap on ply 9 takes it out.
+      { panelMove: true, panel: 'bl', turn: 9, unit, from: '-12,11', to: '11,1' },
+    ];
+    c.gameState.snapshot.turnNumber = 20;
+    expect(c.withdrawnUnits.find((w: any) => w.unit.uid === 'w3,9').unit.hp).toBe(10);
   });
 
   it('leaves a unit killed in the base out of the panel for good', () => {
@@ -1746,6 +2238,109 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.stagedActions.length).toBe(4);
   });
 
+  /** An overtime turn's staged stack, and what ending it sends. */
+  const committing = (c: any, ply: number, staged: any[]) => {
+    const sent: any[] = [];
+    c.wsService = { sendMessage: (m: any) => sent.push(m) };
+    c.persistLocalUiState = () => {};
+    c.playSteps = () => {};
+    c.playEndTurnSound = () => {};
+    c.gameState.snapshot.currentTurn = 'me';
+    c.gameState.snapshot.turnNumber = ply;
+    c.stagedActions = staged;
+    c.endTurn();
+    return sent;
+  };
+  const OVERTIME_TWO = 89, OVERTIME_THREE = 99;
+  const blowIntoPanel = (at: number, from: string) => ({
+    at, from, to: from, used: 0, attack: '-5,8',
+    panelUnit: inPanel(), panelUnitHp: 18, intoPanel: true, panelName: 'tl', counters: true,
+  });
+  const walk = (at: number, from: string, to: string) =>
+    ({ at, from, to, used: 1, attack: null });
+
+  it('sends a blow into a panel in its place among the turn’s moves, whichever comes first', () => {
+    // It went alone and ended the turn, so every other move an overtime turn
+    // had staged was lost - before it or after it.
+    let sent = committing(room(), OVERTIME_TWO,
+      [blowIntoPanel(1, '-5,9'), walk(2, '-4,9', '-4,8')]);
+    expect(sent.map(m => m.type)).toEqual(['panel_attack', 'make_move']);
+    expect(sent[0].more).toBeTrue();
+    expect(sent[1].more).toBeUndefined();
+    expect(sent[1].from).toBe('-4,9');
+
+    sent = committing(room(), OVERTIME_TWO,
+      [walk(1, '-4,9', '-4,8'), blowIntoPanel(2, '-5,9')]);
+    expect(sent.map(m => m.type)).toEqual(['make_move', 'panel_attack']);
+    expect(sent[0].more).toBeTrue();
+    expect(sent[1].more).toBeUndefined();
+    expect(sent[1].unit.uid).toBe('rtl0');
+  });
+
+  it('sends all three of an Overtime 3 turn with the blow into a panel in the middle', () => {
+    const sent = committing(room(), OVERTIME_THREE, [
+      walk(1, '-4,9', '-4,8'), blowIntoPanel(2, '-5,9'), walk(3, '-2,9', '-2,8'),
+    ]);
+    expect(sent.map(m => m.type)).toEqual(['make_move', 'panel_attack', 'make_move']);
+    expect(sent.map(m => !!m.more)).toEqual([true, true, false]);
+  });
+
+  it('lands a cast made between two units’ moves between them, not before the first', () => {
+    // The report's case: a rook strikes and takes a one-point counter (10 to
+    // 9), Mend takes it to 29, and a second unit moves. Every cast before the
+    // last move used to ride on the FIRST message - so the mend landed before
+    // the blow, the counter came off 29, and the rook was committed at 28.
+    const spend = { cost: 0, index: 6, side: 'mine', row: 'mine', uid: 'wr', hex: '-5,0' };
+    const sent = committing(room(), OVERTIME_TWO, [
+      { at: 1, from: '-5,0', to: '-5,0', used: 0, attack: '-4,0' },
+      { at: 2, from: '-5,0', to: '-5,0', used: 0, attack: null, spend,
+        hexKey: '-5,0', hexUid: 'wr', hexHp: 29, mark: '+20' },
+      // A blow on an enemy between the two, which the second unit then meets.
+      { at: 3, from: '-5,0', to: '-5,0', used: 0, attack: null, spend,
+        hexKey: '-3,1', hexUid: 'bs', hexHp: 4, mark: '-6' },
+      walk(4, '-4,9', '-4,8'),
+      { at: 5, from: '-4,9', to: '-4,8', used: 1, attack: null, spend,
+        hexKey: '-4,8', hexUid: 'wp', hexHp: 12, mark: '+2' },
+    ]);
+    expect(sent.map(m => m.type)).toEqual(['make_move', 'make_move']);
+    expect(sent[0].effectsBefore).toBeUndefined();
+    expect(sent[0].effects).toBeUndefined();
+    expect(sent[1].effectsBefore).toEqual([
+      { at: '-5,0', uid: 'wr', hp: 29 },
+      { at: '-3,1', uid: 'bs', hp: 4 },
+    ]);
+    // What came after the last move lands after it.
+    expect(sent[1].effects).toEqual([{ at: '-4,8', uid: 'wp', hp: 12 }]);
+  });
+
+  it('gives the next unit its own MOV after another unit has struck', () => {
+    // movesLeft asked "has anything swung this turn" - the one-unit rule - so a
+    // second unit, free to walk in Overtime 2, had 0 MOV after its first hop.
+    const c = room();
+    c.gameState.snapshot.turnNumber = OVERTIME_TWO;
+    c.gameState.snapshot.config = { units: { pawn: { move: 5 }, rook: { move: 4 } } };
+    const board = {
+      '-5,0': { unit_id: 'rook', color: 'white', hp: 9, uid: 'wr' },
+      '-4,8': { unit_id: 'pawn', color: 'white', hp: 10, uid: 'wp' },
+    };
+    c.stagedActions = [
+      { at: 1, board, from: '-5,0', to: '-5,0', used: 0, attack: '-4,0' },
+      { at: 2, board, from: '-4,9', to: '-4,8', used: 1, attack: null },
+    ];
+    expect(c.movesLeft).toBe(4);
+
+    // Its own blow still ends its walk.
+    c.stagedActions.push({ at: 3, board, from: '-4,9', to: '-4,8', used: 1, attack: '-4,7' });
+    expect(c.movesLeft).toBe(0);
+
+    // And the unit that struck first stays done, a cast on top of it or not.
+    c.stagedActions = [
+      { at: 1, board, from: '-5,0', to: '-5,0', used: 0, attack: '-4,0' },
+      { at: 2, board, from: '-5,0', to: '-5,0', used: 0, attack: null, spend: { cost: 0 } },
+    ];
+    expect(c.movesLeft).toBe(0);
+  });
+
   it('writes what a cast did to the HP over the unit it landed on', () => {
     // "mend also doesn't do the +x icon like damage taken." The swell said
     // something had happened and nothing said what - the beat now carries the
@@ -1896,12 +2491,14 @@ describe('GameRoomComponent ability panel', () => {
   it('scores the staged board, so walking out of a zone shows before committing', () => {
     const c = room();
     c.gameState.snapshot.config = { board: { radius: 11 }, units: { pawn: { value: 5 } } };
-    c.gameState.snapshot.boardState = { '0,0': { unit_id: 'pawn', color: 'white' } };
+    // The right-hand zone, 1 a hex, so what is held is the count of hexes
+    // (the middle one is 2 a hex).
+    c.gameState.snapshot.boardState = { '7,0': { unit_id: 'pawn', color: 'white' } };
     expect(c.phaseScore('mine').cap).toBe(7);
 
     // A step away is staged, not sent. The board being drawn is the staged
     // one, and the score reads the same board the player is looking at.
-    c.stagedActions = [{ from: '0,0', to: '4,0', board: { '4,0': { unit_id: 'pawn', color: 'white' } } } as any];
+    c.stagedActions = [{ from: '7,0', to: '4,0', board: { '4,0': { unit_id: 'pawn', color: 'white' } } } as any];
     expect(c.phaseScore('mine').cap).toBe(0);
 
     // Taking it back puts the hexes back.
@@ -1919,6 +2516,164 @@ describe('GameRoomComponent ability panel', () => {
     // Picked and returned inside one turn is not a pick: nothing for the
     // other player to read, and nothing for the recap to replay.
     expect(c.isRecentPick('mine', TARGETED)).toBeFalse();
+  });
+
+  /**
+   * The catalogue's numbers are the numbers: a cast cools for its own
+   * `cooldown`, a stat change lasts its own `turns` of its caster's, `uses`
+   * caps it per side (or per unit), and a unit type's own ability is the one
+   * its config names. Each was a constant, or a slot, before.
+   */
+  describe('the numbers the catalogue holds', () => {
+    /** The shipped config with `edit` applied, and three units dealt. */
+    const tuned = (edit: (config: any) => void = () => {}) => {
+      const c = room();
+      const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+      edit(config);
+      c.gameState.snapshot.config = config;
+      c.gameState.snapshot.turnNumber = 20;
+      c.gameState.snapshot.boardState = {
+        '0,0': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'wp' },
+        '1,0': { unit_id: 'pawn', color: 'black', hp: 20, max_hp: 20, uid: 'bp' },
+        '2,0': { unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'wr' },
+      };
+      c.persistLocalUiState = () => {};
+      c.playSteps = () => {};
+      c.playAbilitySound = () => {};
+      c.myPoints = 100;
+      c.opponentPoints = 100;
+      return c;
+    };
+    const unit = (key: string, uid: string, unitId: string, color: string) =>
+      ({ key, uid, unitId, name: unitId, color, hp: 20, hpMax: 20, vet: 3 });
+    const WP = unit('0,0', 'wp', 'pawn', 'white');
+    const BP = unit('1,0', 'bp', 'pawn', 'black');
+    const WR = unit('2,0', 'wr', 'rook', 'white');
+
+    /** Pick `id`'s pair if need be, arm it off the panel, and land it on `target`. */
+    const cast = (c: any, side: 'mine' | 'opponent', id: string, target: any): boolean => {
+      const index = c.slotOfAbility(id);
+      if (!c.isPicked(side, index)) c.pickAbility(side, index);
+      c.selectAbility(side, index, side === 'mine' ? c.myCooldowns : c.opponentCooldowns);
+      if (c.pendingAbility?.index !== index) {
+        c.clearAbilityFocus();
+        return false;
+      }
+      c.onHexClicked(target);
+      return true;
+    };
+
+    it("cools a cast for the catalogue's cooldown, not a fixed three", () => {
+      const c = tuned(config => {
+        config.abilities.catalogue.dash.cooldown = 1;
+        config.abilities.catalogue.focus.cooldown = 0;
+      });
+      expect(cast(c, 'mine', 'dash', WP)).toBeTrue();
+      expect(c.myCooldowns[c.slotOfAbility('dash')]).toBe(1);
+      expect(cast(c, 'mine', 'focus', WR)).toBeTrue();
+      expect(c.myCooldowns[c.slotOfAbility('focus')]).toBe(0);
+      // Nothing to wait for, so it is ready again at once.
+      expect(cast(c, 'mine', 'focus', WP)).toBeTrue();
+    });
+
+    it("keeps a stat change for its caster's turns, and lifts each on its own caster's", () => {
+      const c = tuned(config => { config.abilities.catalogue.dash.turns = 2; });
+      expect(cast(c, 'mine', 'dash', WP)).toBeTrue();       // white's +2 MOV, two white turns
+      c.gameState.snapshot.currentTurn = 'bot';
+      expect(cast(c, 'opponent', 'sap', WP)).toBeTrue();    // black's -2 all round, one black turn
+      expect(c.buffs['wp'].mov).toBe(0);
+      expect(c.buffs['wp'].atk).toBe(-2);
+
+      // White's turn counts white's down and leaves black's alone. Both used to
+      // go together, on whichever side had cast first.
+      c.beginTurnFor('white');
+      expect(c.buffs['wp'].effects.map((e: any) => [e.name, e.turns]))
+        .toEqual([['Dash', 1], ['Sap', 1]]);
+      c.beginTurnFor('black');
+      expect(c.buffs['wp'].mov).toBe(2);
+      expect(c.buffs['wp'].atk).toBe(0);
+      expect(c.buffs['wp'].down).toBeFalse();
+      c.beginTurnFor('white');
+      expect(c.buffs['wp']).toBeUndefined();
+    });
+
+    it("stops an ability at its uses, and Undo gives the last one back", () => {
+      const c = tuned(config => {
+        config.abilities.catalogue.dash.uses = 2;
+        config.abilities.catalogue.dash.cooldown = 0;
+      });
+      const dash = c.slotOfAbility('dash');
+      expect(cast(c, 'mine', 'dash', WP)).toBeTrue();
+      expect(cast(c, 'mine', 'dash', WR)).toBeTrue();
+      expect(c.usesLeft('mine', dash)).toBe(0);
+      expect(cast(c, 'mine', 'dash', WP)).toBeFalse();
+      c.undoMove();
+      expect(c.usesLeft('mine', dash)).toBe(1);
+      // Per side: the other side's count is its own.
+      expect(c.usesLeft('opponent', dash)).toBe(2);
+    });
+
+    it("pays a path's ultimate in CP and hands its points out as points", () => {
+      const c = tuned();
+      fundCp(c, 20);
+      c.unlockPath('mine', 0);      // Bastion; Fortress costs 8 CP and hands out 4 points
+      const cp = c.cpOf('mine');
+      const fortress = c.slotOfAbility('fortress');
+      c.selectAbility('mine', fortress, c.myCooldowns);
+      c.activateFocusedAbility();
+      // They were netted in CP: -4 CP, and the points purse never moved.
+      expect(c.cpOf('mine')).toBe(cp - 8);
+      expect(c.myPoints).toBe(104);
+      c.undoMove();
+      expect(c.cpOf('mine')).toBe(cp);
+      expect(c.myPoints).toBe(100);
+      expect(c.usesLeft('mine', fortress)).toBe(1);
+    });
+
+    it("gives a unit type its own ability, cooling per unit, on either side's turn", () => {
+      const c = tuned(config => {
+        config.units.pawn.ability = 'focus';
+        config.units.rook.ability = 'bulwark';
+        delete config.units.king.ability;
+      });
+      const focus = c.slotOfAbility('focus');
+      // Nothing picked: a unit's own ability is not a pool pick.
+      c.selectedUnit = WP;
+      expect(c.displayUnitAbility).toBe(focus);
+      c.selectUnitAbility(focus);
+      expect(c.unitAbilityCanActivate()).toBeTrue();
+      c.activateUnitAbility();
+      expect(c.buffs['wp'].atk).toBe(2);
+      expect(c.unitCooldownOf('wp')).toBe(3);
+      expect(c.myPoints).toBe(95);
+
+      // Per unit: the pawn cooling leaves the rook's own alone.
+      c.selectedUnit = WR;
+      expect(c.displayUnitAbility).toBe(c.slotOfAbility('bulwark'));
+      c.selectUnitAbility(c.slotOfAbility('bulwark'));
+      expect(c.unitAbilityCanActivate()).toBeTrue();
+
+      // Black's pawn uses its own on black's turn, from black's purse.
+      c.gameState.snapshot.currentTurn = 'bot';
+      c.selectedUnit = BP;
+      c.selectUnitAbility(focus);
+      expect(c.unitAbilityCanActivate()).toBeTrue();
+      c.activateUnitAbility();
+      expect(c.opponentPoints).toBe(95);
+      expect(c.unitCooldownOf('bp')).toBe(3);
+
+      // Each side's turn ticks its own units' cooldowns, and Undo hands one back.
+      c.beginTurnFor('white');
+      expect(c.unitCooldownOf('wp')).toBe(2);
+      expect(c.unitCooldownOf('bp')).toBe(3);
+      c.undoMove();
+      expect(c.unitCooldownOf('bp')).toBe(0);
+      expect(c.opponentPoints).toBe(100);
+
+      // A unit type with none has none.
+      c.selectedUnit = unit('3,0', 'wk', 'king', 'white');
+      expect(c.displayUnitAbility).toBeNull();
+    });
   });
 });
 
@@ -2161,5 +2916,46 @@ describe('GameRoomComponent leaving', () => {
       expect(walks[0].from).toBe('-12,11');
       expect(walks[0].withdraw).toBeTrue();
     });
+  });
+});
+
+/**
+ * The owner: "DO NOT HIDE ANYTHING AS IT MAKES THIS GAME UNPLAYABLE". A
+ * window smaller than the room gets the whole room scaled down, never a panel
+ * crushed or a column stacked below the board.
+ */
+describe('GameRoomComponent fitting the window', () => {
+  let innerWidth: jasmine.Spy;
+  let innerHeight: jasmine.Spy;
+  beforeEach(() => {
+    innerWidth = spyOnProperty(window, 'innerWidth');
+    innerHeight = spyOnProperty(window, 'innerHeight');
+  });
+
+  const fit = (width: number, height: number) => {
+    innerWidth.and.returnValue(width);
+    innerHeight.and.returnValue(height);
+    const c: any = { cdr: { markForCheck: () => {} } };
+    GameRoomComponent.prototype.fitRoom.call(c);
+    return c;
+  };
+
+  it('scales the room down by whichever side is shorter, laid out at its least', () => {
+    // Half the least width, and more than half the least height: width decides.
+    const c = fit(740, 700);
+    expect(c.roomZoom).toBe(0.5);
+    expect(c.roomWidth).toBe(1480);
+    expect(c.roomHeight).toBe(1400);
+    // Height decides here.
+    const d = fit(1904, 560);
+    expect(d.roomZoom).toBe(0.5);
+    expect(d.roomHeight).toBe(1120);
+  });
+
+  it('leaves a window big enough for the whole room alone', () => {
+    const c = fit(2000, 1200);
+    expect(c.roomZoom).toBe(1);
+    expect(c.roomWidth).toBeNull();
+    expect(c.roomHeight).toBeNull();
   });
 });

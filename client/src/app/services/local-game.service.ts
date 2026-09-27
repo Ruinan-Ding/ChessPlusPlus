@@ -12,6 +12,7 @@ import {
   boardMovesPerTurn, overtimeTollAt, isEntryOpen,
   isHomecomingOpen, isInitialization, isSetupTurn, isWrapOpen, noAttackMessage,
 } from './phases';
+import { PhaseBank, bankEndedPhases, scheduleEnding } from './match-score';
 
 /**
  * What overtime costs a commander at the end of each of its side's turns.
@@ -32,8 +33,10 @@ import {
  *
  * It mirrors the server's rules: movement (see hex-rules), combat with
  * counter-attacks, and the regicide win condition. Endings are resign, draw,
- * and losing your commander. Anything the engine learns has to land here too,
- * or offline play quietly diverges from online play.
+ * losing your commander, and the schedule's two: a side past the other's
+ * margin once Phase 3 has banked and its postmatch is played, and turn 50
+ * played out with both kings standing, which is black's (match-score.ts). Anything the engine learns has to land
+ * here too, or offline play quietly diverges from online play.
  *
  * **What it checks, and what it takes on trust.** The server re-derives every
  * move; this engine cannot, because the panels, the points and the abilities
@@ -95,6 +98,22 @@ interface LocalGame {
   turnStartedAt: string;
   mode: string;
   options: any;
+  /**
+   * What each scoring phase finished on - see match-score.ts. Optional
+   * because a game saved before the engine kept one has none, and
+   * `bankEndedPhases` reads a missing bank as an empty one.
+   */
+  phaseBank?: PhaseBank;
+}
+
+/**
+ * The extra steps a message says an ability lent a unit: a whole number, and
+ * never below 0 - a drained MOV is the board's to show, and walking fewer
+ * steps than offered is always legal. No ceiling: the config decides how far
+ * an ability sends a unit, and the board has already offered exactly that.
+ */
+function extraSteps(moveBonus: unknown): number {
+  return Math.max(0, Math.trunc(Number(moveBonus) || 0));
 }
 
 @Injectable({ providedIn: 'root' })
@@ -188,7 +207,7 @@ export class LocalGameService {
         this.attackIntoPanel(
           msg.from, msg.to ?? msg.from, msg.attack, msg.unit,
           msg.moveBonus, msg.counters !== false, msg.bonuses, msg.panel,
-          msg.effects, msg.effectsBefore);
+          msg.effects, msg.effectsBefore, msg.more);
         break;
 
       case 'pass_turn':
@@ -257,6 +276,7 @@ export class LocalGameService {
       turnStartedAt: '',
       mode: 'default',
       options: {},
+      phaseBank: {},
     };
   }
 
@@ -334,10 +354,11 @@ export class LocalGameService {
    * Whether a message brought an ability onto a turn that forbids one.
    *
    * **No ability fires on a turn given to setting out** - the owner's rule for
-   * a phase initialization, and true of the opening for the same reason. This
-   * is the one ability rule the engine can keep without the abilities being
-   * settled: it does not need to know what a cast is *worth* to know that none
-   * should have arrived. What it is worth stays on trust, as everything about
+   * a phase's extra turn (its postmatch now; it was an initialization at the
+   * phase's start when the rule was made), and true of the opening for the
+   * same reason. This is the one ability rule the engine can keep without the
+   * abilities being settled: it does not need to know what a cast is *worth*
+   * to know that none should have arrived. What it is worth stays on trust, as everything about
    * abilities does.
    *
    * A zero is not a use. The room sends `moveBonus: 0` and an all-zero
@@ -404,8 +425,8 @@ export class LocalGameService {
       return;
     }
     // A crossing spends one of the reserve's three starts for the turn - five
-    // in a phase initialization - and the opening gives a unit one move for
-    // the whole phase.
+    // in a postmatch - and the opening gives a unit one move for the whole
+    // phase.
     if (!panelMoverAllowed(g.moveHistory, g.turnNumber, unit.color, unit.uid, undefined, g.config)) {
       this.emit({ type: 'invalid_move', message: 'That reserve has started its units for the turn' });
       return;
@@ -531,6 +552,8 @@ export class LocalGameService {
     /** The turn's casts after its blow, and before it - see `landEffects`. */
     effects?: any[],
     effectsBefore?: any[],
+    /** Another board move follows in this turn - see `holding` in `move`. */
+    more?: boolean,
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
@@ -549,6 +572,24 @@ export class LocalGameService {
       this.emit({ type: 'invalid_move', message: noAttackMessage(g.turnNumber) });
       return;
     }
+    // One of the turn's board moves like any other - the allowance, the
+    // one-move-per-unit rule and `more`, exactly as `move` asks them. Ending
+    // the turn outright threw away every other move an overtime turn had
+    // staged alongside the blow. Mirrors `_claim_board_move` in consumers.py.
+    const moveAllowance = boardMovesPerTurn(g.turnNumber);
+    const movesUsed = boardMovesAt(g.moveHistory, g.turnNumber, movingColor);
+    if (movesUsed >= moveAllowance) {
+      this.emit({
+        type: 'invalid_move',
+        message: `That side has had all ${moveAllowance} of its moves this turn`,
+      });
+      return;
+    }
+    if (boardMoveLandings(g.moveHistory, g.turnNumber, movingColor).has(from)) {
+      this.emit({ type: 'invalid_move', message: 'That unit has already moved this turn' });
+      return;
+    }
+    const holding = !!more && movesUsed + 1 < moveAllowance;
     // The defender is named by the message too, so it gets the same checks the
     // walkers get, less the opening's lock - it is not the one moving.
     const bad = this.panelUnitFault(unit, false);
@@ -562,7 +603,7 @@ export class LocalGameService {
     // set off from.
     const radius: number = g.config?.board?.radius ?? 11;
     const [q, r] = String(from).split(',').map(Number);
-    const bonus = Math.max(0, Math.min(10, Number(moveBonus) || 0));
+    const bonus = extraSteps(moveBonus);
     const budget = bonus
       ? (g.config?.units?.[attacker.unit_id]?.move ?? 0) + bonus
       : undefined;
@@ -623,6 +664,15 @@ export class LocalGameService {
           board[to] = mine;
         }
       }
+    }
+    // Held: the seat, the ply and the clock stay put, and the toll waits for
+    // the turn's last move - the same as a held `move`.
+    if (holding) {
+      g.boardState = board;
+      g.moveHistory = [...g.moveHistory, ...before.records, record];
+      this.persist();
+      this.emit({ type: 'game_state_update', ...this.snapshot() });
+      return;
     }
     this.commitPanelBlow(record, board, before.records, this.landEffects(board, effects).records);
   }
@@ -700,14 +750,7 @@ export class LocalGameService {
     this.overtimeToll(board);
     g.boardState = board;
     g.moveHistory = [...g.moveHistory, ...before, record, ...after];
-    const defeated = this.defeatedSides(board);
-    const maxTurns: number = g.config?.rules?.maxTurns ?? 0;
-    const outOfTurns = maxTurns > 0 && g.turnNumber >= maxTurns;
-    g.turnNumber += 1;
-    g.currentTurn = this.other(g.currentTurn);
-    g.turnStartedAt = new Date().toISOString();
-    this.persist();
-    const ending = defeated.length > 0 || outOfTurns;
+    const ending = this.settleHandOver(this.defeatedSides(board));
     this.emit({
       // Under `move`, like every other move_made: applyMoveMade reads that
       // key and nothing else. Spread flat, the record went out looking
@@ -720,12 +763,9 @@ export class LocalGameService {
       currentTurn: ending ? '' : g.currentTurn,
       turnNumber: g.turnNumber,
       turnStartedAt: g.turnStartedAt,
+      phaseBank: g.phaseBank,
     });
-    if (defeated.length) {
-      this.over(this.seat(defeated[0] === 'white' ? 'black' : 'white'), this.endReasonName());
-    } else if (outOfTurns) {
-      this.over('', 'draw_max_turns');
-    }
+    if (ending) this.over(ending.winner, ending.reason);
   }
 
   private move(
@@ -759,11 +799,13 @@ export class LocalGameService {
     const movingColor = this.colorOf(g.currentTurn);
 
     const relocating = to !== from;
-    // Steps lent by a one-turn ability, on top of the unit's own move stat.
-    const bonus = Math.max(0, Math.min(10, Number(moveBonus) || 0));
-    // One-turn ability boosts, the client's word for them - taken because
-    // solo play has nobody to cheat. Clamped like the move bonus above.
-    const stat = (v: unknown) => Math.max(-20, Math.min(20, Number(v) || 0));
+    // Steps lent by an ability, on top of the unit's own move stat.
+    const bonus = extraSteps(moveBonus);
+    // Ability boosts, the client's word for them - taken because solo play
+    // has nobody to cheat. Whole numbers, and no ceiling: they were capped at
+    // 10 steps and +/-20, which the config never said, so a Surge of 12 was
+    // offered on the board and refused here as an illegal move.
+    const stat = (v: unknown) => Math.trunc(Number(v) || 0);
     const atkUp = stat(bonuses?.atk), defUp = stat(bonuses?.def);
     const theirAtkUp = stat(bonuses?.targetAtk), theirDefUp = stat(bonuses?.targetDef);
     const budget = bonus
@@ -839,8 +881,8 @@ export class LocalGameService {
     //
     // Two predicates, deliberately. Nobody attacks on any turn given to
     // setting out; the one-move-per-phase lock is the opening's alone, and
-    // handing it to a single initialization turn would stop a unit that had
-    // moved in some earlier turn of a phase it has nothing to do with.
+    // handing it to a single postmatch turn would stop a unit that had moved
+    // in some earlier turn of a phase it has nothing to do with.
     if (isSetupTurn(g.turnNumber)) {
       // Landing on an enemy is an attack too, by another road.
       if (attack || (relocating && start[to] && start[to].color !== movingColor)) {
@@ -980,19 +1022,13 @@ export class LocalGameService {
     this.overtimeToll(board);
     g.boardState = board;
     g.moveHistory = [...g.moveHistory, ...before.records, record, ...after];
-    const defeated = this.defeatedSides(board);
-    // The server checks the turn limit against the turn just played, before
-    // it counts the next one - mirror that or the two disagree by a ply.
-    const maxTurns: number = g.config?.rules?.maxTurns ?? 0;
-    const outOfTurns = maxTurns > 0 && g.turnNumber >= maxTurns;
-    g.turnNumber += 1;
-    g.currentTurn = this.other(g.currentTurn);
-    g.turnStartedAt = new Date().toISOString();
-    this.persist();
+    // Whoever lost their commander loses, whichever side was moving - a
+    // counter-attack can take the attacker's king on the attacker's own turn,
+    // and can take both commanders at once, which is nobody's win.
+    const ending = this.settleHandOver(this.defeatedSides(board));
     // consumers.py sends `currentTurn: ''` on the move that ends a game -
     // naming the next player starts a clock and sounds a turn for a match
     // that is already over, in the moment before game_over lands.
-    const ending = defeated.length > 0 || outOfTurns;
     this.emit({
       type: 'move_made',
       move: record,
@@ -1003,18 +1039,54 @@ export class LocalGameService {
       currentTurn: ending ? '' : g.currentTurn,
       turnNumber: g.turnNumber,
       turnStartedAt: g.turnStartedAt,
+      phaseBank: g.phaseBank,
     });
+    if (ending) this.over(ending.winner, ending.reason);
+  }
 
-    // Whoever lost their commander loses, whichever side was moving - a
-    // counter-attack can take the attacker's king on the attacker's own turn,
-    // and can take both commanders at once, which is nobody's win.
-    if (defeated.length === 2) {
-      this.over('', 'draw_mutual');
-    } else if (defeated.length) {
-      this.over(this.seat(defeated[0] === 'white' ? 'black' : 'white'), this.endReasonName());
-    } else if (outOfTurns) {
-      this.over('', 'draw_max_turns');
+  /**
+   * Hand the seat over and settle the match. **Every hand-over ends here** -
+   * a move, a blow into a panel, a pass - once the turn has done everything
+   * it does to `g.boardState`, the toll included, and `g.moveHistory` holds
+   * its records. Mirrors `_settle_hand_over` in consumers.py.
+   *
+   * In order, each only if nothing before it ended the match:
+   *
+   * 1. **The board.** `beaten` is every side that has lost on it: both is a
+   *    draw, one is the other's win by the objective.
+   * 2. **The schedule.** The phase the hand-over closed banks
+   *    (`bankEndedPhases`), and then a side past the other's margin once
+   *    Phase 3 has banked and its postmatch is played wins on points, and a
+   *    match still standing once turn 50 is played out is black's
+   *    (`scheduleEnding`).
+   * 3. **The turn limit**, `rules.maxTurns`, checked against the turn just
+   *    played - the server checks it before it counts the next one, and
+   *    mirroring anything else leaves the two a ply apart.
+   *
+   * The order used to be written out in each of the three, and they had
+   * drifted: a panel blow that felled both kings gave the match to black.
+   *
+   * Returns the ending, or `null` while the match goes on. The caller emits
+   * its own message first - with `currentTurn: ''` on an ending - and then
+   * hands the ending to `over`.
+   */
+  private settleHandOver(beaten: string[]): { winner: string; reason: string } | null {
+    const g = this.game!;
+    const maxTurns: number = g.config?.rules?.maxTurns ?? 0;
+    const outOfTurns = maxTurns > 0 && g.turnNumber >= maxTurns;
+    g.turnNumber += 1;
+    g.currentTurn = this.other(g.currentTurn);
+    g.turnStartedAt = new Date().toISOString();
+    g.phaseBank = bankEndedPhases(g.phaseBank, g.config, g.boardState, g.moveHistory, g.turnNumber);
+    this.persist();
+    if (beaten.length === 2) return { winner: '', reason: 'draw_mutual' };
+    if (beaten.length) {
+      return { winner: this.seat(beaten[0] === 'white' ? 'black' : 'white'), reason: this.endReasonName() };
     }
+    const schedule = scheduleEnding(g.phaseBank, g.turnNumber);
+    if (schedule) return { winner: this.seat(schedule.winner), reason: schedule.reason };
+    if (outOfTurns) return { winner: '', reason: 'draw_max_turns' };
+    return null;
   }
 
   /** What the objective calls a decided game. Mirrors consumers.py. */
@@ -1035,7 +1107,7 @@ export class LocalGameService {
    *
    * **Real damage, not a mark.** A king on the toll or less dies of it, which
    * is the owner's rule - and it is what eventually settles a deathmatch
-   * neither side is winning on points. How much climbs 1, 2, 3 through
+   * neither side is winning on points. How much climbs 1, 3, 5 through
    * overtime's three stretches, so a match that will not end has its ending
    * brought forward rather than merely waited for. It lands after everything else the turn did, so a blow
    * struck this turn is resolved before the toll rather than after it, and a
@@ -1058,7 +1130,7 @@ export class LocalGameService {
     const g = this.game!;
     // Still the ply just played: it is bumped after this. How much it costs is
     // the ply's business - overtime runs in three stretches and the toll
-    // climbs 1, 2, 3 through them - and `overtimeTollAt` answers 0 outside
+    // climbs 1, 3, 5 through them - and `overtimeTollAt` answers 0 outside
     // overtime, so it is the "not yet" gate as well as the amount. A
     // `turnNumber < OVERTIME_FIRST_PLY` test beside it would be a second
     // place holding the schedule, and the two could come to disagree.
@@ -1129,27 +1201,17 @@ export class LocalGameService {
       : felled ? this.defeatedSides(board).filter(side => side === felled) : [];
     g.boardState = board;
     if (cast.records.length) g.moveHistory = [...g.moveHistory, ...cast.records];
-    const maxTurns: number = g.config?.rules?.maxTurns ?? 0;
-    const outOfTurns = maxTurns > 0 && g.turnNumber >= maxTurns;
-    g.turnNumber += 1;
-    g.currentTurn = this.other(passedBy);
-    g.turnStartedAt = new Date().toISOString();
-    this.persist();
-    const ending = beaten.length > 0 || outOfTurns;
+    // A pass can be the hand-over that closes a phase, or turn 50.
+    const ending = this.settleHandOver(beaten);
     this.emit({
       type: 'turn_passed', passedBy, color, boardState: board,
       ...(cast.records.length ? { effectsBefore: cast.records } : {}),
       // As above: a pass that runs the turn limit out hands over to nobody.
       currentTurn: ending ? '' : g.currentTurn,
       turnNumber: g.turnNumber, turnStartedAt: g.turnStartedAt,
+      phaseBank: g.phaseBank,
     });
-    if (beaten.length === 2) {
-      this.over('', 'draw_mutual');
-    } else if (beaten.length) {
-      this.over(this.seat(beaten[0] === 'white' ? 'black' : 'white'), this.endReasonName());
-    } else if (outOfTurns) {
-      this.over('', 'draw_max_turns');
-    }
+    if (ending) this.over(ending.winner, ending.reason);
   }
 
   private over(winner: string, endReason: string, extra: any = {}): void {
@@ -1219,6 +1281,7 @@ export class LocalGameService {
       endReason: g.endReason,
       turnStartedAt: g.turnStartedAt,
       drawOfferedBy: '',
+      phaseBank: g.phaseBank ?? {},
     };
   }
 

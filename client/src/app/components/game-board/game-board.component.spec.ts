@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { SimpleChange } from '@angular/core';
-import { GameBoardComponent } from './game-board.component';
+import { GameBoardComponent, hexNumberMap } from './game-board.component';
+import { DEFAULT_GAME_CONFIG } from '../../services/config.service';
 import { OVERTIME_FIRST_PLY } from '../../services/phases';
 import { setPanelsDealt } from '../../services/hex-rules';
 
@@ -28,11 +29,11 @@ describe('GameBoardComponent reach preview', () => {
     '-3,0': { unit_id: 'scout', color: 'white', hp: 6, max_hp: 6 },
   };
 
-  // A new game opens with all four panels empty while the owner clears the
-  // placeholder squads out. Everything below that works a panel - the walk,
-  // the wrap, the crossing, the blow into one, the walk home, and the windows
-  // and allowances over them - is still live code and still has to be right
-  // for the day the squads come back, so these deal a board to test it on.
+  // A new game stands in its panels what the config's setup puts there - the
+  // owner's base squads ('GameBoardComponent setup deal', below). Everything
+  // here that works a panel - the walk, the wrap, the crossing, the blow into
+  // one, the walk home, and the windows and allowances over them - was written
+  // against the placeholder squads, so these deal those instead.
   beforeEach(() => setPanelsDealt(true));
   afterEach(() => setPanelsDealt(false));
 
@@ -433,6 +434,52 @@ describe('GameBoardComponent reach preview', () => {
     // the class once, so the full count is also the proof they do not overlap
     // and that none of them ran off the board.
     expect(zoned.length).toBe(5 * 19);
+  });
+
+  it('draws a dark line along every edge where a panel meets the battlefield', () => {
+    // The owner, 26 Sep 2026: "try to draw a darker line on between the
+    // reserve/base and the board edge".
+    board.radius = 11;
+    board.ngOnChanges({ radius: new SimpleChange(4, 11, false) });
+    (board as any).cdr.detectChanges();
+
+    // 22 edges down each of the four panels' inner sides, counted off the
+    // server's grid.
+    expect(board.panelSeams.length).toBe(88);
+    const lines = fixture.nativeElement.querySelectorAll('line.panel-seam');
+    expect(lines.length).toBe(88);
+    expect(getComputedStyle(lines[0]).pointerEvents).toBe('none');
+
+    // Each runs corner to corner along an edge a panel hex and a battlefield
+    // hex share: both its ends are corners of both hexes.
+    const corners = (hex: any) => hex.points.split(' ').map((p: string) => p.split(',').map(Number));
+    const isCorner = (hex: any, x: number, y: number) =>
+      corners(hex).some(([cx, cy]: number[]) => Math.hypot(cx - x, cy - y) < 0.05);
+    for (const seam of board.panelSeams) {
+      const touching = board.cells.filter(hex =>
+        isCorner(hex, seam.x1, seam.y1) && isCorner(hex, seam.x2, seam.y2));
+      expect(touching.length).withContext(JSON.stringify(seam)).toBe(2);
+      expect(touching.filter(hex => hex.filler).length).withContext(JSON.stringify(seam)).toBe(1);
+    }
+  });
+
+  it('writes what a zone hex is worth on every empty one', () => {
+    // The owner, 26 Sep 2026: "make the hex capture zone near my base 3x. the
+    // middle hex worth 2x. side hex worth 1x" - which a player has to be able
+    // to read off the board, not only find out from the score.
+    board.radius = 11;
+    board.ngOnChanges({ radius: new SimpleChange(4, 11, false) });
+    (board as any).cdr.detectChanges();   // OnPush: the fixture alone would not redraw
+
+    const labels: Element[] = [...fixture.nativeElement.querySelectorAll('.zone-worth')];
+    const worths = labels.map(l => l.textContent!.trim());
+    // Every zone hex but the middle one, where the archer stands.
+    expect(worths.length).toBe(5 * 19 - 1);
+    const X = '×';
+    const count = (w: number) => worths.filter(t => t === `${X}${w}`).length;
+    expect([count(3), count(2), count(1)]).toEqual([38, 18, 38]);
+    // And never in the way of a click on the hex.
+    expect(getComputedStyle(labels[0]).pointerEvents).toBe('none');
   });
 
   it('splits a hovered unit into where it can stand and where it can only strike', () => {
@@ -1315,26 +1362,26 @@ describe('GameBoardComponent reach preview', () => {
         return board.doomState(anyBoard().cellsByKey.get('0,0'));
       };
       // Turn 44 is the last of the first stretch. This turn costs him 1 and
-      // his next costs 2, so three HP is exactly two turns' worth and the
+      // his next costs 3, so four HP is exactly two turns' worth and the
       // skull is owed. `toll * DOOM_WARNING_TURNS` answered 2 here and said
       // nothing - a king who dies at the end of turn 45 with no warning at all.
-      expect(doom(3, 2 * 44 - 1)).toBe('early');
-      expect(doom(4, 2 * 44 - 1)).toBe('');
+      expect(doom(4, 2 * 44 - 1)).toBe('early');
+      expect(doom(5, 2 * 44 - 1)).toBe('');
       expect(doom(1, 2 * 44 - 1)).toBe('imminent');
 
-      // The last turn of the match takes three, so three is imminent rather
-      // than two turns clear, and the warning reaches back to six.
-      expect(doom(3, 2 * 50 - 1)).toBe('imminent');
-      expect(doom(6, 2 * 50 - 1)).toBe('early');
-      expect(doom(7, 2 * 50 - 1)).toBe('');
+      // The last turn of the match takes five, so five is imminent rather
+      // than two turns clear, and the warning reaches back to ten.
+      expect(doom(5, 2 * 50 - 1)).toBe('imminent');
+      expect(doom(10, 2 * 50 - 1)).toBe('early');
+      expect(doom(11, 2 * 50 - 1)).toBe('');
 
       // Read off HIS next toll, not the mover's. White pays at the end of an
       // odd hand-over, so a white king asked on ply 88 - black's half of turn
       // 44 - pays next at the end of turn 45, which is the stretch that takes
-      // two. Four HP is two of those and the skull is owed; reading the
-      // mover's ply instead answered 1 + 2 and said nothing at all.
-      expect(doom(4, 2 * 44)).toBe('early');
-      expect(doom(5, 2 * 44)).toBe('');
+      // three. Six HP is two of those and the skull is owed; reading the
+      // mover's ply instead answered 1 + 3 and said nothing at all.
+      expect(doom(6, 2 * 44)).toBe('early');
+      expect(doom(7, 2 * 44)).toBe('');
     });
 
     it('names the panel a blow landed in, so the mending can tell base from reserve', () => {
@@ -1399,10 +1446,13 @@ describe('GameBoardComponent reach preview', () => {
 
       // Turn 8, Phase 1's played half: the wrap alone is open.
       expect(shutOn(15)).toEqual({ wrap: 0, entry: 6, home: 6 });
+      // Turn 4, the first of that half - it used to be Phase 1's own setup
+      // turn, and now plays like the rest of it.
+      expect(shutOn(7)).toEqual({ wrap: 0, entry: 6, home: 6 });
       // Turn 11, its halftime half: the ways in open and the wrap shuts.
       expect(shutOn(21)).toEqual({ wrap: 2, entry: 0, home: 6 });
-      // Turn 4, Phase 1's own initialization: both ways open, wrap shut.
-      expect(shutOn(7)).toEqual({ wrap: 2, entry: 0, home: 0 });
+      // Turn 14, Phase 1's postmatch: both ways open, wrap shut.
+      expect(shutOn(27)).toEqual({ wrap: 2, entry: 0, home: 0 });
       // Turn 1, the opening: the same three answers.
       expect(shutOn(1)).toEqual({ wrap: 2, entry: 0, home: 0 });
       // Turn 37, overtime: only the way home is open.
@@ -1548,9 +1598,9 @@ describe('GameBoardComponent reach preview', () => {
       const beside = '-11,11';
       const setUp = () => {
         // The base's three doorways run on the setup turns and all of
-        // overtime. Ply 7 is turn 4, Phase 1's own initialization - the first
-        // turn past the opening on which a unit may walk home at all.
-        board.turnNumber = 7;
+        // overtime. Ply 27 is turn 14, Phase 1's postmatch - the first turn
+        // past the opening on which a unit may walk home at all.
+        board.turnNumber = 27;
         board.radius = 11;
         board.ngOnChanges({ radius: new SimpleChange(4, 11, false) });
         board.interactive = true;
@@ -1618,7 +1668,7 @@ describe('GameBoardComponent reach preview', () => {
         // Ply 20 is Phase 1's halftime half: the doorways home are shut, so
         // the staged turn is the whole of the answer and this unit has nothing.
         board.turnNumber = 20;
-        board.ngOnChanges({ turnNumber: new SimpleChange(7, 20, false) });
+        board.ngOnChanges({ turnNumber: new SimpleChange(27, 20, false) });
         board.movesLeftFor = '0,0';
         board.movesLeft = 2;
 
@@ -1844,8 +1894,16 @@ describe('GameBoardComponent reach preview', () => {
         board.entryBind = true;
         const king = board.cells.find(c => c.piece?.color === 'black')!;
         anyBoard().oweMark(king.piece!.uid, '-1');
+        const sounded: Array<{ toll: boolean; heal: boolean }> = [];
+        board.upkeepSettled.subscribe(upkeep => sounded.push(upkeep));
         await anyBoard().settleUpkeep();
         anyBoard().cdr.detectChanges();
+        // Told to the room once, with both in it, for it to sound one after
+        // the other (the room's onUpkeepSettled).
+        expect(sounded).toEqual([{ toll: true, heal: true }]);
+        // A turn that owes nothing says nothing.
+        await anyBoard().settleUpkeep();
+        expect(sounded.length).toBe(1);
 
         const marks = [...fixture.nativeElement.querySelectorAll('text.heal-mark')]
           .map((t: Element) => [t.textContent, t.getAttribute('class')]);
@@ -2191,7 +2249,7 @@ describe('GameBoardComponent reach preview', () => {
     });
   });
 
-  describe('the initialization', () => {
+  describe('the setup turns', () => {
     const anyBoard = () => board as any;
     const baseCell = () => board.cells.find(c => c.panel === 'bl' && !!c.piece)!;
     const reserveCell = () => board.cells.find(c => c.panel === 'br' && !!c.piece)!;
@@ -2249,23 +2307,29 @@ describe('GameBoardComponent reach preview', () => {
       expect(board.legalTargets.size).toBeGreaterThan(0);
     });
 
-    it('offers nobody a strike on a phase initialization turn either', () => {
-      // The opening and turn 4 refuse a blow for two different reasons, and
-      // the board used to ask only about the opening - so on turn 4 (ply 7) it
-      // offered a target and drew a strike layer for a blow both engines then
-      // threw back, stalling a networked turn on the error.
-      enterTurn(1, 7);
+    it('offers nobody a strike on a postmatch either', () => {
+      // The opening and a postmatch refuse a blow for two different reasons,
+      // and the board once asked only about the opening - so on the phase's
+      // own setup turn it offered a target and drew a strike layer for a blow
+      // both engines then threw back, stalling a networked turn on the error.
+      // Ply 27 is turn 14, Phase 1's postmatch.
+      enterTurn(1, 27);
       board.onHexClick(cell('0,0'));
       expect(board.attackTargets.size).toBe(0);
       board.onHexHover(cell('0,0'));
       expect(board.previewAttacks.size).toBe(0);
+
+      // Turn 4 used to be that setup turn. It plays now, and strikes with it.
+      enterTurn(27, 7);
+      board.onHexClick(cell('0,0'));
+      expect(board.attackTargets.has('1,0')).toBeTrue();
     });
 
-    it('lets five out of the reserve on a phase initialization turn', () => {
+    it('lets five out of the reserve on a postmatch', () => {
       // The engines raise the reserve's allowance to five there. The board
       // kept its own copy of the three and never heard about it, so the fourth
       // and fifth were refused by the only thing the player can click.
-      enterTurn(1, 7);
+      enterTurn(1, 27);
       const res = reserveCell();
       ['a', 'b', 'c'].forEach(uid => anyBoard().reserveMovers.add(uid));
       board.onHexClick(res);
@@ -2281,6 +2345,32 @@ describe('GameBoardComponent reach preview', () => {
       ['d', 'e'].forEach(uid => anyBoard().reserveMovers.add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBe(0);
+
+      // Five is rules.postmatchEntries, not the board's own number: a room
+      // that allows six lets a sixth set out.
+      board.config = { ...config, rules: { ...(config as any).rules, postmatchEntries: 6 } };
+      board.selectedHex = null;
+      board.onHexClick(res);
+      expect(board.legalTargets.size).toBeGreaterThan(0);
+      board.config = config;
+    });
+
+    it('holds the reserve to three on the turns either side of a postmatch', () => {
+      // Five is the postmatch's and nobody else's: turn 13 is the last of
+      // Phase 1's play and turn 15 the first of Phase 2's, and turn 4 - the
+      // turn that used to be Phase 1's own setup turn - plays now as well.
+      for (const ply of [7, 26, 29]) {
+        enterTurn(1, ply);
+        // Two started leaves one to go, so the cell has somewhere to walk -
+        // without that, the nought below would prove nothing about the cap.
+        ['a', 'b'].forEach(uid => anyBoard().reserveMovers.add(uid));
+        board.onHexClick(reserveCell());
+        expect(board.legalTargets.size).withContext(`ply ${ply}, two started`).toBeGreaterThan(0);
+        anyBoard().reserveMovers.add('c');
+        board.selectedHex = null;
+        board.onHexClick(reserveCell());
+        expect(board.legalTargets.size).withContext(`ply ${ply}`).toBe(0);
+      }
     });
 
     it('marks a panel unit that has been started this turn', () => {
@@ -2435,5 +2525,104 @@ describe('GameBoardComponent reach preview', () => {
       expect(stands.length).toBe(1);
       expect(zone()).toContain(stands[0]);
     });
+  });
+});
+
+/**
+ * What a real game stands in its panels: the setup's entries on each side's
+ * own panel hexes - the owner's base squads, and nothing in the reserves.
+ * Mirrors SetUpPanelsTestCase in test_engine.py.
+ */
+describe('GameBoardComponent setup deal', () => {
+  /** The owner's base squad for white, by the number on each hex, 25 Sep 2026. */
+  const WHITE_BASE_BY_NUMBER: Record<number, string> = {
+    518: 'rook', 519: 'knight', 520: 'bishop', 521: 'bishop', 522: 'knight', 523: 'rook',
+    495: 'shieldman', 496: 'archer', 497: 'pawn', 498: 'archer', 499: 'shieldman',
+    471: 'pawn', 472: 'shieldman', 473: 'pawn', 474: 'archer', 475: 'pawn',
+  };
+  let board: any;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({ imports: [GameBoardComponent] }).compileComponents();
+  });
+
+  const deal = (config: any, panelHp: Record<string, number> = {}) => {
+    board = TestBed.createComponent(GameBoardComponent).componentInstance;
+    board.config = config;
+    board.radius = config.board.radius;
+    board.boardState = {};
+    board.panelHp = panelHp;
+    board.ngOnChanges({
+      config: new SimpleChange(null, config, true),
+      radius: new SimpleChange(null, config.board.radius, true),
+      boardState: new SimpleChange(null, {}, true),
+    });
+    return board.reserves as Record<string, any>;
+  };
+
+  it("opens each base on the owner's squad, by the numbers on the board", () => {
+    const reserves = deal(structuredClone(DEFAULT_GAME_CONFIG));
+    const numbers = hexNumberMap(11);
+    const white: Record<number, string> = {};
+    for (const [key, unit] of Object.entries(reserves)) {
+      if (unit.color === 'white') white[numbers[key]] = unit.unit_id;
+    }
+    expect(white).toEqual(WHITE_BASE_BY_NUMBER);
+    // Black's is the point mirror.
+    for (const [key, unit] of Object.entries(reserves)) {
+      if (unit.color !== 'white') continue;
+      const [q, r] = key.split(',').map(Number);
+      expect(reserves[`${-q},${-r}`]).toEqual(jasmine.objectContaining(
+        { unit_id: unit.unit_id, color: 'black' }));
+    }
+    expect(Object.keys(reserves).length).toBe(32);
+    // Both bases, and neither reserve.
+    const panels = new Set(Object.keys(reserves).map(k => board.cellsByKey.get(k)?.panel));
+    expect(panels).toEqual(new Set(['bl', 'tr']));
+    expect(reserves['-17,11']).toEqual({
+      unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'w-17,11',
+    });
+  });
+
+  it("hands the room a unit's real numbers, and the hex its two digits", () => {
+    // The room writes these back as a panel unit's HP when a cast lands, so a
+    // clamp here cut a 120-HP unit to 99 for good.
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    config.units.rook.hp = 120;
+    config.units.rook.move = 104;
+    board = TestBed.createComponent(GameBoardComponent).componentInstance;
+    const state = { '0,0': { unit_id: 'rook', color: 'white', hp: 115, max_hp: 120, uid: 'wr' } };
+    board.config = config;
+    board.radius = 11;
+    board.boardState = state;
+    board.ngOnChanges({
+      config: new SimpleChange(null, config, true),
+      radius: new SimpleChange(null, 11, true),
+      boardState: new SimpleChange(null, state, true),
+    });
+    const hex = board.cellsByKey.get('0,0');
+    const seen = board.describe(hex);
+    expect([seen.hp, seen.hpMax, seen.mv]).toEqual([115, 120, 104]);
+    expect(hex.stats.hp).toBe(99);
+  });
+
+  it('deals a wounded unit wounded, and a dead one not at all', () => {
+    const reserves = deal(structuredClone(DEFAULT_GAME_CONFIG), { 'w-17,11': 7, 'b12,-9': 0 });
+    expect(reserves['-17,11'].hp).toBe(7);
+    expect(reserves['12,-9']).toBeUndefined();
+    expect(Object.keys(reserves).length).toBe(31);
+  });
+
+  it("deals into a reserve too, and nothing into the other side's panels or a king", () => {
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    deal(config);
+    const freeBase = [...board.panelZones.get('bl')].find((k: string) => !config.setup.white[k]);
+    config.setup.white['2,10'] = 'pawn';      // hex 513, white's reserve
+    config.setup.white['-2,-10'] = 'pawn';    // black's reserve - not white's to fill
+    config.setup.white[freeBase] = 'king';    // a commander starts on the battlefield
+    const reserves = deal(config);
+    expect(reserves['2,10']).toEqual(jasmine.objectContaining({ color: 'white', uid: 'w2,10' }));
+    expect(reserves['-2,-10']).toBeUndefined();
+    expect(reserves[freeBase]).toBeUndefined();
   });
 });

@@ -13,13 +13,13 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
-  attackTiers, captureClaims, captureZoneHexes, computeAttackZone, computeLegalMoves,
-  computeMoveCosts, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
+  attackTiers, captureClaims, captureZoneHexes, captureZoneValues, computeAttackZone,
+  computeLegalMoves, computeMoveCosts, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
   BASE_PANELS, HEX_DIRS, PANELS_DEALT,
 } from '../../services/hex-rules';
 import {
   boardMovesPerTurn, overtimeTollAt, overtimeTollOver,
-  isEntryOpen, isHomecomingOpen, isInitialization, isOvertime, isPhaseInitialization,
+  isEntryOpen, isHomecomingOpen, isInitialization, isOvertime, isPostmatch,
   isSetupTurn, isWrapOpen, sideOfPly,
 } from '../../services/phases';
 import { ruleOf } from '../../services/config.service';
@@ -319,7 +319,12 @@ function hexPoints(cx: number, cy: number, orientation: BoardOrientation, size =
 
 /** Stats render in two digits at most - clamp rather than overflow the hex. */
 function twoDigits(v: number | null | undefined): number | null {
-  return v === null || v === undefined ? null : Math.min(99, Math.max(0, Math.trunc(v)));
+  return v === null || v === undefined ? null : Math.min(99, wholeStat(v)!);
+}
+
+/** A stat as a whole number, never negative - the real one, for the Unit panel and the room. */
+function wholeStat(v: number | null | undefined): number | null {
+  return v === null || v === undefined ? null : Math.max(0, Math.trunc(v));
 }
 
 /**
@@ -331,14 +336,6 @@ function placeholderVet(key: string, unitId: string): number {
   const seed = key + unitId;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
   return Math.abs(h) % 4;
-}
-
-/**
- * Attack as drawn on the hex: one number per ring the unit can strike,
- * outermost last - "16" for a melee unit, "26,19" for one that reaches two.
- */
-function attackText(unitId: string, config: any): string {
-  return attackTiers(unitId, config).map(d => String(twoDigits(d))).join(',');
 }
 
 function attackCellText(unitId: string, config: any, bonus = 0): string {
@@ -380,6 +377,18 @@ export function hexNumberMap(
  */
 function panelOf(x: number, y: number): string {
   return `${y < 0 ? 't' : 'b'}${x < 0 ? 'l' : 'r'}`;
+}
+
+/**
+ * Which corner panel the panel hex `key` sits in, or '' for a key that is no
+ * hex. Exported so the game room can tell a base from a reserve off where a
+ * panel walk ended, as `panel_of(axial_to_pixel(...))` does on the server.
+ */
+export function panelOfHex(key: string, orientation: BoardOrientation = 'edge-up'): string {
+  const [q, r] = String(key).split(',').map(Number);
+  if (!Number.isInteger(q) || !Number.isInteger(r)) return '';
+  const { x, y } = axialToPixel(q, r, orientation);
+  return panelOf(x, y);
 }
 
 /**
@@ -581,6 +590,18 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [class.held-white]="captureClaim.get(hex.key) === 'white'"
             [class.held-black]="captureClaim.get(hex.key) === 'black'"
           />
+          <!-- What a hex of this zone is worth to whoever holds it (ZONE_WORTH:
+               3 in each side's half, 2 in the middle, 1 at the sides), on
+               every empty one. In the bottom of the hex, clear of the move dot
+               and the hex number in the middle; a unit's plate covers the
+               hex, so the empty hexes around it carry the number. -->
+          <text
+            *ngIf="hex.zoneClass === 'zone' && !hex.piece"
+            [attr.x]="hex.cx"
+            [attr.y]="hex.cy + 18"
+            [attr.transform]="textTransform(hex.cx, hex.cy)"
+            class="zone-worth"
+          >&times;{{ zoneWorthAt(hex) }}</text>
           <!-- The way onto the battlefield on the three reserve hexes it can
                be taken from, and the two ends of the wrap. Under the unit
                group below, so a unit standing on the hex covers its middle
@@ -701,6 +722,13 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             </g>
           </ng-container>
         </g>
+        <!-- The edge of the battlefield, where the bases and reserves meet it
+             (panelSeams): over every hex, so no neighbour paints half of it
+             out, and under the labels and the arrows of a move. -->
+        <line *ngFor="let seam of panelSeams"
+              [attr.x1]="seam.x1" [attr.y1]="seam.y1"
+              [attr.x2]="seam.x2" [attr.y2]="seam.y2"
+              class="panel-seam" />
         <ng-container *ngFor="let arrow of movementArrowSegments">
           <line [attr.x1]="arrow.x1" [attr.y1]="arrow.y1"
                 [attr.x2]="arrow.x2" [attr.y2]="arrow.y2"
@@ -931,6 +959,16 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       transition: fill 0.1s;
     }
 
+    /* The battlefield's edge against the panels: the hex lines' brown, much
+       darker and three times as heavy. Round caps join the segments into one
+       line round each corner. */
+    .panel-seam {
+      stroke: #3b2410;
+      stroke-width: 3;
+      stroke-linecap: round;
+      pointer-events: none;
+    }
+
     /* Each side's home ground - the three rows up to and including its pawn
        wall. Yours green and theirs red, the same language the turn indicator
        uses, and both pale enough that a piece still reads on top of them.
@@ -970,6 +1008,22 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
        either of them, which is the same as nobody standing there. */
     .zone-wash.held-white { fill: #ff8c1a; fill-opacity: 0.68; }
     .zone-wash.held-black { fill: #7b4fbf; fill-opacity: 0.58; }
+
+    /* A zone hex's worth. Small, with a pale halo so it reads on the plain
+       blue and on either side's colour alike. */
+    .zone-worth {
+      fill: #1e3a66;
+      font-size: 10px;
+      font-weight: 800;
+      text-anchor: middle;
+      dominant-baseline: central;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.8);
+      stroke-width: 2.5;
+      stroke-linejoin: round;
+      pointer-events: none;
+      user-select: none;
+    }
 
     .hex-cell:not(.hex-filler):hover {
       fill: #e8cf9f;
@@ -1831,6 +1885,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   @Output() playbackStep = new EventEmitter<AnimStep>();
   /** Nothing left to play - the room starts its clock again. */
   @Output() playbackDone = new EventEmitter<void>();
+  /**
+   * The turn's last beat as it lands (`settleUpkeep`), so the room can sound
+   * it: whether overtime's toll struck a king, and whether anything in a base
+   * mended. Both can land in the same beat.
+   */
+  @Output() upkeepSettled = new EventEmitter<{ toll: boolean; heal: boolean }>();
 
   /** The unit in flight: a copy drawn over the board while its hex is empty. */
   mover: { points: string; symbol: string; dark: boolean; x: number; y: number } | null = null;
@@ -2612,6 +2672,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   /** Which side holds each capture hex; missing means nobody, or cancelled. */
   captureClaim = new Map<string, 'white' | 'black'>();
 
+  /** What a hex of the zone `hex` is in is worth; 0 off the zones. */
+  zoneWorthAt(hex: HexCell): number {
+    return captureZoneValues(this.radius).get(hex.key) ?? 0;
+  }
+
   /**
    * The arrow on a hex: a triangle pushed out to the edge it points at, so it
    * still shows around the plate of a unit standing there rather than hiding
@@ -2751,6 +2816,37 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     return this.config?.board?.orientation === 'vertex-up' ? 'vertex-up' : 'edge-up';
   }
 
+  /**
+   * Where the bases and reserves meet the battlefield: one segment on every
+   * edge a panel hex shares with a battlefield hex, drawn dark so the edge of
+   * the board reads at a glance. The owner, 26 Sep 2026: "try to draw a
+   * darker line on between the reserve/base and the board edge".
+   */
+  panelSeams: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+  /** The board shape `panelSeams` was built for - it depends on nothing else. */
+  private panelSeamsFor = '';
+
+  private buildPanelSeams(): void {
+    const stamp = `${this.radius}|${this.orientation}`;
+    if (stamp === this.panelSeamsFor) return;
+    this.panelSeamsFor = stamp;
+    const seams: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+    for (const cell of this.cells) {
+      if (!cell.filler) continue;
+      for (const [dq, dr] of HEX_DIRS) {
+        const next = this.cellsByKey.get(`${cell.q + dq},${cell.r + dr}`);
+        if (!next || next.filler) continue;
+        // The edge the two share: a side's length (HEX_SIZE), square to the
+        // line between their centres and halfway along it.
+        const dx = next.cx - cell.cx, dy = next.cy - cell.cy;
+        const half = HEX_SIZE / 2 / Math.hypot(dx, dy);
+        const mx = (cell.cx + next.cx) / 2, my = (cell.cy + next.cy) / 2;
+        seams.push({ x1: mx - dy * half, y1: my + dx * half, x2: mx + dy * half, y2: my - dx * half });
+      }
+    }
+    this.panelSeams = seams;
+  }
+
   private buildCells(): void {
     const r = this.radius;
     const orientation = this.orientation;
@@ -2852,6 +2948,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     });
 
     this.cellsByKey = new Map(this.cells.map(c => [c.key, c]));
+    this.buildPanelSeams();
     this.strikeBounds = { white: new Set(), black: new Set() };
     for (const cell of this.cells) {
       // Where each commander stands, on what, and when. Once a king is off the
@@ -2889,22 +2986,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /**
-   * Start new games with empty base and reserve panels.
-   *
-   * Panel history is still replayed below for compatibility with recorded
-   * deployment actions, but no placeholder squad is dealt into a fresh game.
+   * Deal a new game's panels: what the config's setup stands in them, or the
+   * placeholder squads while `PANELS_DEALT` is on (the specs' fixture).
    */
   private buildReserves(): void {
-    // **The emptiness is a decision, not arithmetic.** A new game opens with
-    // all four panels empty while the owner clears the placeholder squads out
-    // (`PANELS_DEALT`), but the deal itself stays here and stays tested - the
-    // panels come back, and everything that works one is still live code.
     if (!PANELS_DEALT) {
-      const stamp = `${this.radius}|${this.orientation}|empty`;
+      const setup = this.config?.setup;
+      const stamp = `${this.radius}|${this.orientation}|setup|` +
+        JSON.stringify([setup?.white ?? null, setup?.black ?? null]);
       if (stamp === this.reservesKey) return;
       this.reservesKey = stamp;
       this.reserves = {};
       this.fallen.clear();
+      this.dealSetUpPanels();
       return;
     }
     const roster = Object.entries(this.config?.units ?? {})
@@ -2960,6 +3054,47 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
         if (left <= 0) return;
         this.reserves[at] = { unit_id: id, color, hp: left, max_hp: hp, uid };
       });
+    }
+  }
+
+  /**
+   * The units the config's setup stands in the panels. Mirrors
+   * `set_up_panels` in `server/game/engine/panels.py`.
+   *
+   * A side's setup is one map of hexes, battlefield and panels alike, so the
+   * starting position reads the way the board is numbered. The battlefield's
+   * entries are the board builders'; this takes every one that falls on a hex
+   * of **that side's own** panels. One anywhere else - the other side's
+   * panels, or off the drawn block - is not dealt (`validateGameRules`
+   * refuses the first), nor is a commander, who starts on the battlefield.
+   *
+   * The uid is the board's shape, `${color[0]}${q},${r}` - the hex it was
+   * dealt on, so it is deterministic and never meets a board unit's.
+   */
+  private dealSetUpPanels(): void {
+    const panelAt = new Map<string, string>();
+    for (const [panel, hexes] of this.panelZones) {
+      for (const hex of hexes) panelAt.set(hex, panel);
+    }
+    for (const color of ['white', 'black'] as const) {
+      const placement = this.config?.setup?.[color];
+      if (!placement || typeof placement !== 'object') continue;
+      for (const [coord, unitId] of Object.entries<any>(placement)) {
+        const [q, r] = String(coord).split(',').map(Number);
+        if (!Number.isInteger(q) || !Number.isInteger(r)) continue;
+        const at = `${q},${r}`;
+        const panel = panelAt.get(at);
+        if (!panel || (panel[0] === 'b' ? 'white' : 'black') !== color) continue;
+        const def = this.config?.units?.[unitId];
+        if (!def || def.commander) continue;
+        const hp = def.hp ?? 1;
+        const uid = `${color[0]}${at}`;
+        // As in the placeholder deal: a wound taken in a panel outlives the
+        // deal, and nothing at 0 is dealt at all.
+        const left = this.panelHp[uid] ?? hp;
+        if (left <= 0) continue;
+        this.reserves[at] = { unit_id: unitId, color, hp: left, max_hp: hp, uid };
+      }
     }
   }
 
@@ -3153,6 +3288,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (!this.pendingUpkeep.size) return;
     const owed = [...this.pendingUpkeep];
     this.pendingUpkeep.clear();
+    // One of each kind for the room to sound, however many units mended.
+    this.upkeepSettled.emit({
+      toll: owed.some(([, text]) => text.charAt(0) === '-'),
+      heal: owed.some(([, text]) => text.charAt(0) !== '-'),
+    });
     // Where each of them is standing *now*: a unit that walked during the
     // turn is marked where it ended up, not where the mending noticed it.
     const at = new Map<string, string>();
@@ -3283,8 +3423,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * quietly dropping out of the score.
    *
    * The number on the mark is the *stretch's*, not a fixed `-1`: overtime runs
-   * in three and the toll climbs 1, 2, 3 through them, so the last turn of the
-   * match writes `-3`.
+   * in three and the toll climbs 1, 3, 5 through them, so the last turn of the
+   * match writes `-5`.
    *
    * Derived from the turn that just ended rather than announced by the room:
    * white plays the odd hand-overs, so which side paid is arithmetic.
@@ -3477,7 +3617,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * too - see `homecoming_targets` and the browser engine's `move`.
    *
    * **When it is open**: any setup turn - the opening's three and each phase's
-   * own initialization - and all of overtime. Shut through both halves of a
+   * own postmatch - and all of overtime. Shut through both halves of a
    * numbered phase's play. Overtime is the owner's exception and is not a
    * setup turn: the toll is running and units are still fighting, so a walk
    * home there is an ordinary move that happens to end off the board, and the
@@ -3831,9 +3971,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   /**
-   * Any turn given to setting out - the opening, or a phase's initialization
-   * turn. Deliberately not the same question as `initializing`: the one-move-
-   * per-phase lock above is the opening's alone, but nobody attacks on either.
+   * Any turn given to setting out - the opening, or a phase's postmatch.
+   * Deliberately not the same question as `initializing`: the one-move-per-
+   * phase lock above is the opening's alone, but nobody attacks on either.
    */
   private get settingOut(): boolean {
     return isSetupTurn(this.turnNumber);
@@ -3848,19 +3988,20 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
    * Both panels carry the cap, all match, and each carries its own: three
    * out of the base and three out of the reserve, never three between them.
    *
-   * **A phase's initialization turn raises the reserve's to five** - the same
-   * number `panelMoverAllowed` and `panel_allowance` raise it to, and the
-   * board must raise it too or the fourth and fifth are offered by neither
-   * engine's rule but refused by the screen. The base keeps its three:
-   * nothing in that allowance was about the base.
+   * **A phase's postmatch raises the reserve's to five**
+   * (`rules.postmatchEntries`) - the same number `panelMoverAllowed` and
+   * `panel_allowance` raise it to, and the board must raise it too or the
+   * fourth and fifth are offered by neither engine's rule but refused by the
+   * screen. The base keeps its three: nothing in that allowance was about the
+   * base.
    */
   private panelCanMove(cell: HexCell): boolean {
     const uid = this.uidOf(cell);
     if (this.lockedUnits.has(uid)) return false;
     const base = BASE_PANELS.has(cell.panel);
     const movers = base ? this.baseMovers : this.reserveMovers;
-    const cap = ruleOf(this.config, !base && isPhaseInitialization(this.turnNumber)
-      ? 'phaseInitEntries' : 'panelMoversPerTurn');
+    const cap = ruleOf(this.config, !base && isPostmatch(this.turnNumber)
+      ? 'postmatchEntries' : 'panelMoversPerTurn');
     return movers.has(uid) || movers.size < cap;
   }
 
@@ -4147,8 +4288,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // reaches, though, includes them both: a unit at the edge shows its range
     // running on into the panel beside it.
     // On any turn given to setting out, nobody attacks at all - the opening
-    // and a phase's initialization turn alike, which is what both engines
-    // refuse. Offering a target here would stage a blow they then reject.
+    // and a phase's postmatch alike, which is what both engines refuse.
+    // Offering a target here would stage a blow they then reject.
     if (!cell.panel && !this.settingOut) {
       const range: number = this.config?.units?.[cell.piece.unit_id]?.attackRange ?? 1;
       for (const other of this.cells) {
@@ -4392,7 +4533,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // turn and can be a stretch further along with a heavier toll.
     const due = sideOfPly(this.turnNumber) === hex.piece.color
       ? this.turnNumber : this.turnNumber + 1;
-    // Not `toll * DOOM_WARNING_TURNS`: the toll climbs 1, 2, 3 through
+    // Not `toll * DOOM_WARNING_TURNS`: the toll climbs 1, 3, 5 through
     // overtime's three stretches, so what two more turns cost has to be summed
     // over the turns he will actually live through. A king on 3 HP is two
     // turns clear in the first stretch, on his last in the second, and already
@@ -4447,12 +4588,16 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       unitId: pc.unit_id,
       name: def?.name ?? pc.unit_id,
       color: pc.color,
-      hp: twoDigits(pc.hp),
-      hpMax: twoDigits(pc.max_hp ?? def?.hp),
+      // The real numbers, not the hex's two digits: the room writes `hp` and
+      // `hpMax` back as a panel unit's HP when a cast lands on it, and a
+      // clamp here cut a 120-HP unit to 99 for good. Only the hex is short of
+      // room for a third digit.
+      hp: wholeStat(pc.hp),
+      hpMax: wholeStat(pc.max_hp ?? def?.hp),
       hpAfter: this.forecastHpAfter(hex.key),
-      atk: attackText(pc.unit_id, this.config),
-      def: hex.stats?.def ?? null,
-      mv: twoDigits(def?.move),
+      atk: attackTiers(pc.unit_id, this.config).map(d => String(wholeStat(d))).join(','),
+      def: wholeStat(def?.defense),
+      mv: wholeStat(def?.move),
       points: def?.value ?? 0,
       vet: hex.vet,
       panel: hex.panel || undefined,

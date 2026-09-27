@@ -44,13 +44,23 @@ export class AudioService {
     this.save();
   }
 
-  playTone(frequencies: number[], duration: number): void {
+  /**
+   * A run of notes, each `duration` seconds. `type` is the oscillator's wave -
+   * a triangle carries further than the default sine for the same volume -
+   * and `delay` starts the run that many seconds from now, on the audio
+   * clock, so two sounds for one moment can follow each other instead of
+   * playing over each other.
+   */
+  playTone(
+    frequencies: number[], duration: number,
+    { type = 'sine', delay = 0 }: { type?: OscillatorType; delay?: number } = {},
+  ): void {
     if (this.muted || this.volume <= 0 || typeof AudioContext === 'undefined') return;
     try {
       this.context ??= new AudioContext();
       const context = this.context;
       const play = (): void => {
-        const now = context.currentTime;
+        const now = context.currentTime + Math.max(0, delay);
         const gain = context.createGain();
         gain.gain.setValueAtTime(0.0001, now);
         gain.gain.exponentialRampToValueAtTime(0.3 * this.volume, now + 0.01);
@@ -59,7 +69,7 @@ export class AudioService {
         frequencies.forEach((frequency, index) => {
           const oscillator = context.createOscillator();
           oscillator.frequency.value = frequency;
-          oscillator.type = 'sine';
+          oscillator.type = type;
           oscillator.connect(gain);
           oscillator.start(now + index * duration);
           oscillator.stop(now + (index + 1) * duration);

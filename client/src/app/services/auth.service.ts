@@ -25,9 +25,20 @@ export class AuthService {
     return this.usernameSubject.value;
   }
 
+  /**
+   * This page's identity secret, once it has one. **Kept here, not only in
+   * storage**: with site data blocked the write fails quietly, and a secret
+   * read back from storage alone came out new on every call - so a reconnect
+   * could no longer prove the name the same page had claimed a minute before.
+   * Storage is what carries it past a reload; this is what carries it
+   * through one page.
+   */
+  private identitySecret: string | null = null;
+
   // ponytail: anonymous per-browser secret, not a real credential. Swap this
   // for real session/JWT storage if real accounts are added later.
   getIdentitySecret(): string {
+    if (this.identitySecret) return this.identitySecret;
     let secret = readStore('local', 'identitySecret');
     if (!secret) {
       // crypto.getRandomValues works in insecure contexts (e.g. a plain-HTTP
@@ -37,6 +48,7 @@ export class AuthService {
       secret = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
       writeStore('local', 'identitySecret', secret);
     }
+    this.identitySecret = secret;
     return secret;
   }
 

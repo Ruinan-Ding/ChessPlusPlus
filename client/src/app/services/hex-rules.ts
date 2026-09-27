@@ -33,15 +33,18 @@ export const HEX_DIRS: [number, number][] = [
 export const BASE_PANELS = new Set(['bl', 'tr']);
 
 /**
- * Whether a new game deals squads into the panels. Mirrors `PANELS_DEALT` in
- * `server/game/engine/panels.py`, and the two must be turned back on together
- * or the two sides of a networked game disagree about who is standing where.
+ * Whether a new game gets the **placeholder** squads instead of the setup's.
+ * Mirrors `PANELS_DEALT` in `server/game/engine/panels.py`, and the two go on
+ * together or the two sides of a networked game disagree about who is
+ * standing where.
  *
- * **Temporarily off**: the owner is clearing the placeholder squads out, so a
- * new game opens with all four panels empty. Everything that *works* a panel
- * is untouched and still tested - the walk, the wrap, the crossing, the blow,
- * the walk home, and the windows and allowances over all of them - because a
- * rule nobody exercises while it is being changed is a rule that rots.
+ * A real game stands in its panels what the config's setup puts there - since
+ * 25 Sep 2026 the owner's base squads, and nothing in the reserves. The
+ * placeholder deal (one of each of the first five unit types, on every third
+ * hex of all four panels) is what the panel specs were written against - the
+ * walk, the wrap, the crossing, the blow, the walk home - so they turn this on
+ * and keep their fixtures. With it on the placeholder squads stand **instead
+ * of** the setup's panel entries, never beside them.
  *
  * Mutable so the specs can deal a board to test that machinery on; nothing in
  * the app writes to it. `setPanelsDealt` is the only writer.
@@ -232,17 +235,25 @@ const ZONE_COLS = 7 / 11;
 const ZONE_ROWS = 6 / 11;
 /** Rings of hexes around each zone's centre: 2 makes a 19-hex patch. */
 const ZONE_SPREAD = 2;
+/**
+ * What one hex of each zone is worth to the side holding it. The owner, 26 Sep
+ * 2026: "make the hex capture zone near my base 3x. the middle hex worth 2x.
+ * side hex worth 1x" - the zone in each side's own half 3 a hex (412 and 130 on
+ * the shipped board), the middle one 2 (271), the two at the sides 1 (264 and
+ * 278). Black's is the mirror of white's, and a zone is worth the same to
+ * whichever side holds it.
+ */
+export const ZONE_WORTH = { base: 3, middle: 2, side: 1 } as const;
 
 /**
- * The five capture zones as one set of hexes: a patch in the middle and four
- * around it - top, bottom, left, right - the same size and the same distance
- * out, so they read as one set rather than five decisions.
+ * The five capture zones, as what each of their hexes is worth: a patch in the
+ * middle and four around it - top, bottom, left, right - the same size and
+ * the same distance out, so they read as one set rather than five decisions.
  *
- * One flat set rather than five because nothing asks which zone a hex is in.
  * On the shipped radius-11 board the patches stand well clear of each other;
- * on a small enough board the centres come close enough that they overlap and
- * the Set merges them into one larger zone. That is degenerate but not wrong
- * - claims are clipped to the set either way - and the schema allows a radius
+ * on a small enough board the centres come close enough that they overlap,
+ * and a hex in two is worth the higher. That is degenerate but not wrong -
+ * claims are clipped to the zones either way - and the schema allows a radius
  * as low as 1, where every hex on the board is a capture hex.
  * ponytail: no minimum radius is enforced, because what a tiny board should
  * do with five zones is the owner's call, not a default worth inventing.
@@ -250,9 +261,9 @@ const ZONE_SPREAD = 2;
  * Memoised: the answer depends on nothing but the radius, and this is on the
  * path that rebuilds the board's cells - every staged step, every buff.
  */
-const zoneCache = new Map<number, Set<string>>();
+const zoneCache = new Map<number, Map<string, number>>();
 
-export function captureZoneHexes(radius: number): Set<string> {
+export function captureZoneValues(radius: number): Map<string, number> {
   const cached = zoneCache.get(radius);
   if (cached) return cached;
   // One step left or right is one column. Up and down goes in pairs of rows -
@@ -260,13 +271,13 @@ export function captureZoneHexes(radius: number): Set<string> {
   // board's own centre column instead of half a column off it.
   const cols = Math.max(ZONE_SPREAD + 1, Math.round(radius * ZONE_COLS));
   const pairs = Math.max(1, Math.round((radius * ZONE_ROWS) / 2));
-  const centres: Array<[number, number]> = [
-    [0, 0],
-    [cols, 0], [-cols, 0],
-    [pairs, -2 * pairs], [-pairs, 2 * pairs],
+  const centres: Array<[number, number, number]> = [
+    [0, 0, ZONE_WORTH.middle],
+    [cols, 0, ZONE_WORTH.side], [-cols, 0, ZONE_WORTH.side],
+    [pairs, -2 * pairs, ZONE_WORTH.base], [-pairs, 2 * pairs, ZONE_WORTH.base],
   ];
-  const hexes = new Set<string>();
-  for (const [cq, cr] of centres) {
+  const worths = new Map<string, number>();
+  for (const [cq, cr, worth] of centres) {
     // The rows a radius-N patch spans, and the span of each - the same bounds
     // computeAttackZone walks, rather than a square with the corners thrown
     // away.
@@ -275,18 +286,29 @@ export function captureZoneHexes(radius: number): Set<string> {
       const hi = Math.min(ZONE_SPREAD, -dq + ZONE_SPREAD);
       for (let dr = lo; dr <= hi; dr++) {
         const q = cq + dq, r = cr + dr;
-        if (isInsideBoard(q, r, radius)) hexes.add(`${q},${r}`);
+        if (!isInsideBoard(q, r, radius)) continue;
+        const key = `${q},${r}`;
+        worths.set(key, Math.max(worth, worths.get(key) ?? 0));
       }
     }
   }
-  zoneCache.set(radius, hexes);
+  zoneCache.set(radius, worths);
+  return worths;
+}
+
+/** Every capture hex, as one set. */
+const zoneHexCache = new Map<number, Set<string>>();
+
+export function captureZoneHexes(radius: number): Set<string> {
+  let hexes = zoneHexCache.get(radius);
+  if (!hexes) zoneHexCache.set(radius, hexes = new Set(captureZoneValues(radius).keys()));
   return hexes;
 }
 
 /**
  * Who holds each capture hex. A unit standing in a zone takes the hex under
- * it and the zone hexes beside it - so the middle of a patch is worth seven,
- * and a hex on its rim rather less. Adjacency stops at the zone's edge: the
+ * it and the zone hexes beside it - so the middle of a patch holds seven,
+ * and a hex on its rim rather fewer. Adjacency stops at the zone's edge: the
  * ordinary board around a zone is not worth anything.
  *
  * A hex both sides reach is held by neither, which is what cancels two lines
@@ -320,12 +342,13 @@ export function captureClaims(
   return held;
 }
 
-/** What a side's holdings are worth: a point a hex, every turn it keeps them. */
+/** What the hexes a side holds are worth: each its zone's worth (ZONE_WORTH). */
 export function captureScore(
-  claims: Map<string, 'white' | 'black'>, color: 'white' | 'black',
+  claims: Map<string, 'white' | 'black'>, color: 'white' | 'black', radius: number,
 ): number {
+  const worths = captureZoneValues(radius);
   let held = 0;
-  for (const owner of claims.values()) if (owner === color) held++;
+  for (const [key, owner] of claims) if (owner === color) held += worths.get(key) ?? 0;
   return held;
 }
 

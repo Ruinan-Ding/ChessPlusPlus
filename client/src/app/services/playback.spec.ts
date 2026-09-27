@@ -123,6 +123,69 @@ describe('buildPlayback', () => {
     ]);
   });
 
+  it('keeps two units’ moves two moves', () => {
+    // The review's case: one "where the unit stands" for the whole turn folded
+    // these into a single walk from 0,0 to 6,0 - a move nobody made.
+    const turn = [step('0,0', '1,0'), step('5,0', '6,0')];
+    expect(buildPlayback(turn, true)).toEqual([
+      { kind: 'move', from: '0,0', to: '1,0' },
+      { kind: 'move', from: '5,0', to: '6,0' },
+    ]);
+    // And staged, each hop starts where its own unit stood.
+    expect(buildPlayback(turn)).toEqual([
+      { kind: 'move', from: '0,0', to: '1,0' },
+      { kind: 'move', from: '5,0', to: '6,0' },
+    ]);
+  });
+
+  it('collapses each unit’s own walk, and keeps the order they acted in', () => {
+    expect(buildPlayback([
+      step('0,0', '1,0'), step('0,0', '2,0'),
+      step('0,0', '2,0', '3,0'),
+      step('5,0', '5,1'), step('5,0', '5,2'),
+    ], true)).toEqual([
+      { kind: 'move', from: '0,0', to: '2,0' },
+      { kind: 'attack', from: '2,0', to: '3,0' },
+      { kind: 'counter', from: '3,0', to: '2,0' },
+      { kind: 'move', from: '5,0', to: '5,2' },
+    ]);
+  });
+
+  it('plays three walks home as three walks', () => {
+    // A setup turn sends up to three units home; each is its own line.
+    expect(buildPlayback([
+      step('-11,11', '-12,11'), step('-11,10', '-12,10'), step('-10,11', '-13,12'),
+    ], true)).toEqual([
+      { kind: 'move', from: '-11,11', to: '-12,11' },
+      { kind: 'move', from: '-11,10', to: '-12,10' },
+      { kind: 'move', from: '-10,11', to: '-13,12' },
+    ]);
+  });
+
+  it('lands a cast on one unit where that unit ended, not where another did', () => {
+    // A mend on A, then B walks. The cast followed "the" acting unit, which
+    // after B's walk was B - so A's mend popped over B.
+    expect(buildPlayback([
+      step('0,0', '1,0'),
+      step('0,0', '1,0', null, { spend: { index: 6, hex: '1,0', side: 'mine' } }),
+      step('5,0', '6,0'),
+    ], true)).toEqual([
+      { kind: 'move', from: '0,0', to: '1,0' },
+      { kind: 'ability', from: '1,0', to: '1,0', index: 6, side: 'mine', brief: true },
+      { kind: 'move', from: '5,0', to: '6,0' },
+    ]);
+    // Cast on B before B moves: B's walk goes first, then the cast where B is.
+    expect(buildPlayback([
+      step('0,0', '1,0'),
+      step('0,0', '1,0', null, { spend: { index: 6, hex: '5,0', side: 'mine' } }),
+      step('5,0', '6,0'),
+    ], true)).toEqual([
+      { kind: 'move', from: '0,0', to: '1,0' },
+      { kind: 'move', from: '5,0', to: '6,0' },
+      { kind: 'ability', from: '6,0', to: '6,0', index: 6, side: 'mine', brief: true },
+    ]);
+  });
+
   it('has nothing to play for a turn that staged nothing', () => {
     expect(buildPlayback([])).toEqual([]);
   });

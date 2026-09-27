@@ -3,8 +3,14 @@
  *
  * Five phases: three turns to set up, three ten-turn phases with a halftime
  * halfway through each, then overtime, which runs until the game ends. Each
- * numbered phase opens with an **initialization turn** of its own, which its
- * ten do not count - see `init` below.
+ * numbered phase closes with a **postmatch turn** of its own, which its ten
+ * do not count - see `postmatch` below.
+ *
+ * The extra turn used to sit at the *start* of each phase, as that phase's
+ * "initialization". Put there, it followed the opening's three setup turns
+ * straight away, so a match opened on four setup turns in a row. At the end
+ * of a phase it is a breather between two phases of play instead, and play
+ * starts the moment the opening is over.
  *
  * The turns here are *full* turns - white's hand-over and black's together.
  * The engine counts one per hand-over, so everything exported below takes
@@ -23,17 +29,50 @@ export interface Phase {
   /** Whether it breaks in the middle. A halftime splits the turns evenly. */
   halftime?: boolean;
   /**
-   * Whether the phase opens with an initialization turn - one full turn, both
-   * sides, before its play begins.
+   * Whether the phase closes with a postmatch turn - one full turn, both
+   * sides, after its play is over.
    *
    * **`turns` does not count it.** The owner's rule: it "counts as a turn but
    * not any turn taking from any phases", so Phase 1 still gets its ten. That
    * is why this is a flag on the phase rather than a phase of its own: a
    * separate entry would have to be excluded from `SCORING_PHASES` and from
-   * every "which phase am I in" answer, and the init turn *is* part of Phase
-   * 1. The span it occupies is `phaseSpan`; the ten are still `turns`.
+   * every "which phase am I in" answer, and the postmatch *is* part of the
+   * phase it closes - turn 14 is Phase 1's. The span it occupies is
+   * `phaseSpan`; the ten are still `turns`.
    */
-  init?: boolean;
+  postmatch?: boolean;
+  /**
+   * Points a side banks at the start of each of its own turns - the board's
+   * currency, for the pool abilities and the wrap crossing, not the match
+   * score. `turnPointsBy` is the one place that adds them up.
+   *
+   * The phase's number - 1, 2, 3 - and **from its halftime**, not its first
+   * turn: a phase's first half still pays the rate before it (`POINT_RATES`).
+   * A phase with no halftime pays from its start: the opening the regular 1,
+   * and **overtime nothing**. *The owner, 24 Sep 2026: "regular points are
+   * multipled by x ... phase 1 is 1 points, phase 2 is 2 points. phase 3 is 3
+   * points"*, *"OT stops gaining points"*, and then *"1x, 2x, 3x regular point
+   * accumation now happens at the start of half time of each phase instead of
+   * start of a phase."*
+   */
+  points: number;
+  /**
+   * Points a side is handed as the phase begins, on top of the turn's rate -
+   * paid on its own first turn of the phase, the way a turn's point is: 10
+   * for Phase 1, 20 for Phase 2, 30 for Phase 3, nothing for the opening or
+   * overtime. *The owner, 24 Sep 2026: "at the start of each phase (not start
+   * of each postmatch), +10 regular points for phase 1, 20 for phase 2, 30 for
+   * phase 3."*
+   */
+  grant: number;
+  /**
+   * What the phase's victory points are multiplied by as it scores
+   * (`phaseTotal` in match-score.ts): 1, 2, 3 for Phases 1-3. *The owner, 24
+   * Sep 2026: "the total victory points for each phase is multiplied by 2 on
+   * phase 2, multipled by 3 on phase 3".* 1 on the two phases that score
+   * nothing, so reading it there changes nothing.
+   */
+  multiplier: number;
 }
 
 /** Hand-overs to a full turn: white plays, then black. */
@@ -45,23 +84,23 @@ export function turnOf(ply: number): number {
 }
 
 export const PHASES: Phase[] = [
-  { name: 'Initialization', turns: 3 },
-  { name: 'Phase 1', turns: 10, halftime: true, init: true },
-  { name: 'Phase 2', turns: 10, halftime: true, init: true },
-  { name: 'Phase 3', turns: 10, halftime: true, init: true },
-  { name: 'Overtime', turns: Infinity },
+  { name: 'Initialization', turns: 3, points: 1, grant: 0, multiplier: 1 },
+  { name: 'Phase 1', turns: 10, halftime: true, postmatch: true, points: 1, grant: 10, multiplier: 1 },
+  { name: 'Phase 2', turns: 10, halftime: true, postmatch: true, points: 2, grant: 20, multiplier: 2 },
+  { name: 'Phase 3', turns: 10, halftime: true, postmatch: true, points: 3, grant: 30, multiplier: 3 },
+  { name: 'Overtime', turns: Infinity, points: 0, grant: 0, multiplier: 1 },
 ];
 
 /**
  * How many turns of the clock a phase occupies: its own `turns`, plus the
- * initialization turn if it opens with one.
+ * postmatch turn if it closes with one.
  *
  * Every "where am I on the schedule" answer counts in spans; everything that
  * asks how long a phase *plays* for - the halftime split, the score it banks -
  * counts in `turns`. Keeping the two apart is the whole point of the flag.
  */
 function phaseSpan(phase: Phase): number {
-  return Number.isFinite(phase.turns) && phase.init ? phase.turns + 1 : phase.turns;
+  return Number.isFinite(phase.turns) && phase.postmatch ? phase.turns + 1 : phase.turns;
 }
 
 /**
@@ -105,11 +144,11 @@ export const OVERTIME_FIRST_PLY = PHASES
  * out: three base units and three reserve units a turn, one battlefield unit
  * for the whole of it, and a unit that has been moved is done for the phase.
  *
- * **The opening only** - not a numbered phase's initialization turn, which is
- * one turn with its own allowances (`isPhaseInitialization`). Widening this to
- * mean "any setup turn" would hand the opening's one-move-per-phase lock to a
- * single turn that was never about it; `isSetupTurn` is the predicate for what
- * the two genuinely share.
+ * **The opening only** - not a numbered phase's postmatch, which is one turn
+ * with its own allowances (`isPostmatch`). Widening this to mean "any setup
+ * turn" would hand the opening's one-move-per-phase lock to a single turn that
+ * was never about it; `isSetupTurn` is the predicate for what the two
+ * genuinely share.
  */
 export function isInitialization(ply: number): boolean {
   return phaseIndexAt(ply) === 0;
@@ -124,71 +163,88 @@ export function isScoringPhase(ply: number): boolean {
 }
 
 /**
- * A numbered phase's own initialization turn: the first turn of its span,
- * which its ten turns of play do not count.
+ * A numbered phase's own postmatch turn: the last turn of its span, straight
+ * after its ten turns of play, which do not count it. Turns 14, 25 and 36 on
+ * the shipped schedule.
  *
  * One full turn - white's hand-over and black's. Both sides get one, because
  * a turn either side could set out on and the other could not would hand the
  * second mover a free look at the first's deployment.
+ *
+ * It belongs to the phase it closes, not the one after: `phaseIndexAt` still
+ * answers the closing phase's index for it, so whatever reads "which phase is
+ * this" - the deaths a phase is charged, the phase's rate of points - reads
+ * the closing phase there. It is also where CP arrives: each postmatch pays
+ * the award for the phase just banked (`cpAwarded`, off the bank, not the
+ * index). The score is the one thing that has to know better,
+ * in two places: `bankEndedPhases` (match-score.ts, run by the engines on
+ * each hand-over), which banks the phase as its postmatch begins, and the
+ * room's `standings`, which reads the postmatch as nought so the phase just
+ * banked is not counted a second time.
  */
-export function isPhaseInitialization(ply: number): boolean {
+export function isPostmatch(ply: number): boolean {
   const index = phaseIndexAt(ply);
-  return !!PHASES[index].init && turnOf(ply) === phaseStartTurn(index);
+  const phase = PHASES[index];
+  return !!phase.postmatch && turnOf(ply) === phaseStartTurn(index) + phase.turns;
 }
 
 /**
  * A turn given to setting out rather than playing: the opening's three, and
- * each numbered phase's initialization turn.
+ * each numbered phase's postmatch.
  *
  * What the two share, and *all* they share: **nobody attacks and no ability
  * fires**. Their movement allowances are different - the opening gives a
- * battlefield unit one move for the whole phase, a phase initialization gives
- * five crossings and three walks home for the one turn - so anything about
- * how much may move asks the narrower predicate.
+ * battlefield unit one move for the whole phase, a postmatch gives five
+ * crossings and three walks home for the one turn - so anything about how
+ * much may move asks the narrower predicate.
  */
 export function isSetupTurn(ply: number): boolean {
-  return isInitialization(ply) || isPhaseInitialization(ply);
+  return isInitialization(ply) || isPostmatch(ply);
 }
 
 /**
  * What to tell someone who tried to strike on a turn given to setting out.
  *
  * Two turns refuse a blow for two different reasons, and saying "the opening"
- * on turn 15 would send the player looking at a phase that ended ten turns
- * ago. Lives here rather than at the call sites so the server's copy has one
- * thing to mirror.
+ * on turn 14 would send the player looking at a phase that ended at turn 3.
+ * Lives here rather than at the call sites so the server's copy has one thing
+ * to mirror.
  *
  * Total, not partial: a ply that refuses no blow gets `''`. Asked the other
- * way round - "not the opening, so a phase initialization" - it answered
- * `Nobody attacks in a phase initialization` for every playable turn of every
- * phase, which is exactly the reading a caller without a guard would take.
+ * way round - "not the opening, so a postmatch" - it would answer `Nobody
+ * attacks in the postmatch` for every playable turn of every phase, which is
+ * exactly the reading a caller without a guard would take. (It did exactly
+ * that when the extra turn was a phase's initialization.)
  */
 export function noAttackMessage(ply: number): string {
-  if (isPhaseInitialization(ply)) return 'Nobody attacks in a phase initialization';
+  if (isPostmatch(ply)) return 'Nobody attacks in the postmatch';
   if (isInitialization(ply)) return 'Nobody attacks in the opening';
   return '';
 }
 
-// How many units a side may bring out of its reserve in a phase
-// initialization, and walk home in a setup turn, are config:
-// rules.phaseInitEntries and rules.homecomingsPerSetupTurn (see ruleOf).
+// How many units a side may bring out of its reserve in a postmatch, and walk
+// home in a setup turn, are config: rules.postmatchEntries and
+// rules.homecomingsPerSetupTurn (see ruleOf).
 
 /**
  * Overtime's three stretches, and what each takes off a commander at the end
  * of that side's turn.
  *
  * Real damage, and a commander on that much HP dies of it. The toll climbs so
- * that a match neither side can win on the board still ends: the last turn
- * takes three, and a king who walks into it on three or less does not walk
- * out. A match still standing after it goes to black - see `matchVerdict`.
+ * that a match neither side can win on the board still ends: **1 a turn, then
+ * 3, then 5 on the last turn**, and a king who walks into it on five or less
+ * does not walk out. *The owner, 24 Sep 2026: "the 3 and 5 is DAMAGE TAKEN TO
+ * KING"*. A match still standing after it goes to black,
+ * and both engines end it there - see `scheduleEnding` in match-score.ts.
  *
  * `turns` are full turns - white's hand-over and black's - counted forward
  * from overtime's first, which gives turns 37-44, 45-49 and 50 on the shipped
  * schedule. Counted forward rather than written down, because a written-down
  * turn number is exactly what went wrong last time: `OVERTIME_LAST_TURN` was
- * the literal 50, the initialization turns pushed overtime from turn 34 to
- * turn 37, and the literal stayed where it was and quietly shortened overtime
- * by three turns.
+ * the literal 50, the extra turn each numbered phase gained (an initialization
+ * at its start then, a postmatch at its end now - either way one more turn a
+ * phase) pushed overtime from turn 34 to turn 37, and the literal stayed where
+ * it was and quietly shortened overtime by three turns.
  *
  * The stretches are named, and the phase they sit in is not: `phaseAt` still
  * answers `Overtime` for all fourteen turns, while `stageAt` answers
@@ -205,16 +261,6 @@ export interface OvertimeStage {
   /** HP off that side's commander at the end of each of its turns. */
   toll: number;
   /**
-   * Points a side banks at the start of each of its turns in the stretch,
-   * in place of `POINTS_PER_TURN`.
-   *
-   * The toll takes and this gives, and they climb together: the pressure to
-   * finish comes with the means to. Points are the board's currency - the
-   * pool abilities, the wrap crossing - not the match score, which overtime
-   * still does not touch.
-   */
-  points: number;
-  /**
    * How many units a side may move on the **main board** in one of its turns,
    * in place of `BOARD_MOVES_PER_TURN`.
    *
@@ -228,9 +274,9 @@ export interface OvertimeStage {
 }
 
 export const OVERTIME_STAGES: OvertimeStage[] = [
-  { name: 'Overtime 1', turns: 8, toll: 1, points: 1, moves: 1 },
-  { name: 'Overtime 2', turns: 5, toll: 2, points: 3, moves: 2 },
-  { name: 'Overtime 3', turns: 1, toll: 3, points: 5, moves: 3 },
+  { name: 'Overtime 1', turns: 8, toll: 1, moves: 1 },
+  { name: 'Overtime 2', turns: 5, toll: 3, moves: 2 },
+  { name: 'Overtime 3', turns: 1, toll: 5, moves: 3 },
 ];
 
 /** Overtime's first full turn, and its last. Both read off the schedule. */
@@ -251,10 +297,10 @@ export function isOvertime(ply: number): boolean {
  * Which stretch of overtime a hand-over falls in, or `null` before overtime
  * begins.
  *
- * Past the last turn it is the last stretch rather than `null`: the match is
- * black's by then, but that verdict is read and not enforced, so a game
- * played on past turn 50 keeps paying the heaviest toll instead of quietly
- * ceasing to pay one at all.
+ * Past the last turn it is the last stretch rather than `null`. Both engines
+ * end the match as turn 50 is played out (`scheduleEnding` in match-score.ts),
+ * so no game reaches it by playing; a position built past it - a saved game,
+ * a test - still pays the heaviest toll rather than quietly none at all.
  */
 export function overtimeStageAt(ply: number): OvertimeStage | null {
   if (!isOvertime(ply)) return null;
@@ -282,21 +328,13 @@ export function overtimeTollAt(ply: number): number {
  *
  * What the board's skull warns on. With a toll that climbs, "will he live
  * through the next two" stopped being `toll * 2`: a king on 3 HP is safe in
- * the first stretch, on his last turn in the second, and already dead in the
- * third.
+ * the first stretch and dies on his first turn of the second.
  */
 export function overtimeTollOver(ply: number, turns: number): number {
   let sum = 0;
   for (let i = 0; i < turns; i++) sum += overtimeTollAt(ply + i * PLIES_PER_TURN);
   return sum;
 }
-
-/**
- * What a side banks at the start of one of its own turns, everywhere the
- * schedule is still running. Overtime's stretches pay more - see
- * `OVERTIME_STAGES` - and `pointsPerTurnAt` is the one place to ask.
- */
-export const POINTS_PER_TURN = 1;
 
 /**
  * How many units a side may move on the main board in one of its turns,
@@ -315,45 +353,59 @@ export function boardMovesPerTurn(ply: number): number {
   return overtimeStageAt(ply)?.moves ?? BOARD_MOVES_PER_TURN;
 }
 
-/** What the turn at `ply` pays the side playing it. */
-export function pointsPerTurnAt(ply: number): number {
-  return overtimeStageAt(ply)?.points ?? POINTS_PER_TURN;
-}
+/**
+ * What each phase pays, as first hand-overs: `from` is where its points rate
+ * starts - the opening from its first turn, each numbered phase from its
+ * **halftime**, overtime from its first turn - and `start` is its first turn,
+ * where its `grant` is paid. On the shipped schedule the rates are 1 from turn
+ * 1, 1 from turn 9, 2 from turn 20, 3 from turn 31 and nothing from turn 37.
+ * Read off the schedule rather than written down, so a phase that moves
+ * carries its rate with it; worked out once, the schedule being fixed.
+ */
+const POINT_RATES: { from: number; rate: number; start: number; grant: number }[] = PHASES.map(
+  (phase, index) => {
+    const first = phaseStartTurn(index);
+    // The first turn not before the halftime, by `beforeHalftime`'s own test
+    // (`turn < first + turns / 2`) - so an odd phase breaks where it does.
+    const turn = phase.halftime ? Math.ceil(first + phase.turns / 2) : first;
+    return {
+      from: (turn - 1) * PLIES_PER_TURN + 1, rate: phase.points,
+      start: (first - 1) * PLIES_PER_TURN + 1, grant: phase.grant,
+    };
+  });
 
 /**
  * What a side's own turns have paid it in points by `ply` - the hand-over
- * about to be played, which counts, since a turn pays at its start.
+ * about to be played, which counts, since a turn pays at its start: each
+ * turn's rate, and each phase's `grant` once the side has begun a turn in it.
  *
- * **Not `handOversBy(color, ply) * POINTS_PER_TURN` any more.** The rate
- * climbs through overtime, so this walks the stretches and counts how many of
- * that side's hand-overs fall in each, which is a difference of two
- * `handOversBy` at the stretch's ends - the same shape `panelMoversSince`
- * uses to count a side's turns between two plies.
+ * The rate changes at each halftime (`POINT_RATES`), so this walks the rates
+ * and counts how many of that side's hand-overs fall under each, which is a
+ * difference of two `handOversBy` at its ends - the same shape
+ * `panelMoversSince` uses to count a side's turns between two plies.
+ * Overtime pays nothing, however long a position built past it runs.
  *
- * Past the last stretch it keeps paying at the last rate, for the reason the
- * toll keeps taking at it: the verdict there is read and not enforced, and a
- * game played on must not quietly stop settling up.
+ * What one turn pays - the room's live award - is this at the turn's ply less
+ * this at the ply before, so the grant and the rate come from one sum.
  */
 export function turnPointsBy(color: 'white' | 'black', ply: number): number {
   const played = Math.max(0, ply);
-  // Everything on the schedule pays the flat rate.
-  let start = OVERTIME_FIRST_PLY - 1;
-  let points = handOversBy(color, Math.min(played, start)) * POINTS_PER_TURN;
-  for (const stage of OVERTIME_STAGES) {
-    if (played <= start) return points;
-    const end = start + stage.turns * PLIES_PER_TURN;
-    points += (handOversBy(color, Math.min(played, end))
-      - handOversBy(color, start)) * stage.points;
-    start = end;
-  }
-  const last = OVERTIME_STAGES[OVERTIME_STAGES.length - 1];
-  if (played <= start) return points;
-  return points + (handOversBy(color, played) - handOversBy(color, start)) * last.points;
+  const begun = handOversBy(color, played);
+  let points = 0;
+  POINT_RATES.forEach(({ from, rate, start, grant }, i) => {
+    if (grant && begun > handOversBy(color, start - 1)) points += grant;
+    if (played < from) return;
+    const to = i + 1 < POINT_RATES.length ? Math.min(played, POINT_RATES[i + 1].from - 1) : played;
+    points += (handOversBy(color, to) - handOversBy(color, from - 1)) * rate;
+  });
+  return points;
 }
 
 /**
- * The first full turn of a phase - its initialization turn, where it has one.
- * Counted in spans, so an earlier phase's init turn pushes this along too.
+ * The first full turn of a phase. For a numbered phase that is its first turn
+ * of play - its one extra turn is its postmatch, at the other end. (The
+ * opening's first turn is a setup turn like the rest of it.) Counted in spans,
+ * so an earlier phase's postmatch pushes this along too.
  */
 function phaseStartTurn(index: number): number {
   let turn = 1;
@@ -362,18 +414,16 @@ function phaseStartTurn(index: number): number {
 }
 
 /**
- * The first turn a phase actually *plays*: one past its start where it opens
- * with an initialization turn, its start where it does not. What the halftime
- * splits, since the init turn is not one of the ten it halves.
- */
-function playStartTurn(index: number): number {
-  return phaseStartTurn(index) + (PHASES[index].init ? 1 : 0);
-}
-
-/**
  * Whether a turn falls before its phase's break - or in a phase that has no
  * break to fall either side of. The opening and overtime are the two of
  * those, so they are always "before".
+ *
+ * Play starts on the phase's first turn, so the break is half its ten turns
+ * on from there. A postmatch comes after all ten, which puts it on the far
+ * side of the break: it reads as *not* before the halftime. So anything that
+ * means "the played first half" already leaves it out, and it is the other
+ * half's readers that have to ask about it first - `stageAt`, which would
+ * otherwise call it one more turn of the halftime.
  *
  * Read off the schedule rather than written down as turn numbers, so moving
  * a phase moves everything that hangs off this with it.
@@ -382,7 +432,7 @@ export function beforeHalftime(ply: number): boolean {
   const index = phaseIndexAt(ply);
   const phase = PHASES[index];
   if (!phase.halftime) return true;
-  return turnOf(ply) < playStartTurn(index) + phase.turns / 2;
+  return turnOf(ply) < phaseStartTurn(index) + phase.turns / 2;
 }
 
 /**
@@ -390,17 +440,21 @@ export function beforeHalftime(ply: number): boolean {
  * outer tip and onto the reserve tip facing it across the board.
  *
  * **Only the played first half of a numbered phase.** Not the opening, not a
- * phase's initialization turn, and not overtime: the owner's rule is that the
- * wrap belongs to the half before the halftime and to nothing else. On the
- * shipped schedule that is turns 5-9, 16-20 and 27-31, and no others.
+ * phase's postmatch, and not overtime: the owner's rule is that the wrap
+ * belongs to the half before the halftime and to nothing else. On the shipped
+ * schedule that is turns 4-8, 15-19 and 26-30, and no others.
  *
  * `beforeHalftime` alone used to be the whole answer, and it said yes for
  * every phase that has no break to fall either side of - which quietly
- * included the opening and the whole of overtime. The three conditions are
- * spelled out because each one refuses a different turn.
+ * included the opening and the whole of overtime. The scoring-phase and
+ * halftime conditions are spelled out because each refuses turns the other
+ * does not. The postmatch one refuses nothing more today - `beforeHalftime`
+ * already shuts it now that it sits after the break - and is kept anyway: it
+ * says what the rule is rather than leaning on where the postmatch happens to
+ * fall.
  */
 export function isWrapOpen(ply: number): boolean {
-  return isScoringPhase(ply) && !isPhaseInitialization(ply) && beforeHalftime(ply);
+  return isScoringPhase(ply) && !isPostmatch(ply) && beforeHalftime(ply);
 }
 
 /**
@@ -409,7 +463,8 @@ export function isWrapOpen(ply: number): boolean {
  *
  * Open on any setup turn and through a phase's halftime half; shut through the
  * played first half and through overtime. On the shipped schedule that is
- * turns 1-4, 10-15, 21-26 and 32-36.
+ * turns 1-3, 9-14, 20-25 and 31-36 - each halftime half running straight on
+ * into the postmatch that closes its phase.
  *
  * The complement of the wrap, near enough: a side spends the first half of a
  * phase sending units home around the outside and the second half bringing
@@ -425,7 +480,8 @@ export function isEntryOpen(ply: number): boolean {
  *
  * Open on any setup turn and through **all** of overtime; shut through both
  * halves of a numbered phase's play. On the shipped schedule that is turns
- * 1-4, 15, 26 and 37 on.
+ * 1-3, 14, 25, and 36 on - Phase 3's postmatch running straight on into
+ * overtime.
  *
  * Overtime is the owner's exception and is not a setup turn: the toll is
  * running and units are still attacking, so a walk home there is an ordinary
@@ -438,15 +494,17 @@ export function isHomecomingOpen(ply: number): boolean {
 }
 
 /**
- * Where the match is, as a name: `Initialization`, `Phase 1 Initialization`,
- * `Phase 1`, `Phase 1 Halftime`, ... , `Overtime`, `Overtime 2`, `Overtime 3`.
- * A phase that breaks in the middle is two stages, and the second takes the
- * halftime's name - the same name the history header counts down to, so the
- * two agree on what to call it. Overtime breaks twice more, on the same terms.
+ * Where the match is, as a name: `Initialization`, `Phase 1`, `Phase 1
+ * Halftime`, `Phase 1 Postmatch`, ... , `Overtime 1`, `Overtime 2`,
+ * `Overtime 3`. A phase that breaks in the middle is two stages, and the
+ * second takes the halftime's name - the same name the history header counts
+ * down to, so the two agree on what to call it. One that closes with a
+ * postmatch is a third, on the same terms. Overtime breaks twice more, again
+ * on the same terms.
  */
 export function stageAt(ply: number): string {
   const phase = phaseAt(ply);
-  if (isPhaseInitialization(ply)) return `${phase.name} Initialization`;
+  if (isPostmatch(ply)) return `${phase.name} Postmatch`;
   const overtime = overtimeStageAt(ply);
   if (overtime) return overtime.name;
   return phase.halftime && !beforeHalftime(ply)
@@ -486,38 +544,31 @@ function buildMilestones(): Milestone[] {
   PHASES.forEach((phase, i) => {
     // The last phase runs to the end of the match, so nothing follows it.
     if (!Number.isFinite(phase.turns)) return;
-    if (phase.init) {
-      // An initialization turn is a gear change twice over: into it at the end
-      // of the turn before, and out of it into the phase's play one turn later.
-      // Nothing changes gear at the end of turn 0, though - a leading phase
-      // with an initialization turn has no turn before it to count from, and
-      // the entry would be unreachable while shifting every later one by a
-      // turn. Not reachable on the shipped table; the point of deriving this
-      // from PHASES is that the table can be edited without minding the sums.
-      if (end > 0) out.push({ turn: end, next: `${phase.name} Initialization` });
-      end += 1;
-      out.push({ turn: end, next: phase.name });
-    }
+    // Play starts on the phase's first turn, so the break is half its ten on.
     if (phase.halftime) {
       out.push({ turn: end + phase.turns / 2, next: `${phase.name} Halftime` });
     }
     end += phase.turns;
+    if (phase.postmatch) {
+      // A postmatch is one more gear change, at the phase's own end: into it
+      // once the ten are played, and out of it into whatever follows one turn
+      // later - which the block below announces, from the end it now sits at.
+      out.push({ turn: end, next: `${phase.name} Postmatch` });
+      end += 1;
+    }
     const following = PHASES[i + 1];
-    // A phase that opens with an initialization announces itself above, on its
-    // own pass. Announcing it here as well would put two changes on one turn.
-    //
     // The phase that runs out the match announces itself in the overtime block
     // below, in the name of its FIRST STRETCH rather than its own: the match
     // arrives in `Overtime 1`, and a countdown to a bare `Overtime` would name
     // something `stageAt` never says.
-    if (following && !following.init && Number.isFinite(following.turns)) {
+    if (following && Number.isFinite(following.turns)) {
       out.push({ turn: end, next: following.name });
     }
   });
   // Overtime's own gear changes, including the one into it: the loop above
   // returns before the phase that runs out the match, so this is where all
   // three stretches are announced. The toll climbs twice inside overtime, and
-  // a turn where the damage doubles is as much a change to count down to as a
+  // a turn where the damage goes up is as much a change to count down to as a
   // halftime is.
   //
   // Each is announced at the end of the turn BEFORE it opens, which is what
@@ -540,10 +591,11 @@ export const MILESTONES: Milestone[] = buildMilestones();
  *
  * A change lands at the *end* of the turn it is counted to, so the turn it
  * lands on has already moved on to counting the next one - turn 3 is the last
- * of the opening, so it looks ahead to Phase 1's initialization turn rather
- * than to the opening, which it is still in. Since each phase now opens with
- * an initialization turn, the countdowns run to those too: turn 3 reads
- * `1 Until Phase 1`, the phase's play being what turn 4 counts to.
+ * of the opening, so it looks past Phase 1, which it is about to hand over
+ * to, and reads `5 Until Phase 1 Halftime`. The postmatch that closes each
+ * phase is counted to as well, and the same rule carries the countdown over
+ * it: turn 12 reads `1 Until Phase 1 Postmatch`, and turn 13 - the last of
+ * the play, handing over to the postmatch - already reads `1 Until Phase 2`.
  *
  * The last change has nothing beyond it to move on to, so its own turn keeps
  * counting to it and reads `0 Until Overtime 3`. Naming the stage there

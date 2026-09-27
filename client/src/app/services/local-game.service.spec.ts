@@ -29,17 +29,19 @@ describe('LocalGameService', () => {
   /**
    * Past every turn given to setting out, where nobody attacks at all.
    *
-   * Eight plies of passing rather than a turn number written over the cache:
+   * Six plies of passing rather than a turn number written over the cache:
    * the pass is what a real game does to get there, and the specs that need
    * it are about blows, which a setup turn refuses outright. A pass moves
    * nobody, so the board they were written against is the board they get.
    *
-   * Eight, not six: the opening's three turns are followed by Phase 1's own
-   * initialization turn, which refuses a blow for the same reason. Ply 9 is
-   * turn 5, the first of Phase 1's play.
+   * Six - the opening's three turns and nothing after them. It was eight
+   * while Phase 1 opened with an initialization turn of its own, which
+   * refused a blow for the same reason; that extra turn is the phase's
+   * postmatch now, at its other end, so play starts the moment the opening
+   * is over. Ply 7 is turn 4, the first of Phase 1's play.
    */
   const pastOpening = async () => {
-    for (let i = 0; i < 8; i++) service.send({ type: 'pass_turn' });
+    for (let i = 0; i < 6; i++) service.send({ type: 'pass_turn' });
     await flush();
   };
 
@@ -238,27 +240,98 @@ describe('LocalGameService', () => {
     await flush();
     expect(last('move_made').turnNumber).toBe(2 * 45);
 
-    // **The toll was taken once, not once per move.** Overtime 2 takes 2, so a
-    // two-move turn costs 2 and not 4 - and Overtime 3, the stretch that
+    // **The toll was taken once, not once per move.** Overtime 2 takes 3, so a
+    // two-move turn costs 3 and not 6 - and Overtime 3, the stretch that
     // allows three, is where charging it per move would hurt most. The held
     // move must leave it alone: the toll is what the END of a turn costs.
-    expect(kingOf(last('move_made').boardState).hp).toBe(hpBefore - 2);
+    expect(kingOf(last('move_made').boardState).hp).toBe(hpBefore - 3);
     // And the held message took none of it at all.
     expect(kingOf(held.boardState).hp).toBe(hpBefore);
   });
 
+  it('holds the seat for a blow into a panel that is not the turn’s last', async () => {
+    // A blow into a panel ended the turn outright, so the room sent it alone
+    // and dropped every other move an overtime turn had staged with it.
+    const g = (service as any).game;
+    g.turnNumber = 2 * 45 - 1;
+    const kingOf = (board: any) => Object.values(board).find(
+      (c: any) => c.color === 'white' && g.config.units[c.unit_id]?.commander) as any;
+    const hpBefore = kingOf(g.boardState).hp;
+    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+
+    service.send({
+      type: 'panel_attack', intoPanel: true, panel: 'tr', more: true,
+      from: '-5,9', attack: '-5,8', unit: home,
+    });
+    await flush();
+    expect(last('move_made')).toBeUndefined();
+    const held = last('game_state_update');
+    expect(held.turnNumber).toBe(2 * 45 - 1);
+    expect(held.currentTurn).toBe('Solo');
+    expect(held.moveHistory.slice(-1)[0].intoPanel).toBeTrue();
+    expect(kingOf(held.boardState).hp).toBe(hpBefore);
+
+    service.send({ type: 'make_move', from: '-4,9', to: '-4,8' });
+    await flush();
+    expect(last('move_made').turnNumber).toBe(2 * 45);
+    // The toll once, for the whole turn.
+    expect(kingOf(last('move_made').boardState).hp).toBe(hpBefore - 3);
+  });
+
+  it('counts a blow into a panel against the turn’s allowance', async () => {
+    await pastOpening();
+    service.send({ type: 'make_move', from: '-4,9', to: '-4,8' });
+    await flush();
+    // Wound back into the same hand-over: the one move of turn 4 is spent.
+    (service as any).game.turnNumber = 7;
+    (service as any).game.currentTurn = 'Solo';
+    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+    service.send({
+      type: 'panel_attack', intoPanel: true, panel: 'tr',
+      from: '-5,9', attack: '-5,8', unit: home,
+    });
+    await flush();
+    expect(last('invalid_move').message).toBe('That side has had all 1 of its moves this turn');
+  });
+
+  it('keeps a mend cast between two units’ moves on top of the first unit’s wound', async () => {
+    // The order the room now sends it in: the blow, then - riding ahead of the
+    // second unit's move - the mend worked out after the counter. The engine
+    // takes the counter first and the mend second, and ends where the staged
+    // board did.
+    const g = (service as any).game;
+    g.turnNumber = 2 * 45 - 1;
+    g.boardState = {
+      ...g.boardState,
+      '-5,5': { unit_id: 'rook', color: 'white', hp: 30, max_hp: 40, uid: 'wr' },
+      '-4,5': { unit_id: 'shieldman', color: 'black', hp: 30, max_hp: 30, uid: 'bs' },
+    };
+    service.send({ type: 'make_move', from: '-5,5', to: '-5,5', attack: '-4,5', more: true });
+    await flush();
+    const struck = last('game_state_update').boardState['-5,5'].hp;
+    expect(struck).toBeLessThan(30);
+    const mended = struck + 5;
+
+    service.send({
+      type: 'make_move', from: '-4,9', to: '-4,8',
+      effectsBefore: [{ at: '-5,5', uid: 'wr', hp: mended }],
+    });
+    await flush();
+    expect(last('move_made').boardState['-5,5'].hp).toBe(mended);
+  });
+
   it('refuses a move once the turn’s allowance is spent', async () => {
-    // Ply 9 is turn 5, one board move. The second message is refused rather
+    // Ply 7 is turn 4, one board move. The second message is refused rather
     // than quietly played into the next side’s turn.
     await pastOpening();
     service.send({ type: 'make_move', from: '-5,9', to: '-5,8', more: true });
     await flush();
     // `more` on the last move the allowance permits ends the turn anyway -
     // there is nothing left for it to hold the seat open for.
-    expect(last('move_made').turnNumber).toBe(10);
+    expect(last('move_made').turnNumber).toBe(8);
 
     // Wind back into the same hand-over: a second board move is refused.
-    (service as any).game.turnNumber = 9;
+    (service as any).game.turnNumber = 7;
     (service as any).game.currentTurn = 'Solo';
     service.send({ type: 'make_move', from: '-4,9', to: '-4,8' });
     await flush();
@@ -458,8 +531,8 @@ describe('LocalGameService', () => {
         '0,0': { unit_id: 'rook', color: 'white', hp, max_hp: hp, uid: 'w0,0' },
         '1,0': { unit_id: 'rook', color: 'black', hp, max_hp: hp, uid: 'b1,0' },
       },
-      // Ply 9: the first on which anybody may swing at all.
-      currentTurn: 'Solo', turnNumber: 9, moveHistory: [], winner: '', endReason: '',
+      // Ply 7: the first on which anybody may swing at all.
+      currentTurn: 'Solo', turnNumber: 7, moveHistory: [], winner: '', endReason: '',
       turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
     });
 
@@ -496,8 +569,9 @@ describe('LocalGameService', () => {
         '1,0': { unit_id: 'king', color: 'black', hp: 5, max_hp: 45, uid: 'b1,0' },
         '-5,0': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'w-5,0' },
       },
-      // Ply 9: every setup turn is over, so the killing blow may land.
-      currentTurn: 'Solo', turnNumber: 9, moveHistory: [], winner: '', endReason: '',
+      // Ply 7: the opening is over and Phase 1 is playing, so the killing blow
+      // may land.
+      currentTurn: 'Solo', turnNumber: 7, moveHistory: [], winner: '', endReason: '',
       turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
     }));
     const engine = new LocalGameService((service as any).configService);
@@ -722,6 +796,135 @@ describe('LocalGameService', () => {
     });
   });
 
+  /**
+   * The schedule's two endings, which this engine enforces the way the server
+   * does (match-score.ts): a side past the other's margin once Phase 3 has
+   * banked and its postmatch is played wins on points, and a match still
+   * standing once turn 50 is played out is black's. Both kings stand on the rim of a side zone each - the same four
+   * hexes apiece - so whatever the board banks, it banks level.
+   */
+  describe('the schedule\'s endings', () => {
+    const at = (ply: number, phaseBank: any = {}, blackHp = 45) => {
+      const config = JSON.parse(JSON.stringify((service as any).game.config));
+      localStorage.setItem('cpp.localGame.v1', JSON.stringify({
+        username: 'Solo', hostColor: 'white', started: true, config,
+        boardState: {
+          '-5,0': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'wk' },
+          '5,0': { unit_id: 'king', color: 'black', hp: blackHp, max_hp: 45, uid: 'bk' },
+        },
+        currentTurn: ply % 2 ? 'Solo' : LOCAL_OPPONENT,
+        turnNumber: ply, moveHistory: [], winner: '', endReason: '',
+        turnStartedAt: new Date().toISOString(), mode: 'default', options: {}, phaseBank,
+      }));
+      const engine = new LocalGameService((service as any).configService);
+      const seen: any[] = [];
+      engine.messages$.subscribe(m => seen.push(m));
+      return { engine, seen, find: (t: string) => seen.find(m => m.type === t) };
+    };
+
+    it('banks a phase on the hand-over into its postmatch, and hands the bank out', async () => {
+      const g = at(26);   // black's half of turn 13, the last of Phase 1's play
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('turn_passed').phaseBank).toEqual({ 1: { white: 4, black: 4 } });
+      // And it is the game's: a reload brings it back.
+      g.engine.send({ type: 'request_game_state' });
+      await flush();
+      expect(g.find('game_state_update').phaseBank).toEqual({ 1: { white: 4, black: 4 } });
+    });
+
+    it('ends the match at the end of turn 50, with both kings standing - black\'s', async () => {
+      const g = at(99);
+      // White's half of turn 50 is played, and the match goes on.
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('game_over')).toBeUndefined();
+      expect(g.find('turn_passed').currentTurn).toBe(LOCAL_OPPONENT);
+      // Black's half ends it.
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('game_over')).toEqual(jasmine.objectContaining({
+        winner: LOCAL_OPPONENT, endReason: 'overtime',
+      }));
+      expect(g.seen.filter(m => m.type === 'turn_passed')[1].currentTurn).toBe('');
+    });
+
+    it('ends it the same on a move that plays turn 50 out', async () => {
+      // A move hands over through its own path, not the pass's: both ask.
+      const g = at(100);
+      g.engine.send({ type: 'make_move', from: '5,0', to: '6,0' });
+      await flush();
+      expect(g.find('move_made').currentTurn).toBe('');
+      expect(g.find('game_over')).toEqual(jasmine.objectContaining({
+        winner: LOCAL_OPPONENT, endReason: 'overtime',
+      }));
+    });
+
+    it('but a king the last toll kills still loses by regicide', async () => {
+      // The board decides before the schedule does.
+      const g = at(100, {}, 3);
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('game_over')).toEqual(jasmine.objectContaining({
+        winner: 'Solo', endReason: 'regicide',
+      }));
+    });
+
+    /** Pass `n` hand-overs in a row. */
+    const passes = async (g: { engine: LocalGameService }, n: number) => {
+      for (let i = 0; i < n; i++) {
+        g.engine.send({ type: 'pass_turn' });
+        await flush();
+      }
+    };
+
+    it("plays Phase 3's postmatch out, then ends the match on points", async () => {
+      // Phase 3 banks as its postmatch begins and the result is known there,
+      // but the postmatch is still played - "phase 3 post match still happens
+      // even if overtime isnt triggered" - and the match ends as it does.
+      const g = at(70, { 1: { white: 12, black: 0 }, 2: { white: 0, black: 0 } });
+      await passes(g, 1);   // black's half of turn 35: into the postmatch
+      // Four hexes apiece, tripled in Phase 3.
+      expect(g.find('turn_passed').phaseBank[3]).toEqual({ white: 12, black: 12 });
+      expect(g.find('turn_passed').currentTurn).toBe('Solo');
+      await passes(g, 1);   // white's half of the postmatch
+      expect(g.find('game_over')).toBeUndefined();
+      await passes(g, 1);   // black's: out of it, into turn 37
+      expect(g.seen.filter(m => m.type === 'turn_passed')[2].currentTurn).toBe('');
+      expect(g.find('game_over')).toEqual(jasmine.objectContaining({
+        winner: 'Solo', endReason: 'points',
+      }));
+    });
+
+    it('plays a close match on into overtime', async () => {
+      // Ten clear is not more than ten.
+      const g = at(70, { 1: { white: 10, black: 0 }, 2: { white: 0, black: 0 } });
+      await passes(g, 3);
+      expect(g.find('game_over')).toBeUndefined();
+      expect(g.seen.filter(m => m.type === 'turn_passed')[2].currentTurn).toBe('Solo');
+    });
+
+    it('decides nothing on points while a phase was banked late', async () => {
+      // Phase 1 banked after its moment, off the wrong board: Phase 3 banks on
+      // time, white reads nine clear, and the match still goes on past the
+      // postmatch.
+      const g = at(70, { 1: { white: 12, black: 0, late: true }, 2: { white: 0, black: 0 } });
+      await passes(g, 3);
+      expect(g.find('turn_passed').phaseBank[3].late).toBeUndefined();
+      expect(g.find('game_over')).toBeUndefined();
+    });
+
+    it('does not end a match on a Phase 3 bank taken late', async () => {
+      // A game saved past the moment banks Phase 3 at its next hand-over, off
+      // a board that no longer shows how Phase 3 finished - and plays on.
+      const g = at(80, { 1: { white: 12, black: 0 }, 2: { white: 0, black: 0 } });
+      g.engine.send({ type: 'pass_turn' });
+      await flush();
+      expect(g.find('turn_passed').phaseBank[3]).toBeDefined();
+      expect(g.find('game_over')).toBeUndefined();
+    });
+  });
+
   it('ends on resign, with the other seat winning', async () => {
     service.send({ type: 'resign' });
     await flush();
@@ -741,6 +944,33 @@ describe('LocalGameService', () => {
    * something this engine has not got, and the purse also holds what
    * abilities have paid in and out - see 6.15 and 6.17.
    */
+  it('calls a blow into a panel that leaves no commander standing a draw', async () => {
+    // Every hand-over settles the match in one place now. The panel blow's
+    // copy of the order had no mutual draw in it, so a blow that left both
+    // sides without a commander went to black by regicide, off nothing more
+    // than list order. No commander on either side is the plainest way there.
+    const config = (service as any).game.config;
+    localStorage.setItem('cpp.localGame.v1', JSON.stringify({
+      username: 'Solo', hostColor: 'white', started: true, config,
+      boardState: { '-5,9': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'wp' } },
+      currentTurn: 'Solo', turnNumber: 9, moveHistory: [], winner: '', endReason: '',
+      turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
+    }));
+    const engine = new LocalGameService((service as any).configService);
+    const seen: any[] = [];
+    engine.messages$.subscribe(m => seen.push(m));
+    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+    engine.send({
+      type: 'panel_attack', intoPanel: true, panel: 'tr',
+      from: '-5,9', attack: '-5,8', unit: home,
+    });
+    await flush();
+    expect(seen.find(m => m.type === 'move_made')).toBeDefined();
+    expect(seen.find(m => m.type === 'game_over')).toEqual(jasmine.objectContaining({
+      winner: '', endReason: 'draw_mutual',
+    }));
+  });
+
   describe('the rules it keeps without a panel', () => {
     /** A reserve unit of white's, as a panel message carries one. */
     const reserve = (uid: string, over: any = {}) => ({
@@ -782,14 +1012,29 @@ describe('LocalGameService', () => {
       '1,0': { unit_id: 'king', color: 'black', hp: 45, max_hp: 45, uid: 'bk' },
     };
 
-    it('refuses an attack in a phase initialization, and says which turn', async () => {
-      // Turn 4 refuses a blow for the same reason the opening does, and
-      // saying "the opening" there points at a phase that has already ended.
-      const g = at(7, { ...kings, ...walker('-5,9') });
+    it('refuses an attack in a postmatch, and says which turn', async () => {
+      // Turn 14 - Phase 1's postmatch, plies 27 and 28 - refuses a blow for
+      // the same reason the opening does, and saying "the opening" there
+      // points at a phase that ended at turn 3.
+      const g = at(27, { ...kings, ...walker('-5,9') });
       g.engine.send({ type: 'make_move', from: '-5,9', to: '-5,9', attack: '-5,8' });
       await flush();
-      expect(g.refusal()).toBe('Nobody attacks in a phase initialization');
+      expect(g.refusal()).toBe('Nobody attacks in the postmatch');
       expect(g.seen.find(m => m.type === 'move_made')).toBeUndefined();
+    });
+
+    it('lets a blow land on turn 4, which used to be a setup turn and now plays', async () => {
+      // Phase 1's extra turn moved from its start to its end, so the turn
+      // straight after the opening is a turn of play. Refused here, it would
+      // be the four-setup-turn opening the move was made to get rid of.
+      const g = at(7, {
+        ...kings, ...walker('-5,9'),
+        '-5,8': { unit_id: 'pawn', color: 'black', hp: 20, max_hp: 20, uid: 'b1' },
+      });
+      g.engine.send({ type: 'make_move', from: '-5,9', to: '-5,9', attack: '-5,8' });
+      await flush();
+      expect(g.refusal()).toBeUndefined();
+      expect(g.seen.find(m => m.type === 'move_made').move.damage_dealt).toBeGreaterThan(0);
     });
 
     it('refuses a crossing that would stop past its own first three rows', async () => {
@@ -814,11 +1059,12 @@ describe('LocalGameService', () => {
       expect(g.refusal()).toBe('The way in is shut');
     });
 
-    it('starts five out of a reserve in a phase initialization, and no more', async () => {
+    it('starts five out of a reserve in a postmatch, and no more', async () => {
       // Five stands INSTEAD of the per-panel three on that turn, so the fourth
-      // and fifth go through and the sixth does not.
+      // and fifth go through and the sixth does not. Ply 27 is turn 14, Phase
+      // 1's postmatch.
       const hexes = ['-10,9', '-8,9', '-6,9', '-3,9', '-1,9', '1,9'];
-      const g = at(7);
+      const g = at(27);
       hexes.forEach((to, i) => g.engine.send({
         type: 'enter_board', from: 'bl-1', to, unit: reserve(`r${i}`),
       }));
@@ -830,20 +1076,20 @@ describe('LocalGameService', () => {
       expect(hexes.filter(h => board[h]).length).toBe(5);
     });
 
-    it("reads a phase initialization's entries off the game's config", async () => {
-      // rules.phaseInitEntries: a room that says two stops the third.
+    it("reads a postmatch's entries off the game's config", async () => {
+      // rules.postmatchEntries: a room that says two stops the third.
       const rules = (service as any).game.config.rules;
-      const saved = rules.phaseInitEntries;
-      rules.phaseInitEntries = 2;
+      const saved = rules.postmatchEntries;
+      rules.postmatchEntries = 2;
       try {
-        const g = at(7);
+        const g = at(27);
         ['-10,9', '-8,9', '-6,9'].forEach((to, i) => g.engine.send({
           type: 'enter_board', from: 'bl-1', to, unit: reserve(`r${i}`),
         }));
         await flush();
         expect(g.refusal()).toBe('That reserve has started its units for the turn');
       } finally {
-        rules.phaseInitEntries = saved;
+        rules.postmatchEntries = saved;
       }
     });
 
@@ -858,8 +1104,9 @@ describe('LocalGameService', () => {
 
     it('refuses a walk home from outside its own first three rows', async () => {
       // Row 8 again: a unit that has pushed up the board walks back down into
-      // its own ground before it can walk off it.
-      const g = at(7, { ...kings, ...walker('-11,8') });
+      // its own ground before it can walk off it. On a postmatch, where the
+      // way home is open, so the rows are what refuse it.
+      const g = at(27, { ...kings, ...walker('-11,8') });
       g.engine.send({ type: 'make_move', from: '-11,8', to: '-12,8', withdraw: true });
       await flush();
       expect(g.refusal()).toBe('Only your own first three rows walk home');
@@ -871,7 +1118,7 @@ describe('LocalGameService', () => {
       const saved = rules.homecomingsPerSetupTurn;
       rules.homecomingsPerSetupTurn = 1;
       try {
-        const g = at(7, { ...kings, ...walker('-11,11', 'w1'), ...walker('-10,11', 'w2') });
+        const g = at(27, { ...kings, ...walker('-11,11', 'w1'), ...walker('-10,11', 'w2') });
         g.engine.send({ type: 'make_move', from: '-11,11', to: '-12,11', withdraw: true });
         await flush();
         expect(g.refusal()).toBeUndefined();
@@ -884,7 +1131,8 @@ describe('LocalGameService', () => {
     });
 
     it('walks three home in a setup turn and no more', async () => {
-      const g = at(7, {
+      // Ply 27, Phase 1's postmatch.
+      const g = at(27, {
         ...kings,
         ...walker('-11,11', 'w1'), ...walker('-10,11', 'w2'),
         ...walker('-8,11', 'w3'), ...walker('-7,11', 'w4'),
@@ -905,7 +1153,7 @@ describe('LocalGameService', () => {
       }
       expect(g.refusal()).toBe('That is all who may walk home this turn');
       // Three went, and the turn is still the one they went on.
-      expect((g.engine as any).game.turnNumber).toBe(7);
+      expect((g.engine as any).game.turnNumber).toBe(27);
       expect(g.seen.filter(m => m.type === 'game_state_update').length).toBe(3);
       expect(g.seen.filter(m => m.type === 'move_made').length).toBe(0);
     });
@@ -923,7 +1171,8 @@ describe('LocalGameService', () => {
     it('fires no ability on a turn given to setting out', async () => {
       // The one ability rule the engine can keep with the abilities unsettled:
       // it need not know what a cast is worth to know none should have come.
-      const g = at(7, { ...kings, ...walker('-5,9') });
+      // Ply 27, Phase 1's postmatch.
+      const g = at(27, { ...kings, ...walker('-5,9') });
       g.engine.send({
         type: 'make_move', from: '-5,9', to: '-5,8',
         effectsBefore: [{ uid: 'w1', hp: 6, at: '-5,9' }],
@@ -947,19 +1196,35 @@ describe('LocalGameService', () => {
       // `Number(x) || 0` was inert as a guard: nonsense came back NaN, which
       // is falsy, so it passed for "no ability"; a negative one is truthy, so
       // it refused a move no ability had touched.
-      const nonsense = at(7, { ...kings, ...walker('-5,9') });
+      const nonsense = at(27, { ...kings, ...walker('-5,9') });
       nonsense.engine.send({
         type: 'make_move', from: '-5,9', to: '-5,8', moveBonus: 'x' as any,
       });
       await flush();
       expect(nonsense.refusal()).toBe('No ability fires while a side is setting out');
 
-      const negative = at(7, { ...kings, ...walker('-5,9') });
+      const negative = at(27, { ...kings, ...walker('-5,9') });
       negative.engine.send({
         type: 'make_move', from: '-5,9', to: '-5,8', bonuses: { atk: -1 } as any,
       });
       await flush();
       expect(negative.refusal()).toBe('No ability fires while a side is setting out');
+    });
+
+    it('takes the extra steps an ability lent, past the old cap of 10', async () => {
+      // A pawn walks 6; -5,9 to 6,-8 is 17 steps. The engine capped a bonus
+      // at 10, so a Surge the config made 12 was offered on the board and
+      // refused here.
+      const capped = at(11, { ...kings, ...walker('-5,9') });
+      capped.engine.send({ type: 'make_move', from: '-5,9', to: '6,-8', moveBonus: 10 });
+      await flush();
+      expect(capped.seen.find(m => m.type === 'move_made')).toBeUndefined();
+
+      const lent = at(11, { ...kings, ...walker('-5,9') });
+      lent.engine.send({ type: 'make_move', from: '-5,9', to: '6,-8', moveBonus: 12 });
+      await flush();
+      expect(lent.refusal()).toBeUndefined();
+      expect(lent.seen.find(m => m.type === 'move_made')).toBeDefined();
     });
 
     it('refuses an attack in the opening', async () => {
@@ -1115,8 +1380,9 @@ describe('LocalGameService', () => {
 
     it('refuses the wrap while it is shut', async () => {
       // The schedule needs only the ply, so it needs none of the three things
-      // this engine has not got. Turns 10-14 are Phase 1's shut halftime half;
-      // ply 19 is turn 10. `panel_move_targets` offers no wrap there at all.
+      // this engine has not got. Turns 9-13 are Phase 1's halftime half, with
+      // the wrap shut; ply 19 is turn 10. `panel_move_targets` offers no wrap
+      // there at all.
       const config = (service as any).game.config;
       localStorage.setItem('cpp.localGame.v1', JSON.stringify({
         username: 'Solo', hostColor: 'white', started: true, config,
@@ -1143,9 +1409,9 @@ describe('LocalGameService', () => {
         boardState: {
           '-11,11': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'wk' },
         },
-        // Turn 4, a phase initialization: the way home is open there, so the
+        // Turn 14, Phase 1's postmatch: the way home is open there, so the
         // king is refused by his own rule and not by a shut doorway.
-        currentTurn: 'Solo', turnNumber: 7, moveHistory: [], winner: '', endReason: '',
+        currentTurn: 'Solo', turnNumber: 27, moveHistory: [], winner: '', endReason: '',
         turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
       }));
       const engine = new LocalGameService((service as any).configService);

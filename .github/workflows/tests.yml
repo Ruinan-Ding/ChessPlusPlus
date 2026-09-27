@@ -1,0 +1,52 @@
+# Both test suites and the production build, on every push and pull request.
+#
+# The server and the client each hold a copy of the rules (see AGENTS.md), so
+# both suites run on every change: the scoring parity tests in each
+# (test_scoring_parity.py, scoring-parity.spec.ts) read the same fixtures, and
+# a rule changed on one side alone fails here.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: server/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Tests
+        run: python manage.py test game.testsuite
+        env:
+          DJANGO_DEBUG: 'true'
+      - name: Migrations match the models
+        run: python manage.py makemigrations --check --dry-run
+        env:
+          DJANGO_DEBUG: 'true'
+
+  client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - name: Specs
+        run: npx ng test --watch=false --browsers=ChromeHeadless
+      - name: Production build
+        run: npx ng build

@@ -4,412 +4,64 @@ and builds the initial HexBoard state.
 
 The only fixed game fact is the board: a hexagon with 12 cells per edge
 (axial radius 11), rendered with an edge pointing up. Even that lives in
-DEFAULT_CONFIG rather than engine code, so it can change with the config.
+the default config (shared/default-config.json) rather than engine code, so
+it can change with the config.
 
-Everything about the units below is a PLACEHOLDER. The engine reads all
-movement/combat behaviour from this data - none of the unit ids mean
-anything to the code, and the real game's units will replace these.
+The engine reads all movement and combat behaviour from the config's units -
+none of the unit ids mean anything to the code.
 """
 
 from __future__ import annotations
 import copy
+import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .board import HexBoard, coord_key, parse_coord
+from .panels import axial_to_pixel, color_of_panel, on_battlefield, panel_of
 
 logger = logging.getLogger('game')
 
 # ---------------------------------------------------------------------------
 # Default (built-in) configuration.
 #
-# Board: hexagon, 12 cells per edge -> axial radius 11 (side = radius + 1),
-# edge-up orientation. Placement uses axial coords with centre (0, 0);
-# white starts on the southern edge row (r = +11), black mirrored north.
-#
-# Movement is a single "move" stat per unit: the number of adjacent-hex
-# steps it can take per turn. Movement floods outward through the six hex
-# neighbours, through empty hexes only - a unit can never move through or
-# onto an occupied hex (ally or enemy). See move_validator.py.
+# One file for both engines: shared/default-config.json, beside the schema.
+# The client imports the same file (config.service.ts), so a number changed
+# there is changed for solo and networked play alike - there used to be a copy
+# here and a copy in the client, kept equal by hand. What each field means is
+# in shared/game-config.schema.json.
 # ---------------------------------------------------------------------------
 
-DEFAULT_CONFIG: Dict[str, Any] = {
-    "version": "1.0",
-    "board": {
-        "radius": 11,              # 12 cells per hexagon edge
-        "orientation": "edge-up"   # cosmetic: how the client draws the hexagon
-    },
-    "units": {
-        "king": {
-            "id": "king",
-            "name": "King",
-            "symbol": "K",
-            "display": {"white": "♔", "black": "♚"},
-            "move": 6,
-            "value": 40,
-            "hp": 45,
-            "attack": 16,
-            "attackRange": 1,
-            "commander": True,
-            "defense": 15
-        },
-        "queen": {
-            "id": "queen",
-            "name": "Queen",
-            "symbol": "Q",
-            "display": {"white": "♕", "black": "♛"},
-            "move": 6,
-            "value": 30,
-            "hp": 30,
-            "attack": 26,
-            "attackRange": 2,
-            "defense": 12
-        },
-        "rook": {
-            "id": "rook",
-            "name": "Rook",
-            "symbol": "R",
-            "display": {"white": "♖", "black": "♜"},
-            "move": 6,
-            "value": 18,
-            "hp": 40,
-            "attack": 20,
-            "attackRange": 2,
-            "defense": 13
-        },
-        "bishop": {
-            "id": "bishop",
-            "name": "Bishop",
-            "symbol": "B",
-            "display": {"white": "♗", "black": "♝"},
-            "move": 6,
-            "value": 14,
-            "hp": 22,
-            "attack": 22,
-            "attackRange": 3,
-            "defense": 10
-        },
-        "knight": {
-            "id": "knight",
-            "name": "Knight",
-            "symbol": "N",
-            "display": {"white": "♘", "black": "♞"},
-            "move": 6,
-            "value": 12,
-            "hp": 28,
-            "attack": 18,
-            "attackRange": 1,
-            "defense": 11
-        },
-        # Two more of the footsoldier's kind, either side of the pawn: one
-        # that outranges everything but the bishop and folds when reached,
-        # one that reaches nothing and does not fold. Placeholder numbers on
-        # the same scale as the rest - the owner said to make them up.
-        "archer": {
-            "id": "archer",
-            "name": "Archer",
-            "symbol": "A",
-            "display": {"white": "🏹︎", "black": "🏹︎"},
-            "move": 6,
-            "value": 8,
-            "hp": 16,
-            "attack": 15,
-            "attackRange": 3,
-            "defense": 7
-        },
-        "shieldman": {
-            "id": "shieldman",
-            "name": "Shieldman",
-            "symbol": "S",
-            "display": {"white": "🛡︎", "black": "🛡︎"},
-            "move": 5,
-            "value": 9,
-            "hp": 30,
-            "attack": 8,
-            "attackRange": 1,
-            "defense": 18
-        },
-        "pawn": {
-            "id": "pawn",
-            "name": "Pawn",
-            "symbol": "P",
-            "display": {"white": "♙", "black": "♟"},
-            "move": 6,
-            "value": 5,
-            "hp": 20,
-            "attack": 14,
-            "attackRange": 1,
-            "defense": 10
-        }
-    },
-    # The ability catalogue, and how a side gets at it. Keyed by a STABLE id
-    # throughout - never by position - because a side's saved loadout, path and
-    # cooldowns are written by id, and a reordered list would re-point every
-    # one of them. `cost` is in whichever purse the ability draws on: points
-    # for a pool ability, CP for a path's (see `isPathSlot` in the room).
-    #
-    # A path shares its id with its own passive on purpose: the path IS its
-    # passive. They live in different namespaces - `paths` is a list, the
-    # catalogue is a map - and nothing looks one up in the other.
-    #
-    # `testing: True` marks the owner's bench rather than a balanced ability,
-    # and is what keeps Rally's 300 points out of networked play.
-    #
-    # **The engine still does not read any of this.** It is here so that
-    # tuning an ability is a config edit rather than a code change, which is
-    # the half of PUNCHLIST 6.15 that could land without the numbers settling.
-    "abilities": {
-        "slots": 4,
-        "pool": ["dash", "focus", "bulwark", "sap", "arc-bolt", "mire", "mend", "rally"],
-        "paths": [
-            {
-                "id": "bastion",
-                "name": "Bastion",
-                "cost": 6,
-                "passive": "bastion",
-                "skill": "anchor",
-                "ultimate": "fortress"
-            },
-            {
-                "id": "onslaught",
-                "name": "Onslaught",
-                "cost": 7,
-                "passive": "onslaught",
-                "skill": "cleave",
-                "ultimate": "ruin"
-            },
-            {
-                "id": "tempo",
-                "name": "Tempo",
-                "cost": 5,
-                "passive": "tempo",
-                "skill": "surge",
-                "ultimate": "blitz"
-            }
-        ],
-        "catalogue": {
-            "dash": {
-                "id": "dash",
-                "name": "Dash",
-                "target": "friendly",
-                "cost": 3,
-                "mov": 2
-            },
-            "focus": {
-                "id": "focus",
-                "name": "Focus",
-                "target": "friendly",
-                "cost": 5,
-                "atk": 2
-            },
-            "bulwark": {
-                "id": "bulwark",
-                "name": "Bulwark",
-                "target": "friendly",
-                "cost": 1,
-                "def": 3
-            },
-            "sap": {
-                "id": "sap",
-                "name": "Sap",
-                "target": "enemy",
-                "cost": 4,
-                "mov": -2,
-                "atk": -2,
-                "def": -2,
-                "damage": 6
-            },
-            "arc-bolt": {
-                "id": "arc-bolt",
-                "name": "Arc Bolt",
-                "target": "enemy",
-                "cost": 3,
-                "damage": 8
-            },
-            "mire": {
-                "id": "mire",
-                "name": "Mire",
-                "target": "enemy",
-                "cost": 2,
-                "mov": -3
-            },
-            "mend": {
-                "id": "mend",
-                "name": "Mend",
-                "target": "friendly",
-                "cost": 0,
-                "heal": 20,
-                "testing": True
-            },
-            "rally": {
-                "id": "rally",
-                "name": "Rally",
-                "target": "universal",
-                "cost": 0,
-                "points": 300,
-                "testing": True
-            },
-            "bastion": {
-                "id": "bastion",
-                "name": "Bastion",
-                "target": "friendly",
-                "cost": 0,
-                "def": 1
-            },
-            "anchor": {
-                "id": "anchor",
-                "name": "Anchor",
-                "target": "friendly",
-                "cost": 4,
-                "def": 4
-            },
-            "fortress": {
-                "id": "fortress",
-                "name": "Fortress",
-                "target": "universal",
-                "cost": 8,
-                "points": 4
-            },
-            "onslaught": {
-                "id": "onslaught",
-                "name": "Onslaught",
-                "target": "friendly",
-                "cost": 0,
-                "atk": 1
-            },
-            "cleave": {
-                "id": "cleave",
-                "name": "Cleave",
-                "target": "enemy",
-                "cost": 5,
-                "damage": 10
-            },
-            "ruin": {
-                "id": "ruin",
-                "name": "Ruin",
-                "target": "universal",
-                "cost": 8,
-                "points": 5
-            },
-            "tempo": {
-                "id": "tempo",
-                "name": "Tempo",
-                "target": "friendly",
-                "cost": 0,
-                "mov": 1
-            },
-            "surge": {
-                "id": "surge",
-                "name": "Surge",
-                "target": "friendly",
-                "cost": 3,
-                "mov": 3
-            },
-            "blitz": {
-                "id": "blitz",
-                "name": "Blitz",
-                "target": "universal",
-                "cost": 8,
-                "points": 3
-            }
-        }
-    },
-    "setup": {
-        # Three rows on each side of the radius-11 board, spaced so nothing
-        # sits shoulder to shoulder. White's edge row is r=+11; black is the point
-        # mirror (q,r) -> (-q,-r).
-        #   row 1 (r=11): pawn archer shieldman | queen king | shieldman archer pawn
-        #                 - the pair in the middle behind a shield each, an
-        #                 archer outside that, and a pawn on each wing tip
-        #   row 2 (r=10): pawn | rook knight bishop | bishop knight rook | pawn,
-        #                 every other hex with a pawn on each wing tip
-        #   row 3 (r=9) : four pawns, two archers and two shieldmen, every other
-        #                 hex but the middle pair, which straddles the centre
-        #                 line - eight spaced units are one hex wider than the
-        #                 row.
-        # Odd separations are what stay centred here: the row holds an even number
-        # of hexes, so an even gap would put the pair off the middle.
-        "white": {
-            "-11,11":  "pawn",
-            "-10,11":  "archer",
-            "-8,11":   "shieldman",
-            "-6,11":   "queen",
-            "-5,11":   "king",
-            "-3,11":   "shieldman",
-            "-1,11":   "archer",
-            "0,11":    "pawn",
-            "-11,10":  "pawn",
-            "-10,10":  "rook",
-            "-8,10":   "knight",
-            "-6,10":   "bishop",
-            "-4,10":   "bishop",
-            "-2,10":   "knight",
-            "0,10":    "rook",
-            "1,10":    "pawn",
-            "-11,9":   "shieldman",
-            "-9,9":    "pawn",
-            "-7,9":    "archer",
-            "-5,9":    "pawn",
-            "-4,9":    "pawn",
-            "-2,9":    "archer",
-            "0,9":     "pawn",
-            "2,9":     "shieldman",
-        },
-        "black": {
-            "11,-11":  "pawn",
-            "10,-11":  "archer",
-            "8,-11":   "shieldman",
-            "6,-11":   "queen",
-            "5,-11":   "king",
-            "3,-11":   "shieldman",
-            "1,-11":   "archer",
-            "0,-11":   "pawn",
-            "11,-10":  "pawn",
-            "10,-10":  "rook",
-            "8,-10":   "knight",
-            "6,-10":   "bishop",
-            "4,-10":   "bishop",
-            "2,-10":   "knight",
-            "0,-10":   "rook",
-            "-1,-10":  "pawn",
-            "11,-9":   "shieldman",
-            "9,-9":    "pawn",
-            "7,-9":    "archer",
-            "5,-9":    "pawn",
-            "4,-9":    "pawn",
-            "2,-9":    "archer",
-            "0,-9":    "pawn",
-            "-2,-9":   "shieldman",
-        },
-    },
-    "rules": {
-        # Fraction of damage lost per ring beyond the first.
-        "rangeFalloff": 0.25,
-        # The least a blow that lands may deal, once defence is off it.
-        "minStrikeDamage": 1,
-        "maxTurns": 0,
-        "turnTimeLimit": 0,
-        # A side loses when its commander dies; 'elimination' (no units left)
-        # is the other supported objective.
-        "objective": "regicide",
-        # How many units each panel - the base and the reserve, separately -
-        # may start in one turn.
-        "panelMoversPerTurn": 3,
-        # How many a side may bring out of its reserve in a phase
-        # initialization. Stands instead of panelMoversPerTurn for the reserve
-        # on that turn, not beside it.
-        "phaseInitEntries": 5,
-        # How many units a side may walk home in one setup turn.
-        "homecomingsPerSetupTurn": 3,
-        # The CP each side is handed at the start of every phase.
-        "cpPerPhase": 100
-    }
-}
+#: shared/ at the repository root. A deployment builds from the root so the
+#: server can reach it (DEPLOYMENT.md).
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / 'shared' / 'default-config.json'
+
+
+def _read_default_config() -> Dict[str, Any]:
+    with open(DEFAULT_CONFIG_PATH, encoding='utf-8') as fh:
+        return json.load(fh)
+
+
+DEFAULT_CONFIG: Dict[str, Any] = _read_default_config()
 
 #: The rules a config may leave out and be read at their default. Each is a
 #: whole number >= 0, filled in by _normalise_config and read by rule_of.
+#:
+#: postmatchEntries was phaseInitEntries while the extra turn opened a phase
+#: rather than closing it. Nothing migrates the old key: neither runtime
+#: validator (_validate_config here, validateGameRules in the client) refuses
+#: a rule it does not know, so a room snapshot that still carries
+#: phaseInitEntries loads, ignores it, and reads postmatchEntries at its
+#: default. The schema's additionalProperties would refuse it, but nothing
+#: runs the schema at runtime.
+#:
+#: cpPhaseOffset replaced cpPerPhase - a flat 100 at the start of every phase -
+#: when CP became something a phase's play earns. The same holds: a snapshot
+#: still carrying cpPerPhase loads and ignores it.
 COUNTED_RULES = (
-    'panelMoversPerTurn', 'phaseInitEntries', 'homecomingsPerSetupTurn', 'cpPerPhase')
+    'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart',
+    'cpPhaseOffset')
 
 
 def rule_of(config: Optional[Dict[str, Any]], key: str) -> Any:
@@ -475,6 +127,35 @@ def _normalise_config(config: Dict[str, Any]) -> None:
             rules.setdefault(key, DEFAULT_CONFIG['rules'][key])
 
 
+#: A unit type's whole numbers besides `defense`, and the least of each.
+#: Mirrors UNIT_NUMBERS in config.service.ts.
+UNIT_NUMBERS = (('hp', 1), ('attack', 0), ('move', 0), ('value', 0))
+
+
+def _unit_ability_errors(unit_id: str, ability: Any, abilities: Any) -> List[str]:
+    """
+    What is wrong with a unit type's own ability (``units.<id>.ability``),
+    cast from the Unit panel onto the unit itself. Mirrors unitAbilityErrors
+    in config.service.ts. The server casts nothing, but it validates the
+    units it plays, so the two reject the same configs.
+    """
+    at = f"units.{unit_id}.ability"
+    if not isinstance(ability, str):
+        return [f"{at} must be a catalogue id"]
+    catalogue = abilities.get('catalogue') if isinstance(abilities, dict) else None
+    # A config with no catalogue plays the shipped one, checked on its own.
+    if not isinstance(catalogue, dict):
+        return []
+    entry = catalogue.get(ability)
+    if not isinstance(entry, dict):
+        return [f'{at} names unknown ability "{ability}"']
+    paths = abilities.get('paths') if isinstance(abilities.get('paths'), list) else []
+    passive = any(isinstance(p, dict) and p.get('passive') == ability for p in paths)
+    if passive or entry.get('target') != 'friendly':
+        return [f"{at} must be a friendly ability - it is cast on the unit itself"]
+    return []
+
+
 def _validate_config(config: Dict[str, Any]) -> List[str]:
     """
     Light validation of a config dict.
@@ -507,6 +188,23 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
             dfn = unit.get('defense')
             if not isinstance(dfn, int) or isinstance(dfn, bool) or dfn < 0:
                 errors.append(f"units.{unit_id}.defense must be an integer >= 0, got {dfn}")
+            # The rest the engines read, when they are there: a move of "5" was
+            # a TypeError in get_legal_moves - an INTERNAL_ERROR for a plainly
+            # bad config. Only when there: rooms hold configs saved by older
+            # builds, some without a field or with one since renamed (the old
+            # `movement`), and refusing them would strand every such room.
+            # The setup screen, where a config is written today, also refuses
+            # a missing field and an unknown one (validateGameRules).
+            for field, least in UNIT_NUMBERS:
+                if field not in unit:
+                    continue
+                value = unit[field]
+                if not isinstance(value, int) or isinstance(value, bool) or value < least:
+                    errors.append(
+                        f"units.{unit_id}.{field} must be an integer >= {least}, got {value}")
+            if 'ability' in unit:
+                errors.extend(_unit_ability_errors(
+                    unit_id, unit['ability'], config.get('abilities')))
 
     # `config.get('rules', {})` still hands back None for an explicit null,
     # and every read below would raise AttributeError out of a handler that
@@ -536,9 +234,26 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
             errors.append(f"rules.{key} must be an integer >= 0, got {count}")
 
+    # Read as whole numbers on every hand-over and every clock: a null
+    # maxTurns loaded, then reached `None > 0` in _settle_hand_over and failed
+    # every move the room made. Mirrors validateGameRules.
+    for key in ('maxTurns', 'turnTimeLimit'):
+        count = rules.get(key, 0)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            errors.append(f"rules.{key} must be an integer >= 0, got {count}")
+
     if 'setup' not in config:
         errors.append("Missing 'setup'")
     else:
+        board = config.get('board') if isinstance(config.get('board'), dict) else {}
+        radius = board.get('radius')
+        orientation = board.get('orientation', 'edge-up')
+        units = config.get('units') if isinstance(config.get('units'), dict) else {}
+        # One unit a hex, across both sides. Construction places white and then
+        # black, so a second placement on a hex overwrote the first: two kings
+        # on 0,0 built a board with black's alone, and white had lost before
+        # the first move. Compared as numbers, so '-05,11' is '-5,11'.
+        placed: Dict[tuple, str] = {}
         for side in ('white', 'black'):
             placement = config['setup'].get(side, {})
             if not isinstance(placement, dict):
@@ -546,11 +261,35 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                 continue
             for coord_str, unit_id in placement.items():
                 try:
-                    parse_coord(coord_str)
+                    q, r = parse_coord(coord_str)
                 except ValueError:
                     errors.append(f"Invalid coordinate '{coord_str}' in setup.{side}")
+                    q = r = None
                 if unit_id not in config.get('units', {}):
                     errors.append(f"Unknown unit '{unit_id}' at {coord_str} in setup.{side}")
+                if q is not None:
+                    earlier = placed.get((q, r))
+                    if earlier:
+                        errors.append(
+                            f"setup.{side} puts a unit at {coord_str}, where {earlier} "
+                            f"already has one - one unit a hex")
+                    else:
+                        placed[(q, r)] = f"setup.{side}"
+                # Off the battlefield is a panel, and a side's panels are its
+                # own two: a unit dealt into the other side's would be counted
+                # as theirs by every panel rule. And a commander starts on the
+                # battlefield - under regicide one in a panel is a side that
+                # has lost before it moves. Mirrors validateGameRules.
+                if q is None or not isinstance(radius, int) or on_battlefield(q, r, radius):
+                    continue
+                owner = color_of_panel(panel_of(*axial_to_pixel(q, r, orientation)))
+                if owner != side:
+                    errors.append(
+                        f"setup.{side} puts a unit at {coord_str}, in {owner}'s panels")
+                elif (units.get(unit_id) or {}).get('commander'):
+                    errors.append(
+                        f"setup.{side} puts its commander at {coord_str}, in a panel - "
+                        f"a commander starts on the battlefield")
 
     # The objective decides how a game is lost, so a config that cannot
     # satisfy it is unplayable rather than merely odd: under regicide a side
@@ -611,6 +350,11 @@ def build_initial_board(config: Dict[str, Any]) -> HexBoard:
         for coord_str, unit_id in placement.items():
             q, r = parse_coord(coord_str)
             if not board.is_valid(q, r):
+                # A panel hex is the panel deal's (panels.set_up_panels), and
+                # the setup puts a base's squad there on purpose.
+                if color_of_panel(panel_of(*axial_to_pixel(
+                        q, r, config['board'].get('orientation', 'edge-up')))) == color:
+                    continue
                 logger.warning(
                     f"Skipping out-of-bounds placement: {unit_id} at ({q},{r}) "
                     f"for {color} (radius={radius})"
