@@ -1052,10 +1052,12 @@ class SetUpPanelsTestCase(TestCase):
     def test_a_setup_that_crosses_sides_or_benches_its_commander_is_refused(self):
         self.assertEqual(_validate_config(copy.deepcopy(DEFAULT_CONFIG)), [])
         config = copy.deepcopy(DEFAULT_CONFIG)
-        config['setup']['black']['-17,11'] = 'rook'   # white's base
+        # A hex of white's base the shipped squad leaves free: on one it holds,
+        # the second unit on a hex is refused as well.
+        config['setup']['black']['-13,4'] = 'rook'    # white's base
         config['setup']['white']['-17,10'] = 'king'   # a king in a panel
         errors = _validate_config(config)
-        self.assertIn("setup.black puts a unit at -17,11, in white's panels", errors)
+        self.assertIn("setup.black puts a unit at -13,4, in white's panels", errors)
         self.assertIn(
             'setup.white puts its commander at -17,10, in a panel - '
             'a commander starts on the battlefield', errors)
@@ -1564,6 +1566,60 @@ class PanelMendingTestCase(TestCase):
         self.assertEqual(panels.withdrawn_units(history)['w3,9']['hp'], 9)
         # Plies 6..11 finished by ply 12: three white hand-overs.
         self.assertEqual(panels.withdrawn_units(history, 12)['w3,9']['hp'], 12)
+
+    #: White's base tip and the reserve hex the wrap lands on (hexes by
+    #: key: '-12,1' is in white's base 'bl', '11,1' in white's reserve 'br').
+    TIP, WRAPPED = '-12,1', '11,1'
+
+    def _wounded_at_the_tip(self):
+        pawn = {'uid': 'w-12,1', 'unit_id': 'pawn', 'color': 'white', 'hp': 20, 'max_hp': 20}
+        # Black's blow on ply 8 leaves it at 16, standing in white's base.
+        return pawn, [{'intoPanel': True, 'panel': 'bl', 'turn': 8, 'defenderHp': 16,
+                       'unit': pawn, 'from': '-11,1', 'to': '-11,1'}]
+
+    def test_a_unit_wrapped_out_of_its_base_stops_mending(self):
+        # The review's case: struck in the base on ply 8, wrapped into the
+        # reserve on ply 9 - and read back at 17, 18, 19 on plies 10, 12, 14,
+        # mending in a reserve, which never mends.
+        pawn, history = self._wounded_at_the_tip()
+        self.assertEqual(panels.panel_hp(history, 14)['w-12,1'], 19)   # had it stayed
+        history.append({'panelMove': True, 'panel': 'bl', 'turn': 9, 'unit': pawn,
+                        'from': self.TIP, 'to': self.WRAPPED})
+        self.assertEqual([panels.panel_hp(history, ply)['w-12,1'] for ply in (10, 12, 14)],
+                         [16, 16, 16])
+
+    def test_a_unit_mends_for_the_turns_it_stayed_and_no_more(self):
+        pawn, history = self._wounded_at_the_tip()
+        # A walk inside the base keeps it mending; the wrap on ply 13 stops it.
+        # White's hand-overs 9 and 11 were closed in the base: two HP.
+        history += [
+            {'panelMove': True, 'panel': 'bl', 'turn': 9, 'unit': pawn,
+             'from': self.TIP, 'to': '-12,2'},
+            {'panelMove': True, 'panel': 'bl', 'turn': 13, 'unit': pawn,
+             'from': '-12,2', 'to': self.WRAPPED},
+        ]
+        self.assertEqual(panels.panel_hp(history, 12)['w-12,1'], 18)
+        self.assertEqual(panels.panel_hp(history, 20)['w-12,1'], 18)
+
+    def test_a_unit_that_walked_home_and_wrapped_out_stops_mending(self):
+        walked = {'uid': 'w3,9', 'unit_id': 'pawn', 'color': 'white', 'hp': 9, 'max_hp': 20}
+        history = [
+            {'withdrawn': True, 'unit': walked, 'to': '-12,11', 'turn': 5},
+            # Hand-over 7 closes in the base; the wrap on ply 9 takes it out.
+            {'panelMove': True, 'panel': 'bl', 'turn': 9, 'unit': walked,
+             'from': '-12,11', 'to': self.WRAPPED},
+        ]
+        self.assertEqual(panels.withdrawn_units(history, 20)['w3,9']['hp'], 10)
+
+    def test_the_occupancy_a_blow_is_struck_from_agrees(self):
+        pawn, history = self._wounded_at_the_tip()
+        history.append({'panelMove': True, 'panel': 'bl', 'turn': 9, 'unit': pawn,
+                        'from': self.TIP, 'to': self.WRAPPED})
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['setup']['white'][self.TIP] = 'pawn'
+        occupancy = panels.panel_occupancy(config, 11, history, ply=14)
+        self.assertEqual(occupancy[self.WRAPPED]['hp'], 16)
+        self.assertEqual(occupancy[self.WRAPPED]['panel'], 'br')
 
 
 class PanelAttackTestCase(DealtPanels, TestCase):

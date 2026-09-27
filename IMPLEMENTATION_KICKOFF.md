@@ -1,5 +1,11 @@
 # ChessPlusPlus — Implementation Kickoff Prompt
 
+> **Historical - do not paste this into a new session.** It was written for `feature/dev13`,
+> before the phases, the panels, the scoring and overtime existed, and it describes the engine
+> as it was then. [AGENTS.md](AGENTS.md) describes the code as it is, and
+> [CONFIG_BLUEPRINT.md](CONFIG_BLUEPRINT.md) the rules. Kept for the record (26 Sep 2026).
+
+
 Paste the block below as the first message in a new session to start the
 "real" Fire-Emblem-style unit/ability implementation. It has no memory of
 prior conversations, so this is written to stand alone.

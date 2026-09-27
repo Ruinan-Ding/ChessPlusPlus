@@ -1551,6 +1551,74 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.opponentPoints).toBe(15);
   });
 
+  /** A networked room at `ply`, with the opponent (black) to move. */
+  const watching = (ply: number) => {
+    const c = room();
+    c.gameState = new GameStateService();
+    c.gameState.applyGameStarted({
+      playerWhite: 'me', playerBlack: 'Opponent', currentTurn: 'Opponent', turnNumber: ply,
+      config: { board: { radius: 11 }, units: {} }, boardState: {},
+    });
+    return c;
+  };
+  const logged = (c: any) => c.gameRoomMessages.map((m: any) => m.content);
+
+  it('draws and logs every unit of an opponent’s overtime turn, not only the last', () => {
+    // Found in Chrome: the first units of a two- or three-unit turn arrive as
+    // state updates, and the arrows and the log were built from the closing
+    // move_made alone - so the first unit's move, here a blow into a panel,
+    // left no arrow and no line.
+    const c = watching(90);
+    const blow = {
+      turn: 90, color: 'black', unit_id: 'pawn', from: '0,-5', to: '0,-4', attacked: true,
+      attackedHex: '-1,-11', damage_dealt: 4, intoPanel: true, panelAttack: true, panel: 'bl',
+      unit: { unit_id: 'rook', color: 'white', uid: 'w-1,-11' }, defenderHp: 36,
+    };
+    c.handleWebSocketMessage({
+      type: 'game_state_update', turnNumber: 90, currentTurn: 'Opponent', boardState: {},
+      config: { board: { radius: 11 }, units: {} }, moveHistory: [blow],
+    });
+    c.handleWebSocketMessage({
+      type: 'move_made', turnNumber: 91, currentTurn: 'me', boardState: {},
+      move: { turn: 90, color: 'black', unit_id: 'knight', from: '2,-5', to: '2,-3' },
+    });
+    expect(c.opponentMovementArrows).toEqual([
+      { from: '0,-5', to: '0,-4' }, { from: '2,-5', to: '2,-3' },
+    ]);
+    expect(c.opponentAttackMarkers).toEqual([{ from: '0,-4', to: '-1,-11' }]);
+    const lines = logged(c).filter((line: string) => line.startsWith('black '));
+    expect(lines.length).toBe(2);
+    expect(lines[0]).toContain('rook survives, 36 HP');
+    expect(lines[1]).toContain('black knight');
+  });
+
+  it('logs a turn that wrapped and then ended as what it did, not as a pass', () => {
+    const c = watching(9);
+    c.handleWebSocketMessage({
+      type: 'game_state_update', turnNumber: 9, currentTurn: 'Opponent', boardState: {},
+      config: { board: { radius: 11 }, units: {} },
+      moveHistory: [{
+        turn: 9, color: 'black', unit_id: 'pawn', from: '12,-1', to: '-11,-1',
+        panelMove: true, panel: 'tr', price: 5, unit: { unit_id: 'pawn', color: 'black', uid: 'b12,-1' },
+      }],
+    });
+    c.handleWebSocketMessage({
+      type: 'turn_passed', color: 'black', turnNumber: 10, currentTurn: 'me', boardState: {},
+    });
+    const lines = logged(c);
+    expect(lines.some((line: string) => line.includes('(wrapped, 5 pts)'))).toBeTrue();
+    expect(lines).toContain('black ended the turn.');
+    expect(lines).not.toContain('black passed the turn.');
+    // The panels' walks get a line, as ever, but no arrow.
+    expect(c.opponentMovementArrows).toEqual([]);
+
+    // A turn that did nothing at all is still a pass.
+    c.handleWebSocketMessage({
+      type: 'turn_passed', color: 'white', turnNumber: 11, currentTurn: 'Opponent', boardState: {},
+    });
+    expect(logged(c)).toContain('white passed the turn.');
+  });
+
   it('pays a kill made by a held overtime move, which lands as a state update', () => {
     // Overtime 2 and 3 allow several board moves a turn; all but the last are
     // held, and come back as game_state_update rather than move_made. The
@@ -1926,6 +1994,46 @@ describe('GameRoomComponent ability panel', () => {
     expect(home().unit.hp).toBe(10);
   });
 
+  it('stops mending a unit wrapped out of its base into its reserve', () => {
+    // The review's case: struck in the base on ply 8 to 16, wrapped into the
+    // reserve on ply 9 - and drawn at 17, 18, 19 on plies 10, 12, 14, mending
+    // in a reserve, which never mends. panels.py agrees now, and agreed then.
+    const c = room();
+    const pawn = { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'w-12,1' };
+    const wound = { intoPanel: true, panel: 'bl', turn: 8, defenderHp: 16, unit: pawn };
+    const wrap = (turn: number, to: string) =>
+      ({ panelMove: true, panel: 'bl', turn, unit: pawn, from: '-12,1', to });
+    const hpAt = (ply: number) => {
+      c.gameState.snapshot.turnNumber = ply;
+      return c.panelHp['w-12,1'];
+    };
+
+    c.gameState.snapshot.moveHistory = [wound];
+    expect(hpAt(14)).toBe(19);                    // had it stayed
+    c.gameState.snapshot.moveHistory = [wound, wrap(9, '11,1')];
+    expect([10, 12, 14].map(hpAt)).toEqual([16, 16, 16]);
+
+    // A walk inside the base keeps it mending, until the wrap on ply 13:
+    // white's hand-overs 9 and 11 closed with it in the base.
+    c.gameState.snapshot.moveHistory = [
+      wound, wrap(9, '-12,2'), { ...wrap(13, '11,1'), from: '-12,2' },
+    ];
+    expect(hpAt(12)).toBe(18);
+    expect(hpAt(20)).toBe(18);
+  });
+
+  it('stops mending a unit that walked home once it is wrapped out again', () => {
+    const c = room();
+    const unit = { unit_id: 'pawn', color: 'white', hp: 9, max_hp: 20, uid: 'w3,9' };
+    c.gameState.snapshot.moveHistory = [
+      { from: '-11,11', to: '-12,11', color: 'white', turn: 5, withdrawn: true, unit },
+      // Hand-over 7 closes in the base; the wrap on ply 9 takes it out.
+      { panelMove: true, panel: 'bl', turn: 9, unit, from: '-12,11', to: '11,1' },
+    ];
+    c.gameState.snapshot.turnNumber = 20;
+    expect(c.withdrawnUnits.find((w: any) => w.unit.uid === 'w3,9').unit.hp).toBe(10);
+  });
+
   it('leaves a unit killed in the base out of the panel for good', () => {
     const c = room();
     const unit = { unit_id: 'pawn', color: 'white', hp: 10, max_hp: 10, uid: 'gone' };
@@ -2128,6 +2236,109 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canUndo).toBeFalse();
     c.undoMove();
     expect(c.stagedActions.length).toBe(4);
+  });
+
+  /** An overtime turn's staged stack, and what ending it sends. */
+  const committing = (c: any, ply: number, staged: any[]) => {
+    const sent: any[] = [];
+    c.wsService = { sendMessage: (m: any) => sent.push(m) };
+    c.persistLocalUiState = () => {};
+    c.playSteps = () => {};
+    c.playEndTurnSound = () => {};
+    c.gameState.snapshot.currentTurn = 'me';
+    c.gameState.snapshot.turnNumber = ply;
+    c.stagedActions = staged;
+    c.endTurn();
+    return sent;
+  };
+  const OVERTIME_TWO = 89, OVERTIME_THREE = 99;
+  const blowIntoPanel = (at: number, from: string) => ({
+    at, from, to: from, used: 0, attack: '-5,8',
+    panelUnit: inPanel(), panelUnitHp: 18, intoPanel: true, panelName: 'tl', counters: true,
+  });
+  const walk = (at: number, from: string, to: string) =>
+    ({ at, from, to, used: 1, attack: null });
+
+  it('sends a blow into a panel in its place among the turn’s moves, whichever comes first', () => {
+    // It went alone and ended the turn, so every other move an overtime turn
+    // had staged was lost - before it or after it.
+    let sent = committing(room(), OVERTIME_TWO,
+      [blowIntoPanel(1, '-5,9'), walk(2, '-4,9', '-4,8')]);
+    expect(sent.map(m => m.type)).toEqual(['panel_attack', 'make_move']);
+    expect(sent[0].more).toBeTrue();
+    expect(sent[1].more).toBeUndefined();
+    expect(sent[1].from).toBe('-4,9');
+
+    sent = committing(room(), OVERTIME_TWO,
+      [walk(1, '-4,9', '-4,8'), blowIntoPanel(2, '-5,9')]);
+    expect(sent.map(m => m.type)).toEqual(['make_move', 'panel_attack']);
+    expect(sent[0].more).toBeTrue();
+    expect(sent[1].more).toBeUndefined();
+    expect(sent[1].unit.uid).toBe('rtl0');
+  });
+
+  it('sends all three of an Overtime 3 turn with the blow into a panel in the middle', () => {
+    const sent = committing(room(), OVERTIME_THREE, [
+      walk(1, '-4,9', '-4,8'), blowIntoPanel(2, '-5,9'), walk(3, '-2,9', '-2,8'),
+    ]);
+    expect(sent.map(m => m.type)).toEqual(['make_move', 'panel_attack', 'make_move']);
+    expect(sent.map(m => !!m.more)).toEqual([true, true, false]);
+  });
+
+  it('lands a cast made between two units’ moves between them, not before the first', () => {
+    // The report's case: a rook strikes and takes a one-point counter (10 to
+    // 9), Mend takes it to 29, and a second unit moves. Every cast before the
+    // last move used to ride on the FIRST message - so the mend landed before
+    // the blow, the counter came off 29, and the rook was committed at 28.
+    const spend = { cost: 0, index: 6, side: 'mine', row: 'mine', uid: 'wr', hex: '-5,0' };
+    const sent = committing(room(), OVERTIME_TWO, [
+      { at: 1, from: '-5,0', to: '-5,0', used: 0, attack: '-4,0' },
+      { at: 2, from: '-5,0', to: '-5,0', used: 0, attack: null, spend,
+        hexKey: '-5,0', hexUid: 'wr', hexHp: 29, mark: '+20' },
+      // A blow on an enemy between the two, which the second unit then meets.
+      { at: 3, from: '-5,0', to: '-5,0', used: 0, attack: null, spend,
+        hexKey: '-3,1', hexUid: 'bs', hexHp: 4, mark: '-6' },
+      walk(4, '-4,9', '-4,8'),
+      { at: 5, from: '-4,9', to: '-4,8', used: 1, attack: null, spend,
+        hexKey: '-4,8', hexUid: 'wp', hexHp: 12, mark: '+2' },
+    ]);
+    expect(sent.map(m => m.type)).toEqual(['make_move', 'make_move']);
+    expect(sent[0].effectsBefore).toBeUndefined();
+    expect(sent[0].effects).toBeUndefined();
+    expect(sent[1].effectsBefore).toEqual([
+      { at: '-5,0', uid: 'wr', hp: 29 },
+      { at: '-3,1', uid: 'bs', hp: 4 },
+    ]);
+    // What came after the last move lands after it.
+    expect(sent[1].effects).toEqual([{ at: '-4,8', uid: 'wp', hp: 12 }]);
+  });
+
+  it('gives the next unit its own MOV after another unit has struck', () => {
+    // movesLeft asked "has anything swung this turn" - the one-unit rule - so a
+    // second unit, free to walk in Overtime 2, had 0 MOV after its first hop.
+    const c = room();
+    c.gameState.snapshot.turnNumber = OVERTIME_TWO;
+    c.gameState.snapshot.config = { units: { pawn: { move: 5 }, rook: { move: 4 } } };
+    const board = {
+      '-5,0': { unit_id: 'rook', color: 'white', hp: 9, uid: 'wr' },
+      '-4,8': { unit_id: 'pawn', color: 'white', hp: 10, uid: 'wp' },
+    };
+    c.stagedActions = [
+      { at: 1, board, from: '-5,0', to: '-5,0', used: 0, attack: '-4,0' },
+      { at: 2, board, from: '-4,9', to: '-4,8', used: 1, attack: null },
+    ];
+    expect(c.movesLeft).toBe(4);
+
+    // Its own blow still ends its walk.
+    c.stagedActions.push({ at: 3, board, from: '-4,9', to: '-4,8', used: 1, attack: '-4,7' });
+    expect(c.movesLeft).toBe(0);
+
+    // And the unit that struck first stays done, a cast on top of it or not.
+    c.stagedActions = [
+      { at: 1, board, from: '-5,0', to: '-5,0', used: 0, attack: '-4,0' },
+      { at: 2, board, from: '-5,0', to: '-5,0', used: 0, attack: null, spend: { cost: 0 } },
+    ];
+    expect(c.movesLeft).toBe(0);
   });
 
   it('writes what a cast did to the HP over the unit it landed on', () => {

@@ -380,6 +380,18 @@ function panelOf(x: number, y: number): string {
 }
 
 /**
+ * Which corner panel the panel hex `key` sits in, or '' for a key that is no
+ * hex. Exported so the game room can tell a base from a reserve off where a
+ * panel walk ended, as `panel_of(axial_to_pixel(...))` does on the server.
+ */
+export function panelOfHex(key: string, orientation: BoardOrientation = 'edge-up'): string {
+  const [q, r] = String(key).split(',').map(Number);
+  if (!Number.isInteger(q) || !Number.isInteger(r)) return '';
+  const { x, y } = axialToPixel(q, r, orientation);
+  return panelOf(x, y);
+}
+
+/**
  * The three reserve hexes a side may step onto the battlefield from, each
  * mapped to the way its arrow points: hexes 490 `(3,9)`, 513 `(2,10)` and 536
  * `(1,11)` on white's side of the shipped board, and the point mirror of

@@ -4,6 +4,7 @@ from io import StringIO
 from unittest.mock import patch
 
 from django.core.management import call_command
+from django.db.models import F
 
 from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
@@ -14,7 +15,7 @@ from datetime import timedelta
 from django.utils import timezone
 
 from game.consumers import STALE_AFTER
-from game.models import GameChallenge, GameRoom, GameState, PlayerConnection
+from game.models import GameChallenge, GameRoom, GameState, PlayerConnection, PlayerReadyStatus
 from game.engine import economy, panels
 from game.engine.game_logic import board_moves_at
 from game.engine.config_loader import DEFAULT_CONFIG
@@ -191,6 +192,118 @@ class GameStateOptimisticConcurrencyTests(TestCase):
         self.assertEqual(refreshed.end_reason, 'timeout')  # not clobbered back to in-progress
         self.assertEqual(refreshed.winner, 'bob')
         self.assertEqual(refreshed.board_state, {})
+
+    async def _write_from(self, snapshot, history, turn_number=None):
+        """A write the way every commit path makes one: conditional on the
+        turn and the revision of the snapshot it was built from."""
+        return await self.consumer._update_game_state(
+            game_id=self.game.game_id,
+            board_state={},
+            current_turn=snapshot.current_turn,
+            turn_number=turn_number or snapshot.turn_number,
+            move_history=history,
+            expected_turn_number=snapshot.turn_number,
+            expected_revision=snapshot.revision,
+        )
+
+    async def test_two_writes_in_one_ply_cannot_both_land(self):
+        # Two deployments read at the same ply - two tabs, say. Neither hands
+        # the turn over, so the turn number matched both, and the second write
+        # replaced the history the first had just recorded.
+        a = await GameState.objects.aget(game_id=self.game.game_id)
+        b = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertTrue(await self._write_from(a, [{'deployed': 'A'}]))
+        self.assertFalse(await self._write_from(b, [{'deployed': 'B'}]))
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(refreshed.move_history, [{'deployed': 'A'}])
+        self.assertEqual(refreshed.revision, a.revision + 1)
+
+    async def test_a_clock_that_read_before_a_deployment_cannot_erase_it(self):
+        timer_read = await GameState.objects.aget(game_id=self.game.game_id)
+        deploying = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertTrue(await self._write_from(deploying, [{'deployed': 'A'}]))
+        # The timer's pass hands the turn over, from the board it read first.
+        self.assertFalse(await self._write_from(timer_read, [], turn_number=2))
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(refreshed.turn_number, 1)
+        self.assertEqual(refreshed.move_history, [{'deployed': 'A'}])
+
+    async def test_a_resign_racing_a_deployment_retries_and_lands(self):
+        stale = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertTrue(await self._write_from(stale, [{'deployed': 'A'}]))
+        # From the snapshot before the deployment, the ending loses...
+        self.assertFalse(await self.consumer._end_game(self.game.game_id, stale, 'bob', 'resign'))
+        # ...and the retrying path reads again and lands, keeping the deployment.
+        self.assertTrue(await self.consumer._end_game_with_retry(self.game.game_id, 'bob', 'resign'))
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(refreshed.end_reason, 'resign')
+        self.assertEqual(refreshed.move_history, [{'deployed': 'A'}])
+
+    async def test_the_deployment_commit_is_conditional_on_what_it_read(self):
+        sent = []
+
+        async def capture(consumer, code, message):
+            sent.append(code)
+
+        async def quiet(*args, **kwargs):
+            pass
+
+        self.consumer.game_id = self.game.game_id
+        self.consumer.channel_layer = None  # broadcast_to_group is patched out
+        a = await GameState.objects.aget(game_id=self.game.game_id)
+        b = await GameState.objects.aget(game_id=self.game.game_id)
+        with patch('game.consumers.send_error', capture), \
+                patch('game.consumers.broadcast_to_group', quiet):
+            self.assertTrue(await self.consumer._commit_deployment(a, {}, {'deployed': 'A'}, 'crossing'))
+            self.assertFalse(await self.consumer._commit_deployment(b, {}, {'deployed': 'B'}, 'crossing'))
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(refreshed.move_history, [{'deployed': 'A'}])
+        self.assertEqual(sent, ['STATE_CHANGED'])
+
+    async def test_a_clock_that_loses_to_a_deployment_still_passes_the_turn(self):
+        from game import consumers as _consumers
+        real_update = self.consumer._update_game_state
+        raced = []
+
+        async def deployment_lands_first(**kwargs):
+            # Between the timer's read and its write, somebody deploys.
+            if not raced:
+                raced.append(True)
+                await GameState.objects.filter(game_id=self.game.game_id).aupdate(
+                    move_history=[{'deployed': 'A'}], revision=F('revision') + 1)
+            return await real_update(**kwargs)
+
+        async def quiet(*args, **kwargs):
+            pass
+
+        async def nobody_there(*args, **kwargs):
+            return False
+
+        self.consumer.channel_layer = None  # broadcast_to_group is patched out
+        self.consumer._update_game_state = deployment_lands_first
+        self.consumer._any_player_connected = nobody_there
+        with patch('game.consumers.broadcast_to_group', quiet):
+            await self.consumer._start_turn_timer(
+                self.game.game_id, 0.01, turn_number=1, current_turn='alice')
+            await _consumers._pending_turn_timers[self.game.game_id]
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        # Giving up on the lost write left the turn with no clock at all.
+        self.assertEqual(refreshed.turn_number, 2)
+        self.assertEqual(refreshed.current_turn, 'bob')
+        self.assertEqual(refreshed.move_history, [{'deployed': 'A'}])
+
+    async def test_a_lost_write_in_a_running_game_is_not_called_game_over(self):
+        sent = []
+
+        async def capture(consumer, code, message):
+            sent.append(code)
+
+        self.consumer.game_id = self.game.game_id
+        with patch('game.consumers.send_error', capture):
+            await self.consumer._refuse_lost_write('crossing')
+            await GameState.objects.filter(game_id=self.game.game_id).aupdate(end_reason='resign')
+            await self.consumer._refuse_lost_write('crossing')
+        self.assertEqual(sent, ['STATE_CHANGED', 'GAME_OVER'])
 
     async def test_end_game_second_caller_on_same_turn_is_rejected(self):
         """Two concurrent end-game paths (e.g. resign racing a timeout) on the
@@ -1169,6 +1282,78 @@ class RoomAccessGuardTests(TransactionTestCase):
             await opp.disconnect()
             await outsider.disconnect()
 
+    async def test_a_refused_join_proves_nothing(self):
+        # The join used to take the name it was offered before checking the
+        # token, and a refusal left it there - after which a leave in that
+        # name resigned the named player's match and closed their room.
+        game = await self._room()
+        host = await self._joined(game.game_id, 'alice', 'host-tok')
+        opp = await self._joined(game.game_id, 'bob', 'opp-tok')
+        stranger = await self._join(game.game_id, 'alice', 'not-the-token')
+        try:
+            await _both_ready_then_start(host, opp, game.game_id)
+            await _receive_until(host, 'game_started')
+            err = await _receive_until(stranger, 'error')
+            self.assertEqual(err['code'], 'INVALID_TOKEN')
+
+            for message in (
+                {'type': 'player_unready', 'username': 'alice', 'gameId': game.game_id},
+                {'type': 'change_game_mode', 'mode': 'custom', 'gameId': game.game_id},
+                {'type': 'request_reveal_mode', 'action': 'enable', 'gameId': game.game_id},
+                {'type': 'start_game', 'gameId': game.game_id},
+                {'type': 'resign'},
+            ):
+                await stranger.send_json_to(message)
+                refused = await _receive_until(stranger, 'error')
+                self.assertNotEqual(refused['code'], 'INTERNAL_ERROR', message['type'])
+            await stranger.send_json_to(
+                {'type': 'leave_game_room', 'username': 'alice', 'gameId': game.game_id})
+            # One socket's messages are handled in order, so the answer to
+            # this one says the leave before it has been dealt with.
+            await stranger.send_json_to({'type': 'heartbeat'})
+            await _receive_until(stranger, 'heartbeat_ack')
+
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.end_reason, '')
+            room = await GameRoom.objects.aget(game_id=game.game_id)
+            self.assertNotEqual(room.status, 'closed')
+            self.assertEqual(room.game_mode, 'default')
+            self.assertTrue(await PlayerReadyStatus.objects.filter(
+                game_id=game.game_id, username='alice', is_ready=True).aexists())
+        finally:
+            await stranger.disconnect()
+            await host.disconnect()
+            await opp.disconnect()
+
+    async def test_the_right_name_without_the_token_holds_no_seat(self):
+        # A socket the lobby knows as the host has proved the name, not the
+        # seat: only the room's token does that.
+        game = await self._room()
+        lobby = WebsocketCommunicator(URLRouter(websocket_urlpatterns), "/ws/game/lobby/")
+        try:
+            await lobby.connect()
+            await lobby.send_json_to({'type': 'join_lobby', 'username': 'alice', 'secret': 'a-secret'})
+            await _receive_until(lobby, 'user_list')
+
+            for message in (
+                {'type': 'player_ready', 'username': 'alice', 'gameId': game.game_id},
+                {'type': 'change_game_mode', 'mode': 'custom', 'gameId': game.game_id},
+                {'type': 'start_game', 'gameId': game.game_id},
+            ):
+                await lobby.send_json_to(message)
+                err = await _receive_until(lobby, 'error')
+                self.assertEqual(err['code'], 'NOT_IN_GAME_ROOM', message['type'])
+            await lobby.send_json_to(
+                {'type': 'leave_game_room', 'username': 'alice', 'gameId': game.game_id})
+            await lobby.send_json_to({'type': 'heartbeat'})
+            await _receive_until(lobby, 'heartbeat_ack')
+
+            room = await GameRoom.objects.aget(game_id=game.game_id)
+            self.assertEqual(room.status, 'waiting')
+            self.assertFalse(await PlayerReadyStatus.objects.filter(game_id=game.game_id).aexists())
+        finally:
+            await lobby.disconnect()
+
     async def test_chat_needs_a_name_and_a_room(self):
         game = await self._room()
         # Connected to the room's own URL, having shown no token: connect()
@@ -1737,6 +1922,95 @@ class PanelAttackLiveIntegrationTests(DealtPanels, TransactionTestCase):
             # Unlike a crossing, a blow IS the turn's board action.
             self.assertEqual(state.turn_number, self.PAST_OPENING + 1)
             self.assertTrue(state.move_history[-1]['intoPanel'])
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    #: Turn 45, Overtime 2: two board moves a turn.
+    OVERTIME_TWO = 89
+
+    async def _stand_pawn_in_overtime(self, game, at):
+        await self._stand_pawn(game, at)
+        state = await GameState.objects.aget(game_id=game.game_id)
+        await GameState.objects.filter(game_id=game.game_id).aupdate(
+            turn_number=self.OVERTIME_TWO, current_turn=state.player_white)
+
+    @staticmethod
+    def _white_king_hp(board):
+        return next(u['hp'] for u in board.values()
+                    if u['unit_id'] == 'king' and u['color'] == 'white')
+
+    async def test_an_overtime_blow_can_hold_the_seat_for_the_next_unit(self):
+        # A blow into a panel ended the turn outright, so the room sent it
+        # alone - and every other move an overtime turn had staged was lost.
+        from game.engine.phases import overtime_toll_at
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await self._stand_pawn_in_overtime(game, self.BESIDE_RESERVE)
+            before = await GameState.objects.aget(game_id=game.game_id)
+            await white.send_json_to({
+                'type': 'panel_attack', 'more': True,
+                'from': self.BESIDE_RESERVE, 'to': self.BESIDE_RESERVE,
+                'attack': self.RESERVE_QUEEN,
+            })
+            held = await _receive_until(white, 'game_state_update')
+            self.assertEqual(held['turnNumber'], self.OVERTIME_TWO)
+            self.assertTrue(held['moveHistory'][-1]['intoPanel'])
+            # The toll is the END of a turn's cost: none yet.
+            self.assertEqual(self._white_king_hp(held['boardState']),
+                             self._white_king_hp(before.board_state))
+
+            await white.send_json_to({'type': 'make_move', 'from': '-5,9', 'to': '-5,8'})
+            made = await _receive_until(white, 'move_made')
+            self.assertEqual(made['turnNumber'], self.OVERTIME_TWO + 1)
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(board_moves_at(state.move_history, self.OVERTIME_TWO, 'white'), 2)
+            # And taken once, for the two moves together.
+            self.assertEqual(
+                self._white_king_hp(state.board_state),
+                self._white_king_hp(before.board_state) - overtime_toll_at(self.OVERTIME_TWO))
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_blow_after_a_held_move_ends_the_turn(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await self._stand_pawn_in_overtime(game, self.BESIDE_RESERVE)
+            await white.send_json_to(
+                {'type': 'make_move', 'from': '-5,9', 'to': '-5,8', 'more': True})
+            await _receive_until(white, 'game_state_update')
+            await white.send_json_to({
+                'type': 'panel_attack',
+                'from': self.BESIDE_RESERVE, 'to': self.BESIDE_RESERVE,
+                'attack': self.RESERVE_QUEEN,
+            })
+            made = await _receive_until(white, 'move_made')
+            self.assertTrue(made['move']['intoPanel'])
+            self.assertEqual(made['turnNumber'], self.OVERTIME_TWO + 1)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_a_blow_is_one_of_the_turns_moves(self):
+        game, host_comm, opp_comm, white, _black = await _start_seated_game()
+        try:
+            await self._stand_pawn_in_overtime(game, self.BESIDE_RESERVE)
+            for move in ({'from': '-5,9', 'to': '-5,8'}, {'from': '-4,9', 'to': '-4,8'}):
+                await white.send_json_to({'type': 'make_move', 'more': True, **move})
+            await _receive_until(white, 'game_state_update')
+            await _receive_until(white, 'move_made')
+            # Both of Overtime 2's moves are spent, and the seat has gone.
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                turn_number=self.OVERTIME_TWO,
+                current_turn=(await GameState.objects.aget(game_id=game.game_id)).player_white)
+            await white.send_json_to({
+                'type': 'panel_attack', 'more': True,
+                'from': self.BESIDE_RESERVE, 'to': self.BESIDE_RESERVE,
+                'attack': self.RESERVE_QUEEN,
+            })
+            err = await _receive_until(white, 'error')
+            self.assertEqual(err['message'], 'That side has had all 2 of its moves this turn')
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()

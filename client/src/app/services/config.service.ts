@@ -268,7 +268,9 @@ export class ConfigService {
       // Bounded like board.radius: a silly range would have the hover preview
       // expanding rings across the whole board.
       for (const [unitId, unit] of Object.entries<any>(config.units)) {
-        const range = unit?.attackRange ?? 1;
+        // Absent is the default; an explicit null is not absent. `?? 1` let a
+        // null through that load_config refuses - see the `rules` checks.
+        const range = unit?.attackRange === undefined ? 1 : unit.attackRange;
         if (!Number.isInteger(range) || range < 1 || range > 50) {
           errors.push(`units.${unitId}.attackRange must be an integer 1-50`);
         }
@@ -301,6 +303,11 @@ export class ConfigService {
       const coordPattern = /^-?\d+,-?\d+$/;
       const radius = config.board?.radius;
       const vertexUp = config.board?.orientation === 'vertex-up';
+      // One unit a hex, across both sides. Both engines place white and then
+      // black, so a second placement on a hex overwrote the first: two kings on
+      // 0,0 dealt black's alone, and white had lost before the first move.
+      // Compared as numbers, so '-05,11' is '-5,11'. Mirrors _validate_config.
+      const placed = new Map<string, string>();
       for (const side of ['white', 'black'] as const) {
         const placement = config.setup[side];
         if (!placement || typeof placement !== 'object') {
@@ -313,6 +320,16 @@ export class ConfigService {
           }
           if (config.units && !(unitId as string in config.units)) {
             errors.push(`Unknown unit "${unitId}" at ${coord} in setup.${side}`);
+          }
+          if (coordPattern.test(coord)) {
+            const hex = coord.split(',').map(Number).join(',');
+            const earlier = placed.get(hex);
+            if (earlier) {
+              errors.push(
+                `setup.${side} puts a unit at ${coord}, where ${earlier} already has one - one unit a hex`);
+            } else {
+              placed.set(hex, `setup.${side}`);
+            }
           }
           // Off the battlefield is a panel, and a side's panels are its own
           // two: a unit dealt into the other side's would be counted as theirs
@@ -344,9 +361,23 @@ export class ConfigService {
     if (!config.rules || typeof config.rules !== 'object' || Array.isArray(config.rules)) {
       errors.push('"rules" must be an object');
     } else {
-      const falloff = config.rules.rangeFalloff ?? 0;
+      // **Absent and null are two different things here**, as they are to
+      // load_config: its `rules.get(key, default)` fills in only a key that is
+      // missing, and hands an explicit null on to be refused. Coalescing with
+      // `??` read that null as absent, so the setup screen passed a config the
+      // server then turned away - the same mistake minStrikeDamage made below.
+      const falloff = config.rules.rangeFalloff === undefined ? 0 : config.rules.rangeFalloff;
       if (typeof falloff !== 'number' || falloff < 0 || falloff > 1) {
         errors.push('rules.rangeFalloff must be a number between 0 and 1');
+      }
+
+      // Both read as whole numbers on every hand-over or clock: a null
+      // maxTurns reached `None > 0` on the server and failed every move.
+      for (const key of ['maxTurns', 'turnTimeLimit']) {
+        const count = config.rules[key];
+        if (count !== undefined && (!Number.isInteger(count) || count < 0)) {
+          errors.push(`rules.${key} must be an integer >= 0`);
+        }
       }
 
       // Checked because a negative floor corrupts the board rather than merely
@@ -376,7 +407,8 @@ export class ConfigService {
       // The objective decides how a game is lost, so a config that cannot
       // satisfy it is unplayable rather than merely odd: under regicide a
       // side with no commander has already lost before the first move.
-      const objective = config.rules.objective ?? 'regicide';
+      // normaliseConfig has filled in an absent one; a null is left to fail.
+      const objective = config.rules.objective;
       if (objective !== 'regicide' && objective !== 'elimination') {
         errors.push(`rules.objective must be 'regicide' or 'elimination'`);
       } else if (objective === 'regicide' && config.setup) {

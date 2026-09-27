@@ -117,9 +117,11 @@ the script writes the server's answers as the truth, and rerunning it to quiet a
 test is the one way to use it wrongly.
 
 **3. Movement is a single `move` stat per unit** (an adjacent-hex step budget), not a pattern
-list. `move_validator.get_legal_moves()` floods outward through the six hex neighbours, through
-empty hexes only — a unit can never move through or onto an occupied hex, ally or enemy. No
-direction/range/canJump DSL, and no white/black mirroring: flood fill is inherently symmetric.
+list. `move_validator.get_legal_moves()` floods outward through the six hex neighbours. **A unit
+walks through its own side's units but never stops on one, and an enemy blocks both its hex
+and the way past it** - the owner's rule, in *Game spec* below (it used to be "any occupied hex
+blocks", and this line said so after the rule had changed). No direction/range/canJump DSL, and
+no white/black mirroring: flood fill is inherently symmetric.
 
 **4. Reveal mode must never inspect config shape.** `_handle_request_reveal_mode` /
 `_handle_reveal_response` treat the config as an opaque blob so that new config sections need
@@ -127,7 +129,30 @@ no transport-layer changes. Keep it that way.
 
 **5. A handler handed a `gameId` off the wire calls `_require_seat` first.** Checking
 `self.username == data['username']` proves who you are, not that the room you named is one of
-yours. See *Room access and identity*.
+yours - and a matching name proves nothing either: the seat is the room's token, shown on this
+socket (`self.game_id`). See *Room access and identity*.
+
+**6. Every write to a `GameState` is conditional on the revision it was built from.**
+`_update_game_state(..., expected_revision=state.revision)` applies only if the row's
+`revision` is still the one read, and every write bumps it. `turn_number` was the only
+condition before, and it cannot see a write that does not hand the turn over - a deployment,
+a held overtime move - so two of those in one ply both landed and the second erased the first,
+and a turn timer that read the board before a deployment wrote over it. A write that loses is
+refused as `STATE_CHANGED` (or `GAME_OVER` if the game ended; `_refuse_lost_write` tells them
+apart), and the room asks for the state again. The timer re-reads and retries rather than
+giving up, or the turn would be left with no clock. A new write path passes the revision too.
+
+**7. The config validators answer the same configs alike, and a shared file says which.**
+`client/src/app/services/config-parity.json` lists edits to the shipped config that both
+`validateGameRules` and `load_config` must refuse, and keys both must accept when absent;
+`config.service.spec.ts` and `test_config_parity.py` run it. **Absent and `null` are different**:
+both normalisers fill only a missing key, so the client must not read a value through `??` -
+that passed an explicit null the server then refused (`rangeFalloff`, `objective`,
+`attackRange`), and a null `maxTurns` loaded on both and then failed every hand-over. Both
+also refuse **two placements on one hex** in `setup`, compared as numbers (`-05,11` is
+`-5,11`): construction places white and then black, so the second wrote over the first - two
+kings on `0,0` built a board where white had lost before the first move. Add a case whenever
+the two are found to disagree.
 
 ## Hex geometry
 
@@ -452,14 +477,21 @@ Decided so far:
     The CSS is ordered plain / theirs / toll / toll+theirs so the more particular selector
     is always the later one.
   - **Mending counts a side's OWN turns, not hand-overs** (`handOversBy()` in `phases.ts`,
-    through the one `mendedSince()` both derivations call). A base mends at the end of its
+    through the one `mendedInBase()` both derivations call). A base mends at the end of its
     owner's turn, so a unit standing through a full turn takes one HP back, not the two a ply
-    count gave it before. **A unit killed in a panel is never mended back** - both derivations
+    count gave it before.
+  - **And only the turns it closed IN a base.** `inBaseAfter()` reads where the unit went after
+    its HP was last written - each `panelMove` lands base or reserve by its `to` hex
+    (`panelOfHex`), a crossing takes it off the panels - and `mendedInBase()` counts a
+    hand-over only while it stood in a base. The derivations used to read where the wound was
+    taken and nothing after, so a unit struck in its base and wrapped into its reserve went on
+    mending there (16, then 17, 18, 19 on plies 10, 12, 14), which a reserve never does. A unit
+    that walked home is placed in a base by the walk home, and followed from there. **A unit killed in a panel is never mended back** - both derivations
     drop it at 0 HP before any mending is added, so one hit on a unit with 1 HP left ends it
     and no later turn brings it back.
   - **One mending rule, two derivations, one panel.** A base holds two kinds of unit and both
     mend: `withdrawnUnits` covers the ones that walked home and `panelHp` the squad dealt there
-    at the start. They share `mendedSince()` so they cannot drift. Before that only the walked-
+    at the start. They share `mendedInBase()` so they cannot drift. Before that only the walked-
     home half mended, so an identical wound closed itself on one unit and stayed open on the
     unit standing beside it - which reads as a bug because it is one. It also means **`panelHp`
     is keyed on the ply as well as the history**: nothing is recorded when a unit mends, so a
@@ -651,13 +683,17 @@ Decided so far:
     - No engine holds a panel, so a blow with a panel at either end goes out as its own
       **`panel_attack`** message on the `enter_board` pattern. Whichever end is in the panel
       rides with it as `unit` and is taken on trust; **`intoPanel`** says which end that is.
-      The attacker is on the board and the defender's HP comes back as `defenderHp`. It ends
-      the turn, like any other swing. *(There was once a mirror of this for a reserve swinging
+      The attacker is on the board and the defender's HP comes back as `defenderHp`. It is one
+      of the turn's board moves, like any other swing: it ends the turn, or with `more` in
+      Overtime 2 and 3 holds the seat for the next unit. `endTurn` sends it in its own place
+      among the turn's moves - it used to go alone and return, so every other move an overtime
+      turn had staged was dropped - and both engines count it against the allowance and the
+      one-move-per-unit rule (`_claim_board_move`, the same checks in `attackIntoPanel`). *(There was once a mirror of this for a reserve swinging
       out - `panelAttack`, `attackerHp`, an `intoPanel` flag to tell them apart. The rule that
       needed it is gone and so is the code; `intoPanel` survives only as the message's marker.)*
-    - **The panel blow is the WHOLE turn - it carries the walk too.** `panel_attack` sends
-      `from`, `to` and `moveBonus` as well as the swing, because no `make_move` follows it to
-      commit the walk. Sent without `to`, the engine resolved the blow from where the unit set
+    - **The panel blow is the unit's WHOLE move - it carries the walk too.** `panel_attack`
+      sends `from`, `to` and `moveBonus` as well as the swing, because no `make_move` follows
+      it to commit that unit's walk. Sent without `to`, the engine resolved the blow from where the unit set
       off and left it standing there, which reads on screen as the attacker being teleported
       back to where it had moved from. The engine re-derives that walk exactly as `move` does,
       applies it first, and measures range - and lands the counter - from where the unit ends up.
@@ -759,10 +795,13 @@ Decided so far:
     panel half was ever sent at first: a mend on a battlefield unit lived on the room's
     `stagedBoard` alone and the next state update rolled it off - which is why *healing a
     king off 1 HP still lost it to overtime on the same commit*.
-  - **A turn's casts ride inside the one message that ends it** - `pass_turn`, `make_move`
-    or `panel_attack` - split around the turn's board action: `effectsBefore` for casts
-    staged before it, `effects` for casts staged after (`endTurn` splits at the last staged
-    entry that is not a cast). The browser engine's `landEffects` lands the first list on a
+  - **A turn's casts ride inside its board-move messages** - `pass_turn`, `make_move` or
+    `panel_attack` - **each on the message it happened before**: a cast staged before a
+    move's last step goes as that message's `effectsBefore`, and the casts after the turn's
+    last move go on the last message as `effects`. They used to be split only around the
+    last move and piled on the first message, so with two or three units a mend cast between
+    them landed before the first unit's blow, whose counter then came off the mended figure
+    again (a rook mended to 29 was committed at 28). The browser engine's `landEffects` lands the first list on a
     *copy* of the board, measures the move against that copy, lands the second list after
     the move resolves, then takes the overtime toll - and emits the panel records on either
     side of the move's own (`applyMoveMade` / `applyTurnPassed` splice them in). They used
@@ -816,7 +855,8 @@ Decided so far:
       uids at different units. Rooms are short-lived, so that bites a game in progress across
       a change and nothing older.
     - **Mending is applied server-side too**, via `panel_hp(history, ply)` and
-      `withdrawn_units(history, ply)`, mirroring `mendedSince`. It only needs ply parity
+      `withdrawn_units(history, ply)`, through `mended_in_base` and `in_base_after`, mirroring
+      `mendedInBase` and `inBaseAfter`. It only needs ply parity
       (`hand_overs_by`), not the phase schedule. Without it the client previewed a blow from
       the mended HP while the server struck from the recorded one, and the unit dropped further
       than the player was shown - which is why it could not wait for stage 3.
@@ -874,7 +914,9 @@ Decided so far:
   around it - are territory, **worth 3, 2 or 1 a hex held** (`ZONE_WORTH`): the zone in each
   side's own half 3 (hexes 412 and 130 on the shipped board), the middle one 2 (271), the two at
   the sides 1 (264 and 278), the same to whichever side holds it. *The owner, 26 Sep 2026: "make
-  the hex capture zone near my base 3x. the middle hex worth 2x. side hex worth 1x".* The board
+  the hex capture zone near my base 3x. the middle hex worth 2x. side hex worth 1x".* **Settled,
+  not a reading:** asked whether the x3 zone by the OTHER side's base pays its taker 3 as well,
+  the owner answered *"worth 3 a hex"* - so a zone's worth never depends on who holds it. The board
   writes the worth (x3, x2, x1) at the bottom of every empty zone hex. A unit standing in one
   claims the hex under it and the zone hexes beside it, so the middle of a patch holds seven hexes
   and its rim fewer. Adjacency stops at the zone's edge; the open board around a zone is worth
@@ -1712,13 +1754,29 @@ usernames holding a ready row - not `all()` over whatever rows exist. A disconne
 the leaver's row, so `all()` over the one surviving row (the host's own) said yes with nobody
 left to play against, and the client's `canStartGame()` was a stricter check than the server's.
 
-**Every handler handed a `gameId` calls `_require_seat`.** `player_ready`, `player_unready` and
-`reveal_response` all take a room id off the wire; `change_game_mode`, `set_custom_config` and
-`start_game` check `game.host` directly, which is stronger. Chat is the same rule wearing
+**Every handler handed a `gameId` calls `_require_seat`.** `player_ready`, `player_unready`,
+`reveal_response`, `change_game_mode`, `request_reveal_mode` and `start_game` all take a room id
+off the wire; the host-only ones then check `game.host` as well. Chat is the same rule wearing
 another hat: `group_send` never asked whether the sender is in the group it sends to, so
 `_handle_game_room_message` requires `self.game_id` - only set after the token check - and
 `_handle_chat_message` requires `self.username`, or a socket that never joined talks to the
 whole lobby as `null`.
+
+**A seat is proved by the room's token, on this socket - not by a name.** `_require_seat`
+checks that `self.game_id` is the room named, and `self.game_id` is set only by a join whose
+token checked out; `leave_game_room` asks the same and ignores a leave from anywhere else. Two
+holes this closed (review of 26 Sep 2026):
+- `_handle_join_game_room` used to take the name it was offered **before** the token check, and
+  a refused join left it on the socket. Every handler that trusted `self.username` then acted
+  for whoever's name had been typed in: a leave in that name resigned their match and closed
+  their room. The name is now set with `self.game_id`, after the token and the expiry.
+- A matching name was all the host-only handlers asked, so a lobby socket that had rightly
+  claimed the host's name could start, reconfigure or leave the room without its token.
+- The refusal for a socket that has not joined the room is `NOT_IN_GAME_ROOM`, not
+  `NOT_IN_GAME`: the room page answers `NOT_IN_GAME` by leaving for the lobby, and a message
+  that merely beat its own socket's join is no reason to throw anybody out.
+`RoomAccessGuardTests` drive both: a refused join followed by every room operation, and the
+host's name without the token.
 
 **A username is taken in one statement.** `_claim_player_connection` is the only way to claim
 one: `get_or_create`, returning whether it is ours now, with `takeover=True` for the rejoin
@@ -1742,6 +1800,12 @@ lobby failed its own rejoin check - `bool(existing.secret)` - and was handed a g
 anyone who reloaded mid-game came back a stranger. The client sends `secret` with
 `join_game_room`; the server stores it once the token has proved the seat, and a join without
 one leaves the stored secret alone.
+
+**The page keeps its secret even where the browser will not.** `AuthService.getIdentitySecret`
+holds the secret for the service's lifetime and uses storage only to carry it past a reload.
+It read storage alone before, so with site data blocked every call minted a new one, and a
+reconnect could not prove the name the same page had claimed a minute earlier. Losing it on
+a reload under blocked storage is expected; changing it inside one page is not.
 
 **A name nobody has heartbeated may be taken back by its owner - and by nobody else.** A row older
 than `STALE_AFTER` (45s, three missed heartbeats) is almost certainly abandoned: a server that dies
@@ -1855,9 +1919,27 @@ receipt, so committing and ending the turn are the same message.
 This is entirely client-side: no new server message and no change to `make_move` semantics
 beyond the optional `attack` and `moveBonus` fields. **One unit per turn** is enforced by the
 `movesLeftFor` check in `refreshTargets()`: once something is staged, no other unit is handed
-legal targets. `canMove` (bound to `!hasAttacked`) is the separate rule that a swing ends the
-unit's movement. With either in force the board still takes clicks, it just hands out no
-targets. Selecting is always allowed — enemy units, or your own on the opponent's turn, are
+legal targets (overtime's second and third unit are let in by `movesToSpare`). `canMove`
+(bound to `canMoveOnBoard`) is the separate rule that a swing ends the unit's movement. With
+either in force the board still takes clicks, it just hands out no targets.
+
+**A swing ends the swinging unit's walk, not the turn's.** `movesLeft` - the MOV the board is
+handed for the unit mid-move - asks whether THAT unit has struck (its entry in `boardMoves`),
+not whether anything has. It asked the whole turn, the one-unit rule, so in Overtime 2 a unit
+walked after another had struck had 0 MOV left after its first hop.
+
+**The log and the other side's arrows cover the whole turn** (`showTurn`). A turn's first units
+arrive as state updates and only its last as `move_made`, so both are read off the history -
+every record of the finished ply - not off the message that closed it. Read off the message,
+the first unit of an overtime turn left no arrow and no line, and a turn that wrapped a unit
+and then ended was logged as a pass (it now says "ended the turn"). Panel walks get a line and
+no arrow, as before.
+
+**The recap follows each unit on its own** (`buildPlayback`). Every staged action carries the
+hex its unit set off from, and that origin is the key: a walk collapses per unit, the units play
+in the order they acted, and a cast lands on whichever unit stood on its hex as it was made.
+One "where the unit stands" used to serve the whole turn, so two units' moves played as one
+invented walk from the first origin to the last landing. Selecting is always allowed — enemy units, or your own on the opponent's turn, are
 inspect-only for the same reason.
 
 Staging is a **stack** (`stagedActions`), oldest first, each entry holding the board as it looked
@@ -1873,9 +1955,10 @@ A unit keeps its remaining steps: the top entry carries a running `used` count c
 under-charges a unit that had to go round something, and the server would then reject the turn), the board
 recomputes legal targets from what is left after every hop, and the Unit panel's MOV shows what
 remains. Attacking is staged too - previewed with the same damage sums the server uses - and
-ends the unit's movement for the turn (`canMove` goes false). End Turn sends the whole turn as
-one `make_move {from, to, attack?}` - its casts included (see *a turn's casts ride inside the one
-message that ends it*), so the engine takes the turn whole or refuses it whole.
+ends the unit's movement for the turn. End Turn sends each unit's move as one message -
+`make_move {from, to, attack?}`, or `panel_attack` for a blow into a panel - in the order they
+were played, `more` on all but the last, its casts included (see *a turn's casts ride inside
+its board-move messages*), so the engine takes each move whole or refuses it whole.
 
 **Undo stops once End Turn has sent the turn.** `turnSubmitted` (the `submittedTurn` guard
 End Turn already used) disables the button and makes `undoMove` a no-op until the engine
@@ -2165,6 +2248,10 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
   discovery pattern and run under a bare `manage.py test` (89 vs 85). They pass. Left as-is.
 - `client/src/app/components/setup-config/setup-config.component.html` is still a raw JSON
   `<textarea>` with a "Configuration UI will be added here" placeholder.
+  - **Back keeps the way to the room until it goes.** `onBack` saves first if asked, and clears
+    `returnToGameRoom` / `gameRoomToken` only when it is about to navigate. It cleared them
+    before asking, so a save the validator refused left the editor open with the room
+    forgotten, and the next Back went to the lobby.
 - **The ability catalogue lives in the config** (`abilities`: `slots`, `pool`, `paths`,
   `catalogue`), in the shipped file. **The engine still does not read it** — only the client
   does — so tuning an ability is a config edit and nothing more. This is the *system* half of

@@ -28,19 +28,25 @@ export interface PlayableAction {
  * answered, each cast lit. Staged actions chain - the second step starts
  * where the first ended - so the walk is followed rather than re-read from
  * each action's own origin.
+ *
+ * **Followed per unit.** Every staged action carries the hex its unit set off
+ * from this turn, and that origin is what tells one unit's walk from
+ * another's. A single "where the unit stands" used to serve the whole turn,
+ * so a turn that moved two units - overtime's, or a setup turn's walks home -
+ * played the second as a walk from wherever the first had stopped, and the
+ * recap folded both into one line from the first origin to the last
+ * landing: a move nobody made, and the two that were made gone.
  */
 export function buildPlayback(actions: PlayableAction[], collapseMoves = false): AnimStep[] {
   const steps: AnimStep[] = [];
-  let standing = '';
-  /** Every hex the acting unit stood on, and the one it set off from. */
-  const walked = new Set<string>();
-  let firstHex = '';
+  /** Which unit each beat belongs to, by origin - or null for nobody's. */
+  const owners: Array<string | null> = [];
+  /** Where each unit that has acted stands now, by the hex it set off from. */
+  const standing = new Map<string, string>();
+  const at = (origin: string) => standing.get(origin) ?? origin;
+  /** Every unit that moves or strikes this turn, by origin. */
+  const origins = [...new Set(actions.filter(a => !a.spend && a.from).map(a => a.from))];
   for (const action of actions) {
-    const origin = standing || action.from;
-    if (origin) {
-      walked.add(origin);
-      if (!firstHex) firstHex = origin;
-    }
     if (action.spend) {
       // The hex the cast landed on, which the spend recorded when it was made.
       // Reading it back off the action's own from/to gave the *caster's* hex,
@@ -63,10 +69,16 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
         // And, for a kill, whose it was: nobody is left to read it off.
         ...(action.killedUnit ? { color: action.killedUnit.color } : {}),
       });
+      // Who stood there as it landed: a unit that has moved is where it got
+      // to, and one that has not is still where it set off from.
+      owners.push(target ? origins.find(origin => at(origin) === target) ?? null : null);
       continue;
     }
+    const origin = at(action.from);
+    const owner = action.from || null;
     if (action.attack) {
       steps.push({ kind: 'attack', from: action.to, to: action.attack });
+      owners.push(owner);
       // Only if it answered. `killed` alone used to stand in for that, which
       // played a counter beat for every blow a base absorbed and every one
       // struck from outside the defender's reach - see onPlayerAttack. The
@@ -74,36 +86,41 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
       // off disk afterwards.
       if (action.countered ?? (action.killed !== action.attack)) {
         steps.push({ kind: 'counter', from: action.attack, to: action.to });
+        owners.push(owner);
       }
-      standing = action.to;
+      if (action.from && action.to) standing.set(action.from, action.to);
       continue;
     }
     if (origin && action.to && origin !== action.to) {
       steps.push({ kind: 'move', from: origin, to: action.to });
+      owners.push(owner);
     }
-    standing = action.to || standing;
-    if (standing) walked.add(standing);
+    if (action.from && action.to) standing.set(action.from, action.to);
   }
   if (!collapseMoves) return steps;
 
-  // Replaying a committed turn, the walk is one straight line from where the
-  // unit set off to where it ended up - the detours were the player's business
-  // while they were staging it - and it goes first, because the board is
-  // already showing the finished position. A cast played on a hex the unit has
-  // since left pops an empty hex, and the walk after it reads as the unit
-  // teleporting back to start again.
-  const first = firstHex;
-  const last = standing || first;
+  // Replaying a committed turn, each unit's walk is one straight line from
+  // where it set off to where it ended up - the detours were the player's
+  // business while they were staging it - and it goes before anything else
+  // that happens to that unit, because the board is already showing the
+  // finished position. A cast played on a hex the unit has since left pops an
+  // empty hex, and the walk after it reads as the unit teleporting back to
+  // start again. The units themselves go in the order they acted.
   const recap: AnimStep[] = [];
-  if (first && last && first !== last) recap.push({ kind: 'move', from: first, to: last });
-  for (const step of steps) {
-    if (step.kind === 'move') continue;              // folded into the one above
-    if (step.kind === 'ability' && step.to && walked.has(step.to)) {
-      // It landed on the unit that acted, so it lands where that unit is now.
-      recap.push({ ...step, from: last, to: last });
-      continue;
+  const walked = new Set<string>();
+  steps.forEach((step, i) => {
+    const owner = owners[i];
+    if (owner !== null && !walked.has(owner)) {
+      walked.add(owner);
+      if (at(owner) !== owner) recap.push({ kind: 'move', from: owner, to: at(owner) });
+    }
+    if (step.kind === 'move') return;              // folded into its unit's line
+    if (step.kind === 'ability' && owner !== null) {
+      // It landed on a unit that acted, so it lands where that unit is now.
+      recap.push({ ...step, from: at(owner), to: at(owner) });
+      return;
     }
     recap.push(step);
-  }
+  });
   return recap;
 }

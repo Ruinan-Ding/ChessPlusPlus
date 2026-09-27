@@ -249,6 +249,77 @@ describe('LocalGameService', () => {
     expect(kingOf(held.boardState).hp).toBe(hpBefore);
   });
 
+  it('holds the seat for a blow into a panel that is not the turn’s last', async () => {
+    // A blow into a panel ended the turn outright, so the room sent it alone
+    // and dropped every other move an overtime turn had staged with it.
+    const g = (service as any).game;
+    g.turnNumber = 2 * 45 - 1;
+    const kingOf = (board: any) => Object.values(board).find(
+      (c: any) => c.color === 'white' && g.config.units[c.unit_id]?.commander) as any;
+    const hpBefore = kingOf(g.boardState).hp;
+    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+
+    service.send({
+      type: 'panel_attack', intoPanel: true, panel: 'tr', more: true,
+      from: '-5,9', attack: '-5,8', unit: home,
+    });
+    await flush();
+    expect(last('move_made')).toBeUndefined();
+    const held = last('game_state_update');
+    expect(held.turnNumber).toBe(2 * 45 - 1);
+    expect(held.currentTurn).toBe('Solo');
+    expect(held.moveHistory.slice(-1)[0].intoPanel).toBeTrue();
+    expect(kingOf(held.boardState).hp).toBe(hpBefore);
+
+    service.send({ type: 'make_move', from: '-4,9', to: '-4,8' });
+    await flush();
+    expect(last('move_made').turnNumber).toBe(2 * 45);
+    // The toll once, for the whole turn.
+    expect(kingOf(last('move_made').boardState).hp).toBe(hpBefore - 3);
+  });
+
+  it('counts a blow into a panel against the turn’s allowance', async () => {
+    await pastOpening();
+    service.send({ type: 'make_move', from: '-4,9', to: '-4,8' });
+    await flush();
+    // Wound back into the same hand-over: the one move of turn 4 is spent.
+    (service as any).game.turnNumber = 7;
+    (service as any).game.currentTurn = 'Solo';
+    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+    service.send({
+      type: 'panel_attack', intoPanel: true, panel: 'tr',
+      from: '-5,9', attack: '-5,8', unit: home,
+    });
+    await flush();
+    expect(last('invalid_move').message).toBe('That side has had all 1 of its moves this turn');
+  });
+
+  it('keeps a mend cast between two units’ moves on top of the first unit’s wound', async () => {
+    // The order the room now sends it in: the blow, then - riding ahead of the
+    // second unit's move - the mend worked out after the counter. The engine
+    // takes the counter first and the mend second, and ends where the staged
+    // board did.
+    const g = (service as any).game;
+    g.turnNumber = 2 * 45 - 1;
+    g.boardState = {
+      ...g.boardState,
+      '-5,5': { unit_id: 'rook', color: 'white', hp: 30, max_hp: 40, uid: 'wr' },
+      '-4,5': { unit_id: 'shieldman', color: 'black', hp: 30, max_hp: 30, uid: 'bs' },
+    };
+    service.send({ type: 'make_move', from: '-5,5', to: '-5,5', attack: '-4,5', more: true });
+    await flush();
+    const struck = last('game_state_update').boardState['-5,5'].hp;
+    expect(struck).toBeLessThan(30);
+    const mended = struck + 5;
+
+    service.send({
+      type: 'make_move', from: '-4,9', to: '-4,8',
+      effectsBefore: [{ at: '-5,5', uid: 'wr', hp: mended }],
+    });
+    await flush();
+    expect(last('move_made').boardState['-5,5'].hp).toBe(mended);
+  });
+
   it('refuses a move once the turn’s allowance is spent', async () => {
     // Ply 7 is turn 4, one board move. The second message is refused rather
     // than quietly played into the next side’s turn.

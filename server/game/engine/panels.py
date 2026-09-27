@@ -467,25 +467,101 @@ def mended_since(color: str, since: Optional[int], now: int) -> int:
         * BASE_HEAL_PER_TURN
 
 
-def panel_hp(history: Iterable[Dict[str, Any]], ply: int) -> Dict[str, int]:
+def in_base_after(
+    moves: List[Dict[str, Any]],
+    index: int,
+    uid: str,
+    orientation: str = 'edge-up',
+) -> List[Tuple[int, bool]]:
+    """
+    Where *uid* went after ``moves[index]``: each ply it moved on, and whether
+    it stood in a base from then. Mirrors ``inBaseAfter`` in the room.
+
+    A walk inside the panels (``panelMove``) lands wherever its ``to`` hex is -
+    the wrap takes a unit out of its base into its reserve. A crossing takes it
+    off the panels, where no base mends it; a walk home would bring it back,
+    but that writes the unit's HP afresh and so starts a new reckoning.
+    """
+    out: List[Tuple[int, bool]] = []
+    for move in moves[index + 1:]:
+        if (move.get('unit') or {}).get('uid') != uid:
+            continue
+        if move.get('panelMove'):
+            try:
+                q, r = parse_key(move.get('to'))
+            except (ValueError, TypeError):
+                continue
+            out.append((move.get('turn') or 0,
+                        is_base(panel_of(*axial_to_pixel(q, r, orientation)))))
+        elif move.get('entered'):
+            out.append((move.get('turn') or 0, False))
+    return out
+
+
+def mended_in_base(
+    color: str,
+    since: Optional[int],
+    in_base: bool,
+    stays: List[Tuple[int, bool]],
+    now: int,
+) -> int:
+    """
+    What a unit mends from the ply its HP was written down (*since*, standing
+    in a base or not) to the ply about to be played - **only for the turns it
+    ended in a base**. Mirrors ``mendedInBase``.
+
+    A base mends at the end of its owner's turn, so each of the side's own
+    hand-overs counts once if the unit stood in a base when it closed.
+    *stays* is :func:`in_base_after`: where the unit went after that, in order.
+    Without it this is :func:`mended_since` - and taking that for the whole
+    stretch was the bug: a unit wounded in its base and wrapped out into its
+    reserve went on mending there, which the owner's rule says a reserve never
+    does.
+    """
+    if since is None:
+        return 0
+    segments = [(since, in_base)] + list(stays)
+    total = 0
+    for k, (start, base) in enumerate(segments):
+        if not base:
+            continue
+        # The plies this stretch is where the unit stood at the close of: from
+        # its own ply to the one before the next move. Two moves in one ply
+        # leave the later one standing, and the earlier stretch empty.
+        lo = max(since, start - 1)
+        hi = now - 1 if k + 1 == len(segments) else min(now - 1, segments[k + 1][0] - 1)
+        if hi > lo:
+            total += hand_overs_by(color, hi) - hand_overs_by(color, lo)
+    return total * BASE_HEAL_PER_TURN
+
+
+def panel_hp(
+    history: Iterable[Dict[str, Any]],
+    ply: int,
+    orientation: str = 'edge-up',
+) -> Dict[str, int]:
     """
     Each panel unit's HP as of *ply*: its last word, plus whatever a base has
     mended since. Mirrors ``panelHp`` in game-room.component.ts.
 
-    **A base mends and a reserve does not**, so this reads the panel off the
-    record rather than off the unit. This is the HP the client draws, and so
-    the HP a blow has to be struck from - striking from the unmended figure
-    instead drops the unit by more than the preview promised.
+    **A base mends and a reserve does not**, so this reads where the unit was
+    off the record rather than off the unit - the panel the wound was taken
+    in, then every walk it has made since (:func:`mended_in_base`). This is the
+    HP the client draws, and so the HP a blow has to be struck from - striking
+    from the unmended figure instead drops the unit by more than the preview
+    promised.
     """
+    moves = [move for move in (history or []) if isinstance(move, dict)]
     wounds: Dict[str, Dict[str, Any]] = {}
-    for move in history or []:
-        if not isinstance(move, dict) or not move.get('intoPanel'):
+    for index, move in enumerate(moves):
+        if not move.get('intoPanel'):
             continue
         unit = move.get('unit') or {}
         uid = unit.get('uid')
         if not uid or move.get('defenderHp') is None:
             continue
         wounds[uid] = {
+            'index': index,
             'left': move.get('defenderHp') or 0,
             'turn': move.get('turn'),
             'full': unit.get('max_hp') or unit.get('hp') or 0,
@@ -498,7 +574,9 @@ def panel_hp(history: Iterable[Dict[str, Any]], ply: int) -> Dict[str, int]:
         if wound['left'] <= 0:
             hp[uid] = 0
             continue
-        mended = mended_since(wound['color'], wound['turn'], ply) if wound['mends'] else 0
+        mended = mended_in_base(
+            wound['color'], wound['turn'], wound['mends'],
+            in_base_after(moves, wound['index'], uid, orientation), ply)
         hp[uid] = min(wound['full'], wound['left'] + mended)
     return hp
 
@@ -525,6 +603,7 @@ def departed_uids(history: Iterable[Dict[str, Any]]) -> frozenset:
 def withdrawn_units(
     history: Iterable[Dict[str, Any]],
     ply: Optional[int] = None,
+    orientation: str = 'edge-up',
 ) -> Dict[str, Dict[str, Any]]:
     """
     Units that walked off the battlefield into their own base, by uid.
@@ -536,13 +615,13 @@ def withdrawn_units(
     for - a later blow that found it at home moves that on.
 
     Mirrors ``withdrawnUnits``. Given the ply about to be played, each unit has
-    whatever its base has mended since its last word added on, never past its
-    full HP; without one, the recorded HP is returned as it stands.
+    whatever its base has mended since its last word added on - for the turns
+    it has stayed in a base, which a wrap out into the reserve ends - never
+    past its full HP; without one, the recorded HP is returned as it stands.
     """
+    moves = [move for move in (history or []) if isinstance(move, dict)]
     home: Dict[str, Dict[str, Any]] = {}
-    for move in history or []:
-        if not isinstance(move, dict):
-            continue
+    for index, move in enumerate(moves):
         unit = move.get('unit') or {}
         uid = unit.get('uid')
         if move.get('withdrawn') and unit:
@@ -551,6 +630,9 @@ def withdrawn_units(
                 'unit': unit,
                 'hp': unit.get('hp', 0),
                 'turn': move.get('turn'),
+                # Where its whereabouts are read from: the walk home put it
+                # in a base, and every walk since says where it went.
+                'index': index,
             }
             continue
         # Something that set a panel unit's HP while it stood in its base - a
@@ -564,14 +646,19 @@ def withdrawn_units(
             standing['turn'] = move.get('turn')
     # Killed where it stood is killed: not drawn, and not mended back to life.
     alive = {uid: stood for uid, stood in home.items() if stood['hp'] > 0}
-    if ply is None:
-        return alive
-    # A unit that walked home is in a base by definition, so it always mends.
     for stood in alive.values():
+        index = stood.pop('index')
+        if ply is None:
+            continue
+        # A unit that walked home starts in a base - and mends only for as
+        # long as it stays in one. Its whereabouts run from the walk home, its
+        # mending from its last word: a stretch before a later wound counts
+        # for nothing, being before it.
         unit = stood['unit']
         full = unit.get('max_hp') or unit.get('hp') or 0
-        stood['hp'] = min(
-            full, stood['hp'] + mended_since(unit.get('color'), stood['turn'], ply))
+        stays = in_base_after(moves, index, unit.get('uid'), orientation)
+        stood['hp'] = min(full, stood['hp'] + mended_in_base(
+            unit.get('color'), stood['turn'], True, stays, ply))
     return alive
 
 
@@ -596,8 +683,8 @@ def panel_occupancy(
     which is fine for "is anyone there" and wrong for "how much is left".
     """
     moves = [move for move in (history or []) if isinstance(move, dict)]
-    wounds = recorded_panel_hp(moves) if ply is None else panel_hp(moves, ply)
-    home = withdrawn_units(moves, ply)
+    wounds = recorded_panel_hp(moves) if ply is None else panel_hp(moves, ply, orientation)
+    home = withdrawn_units(moves, ply, orientation)
 
     # Where each unit stands, by uid, replayed from the deal in the order things
     # happened. It used to be two sets - the dealt squad less whoever had ever

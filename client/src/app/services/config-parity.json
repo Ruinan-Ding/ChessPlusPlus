@@ -1,0 +1,34 @@
+{
+  "about": "Edits to the shipped config (shared/default-config.json) that both validators must answer the same way: config.service.spec.ts runs them through validateGameRules, test_config_parity.py through load_config. Whatever the setup screen accepts, the server has to accept too. A path is a list of keys; value null is an explicit null, not an absent key.",
+  "refused": [
+    { "path": ["rules", "rangeFalloff"], "value": null },
+    { "path": ["rules", "objective"], "value": null },
+    { "path": ["rules", "minStrikeDamage"], "value": null },
+    { "path": ["rules", "maxTurns"], "value": null },
+    { "path": ["rules", "maxTurns"], "value": "5" },
+    { "path": ["rules", "maxTurns"], "value": -1 },
+    { "path": ["rules", "turnTimeLimit"], "value": null },
+    { "path": ["rules", "panelMoversPerTurn"], "value": null },
+    { "path": ["rules", "postmatchEntries"], "value": null },
+    { "path": ["rules", "homecomingsPerSetupTurn"], "value": null },
+    { "path": ["rules", "cpAtStart"], "value": null },
+    { "path": ["rules", "cpPhaseOffset"], "value": null },
+    { "path": ["units", "pawn", "attackRange"], "value": null },
+    { "path": ["units", "pawn", "defense"], "value": null },
+    { "path": ["units", "pawn", "ability"], "value": null },
+    { "path": ["setup", "black", "-5,11"], "value": "pawn" },
+    { "path": ["setup", "black", "-05,11"], "value": "pawn" },
+    { "path": ["setup", "white", "-05,11"], "value": "pawn" }
+  ],
+  "absent": [
+    ["rules", "rangeFalloff"],
+    ["rules", "objective"],
+    ["rules", "minStrikeDamage"],
+    ["rules", "maxTurns"],
+    ["rules", "turnTimeLimit"],
+    ["rules", "panelMoversPerTurn"],
+    ["units", "pawn", "attackRange"],
+    ["units", "pawn", "defense"],
+    ["units", "pawn", "ability"]
+  ]
+}

@@ -1,5 +1,12 @@
 # Deploying ChessPlusPlus
 
+> **Status (26 Sep 2026): a plan, not a tested deployment.** Nothing here has been run end to
+> end, and the source changes it asks for are not in the code yet: `server/core/settings.py`
+> still keeps the database at `server/db.sqlite3` (no `DJANGO_DB_PATH`), and the client's socket
+> config has no `BACKEND_HOST`. Make those changes as the steps below describe, and treat the
+> rest as untried until it has been.
+
+
 Step by step, assuming you have never used any of this before. Follow it top to bottom.
 
 Prices and sign-up details were current when this was written and both drift - check what the

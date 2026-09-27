@@ -234,6 +234,14 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
             errors.append(f"rules.{key} must be an integer >= 0, got {count}")
 
+    # Read as whole numbers on every hand-over and every clock: a null
+    # maxTurns loaded, then reached `None > 0` in _settle_hand_over and failed
+    # every move the room made. Mirrors validateGameRules.
+    for key in ('maxTurns', 'turnTimeLimit'):
+        count = rules.get(key, 0)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            errors.append(f"rules.{key} must be an integer >= 0, got {count}")
+
     if 'setup' not in config:
         errors.append("Missing 'setup'")
     else:
@@ -241,6 +249,11 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
         radius = board.get('radius')
         orientation = board.get('orientation', 'edge-up')
         units = config.get('units') if isinstance(config.get('units'), dict) else {}
+        # One unit a hex, across both sides. Construction places white and then
+        # black, so a second placement on a hex overwrote the first: two kings
+        # on 0,0 built a board with black's alone, and white had lost before
+        # the first move. Compared as numbers, so '-05,11' is '-5,11'.
+        placed: Dict[tuple, str] = {}
         for side in ('white', 'black'):
             placement = config['setup'].get(side, {})
             if not isinstance(placement, dict):
@@ -254,6 +267,14 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                     q = r = None
                 if unit_id not in config.get('units', {}):
                     errors.append(f"Unknown unit '{unit_id}' at {coord_str} in setup.{side}")
+                if q is not None:
+                    earlier = placed.get((q, r))
+                    if earlier:
+                        errors.append(
+                            f"setup.{side} puts a unit at {coord_str}, where {earlier} "
+                            f"already has one - one unit a hex")
+                    else:
+                        placed[(q, r)] = f"setup.{side}"
                 # Off the battlefield is a panel, and a side's panels are its
                 # own two: a unit dealt into the other side's would be counted
                 # as theirs by every panel rule. And a commander starts on the

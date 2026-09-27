@@ -116,6 +116,16 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   }
 
   onBack(): void {
+    // Save first, if asked to, and only then decide where Back goes. A save
+    // the validator refuses keeps the editor open - and the room it was opened
+    // from with it: this used to clear the way back before asking, so fixing
+    // the JSON and pressing Back again landed in the lobby, the room lost.
+    if (this.hasUnsavedChanges
+        && confirm('You have unsaved changes. Do you want to save before going back?')
+        && !this.saveConfig()) {
+      return;
+    }
+
     const returnToGameRoom = readStore('local', 'returnToGameRoom');
     const gameRoomToken = readStore('local', 'gameRoomToken');
     
@@ -128,6 +138,8 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
       if (gameRoomToken) {
         queryParams = { token: gameRoomToken };
       }
+      // Cleared now that we are certainly going: the navigation below is
+      // what uses them.
       removeStore('local', 'returnToGameRoom');
       removeStore('local', 'gameRoomToken');
       
@@ -142,17 +154,7 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
       targetRoute = ['/lobby'];
     }
     
-    if (this.hasUnsavedChanges) {
-      if (confirm('You have unsaved changes. Do you want to save before going back?')) {
-        if (this.saveConfig()) {
-          this.router.navigate(targetRoute, { queryParams });
-        }
-      } else {
-        this.router.navigate(targetRoute, { queryParams });
-      }
-    } else {
-      this.router.navigate(targetRoute, { queryParams });
-    }
+    this.router.navigate(targetRoute, { queryParams });
   }
 
   saveConfig(): boolean {

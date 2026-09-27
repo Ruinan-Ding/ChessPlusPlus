@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { ConfigService, DEFAULT_GAME_CONFIG } from './config.service';
+import parity from './config-parity.json';
 
 /**
  * The setup screen is the only thing standing between a pasted config and a
@@ -29,6 +30,42 @@ describe('ConfigService validation, against the server\'s', () => {
 
   it('takes the config both engines agree on', () => {
     expect(service.validateGameRules(minimal()).valid).toBeTrue();
+  });
+
+  /** The shipped config with one key set - or, with `drop`, removed. */
+  const edited = (path: string[], value: unknown, drop = false) => {
+    const config: any = JSON.parse(JSON.stringify(DEFAULT_GAME_CONFIG));
+    let node = config;
+    for (const key of path.slice(0, -1)) node = node[key];
+    if (drop) delete node[path[path.length - 1]];
+    else node[path[path.length - 1]] = value;
+    return config;
+  };
+
+  it('refuses every edit in the shared cases, as load_config does', () => {
+    // test_config_parity.py runs the same file through load_config. Each of
+    // these was a config the setup screen passed and the server refused: an
+    // explicit null read through `??` as though it were absent, or a second
+    // unit on a hex that construction then quietly wrote over.
+    for (const { path, value } of parity.refused) {
+      expect(service.validateGameRules(edited(path, value)).valid)
+        .withContext(`${path.join('.')} = ${JSON.stringify(value)}`).toBeFalse();
+    }
+  });
+
+  it('takes every field in the shared cases left out, at its default', () => {
+    for (const path of parity.absent) {
+      expect(service.validateGameRules(edited(path, undefined, true)).valid)
+        .withContext(path.join('.')).toBeTrue();
+    }
+  });
+
+  it("refuses two kings on one hex rather than dealing black's over white's", () => {
+    const config: any = minimal();
+    config.setup = { white: { '0,0': 'king' }, black: { '0,0': 'king' } };
+    const result = service.validateGameRules(config);
+    expect(result.valid).toBeFalse();
+    expect(result.errors!.join()).toContain('one unit a hex');
   });
 
   it('refuses a radius that is not a whole number', () => {
@@ -189,13 +226,15 @@ describe('ConfigService validation, against the server\'s', () => {
   it("refuses a unit in the other side's panels, and a commander in a panel", () => {
     expect(service.validateGameRules(structuredClone(DEFAULT_GAME_CONFIG)).valid).toBeTrue();
     const config: any = structuredClone(DEFAULT_GAME_CONFIG);
-    config.setup.black['-17,11'] = 'rook';   // white's base
+    // A hex of white's base the shipped squad leaves free: on one it holds,
+    // the second unit on a hex is refused as well.
+    config.setup.black['-13,4'] = 'rook';    // white's base
     config.setup.white['-17,10'] = 'king';   // a king in a panel
     const result = service.validateGameRules(config);
     // White's setup is read first, as _validate_config reads it.
     expect(result.errors).toEqual([
       'setup.white puts its commander at -17,10, in a panel - a commander starts on the battlefield',
-      "setup.black puts a unit at -17,11, in white's panels",
+      "setup.black puts a unit at -13,4, in white's panels",
     ]);
   });
 

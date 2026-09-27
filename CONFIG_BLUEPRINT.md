@@ -19,7 +19,8 @@ Last updated 26 Sep 2026.
 
 - [ ] **Capture zones are worth 3, 2 or 1 a hex.** The zone in each side's half is 3, the
   middle one 2, and the two at the sides 1. A zone is worth the same to whichever side holds
-  it. Live in the game. (See [Victory points](#6-victory-points).)
+  it - white holding the ×3 zone by black's base gets 3 a hex too (**confirmed by the owner,
+  26 Sep 2026: "worth 3 a hex"**). Live in the game. (See [Victory points](#6-victory-points).)
 - [ ] **The opening shows capture points but counts none of them.** The header shows what each
   side holds during turns 1-3; none of it reaches the match total or gets banked. Live.
 - [ ] **CP: one award number per phase** (5, 10, 15) instead of 5 times the phase number.
@@ -28,6 +29,10 @@ Last updated 26 Sep 2026.
 Screen only, not rules: a dark line now marks where the bases and reserves meet the
 battlefield, and there are sounds for overtime's toll on a king and for a base healing. When
 both happen in the same turn, the toll plays first and the heal after it.
+
+Fixed to match the rules below (the rules did not change): a unit wrapped out of its base
+into its reserve **stops healing** - it kept healing there before - and in overtime 2 and 3 a
+blow into a base or reserve **no longer throws away the turn's other moves**.
 
 ---
 

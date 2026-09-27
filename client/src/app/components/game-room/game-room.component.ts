@@ -11,7 +11,9 @@ import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { GameStateService } from '../../services/game-state.service';
 import { AuthService } from '../../services/auth.service';
-import { AnimStep, FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap } from '../game-board/game-board.component';
+import {
+  AnimStep, FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap, panelOfHex,
+} from '../game-board/game-board.component';
 import {
   hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
 } from '../../services/hex-rules';
@@ -208,7 +210,7 @@ interface UnitCooldown {
  */
 const MOVE_ERROR_CODES = new Set([
   'INVALID_MOVE', 'NOT_YOUR_TURN', 'GAME_OVER', 'GAME_NOT_STARTED',
-  'NOT_IN_GAME', 'INTERNAL_ERROR',
+  'NOT_IN_GAME', 'INTERNAL_ERROR', 'STATE_CHANGED',
 ]);
 
 /** What a room starts with when nobody has picked a clock. */
@@ -914,13 +916,23 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         }
         this.stagedActions = [];
         const previousPassedTurn = this.gameState.snapshot.currentTurn;
+        const passedPly = this.gameState.snapshot.turnNumber;
         this.gameState.applyTurnPassed(actualMessage);
         this.beginTurnFor(actualMessage.color === 'white' ? 'black' : 'white');
         this.reconcilePoints();
         this.playTurnSoundIfNeeded(previousPassedTurn);
         this.startTurnClock();
+        {
+          // A turn that walked panel units about, or brought them in, and
+          // then ended without a board move is not a pass - it used to be
+          // logged as one, and the wrap it paid for never appeared at all.
+          const done = actualMessage.color ? this.turnRecords(passedPly, actualMessage.color) : [];
+          this.showTurn(actualMessage.color, done);
+          this.addSystemMessage(done.length
+            ? `${actualMessage.color} ended the turn.`
+            : `${actualMessage.color ?? 'A player'} passed the turn.`);
+        }
         this.persistLocalUiState();
-        this.addSystemMessage(`${actualMessage.color ?? 'A player'} passed the turn.`);
         this.cdr.markForCheck();
         break;
       case 'move_made': {
@@ -931,22 +943,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.gameState.applyMoveMade(actualMessage);
         const m = actualMessage.move ?? {};
         const other = m.color === 'white' ? 'black' : 'white';
-        const moveColor = String(m.color ?? '').toLowerCase();
-        const mine = String(this.gameState.myColor(this.username) || 'white').toLowerCase();
-        // Solo play changes seats every turn, so the move that just landed
-        // always belongs to the side being handed over - it gets the same
-        // arrow, attack line and skull an opponent's move would.
-        if (moveColor && (this.isSinglePlayer || moveColor !== mine)) {
-          this.opponentMoveVisuals = [{
-            from: m.from,
-            to: m.to,
-            attack: m.attackedHex,
-            killed: m.defender_eliminated ? m.attackedHex : undefined,
-            killedUnit: m.defender_eliminated && m.captured
-              ? { unit_id: m.captured, color: other as 'white' | 'black' }
-              : undefined,
-          }];
-        }
+        // **The whole turn, not the message that ended it.** An overtime turn
+        // moves two or three units, one message each, and only the last is a
+        // `move_made` - the others arrive as state updates. Read off this
+        // message alone, the first units' moves got no arrow and no line in
+        // the log, and nor did anything the panels did before them. The
+        // record holds all of it; this message is only the last entry.
+        const done = this.turnRecords(m.turn, m.color);
+        this.showTurn(m.color, done.length ? done : [m]);
         // Whoever plays next starts their turn.
         this.beginTurnFor(other);
         // And both purses are the record's sum - the kill this move made, the
@@ -956,29 +960,6 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.playTurnSoundIfNeeded(previousMoveTurn);
         this.startTurnClock();
         this.persistLocalUiState();
-        {
-          const move = actualMessage.move;
-          // Quote the same numbers the board draws, not raw axial coords.
-          let moveText = `${move.color} ${move.unit_id}: ${this.hexLabel(move.from)} -> ${this.hexLabel(move.to)}`;
-          if (move.attacked) {
-            moveText += ` - dealt ${move.damage_dealt} dmg`;
-            if (move.defender_eliminated) {
-              moveText += ` (eliminated ${move.captured ?? 'enemy unit'})`;
-            } else {
-              // The defender stands on the hex that was struck; move.to is
-              // where the attacker ended up, which is a different unit for
-              // every ranged trade.
-              const struck = move.attackedHex ?? move.to;
-              const defenderUnit = this.gameState.snapshot.boardState[struck]?.unit_id ?? 'unit';
-              // A blow into a panel writes `defenderHp`; one on the board writes
-              // `defender_hp`. The panel defender is on no board to look up either,
-              // so without both keys the line read "survives, undefined HP".
-              moveText += ` (${defenderUnit} survives, `
-                + `${(move as any).defenderHp ?? move.defender_hp} HP)`;
-            }
-          }
-          this.addSystemMessage(moveText);
-        }
         this.cdr.markForCheck();
         break;
       }
@@ -1361,6 +1342,12 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           // otherwise the one-commit-per-turn guard leaves the player unable
           // to end a turn the server just refused.
           this.submittedTurn = -1;
+        }
+        // Another write landed in this game first - another tab, or the
+        // clock - so what is on screen may be a board the server no longer
+        // has. Ask for the one it does.
+        if (actualMessage.code === 'STATE_CHANGED') {
+          this.wsService.sendMessage({ type: 'request_game_state' });
         }
         // Handle case when game room no longer exists (e.g., host disconnected)
         if (message.message === 'Game room not found') {
@@ -1825,18 +1812,61 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     { history: unknown; turn: number; units: WithdrawnUnit[] } | null = null;
 
   /**
-   * What a unit in a base has mended since the turn its HP was last written
-   * down. Shared by the two derivations that feed a base - the units dealt
-   * there and the units that walked home - so they cannot drift apart.
+   * Where `uid` went after `history[index]`: each ply it moved on, and whether
+   * it stood in a base from then. Mirrors `in_base_after` in panels.py.
+   *
+   * A walk inside the panels lands wherever its `to` hex is - the wrap takes a
+   * unit out of its base into its reserve. A crossing takes it off the panels,
+   * where no base mends it; a walk home would bring it back, but that writes
+   * the unit's HP afresh and so starts a new reckoning.
+   */
+  private inBaseAfter(history: any[], index: number, uid: string): Array<[number, boolean]> {
+    const orientation = this.gameState.snapshot.config?.board?.orientation ?? 'edge-up';
+    const out: Array<[number, boolean]> = [];
+    for (const move of history.slice(index + 1)) {
+      if (move?.unit?.uid !== uid) continue;
+      if (move.panelMove) {
+        const panel = panelOfHex(move.to, orientation);
+        if (panel) out.push([move.turn ?? 0, BASE_PANELS.has(panel)]);
+      } else if (move.entered) {
+        out.push([move.turn ?? 0, false]);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * What a unit has mended since the turn its HP was last written down -
+   * **for the turns it ended in a base**, and only those. Shared by the two
+   * derivations that feed a base - the units dealt there and the units that
+   * walked home - so they cannot drift apart. Mirrors `mended_in_base`.
    *
    * Counted in that side's OWN hand-overs, not in plies: a base mends at the
    * end of its owner's turn, so a unit standing through a full turn takes one
    * HP back and not the two a ply count would have given it. `now` is the ply
    * about to be played, so the last one finished is `now - 1`.
+   *
+   * `inBase` is where it was when the HP was written, and `stays` where it
+   * went after (`inBaseAfter`). Reading only the first was the bug: a unit
+   * wounded in its base and wrapped out into its reserve went on mending
+   * there, which the owner's rule says a reserve never does.
    */
-  private mendedSince(color: 'white' | 'black', since: number, now: number): number {
-    return Math.max(0, handOversBy(color, now - 1) - handOversBy(color, since))
-      * BASE_HEAL_PER_TURN;
+  private mendedInBase(
+    color: 'white' | 'black', since: number, inBase: boolean,
+    stays: Array<[number, boolean]>, now: number,
+  ): number {
+    const segments: Array<[number, boolean]> = [[since, inBase], ...stays];
+    let total = 0;
+    segments.forEach(([start, base], k) => {
+      if (!base) return;
+      // The plies this stretch is where the unit stood at the close of: from
+      // its own ply to the one before the next move. Two moves in one ply
+      // leave the later one standing, and the earlier stretch empty.
+      const lo = Math.max(since, start - 1);
+      const hi = k + 1 === segments.length ? now - 1 : Math.min(now - 1, segments[k + 1][0] - 1);
+      if (hi > lo) total += handOversBy(color, hi) - handOversBy(color, lo);
+    });
+    return total * BASE_HEAL_PER_TURN;
   }
 
   get withdrawnUnits(): WithdrawnUnit[] {
@@ -1854,35 +1884,43 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // record that brought it home, or a later blow that found it there. The
     // mending runs from whichever came last, so a wound taken in the base is
     // healed off from where it left the unit rather than ignored.
-    const base = new Map<string, { at: string; unit: any; hp: number; turn: number }>();
-    for (const move of history ?? []) {
-      const record = move as any;
-      if (!record) continue;
+    // `index` is the walk home: it put the unit in a base, and every walk
+    // since says where it went.
+    const base = new Map<string, {
+      at: string; unit: any; hp: number; turn: number; index: number;
+    }>();
+    const records = (history ?? []) as any[];
+    records.forEach((record, index) => {
+      if (!record) return;
       if (record.withdrawn && record.unit) {
-        base.set(record.unit.uid ?? move.to, {
-          at: move.to, unit: record.unit, hp: record.unit.hp ?? 0, turn: record.turn,
+        base.set(record.unit.uid ?? record.to, {
+          at: record.to, unit: record.unit, hp: record.unit.hp ?? 0, turn: record.turn, index,
         });
-        continue;
+        return;
       }
       // Something that set a panel unit's HP while it stood in the base - a
       // blow, or an ability. Reserves are not in here: they are dealt from the
       // roster and read `panelHp` instead.
-      if (!record.intoPanel || !record.unit?.uid || record.defenderHp === undefined) continue;
+      if (!record.intoPanel || !record.unit?.uid || record.defenderHp === undefined) return;
       const standing = base.get(record.unit.uid);
       if (standing) {
         standing.hp = record.defenderHp ?? 0;
         standing.turn = record.turn;
       }
-    }
+    });
     const units: WithdrawnUnit[] = [];
     for (const stood of base.values()) {
       // Killed where it stood: not drawn, and not mended back to life.
       if (stood.hp <= 0) continue;
       // A unit sitting in the base mends: an HP for every turn since its last
-      // word, never past what it started with. Derived rather than tallied,
-      // so it reads the same after a reload as it did before one.
+      // word that it closed in a base, never past what it started with. Its
+      // whereabouts run from the walk home, its mending from its last word.
+      // Derived rather than tallied, so it reads the same after a reload as
+      // it did before one.
       const full = stood.unit.max_hp ?? stood.unit.hp ?? 0;
-      const mended = stood.hp + this.mendedSince(stood.unit.color, stood.turn, turn);
+      const stays = this.inBaseAfter(records, stood.index, stood.unit.uid);
+      const mended = stood.hp
+        + this.mendedInBase(stood.unit.color, stood.turn, true, stays, turn);
       units.push({ at: stood.at, unit: { ...stood.unit, hp: Math.min(full, mended) } });
     }
     this.withdrawnCache = { history, turn, units };
@@ -2045,26 +2083,30 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     if (!cached || cached.history !== history || cached.turn !== turn) {
       // Each unit's last word on its own HP, and the turn it was said.
       const wounds = new Map<string, {
-        left: number; turn: number; full: number;
+        left: number; turn: number; full: number; index: number;
         color: 'white' | 'black'; mends: boolean;
       }>();
-      for (const move of (history ?? []) as any[]) {
+      const records = (history ?? []) as any[];
+      records.forEach((move, index) => {
         // A blow or an ability - anything that wrote down what a panel unit
         // has left. Both are the unit's last word on its own HP.
-        if (!move?.intoPanel || !move.unit?.uid || move.defenderHp === undefined) continue;
+        if (!move?.intoPanel || !move.unit?.uid || move.defenderHp === undefined) return;
         wounds.set(move.unit.uid, {
           left: move.defenderHp ?? 0,
           turn: move.turn,
           full: move.unit.max_hp ?? move.unit.hp ?? 0,
+          index,
           color: move.unit.color as 'white' | 'black',
           mends: BASE_PANELS.has(move.panel),
         });
-      }
+      });
       const hp: Record<string, number> = {};
       for (const [uid, wound] of wounds) {
         // Nothing mends back from nothing: 0 is what killed in a panel means.
         hp[uid] = wound.left <= 0 ? 0 : Math.min(wound.full, wound.left
-          + (wound.mends ? this.mendedSince(wound.color, wound.turn, turn) : 0));
+          + this.mendedInBase(
+            wound.color, wound.turn, wound.mends,
+            this.inBaseAfter(records, wound.index, uid), turn));
       }
       this.panelHpCache = { history, turn, hp };
     }
@@ -4261,6 +4303,73 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   private opponentMoveVisuals: OpponentMoveVisual[] = [];
 
+  /**
+   * What `color` did on `ply`, in the order it did it: its board moves, its
+   * blows into a panel, and what its panels did - crossings, walks inside a
+   * panel and the wrap, walks home. Not the casts' own records
+   * (`panelEffect`), which say what an ability left and are not actions.
+   */
+  private turnRecords(ply: number | undefined, color: string | undefined): any[] {
+    if (ply == null || !color) return [];
+    return ((this.gameState.snapshot.moveHistory ?? []) as any[])
+      .filter(move => move && move.turn === ply && move.color === color && !move.panelEffect);
+  }
+
+  /**
+   * Put a finished turn in the log, a line for each thing it did, and - for
+   * the side being handed over - on the board: an arrow for every unit that
+   * moved on the battlefield, a strike line for every blow, a skull for every
+   * kill. The panels' own walks get a line but no arrow, as they never had
+   * one.
+   */
+  private showTurn(color: string | undefined, records: any[]): void {
+    const moveColor = String(color ?? '').toLowerCase();
+    const mine = String(this.gameState.myColor(this.username) || 'white').toLowerCase();
+    // Solo play changes seats every turn, so the turn that just ended always
+    // belongs to the side being handed over - it gets the same arrows, attack
+    // lines and skulls an opponent's turn would.
+    if (moveColor && (this.isSinglePlayer || moveColor !== mine)) {
+      const other = moveColor === 'white' ? 'black' : 'white';
+      this.opponentMoveVisuals = records
+        .filter(m => !m.panelMove && !m.entered)
+        .map(m => ({
+          from: m.from,
+          to: m.to,
+          attack: m.attackedHex,
+          killed: m.defender_eliminated ? m.attackedHex : undefined,
+          killedUnit: m.defender_eliminated && m.captured
+            ? { unit_id: m.captured, color: other as 'white' | 'black' }
+            : undefined,
+        }));
+    }
+    for (const move of records) this.addSystemMessage(this.describeMove(move));
+  }
+
+  /** One line of the log for one record, quoting the hex numbers the board draws. */
+  private describeMove(move: any): string {
+    let text = `${move.color} ${move.unit_id}: ${this.hexLabel(move.from)} -> ${this.hexLabel(move.to)}`;
+    if (move.entered) text += ' (out of the reserve)';
+    else if (move.panelMove) text += move.price ? ` (wrapped, ${move.price} pts)` : ' (in its panel)';
+    else if (move.withdrawn) text += ' (walked home)';
+    if (move.attacked) {
+      text += ` - dealt ${move.damage_dealt} dmg`;
+      if (move.defender_eliminated) {
+        text += ` (eliminated ${move.captured ?? 'enemy unit'})`;
+      } else {
+        // The defender stands on the hex that was struck; move.to is where
+        // the attacker ended up, which is a different unit for every ranged
+        // trade. A panel defender is on no board: its record carries it.
+        const struck = move.attackedHex ?? move.to;
+        const defenderUnit = (move.intoPanel ? move.unit?.unit_id : undefined)
+          ?? this.gameState.snapshot.boardState[struck]?.unit_id ?? 'unit';
+        // A blow into a panel writes `defenderHp`; one on the board writes
+        // `defender_hp`. Without both keys the line read "survives, undefined HP".
+        text += ` (${defenderUnit} survives, ${move.defenderHp ?? move.defender_hp} HP)`;
+      }
+    }
+    return text;
+  }
+
   get opponentMovementArrows(): Array<{ from: string; to: string }> {
     return this.opponentMoveVisuals
       .filter(move => move.from !== move.to)
@@ -4345,19 +4454,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return last?.from ? { from: last.from, to: last.to, used: last.used } : null;
   }
 
-  /** A unit that has swung is done for the turn - no more walking. */
-  get hasAttacked(): boolean {
-    return this.stagedActions.some(a => a.attack !== null);
-  }
-
   /**
    * Whether anything may still be walked on the board this turn.
    *
    * A unit that has swung is done - "walk, then optionally swing" means the
    * swing ends its move - so with one board move a turn this was simply
-   * `!hasAttacked`, and the board took it as `canMove`. Overtime 2 and 3 allow
-   * two and three, and a side that has struck with one unit may still walk the
-   * next: the blow ends that unit's move, not the turn.
+   * "nothing has swung", and the board took it as `canMove`. Overtime 2 and 3
+   * allow two and three, and a side that has struck with one unit may still
+   * walk the next: the blow ends that unit's move, not the turn.
    */
   get canMoveOnBoard(): boolean {
     const moves = this.boardMoves;
@@ -4608,11 +4712,18 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.cdr.markForCheck();
   }
 
-  /** Steps the staged unit has left, or null when nothing is staged. */
+  /**
+   * Steps the staged unit has left, or null when nothing is staged.
+   *
+   * **The unit mid-move is done once IT has swung** - not once anybody has.
+   * With one board move a turn the two were the same question; in Overtime 2
+   * and 3 a side may strike with one unit and then walk the next, and asking
+   * the whole turn left that second unit with 0 MOV after its first hop.
+   */
   get movesLeft(): number | null {
     const pending = this.pendingMove;
     if (!pending) return null;
-    if (this.hasAttacked) return 0;
+    if (this.boardMoves.find(move => move.from === pending.from)?.attack) return 0;
     const unit = this.stagedBoard?.[pending.to];
     const base = this.gameState.snapshot.config?.units?.[unit?.unit_id]?.move ?? 0;
     // A +MOV boost is real steps, not just a number in the panel.
@@ -5105,18 +5216,19 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     // panel unit's lives in the move history (`unit` + `panel`), a board
     // unit's on the board (`at` + `uid`).
     //
-    // Inside the one message that ends the turn, split around its board
-    // action - see landEffects in the browser engine. Sent as messages of
-    // their own, a cast after the blow was struck over again, and a move the
-    // engine refused came back half-played with the casts already kept.
-    const pending = this.pendingMove;
-    const boardAction = pending
-      // A walk home is not it either, for the same reason it is not `pending`:
-      // it has already gone out as its own message above.
-      ? this.stagedActions.reduce(
-        (last, step, i) => (step.spend || step.homecoming ? last : i), -1)
-      : Infinity;
-    const before: any[] = [];
+    // **Each cast rides on the message it happened before**, as that message's
+    // `effectsBefore`; those made after the turn's last board move ride on the
+    // last message as `effects` - see landEffects in the browser engine. Sent
+    // as messages of their own, a cast after the blow was struck over again,
+    // and a move the engine refused came back half-played with the casts
+    // already kept. Piled onto the first message instead, a mend cast between
+    // two units' moves landed before the first unit's blow, and that blow's
+    // counter then came off the mended figure a second time.
+    const moves = this.boardMoves;
+    // Where each move's last step sits in the stack: a cast staged before it
+    // happened before that move finished.
+    const ends = moves.map(step => this.stagedActions.indexOf(step));
+    const before: any[][] = moves.map(() => []);
     const after: any[] = [];
     this.stagedActions.forEach((step, i) => {
       if (step.attack !== null) return;
@@ -5129,64 +5241,23 @@ export class GameRoomComponent implements OnInit, OnDestroy {
           ? { at: step.hexKey, uid: step.hexUid, hp: step.hexHp }
           : null;
       if (!effect) return;
-      (i > boardAction ? after : before).push(effect);
+      const owner = ends.findIndex(end => end > i);
+      (owner < 0 ? after : before[owner]).push(effect);
     });
-    const casts = {
-      ...(before.length ? { effectsBefore: before } : {}),
-      ...(after.length ? { effects: after } : {}),
-    };
-    if (!pending) {
-      // Doing nothing is a legal turn.
-      this.wsService.sendMessage({ type: 'pass_turn', ...casts });
-      return;
-    }
-    const attack = this.stagedActions.find(a => a.attack !== null)?.attack;
-    // A swing out of a panel is its own message, for the same reason a
-    // crossing is: the attacker is the client's and no engine holds it.
-    const swung = this.stagedActions.find(a => a.attack !== null && a.panelUnit);
-    if (swung) {
-      // `to` as well as `from`: a unit may walk and then swing, and this
-      // message is the whole turn - there is no make_move behind it to carry
-      // the walk. Without it the engine resolved the blow from where the unit
-      // started and left it there, which read as being teleported back.
-      this.wsService.sendMessage({
-        type: 'panel_attack',
-        from: swung.from, to: swung.to, attack: swung.attack, unit: swung.panelUnit,
-        // Which panel took the blow. The engine keeps it on the record and
-        // nothing else: it is what tells the mending a base from a reserve
-        // after a reload, when the board that knew is long gone.
-        panel: swung.panelName,
-        ...(this.moveBonusFor(swung.to) ? { moveBonus: this.moveBonusFor(swung.to) } : {}),
-        // The same bonuses `make_move` carries, for the same reason: the
-        // engine re-resolves the blow and would otherwise disagree with the
-        // preview the room already drew. `targetDef`/`targetAtk` are the
-        // panel unit's, which stands on `attack`.
-        bonuses: {
-          atk: this.bonusFor(swung.to, 'atk'),
-          def: this.bonusFor(swung.to, 'def'),
-          targetAtk: swung.attack ? this.bonusFor(swung.attack, 'atk') : 0,
-          targetDef: swung.attack ? this.bonusFor(swung.attack, 'def') : 0,
-        },
-        // Whether the panel answers is the panel's rule, and the client owns
-        // panels - the engine has no idea which one a unit is standing in.
-        counters: swung.counters !== false,
-        ...casts,
-      });
-      this.persistLocalUiState();
+    if (!moves.length) {
+      // Doing nothing is a legal turn - and every cast came before it.
+      this.wsService.sendMessage({ type: 'pass_turn', ...(after.length ? { effectsBefore: after } : {}) });
       return;
     }
     // **Every board move the turn made, and only the last hands it over.**
     // One message each, in the order they were played, with `more` on all but
     // the last - both engines answer a held move as a deployment: the same
     // seat, the same ply, the same clock, and the toll untaken until the end.
-    //
-    // The casts are split across the ends rather than piled on the last
-    // message: what was cast BEFORE the turn's board action has to land
-    // before the first unit moves, and a `effectsBefore` on the final message
-    // would land it after the others had already gone. With one move - every
-    // turn of the schedule proper - the two ends are the same message and
-    // this is exactly what it always sent.
-    const moves = this.boardMoves;
+    // A blow into a panel is one of them: it goes as `panel_attack` in its own
+    // place in the order. It used to go alone and end the turn, which dropped
+    // every other move an overtime turn had staged, before it or after it.
+    // With one move - every turn of the schedule proper - this is exactly the
+    // one message it always sent.
     moves.forEach((step, i) => {
       const swing = step.attack ?? undefined;
       // Both engines re-check the walk from where it started, so they need to
@@ -5203,6 +5274,36 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         targetDef: swing ? this.bonusFor(swing, 'def') : 0,
       };
       const boosted = Object.values(bonuses).some(v => v !== 0);
+      const casts = {
+        ...(i < moves.length - 1 ? { more: true } : {}),
+        ...(before[i].length ? { effectsBefore: before[i] } : {}),
+        ...(i === moves.length - 1 && after.length ? { effects: after } : {}),
+      };
+      if (swing && step.panelUnit) {
+        // A swing into a panel. `to` as well as `from`: a unit may walk and
+        // then swing, and there is no make_move behind this to carry the walk.
+        // Without it the engine resolved the blow from where the unit started
+        // and left it there, which read as being teleported back.
+        this.wsService.sendMessage({
+          type: 'panel_attack',
+          from: step.from, to: step.to, attack: swing, unit: step.panelUnit,
+          // Which panel took the blow. The engine keeps it on the record and
+          // nothing else: it is what tells the mending a base from a reserve
+          // after a reload, when the board that knew is long gone.
+          panel: step.panelName,
+          ...(moveBonus ? { moveBonus } : {}),
+          // The same bonuses `make_move` carries, for the same reason: the
+          // engine re-resolves the blow and would otherwise disagree with the
+          // preview the room already drew. `targetDef`/`targetAtk` are the
+          // panel unit's, which stands on `attack`.
+          bonuses,
+          // Whether the panel answers is the panel's rule, and the client owns
+          // panels - the browser engine has no idea which one a unit is in.
+          counters: step.counters !== false,
+          ...casts,
+        });
+        return;
+      }
       this.wsService.sendMessage({
         type: 'make_move',
         from: step.from,
@@ -5214,9 +5315,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // browser one takes the walk on trust, and the server re-derives it -
         // the real doorways, the MOV to reach them - from its own panel model.
         ...(this.offBoard(step.to) ? { withdraw: true } : {}),
-        ...(i < moves.length - 1 ? { more: true } : {}),
-        ...(i === 0 && casts.effectsBefore ? { effectsBefore: casts.effectsBefore } : {}),
-        ...(i === moves.length - 1 && casts.effects ? { effects: casts.effects } : {}),
+        ...casts,
       });
     });
     this.persistLocalUiState();

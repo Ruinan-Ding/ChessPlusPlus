@@ -6,24 +6,36 @@ WebSocket on the back, Angular on the front.
 
 The engine contains **no unit-specific code**. Movement, combat and setup are read from one
 config file; a unit id is an opaque label. Changing what a unit is means editing data, not
-Python. That config lives in three places that must agree - the JSON Schema in `shared/`, the
-server's defaults in `config_loader.py`, and the client's in `config.service.ts`.
+Python. That file is `shared/default-config.json`, which the server and the client both load,
+with the JSON Schema beside it; each side checks a custom config by the same rules, and
+`config-parity.json` holds the cases both have to answer alike.
 
 ## How a game works
 
-**The board** is a hexagon of radius 11 (397 hexes), squared off with four tinted corner
-panels - the reserve planes, one pair per player. Coordinates are axial `q,r`; a hex is on the
-battlefield when `max(|q|, |r|, |q+r|) <= radius`.
+This is the outline. **Every match rule, with its number, is in
+[CONFIG_BLUEPRINT.md](CONFIG_BLUEPRINT.md)** - the owner's checklist - and the reasoning behind
+each one is in [AGENTS.md](AGENTS.md).
 
-**One unit acts per turn.** Sides alternate. Picking a unit shows two layers at once: pale
-green for every hex it could stand on, red for hexes it could not reach but could still strike
-from where it can get to. Hovering shows the same for anyone's unit, your opponent's included -
-knowing what a thing threatens is half the game.
+**The board** is a hexagon of radius 11 (397 hexes), squared off with four corner panels: each
+player's **base** and **reserve**. Coordinates are axial `q,r`; a hex is on the battlefield when
+`max(|q|, |r|, |q+r|) <= radius`.
 
-**Movement** is a flood fill bounded by the unit's `MOV`, through empty hexes only. Units block
-each other, ally and enemy alike, so a wall costs you the detour: a hex three steps away around
-an obstacle costs three, not the one hex of straight-line distance. A unit keeps walking on
-what is left of its budget until it attacks or the turn ends.
+**A match** is a three-turn opening, three phases of ten turns, each ending with a postmatch
+turn, and overtime if the points are close. What a turn may do depends on where the match is:
+the opening and each postmatch are for setting out, with no attacks.
+
+**Sides alternate, and a side moves one unit on the battlefield a turn** - two in Overtime 2
+and three in Overtime 3, where switching to another unit ends the first one's move. Besides
+that, and as the stage allows, a side may start units moving in its panels, bring them out of
+its reserve onto the board, or walk them home into its base. Picking a unit shows two layers at
+once: pale green for every hex it could stand on, red for hexes it could not reach but could
+still strike from where it can get to. Hovering shows the same for anyone's unit, your
+opponent's included - knowing what a thing threatens is half the game.
+
+**Movement** is a flood fill bounded by the unit's `MOV`. A unit walks **through its own side's
+units** but may not stop on one; **an enemy blocks** both its hex and the way past it, so going
+round one costs the detour. A unit keeps walking on what is left of its budget until it attacks
+or the turn ends.
 
 **Attacking** is separate from moving. Each unit has an `attackRange` in rings of hex distance,
 ignoring obstacles - most reach only the six neighbours, some reach two or three rings out for
@@ -45,28 +57,32 @@ range - so a two-ring unit striking a melee unit takes nothing back. A unit at 0
 never counters. The attacker holds its ground even on a kill; taking the hex would be free
 movement, and movement is the thing being budgeted.
 
-**Losing** is regicide: a side is beaten when it has no unit flagged `commander` left. The
-board is asked who has lost - it is never inferred from whoever moved last, so a unit that
-kills itself on a counter-attack loses the game exactly as it should.
+**Bases and reserves** can be struck from the battlefield. A unit in a reserve strikes back; one
+in a base never does, but it mends an HP at the end of each of its side's turns - and only while
+it stays there. A king never enters either.
 
-**A turn is staged before it is sent.** Steps and the attack pile up on a local stack, so the
-board shows where the unit would end up; Undo pops one action at a time; End Turn sends the
-whole turn as a single `make_move` and the server ends the turn on receipt. Nothing is
-committed until then.
+**Winning.** A side loses when its king dies (`rules.objective`: `regicide`, or `elimination`
+to play until a side has no units at all). The board is asked who has lost - it is never
+inferred from whoever moved last, so a unit that kills itself on a counter-attack loses the game
+exactly as it should. Each phase is scored on five capture zones; after Phase 3 a side far enough
+ahead on points wins, and anything closer goes to overtime, where each king pays a toll every
+turn it plays.
 
-**Points and abilities.** Each side banks a point at the start of its turn and one per kill.
+**A turn is staged before it is sent.** Steps, attacks and casts pile up on a local stack, so
+the board shows where each unit would end up; Undo pops one action at a time. End Turn sends
+the turn in the order it was played: the panel moves, crossings and walks home first, then one
+message per battlefield move, each but the last marked `more` - and only the last hands the
+turn over. Nothing is committed until then.
+
+**Points and abilities.** Points come in every turn at a rate the phase sets, with a grant as
+each phase starts; a kill pays the killer the dead unit's value, and walking home refunds it.
 Abilities cost points and go on cooldown when used. Using one is click-then-target: press the
 slot, then click who it lands on - a friendly unit for a boost, an enemy for damage. Clicking
-the wrong kind of target cancels instead. The effect is a one-turn stat change (+MOV, +ATK,
-+DEF, or damage); the Unit panel shows
-boosted over base, so a +4 on a base 26 reads `30/26`, and +MOV is real extra steps, not just a
-number. Each side box holds six slots: four actives, a passive and a once-per-game ultimate.
-The passive is always on, never clicked, and unlocked at ★2; the actives are not gated.
-
-**Reserves.** Each player has two corner panels holding units that are not yet in the war. They
-can be inspected and shuffled inside their own panel and nothing more: they cannot move or
-strike out of it, and nothing on the battlefield can reach in. How they enter play is the next
-thing to design.
+the wrong kind of target cancels instead. The effect is a stat change (+MOV, +ATK, +DEF, or
+damage) for as long as the ability says; the Unit panel shows boosted over base, so a +4 on a
+base 26 reads `30/26`, and +MOV is real extra steps, not just a number. **Abilities are solo
+only for now**: a server does not take a client's word for a stat, and boosts have not reached
+its combat yet.
 
 **Single player needs no server at all.** A solo game runs entirely in the browser and survives
 a reload; the lobby lets you in with any name - or none - when the server is unreachable. It

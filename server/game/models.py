@@ -177,6 +177,11 @@ class GameState(models.Model):
     # than derived: a phase's score reads the board as its play ended, and no
     # board but the current one is stored.
     phase_bank = models.JSONField(default=dict, blank=True)
+    # Bumped by every accepted write to the fields above, and what a write is
+    # conditional on. turn_number cannot be: a deployment or a held overtime
+    # move changes the board without handing the turn over, so two writes in
+    # one ply both matched it and the second erased the first.
+    revision = models.PositiveIntegerField(default=0)
     # Draw offer tracking
     draw_offered_by = models.CharField(max_length=24, blank=True, default='')
     # When the current turn started - persisted so reconnect resyncs report the

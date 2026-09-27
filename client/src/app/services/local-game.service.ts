@@ -207,7 +207,7 @@ export class LocalGameService {
         this.attackIntoPanel(
           msg.from, msg.to ?? msg.from, msg.attack, msg.unit,
           msg.moveBonus, msg.counters !== false, msg.bonuses, msg.panel,
-          msg.effects, msg.effectsBefore);
+          msg.effects, msg.effectsBefore, msg.more);
         break;
 
       case 'pass_turn':
@@ -552,6 +552,8 @@ export class LocalGameService {
     /** The turn's casts after its blow, and before it - see `landEffects`. */
     effects?: any[],
     effectsBefore?: any[],
+    /** Another board move follows in this turn - see `holding` in `move`. */
+    more?: boolean,
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
@@ -570,6 +572,24 @@ export class LocalGameService {
       this.emit({ type: 'invalid_move', message: noAttackMessage(g.turnNumber) });
       return;
     }
+    // One of the turn's board moves like any other - the allowance, the
+    // one-move-per-unit rule and `more`, exactly as `move` asks them. Ending
+    // the turn outright threw away every other move an overtime turn had
+    // staged alongside the blow. Mirrors `_claim_board_move` in consumers.py.
+    const moveAllowance = boardMovesPerTurn(g.turnNumber);
+    const movesUsed = boardMovesAt(g.moveHistory, g.turnNumber, movingColor);
+    if (movesUsed >= moveAllowance) {
+      this.emit({
+        type: 'invalid_move',
+        message: `That side has had all ${moveAllowance} of its moves this turn`,
+      });
+      return;
+    }
+    if (boardMoveLandings(g.moveHistory, g.turnNumber, movingColor).has(from)) {
+      this.emit({ type: 'invalid_move', message: 'That unit has already moved this turn' });
+      return;
+    }
+    const holding = !!more && movesUsed + 1 < moveAllowance;
     // The defender is named by the message too, so it gets the same checks the
     // walkers get, less the opening's lock - it is not the one moving.
     const bad = this.panelUnitFault(unit, false);
@@ -644,6 +664,15 @@ export class LocalGameService {
           board[to] = mine;
         }
       }
+    }
+    // Held: the seat, the ply and the clock stay put, and the toll waits for
+    // the turn's last move - the same as a held `move`.
+    if (holding) {
+      g.boardState = board;
+      g.moveHistory = [...g.moveHistory, ...before.records, record];
+      this.persist();
+      this.emit({ type: 'game_state_update', ...this.snapshot() });
+      return;
     }
     this.commitPanelBlow(record, board, before.records, this.landEffects(board, effects).records);
   }
