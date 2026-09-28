@@ -1,8 +1,10 @@
 import {
+  AfterViewInit,
   Component,
   Input,
   Output,
   EventEmitter,
+  NgZone,
   OnChanges,
   OnInit,
   OnDestroy,
@@ -10,6 +12,7 @@ import {
   ChangeDetectionStrategy,
   ChangeDetectorRef,
   ElementRef,
+  ViewChild,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
@@ -480,8 +483,12 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="board-container">
+      <!-- Pinch to zoom and drag to pan are listened for outside Angular
+           (ngAfterViewInit): they arrive sixty times a second, and each one
+           through change detection would re-check every hex on the board. -->
       <svg
-        [attr.viewBox]="viewBox"
+        #boardSvg
+        [attr.viewBox]="shownViewBox"
         class="hex-board"
         [class.board-flipped]="rotateBoard"
         preserveAspectRatio="xMidYMid meet"
@@ -553,6 +560,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [class.hex-move-preview]="!hex.panel && previewMoves.has(hex.key) && (!showingSelection || !legalTargets.has(hex.key))"
             [class.hex-attack-preview]="!hex.panel && previewAttacks.has(hex.key)"
             [class.hex-attack-target]="!hex.panel && showingSelection && attackTargets.has(hex.key)"
+            [class.hex-attack-armed]="hex.key === armedAttack"
             [class.preview-dim]="previewDim"
             [class.reach-up]="movWave === 'up' && (legalTargets.has(hex.key) || previewMoves.has(hex.key))"
             [class.reach-down]="movWave === 'down' && (legalTargets.has(hex.key) || previewMoves.has(hex.key))"
@@ -913,7 +921,18 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [attr.transform]="textTransform(hex.cx, hex.cy)"
           >{{ mark }}</text>
         </g>
+
+        <!-- Touch only: an enemy in reach tapped once is armed - the trade's
+             forecast on both units, as a hover shows it - and says so here;
+             a second tap on it strikes (armedAttack). -->
+        <text *ngIf="armedCell as armed" class="armed-hint"
+              [attr.x]="armed.cx" [attr.y]="armed.cy - 34"
+              [attr.transform]="textTransform(armed.cx, armed.cy)">Tap again to strike</text>
       </svg>
+
+      <!-- Zoomed in by a pinch: the way back to the whole board. -->
+      <button *ngIf="boardZoom > 1" type="button" class="board-fit-btn"
+              (click)="fitBoard()">Whole board</button>
 
     </div>
   `,
@@ -945,6 +964,48 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       display: block;
       width: 100%;
       height: 100%;
+    }
+
+    /* The board takes every touch itself: a pinch zooms it and a drag pans
+       it, where the browser would otherwise zoom or scroll the page. */
+    .hex-board {
+      touch-action: none;
+    }
+
+    /* Back to the whole board, over its top corner, a finger's width. */
+    .board-fit-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      z-index: 4;
+      min-width: 44px;
+      min-height: 44px;
+      padding: 0 14px;
+      border: none;
+      border-radius: 6px;
+      background: rgba(12, 12, 22, 0.82);
+      color: #fff;
+      font: 700 14px Arial, sans-serif;
+      cursor: pointer;
+    }
+
+    /* An enemy a first tap armed: the target's red, pulsing, so the second
+       tap has somewhere to land. */
+    .hex-attack-armed {
+      fill: #b91c1c !important;
+      animation: armed-pulse 0.8s ease-in-out infinite alternate;
+    }
+    @keyframes armed-pulse {
+      to { fill: #f87171; }
+    }
+    .armed-hint {
+      font: 700 13px Arial, sans-serif;
+      fill: #fff;
+      stroke: #7f1d1d;
+      stroke-width: 3px;
+      paint-order: stroke;
+      text-anchor: middle;
+      pointer-events: none;
     }
 
     .hex-board.board-flipped {
@@ -1714,7 +1775,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
 
   `],
 })
-export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
+export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterViewInit {
   // -- Inputs ---------------------------------------------------------
 
   /** Current board state from server. */
@@ -2225,7 +2286,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   private previewKey: string | null = null;
   lastDamagedHex = '';  // hex that was attacked but unit survived
 
-  constructor(private cdr: ChangeDetectorRef, private host: ElementRef<HTMLElement>) {}
+  constructor(private cdr: ChangeDetectorRef, private host: ElementRef<HTMLElement>,
+              private zone: NgZone) {}
 
   get isMyTurn(): boolean {
     return this.currentTurn === this.username;
@@ -2245,6 +2307,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.stopPlayback();
     clearTimeout(this.markTimer);
+    this.unlistenGestures();
   }
 
   /** Drop everything mid-flight and leave the board on the real position. */
@@ -2451,6 +2514,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   }
 
   ngOnChanges(changes: SimpleChanges): void {
+    // A target armed on one position is not armed on the next.
+    if (changes['boardState'] || changes['currentTurn'] || changes['turnNumber']) {
+      this.armedAttack = null;
+    }
     // Recalculate cells whenever board, radius, or config (orientation) changes
     // myColor with them: it decides which set of home rows is drawn as ours.
     if (changes['boardState'] || changes['radius'] || changes['config']
@@ -2557,6 +2624,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
   // -- Click handler --------------------------------------------------
 
   onHexClick(hex: HexCell): void {
+    // The tap that ends a drag or a pinch is the gesture's, not a choice of
+    // hex - a pan across the board would otherwise land a move where it
+    // stopped.
+    if (this.swallowClick) {
+      this.swallowClick = false;
+      return;
+    }
     this.handleClick(hex);
     // Any branch above may have moved the selection, and the preview follows it.
     this.invalidatePreview();
@@ -2566,6 +2640,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (!this.interactive || this.endReason) {
       return;
     }
+    // Any tap disarms; only a second tap on the armed enemy strikes it.
+    const armed = this.armedAttack;
+    this.armedAttack = null;
     // An armed offensive ability takes the next unit click as its target,
     // rather than allowing the regular attack-selection path to intercept it.
     if (this.abilityMode === 'enemy' && hex.piece) {
@@ -2581,6 +2658,20 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     // An enemy inside reach: swing at it. That spends the unit's turn, so it
     // goes out immediately instead of staging like a move does.
     if (this.selectedHex && this.attackTargets.has(hex.key)) {
+      // A touch screen has no hover, and the hover is where the trade is
+      // read before it is made: both units' damage, and whether it answers.
+      // So the first tap reads it - arms the target, forecast and all - and
+      // a second tap on the same enemy makes it. The owner, 28 Sep 2026. A
+      // mouse has read it by hovering, and its first click strikes as ever.
+      if (this.lastPointer === 'touch' && armed !== hex.key) {
+        this.armedAttack = hex.key;
+        this.hoveredHex = hex.key;
+        this.refreshForecast();
+        this.hexHovered.emit(this.describe(hex));
+        this.refreshPreview();
+        this.cdr.markForCheck();
+        return;
+      }
       // A blow landing in a panel carries the unit it lands on: no engine
       // holds a panel, so that is the only way to name it. Whether it answers
       // is the panel's rule and travels with it - a reserve strikes back, a
@@ -2982,6 +3073,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
       const w = Math.max(...xs) + pad - minX;
       const h = Math.max(...ys) + pad - minY;
       this.viewBox = `${minX.toFixed(1)} ${minY.toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`;
+      this.baseBox = { x: minX, y: minY, w, h };
+      this.applyZoom();
     }
   }
 
@@ -4174,6 +4267,213 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy {
     if (this.movesLeftFor) return false;
     const piece = cell?.piece;
     return !piece || piece.color !== this.activeColor || !this.canDriveNow();
+  }
+
+  // -- Touch: a tap reads the trade, a second tap makes it --------------
+
+  /** What last went down on the board: 'mouse', 'pen' or 'touch'. */
+  private lastPointer = 'mouse';
+
+  /**
+   * Touch only: the enemy a first tap armed, its trade forecast on both
+   * units, which a second tap on it strikes (handleClick). Cleared by any
+   * other tap and by any change of position.
+   */
+  armedAttack: string | null = null;
+
+  get armedCell(): HexCell | null {
+    return this.armedAttack ? this.cellsByKey.get(this.armedAttack) ?? null : null;
+  }
+
+  // -- Pinch to zoom, drag to pan ---------------------------------------
+  //
+  // A phone shows the whole board at 13-17px a hex, however the room is laid
+  // out: it is ~24 hexes across. So on a touch screen it zooms - the owner,
+  // 28 Sep 2026: pinch to zoom, drag to pan, and a button back to the whole
+  // board. What changes is the viewBox, so everything drawn on the board -
+  // arrows, marks, the forecast - zooms with it and nothing is positioned
+  // twice. A tap still selects; the tap that ends a drag does not.
+
+  /** How far a pinch goes: four times the whole board. */
+  static readonly ZOOM_MAX = 4;
+
+  /** 1 is the whole board. */
+  boardZoom = 1;
+  /** The viewBox drawn: the whole board, or the part a zoom shows. */
+  shownViewBox = '0 0 100 100';
+  /** The whole board, in board units (buildCells). */
+  private baseBox = { x: 0, y: 0, w: 100, h: 100 };
+  /** Where the zoomed view is centred, in board units. */
+  private zoomCenter = { x: 50, y: 50 };
+  /** Fingers down on the board, by pointer id, where they are now. */
+  private pointers = new Map<number, { x: number; y: number }>();
+  /** Where the gesture under way started: the view, and each finger. */
+  private gestureStart: {
+    zoom: number;
+    center: { x: number; y: number };
+    at: Map<number, { x: number; y: number }>;
+  } | null = null;
+  /** Set once a gesture has moved the view; its closing tap is swallowed. */
+  private moved = false;
+  private swallowClick = false;
+  private unlistenGestures: () => void = () => {};
+
+  @ViewChild('boardSvg') private boardSvg?: ElementRef<SVGSVGElement>;
+
+  ngAfterViewInit(): void {
+    const svg = this.boardSvg?.nativeElement;
+    if (!svg) return;
+    this.zone.runOutsideAngular(() => {
+      const down = (e: PointerEvent) => this.onBoardPointerDown(e);
+      const move = (e: PointerEvent) => this.onBoardPointerMove(e);
+      const up = (e: PointerEvent) => this.onBoardPointerUp(e);
+      svg.addEventListener('pointerdown', down);
+      svg.addEventListener('pointermove', move);
+      svg.addEventListener('pointerup', up);
+      svg.addEventListener('pointercancel', up);
+      this.unlistenGestures = () => {
+        svg.removeEventListener('pointerdown', down);
+        svg.removeEventListener('pointermove', move);
+        svg.removeEventListener('pointerup', up);
+        svg.removeEventListener('pointercancel', up);
+      };
+    });
+  }
+
+  onBoardPointerDown(e: PointerEvent): void {
+    this.lastPointer = e.pointerType;
+    // A click that never came (the drag ended off every hex) must not take
+    // this tap with it.
+    this.swallowClick = false;
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    this.beginGesture();
+  }
+
+  onBoardPointerMove(e: PointerEvent): void {
+    if (!this.pointers.has(e.pointerId) || !this.gestureStart) return;
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const start = this.gestureStart;
+    const ids = [...start.at.keys()].filter(id => this.pointers.has(id));
+    if (ids.length >= 2) {
+      // Pinch: the zoom follows the fingers' spread, and the board point that
+      // was under their midpoint stays under it.
+      const [a0, b0] = [start.at.get(ids[0])!, start.at.get(ids[1])!];
+      const [a1, b1] = [this.pointers.get(ids[0])!, this.pointers.get(ids[1])!];
+      const spread0 = Math.hypot(a0.x - b0.x, a0.y - b0.y);
+      if (spread0 < 1) return;
+      const zoom = Math.min(GameBoardComponent.ZOOM_MAX,
+        Math.max(1, start.zoom * Math.hypot(a1.x - b1.x, a1.y - b1.y) / spread0));
+      const mid0 = { x: (a0.x + b0.x) / 2, y: (a0.y + b0.y) / 2 };
+      const mid1 = { x: (a1.x + b1.x) / 2, y: (a1.y + b1.y) / 2 };
+      const held = this.toBoard(mid0, start.zoom, start.center);
+      const [perPx, sign, mid] = [this.unitsPerPx(zoom), this.rotateBoard ? -1 : 1, this.svgMiddle()];
+      this.boardZoom = zoom;
+      this.zoomCenter = {
+        x: held.x - (mid1.x - mid.x) * perPx * sign,
+        y: held.y - (mid1.y - mid.y) * perPx * sign,
+      };
+      this.moved = true;
+      this.showZoom();
+      return;
+    }
+    // One finger pans a zoomed board; on the whole board a drag is nothing.
+    if (this.boardZoom <= 1 || ids.length !== 1) return;
+    const from = start.at.get(ids[0])!;
+    const now = this.pointers.get(ids[0])!;
+    const dx = now.x - from.x;
+    const dy = now.y - from.y;
+    if (!this.moved && Math.hypot(dx, dy) < 8) return;
+    const [perPx, sign] = [this.unitsPerPx(this.boardZoom), this.rotateBoard ? -1 : 1];
+    this.zoomCenter = {
+      x: start.center.x - dx * perPx * sign,
+      y: start.center.y - dy * perPx * sign,
+    };
+    this.moved = true;
+    this.showZoom();
+  }
+
+  onBoardPointerUp(e: PointerEvent): void {
+    if (!this.pointers.delete(e.pointerId)) return;
+    if (this.moved) this.swallowClick = true;
+    if (this.pointers.size) {
+      // One finger left of a pinch goes on panning from where it is.
+      this.beginGesture();
+    } else {
+      this.gestureStart = null;
+      this.moved = false;
+    }
+  }
+
+  /** Back to the whole board. */
+  fitBoard(): void {
+    this.boardZoom = 1;
+    this.applyZoom();
+    this.cdr.markForCheck();
+  }
+
+  private beginGesture(): void {
+    this.gestureStart = {
+      zoom: this.boardZoom,
+      center: { ...this.zoomCenter },
+      at: new Map([...this.pointers].map(([id, p]) => [id, { ...p }])),
+    };
+  }
+
+  /**
+   * Board units per screen pixel at `zoom`. The svg letterboxes the viewBox
+   * (meet), so the tighter of the two axes decides.
+   */
+  private unitsPerPx(zoom: number): number {
+    const svg = this.boardSvg?.nativeElement;
+    const w = svg?.clientWidth || 1;
+    const h = svg?.clientHeight || 1;
+    return Math.max(this.baseBox.w / w, this.baseBox.h / h) / zoom;
+  }
+
+  private svgMiddle(): { x: number; y: number } {
+    const r = this.boardSvg?.nativeElement.getBoundingClientRect();
+    return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : { x: 0, y: 0 };
+  }
+
+  /** The board point under a screen point, for a view at zoom and center. */
+  private toBoard(p: { x: number; y: number }, zoom: number, center: { x: number; y: number }) {
+    // Flipped, the whole svg is turned half round (.board-flipped), so a
+    // finger moving right moves the board left under it.
+    const [perPx, sign, mid] = [this.unitsPerPx(zoom), this.rotateBoard ? -1 : 1, this.svgMiddle()];
+    return { x: center.x + (p.x - mid.x) * perPx * sign, y: center.y + (p.y - mid.y) * perPx * sign };
+  }
+
+  /**
+   * Keeps the zoom in range and the view on the board, and works out the
+   * viewBox that shows it.
+   */
+  private applyZoom(): void {
+    const b = this.baseBox;
+    if (this.boardZoom <= 1) {
+      this.boardZoom = 1;
+      this.zoomCenter = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+      this.shownViewBox = this.viewBox;
+      return;
+    }
+    const w = b.w / this.boardZoom;
+    const h = b.h / this.boardZoom;
+    const x = Math.min(Math.max(this.zoomCenter.x, b.x + w / 2), b.x + b.w - w / 2);
+    const y = Math.min(Math.max(this.zoomCenter.y, b.y + h / 2), b.y + b.h - h / 2);
+    this.zoomCenter = { x, y };
+    this.shownViewBox = `${(x - w / 2).toFixed(1)} ${(y - h / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`;
+  }
+
+  /**
+   * A gesture's frame, outside Angular: the viewBox straight onto the svg,
+   * and change detection only when the fit button comes or goes.
+   */
+  private showZoom(): void {
+    const wasZoomed = this.shownViewBox !== this.viewBox;
+    this.applyZoom();
+    this.boardSvg?.nativeElement.setAttribute('viewBox', this.shownViewBox);
+    if (wasZoomed !== (this.shownViewBox !== this.viewBox)) {
+      this.zone.run(() => this.cdr.markForCheck());
+    }
   }
 
   /** Hovering previews a unit in the Unit panel without selecting it. */

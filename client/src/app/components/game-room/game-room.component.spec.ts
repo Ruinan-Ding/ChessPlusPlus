@@ -2944,11 +2944,14 @@ describe('GameRoomComponent fitting the window', () => {
   };
 
   it('scales the room down by whichever side is shorter, laid out at its least', () => {
-    // Half the least width, and more than half the least height: width decides.
-    const c = fit(590, 900);
-    expect(c.roomZoom).toBe(0.5);
-    expect(c.roomWidth).toBe(1180);
-    expect(c.roomHeight).toBe(1800);
+    // A little short of the least width, and taller than the least height:
+    // width decides. (Much narrower is the tabs, or upright the board over
+    // them - neither is scaled.)
+    const c = fit(1100, 1000);
+    expect(c.roomLayout).toBe('columns');
+    expect(c.roomZoom).toBeCloseTo(1100 / 1180, 6);
+    expect(c.roomWidth).toBeCloseTo(1180, 6);
+    expect(c.roomHeight).toBeCloseTo(1000 * 1180 / 1100, 6);
     // Height decides here - a laptop a little short of the columns' least
     // height, which keeps them, scaled. (Much shorter is the tabs.)
     const d = fit(1904, 670);
@@ -3004,10 +3007,28 @@ describe('GameRoomComponent fitting the window', () => {
     expect(fit(1920, 1080).unitPinned).toBeTrue();
   });
 
-  it('leaves a portrait window the scaled columns until it has a layout of its own', () => {
-    const c = fit(820, 1180);
-    expect(c.roomLayout).toBe('columns');
-    expect(c.roomZoom).toBeCloseTo(820 / 1180, 6);
+  it('gives a portrait window the board over the tabs, unscaled', () => {
+    // The owner, 28 Sep 2026: the board the whole width on top, the tabs
+    // under it. A tablet upright pins the Unit panel beside them; a phone
+    // makes it a tab.
+    for (const [w, h, pinned] of [[820, 1180, true], [768, 1024, true], [600, 900, true],
+                                  [390, 844, false], [360, 740, false]] as const) {
+      const c = fit(w, h);
+      expect(c.roomLayout).withContext(`${w}x${h}`).toBe('stacked');
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBe(1);
+      expect(c.unitPinned).withContext(`${w}x${h}`).toBe(pinned);
+      expect(c.roomShort).withContext(`${w}x${h}`).toBeFalse();
+    }
+    // A portrait window big enough for the columns keeps them.
+    expect(fit(1180, 1400).roomLayout).toBe('columns');
+  });
+
+  it('tightens the column for a phone on its side', () => {
+    expect(fit(844, 390).roomShort).toBeTrue();
+    expect(fit(932, 430).roomShort).toBeTrue();
+    expect(fit(1024, 600).roomShort).toBeFalse();
+    expect(fit(960, 520).roomShort).toBeFalse();
+    expect(fit(960, 519).roomShort).toBeTrue();
   });
 });
 

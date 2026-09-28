@@ -63,8 +63,10 @@
     flex: 0 0 auto;
     white-space: nowrap;
     // Everything in here scales off this one size, so the whole right-hand
-    // side shrinks as a unit instead of one part wrapping ahead of the rest.
-    font-size: clamp(0.62rem, 1.3vw, 1rem);
+    // side shrinks as a unit instead of one part wrapping ahead of the rest -
+    // down to 12px and no further, the floor the game room holds its type to.
+    // It went to 9.9px, and under ~950px wide every word here was under 12.
+    font-size: clamp(12px, 1.3vw, 1rem);
     gap: clamp(4px, 0.9vw, 15px);
 
     button {
@@ -558,4 +560,60 @@
   margin: 0 0 6px;
   font-size: 0.85rem;
   color: #b7791f;
+}
+
+// A phone. The header's one row cannot hold the title, the name, three
+// buttons and the connection line at any size worth reading - held to one
+// row, it ran the connection line and the chat off the right of the screen,
+// out of reach. So under 720px the header wraps (the title and the sound on
+// one line, the rest under it), and the roster stands over the chat rather
+// than beside it, its list scrolling in up to two fifths of the height.
+@media (max-width: 720px) {
+  .lobby-container {
+    padding: 12px;
+  }
+
+  .header {
+    flex-wrap: wrap;
+    row-gap: 8px;
+    margin-bottom: 12px;
+
+    h1 {
+      font-size: 1.25rem;
+    }
+
+    .user-info {
+      flex: 1 1 100%;
+      flex-wrap: wrap;
+      white-space: normal;
+      row-gap: 6px;
+    }
+  }
+
+  .lobby-content {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .users-panel {
+    width: auto;
+    display: flex;
+    flex-direction: column;
+    flex: 0 1 auto;
+    max-height: 40%;
+
+    h2 {
+      margin-bottom: 6px;
+    }
+
+    .users-list {
+      height: auto;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+  }
+
+  .chat-panel {
+    min-height: 200px;
+  }
 }

@@ -1,6 +1,8 @@
 <div class="game-room-container" *ngIf="gameState.state$ | async as state"
      [style.zoom]="roomZoom" [style.width.px]="roomWidth" [style.height.px]="roomHeight"
-     [class.tabbed]="roomLayout === 'tabbed'" [class.unit-pinned]="unitPinned"
+     [class.with-tabs]="roomLayout !== 'columns'"
+     [class.tabbed]="roomLayout === 'tabbed'" [class.stacked]="roomLayout === 'stacked'"
+     [class.unit-pinned]="unitPinned" [class.short]="roomShort"
      [attr.data-tab]="shownTab">
   <header #roomHeader>
     <!-- Grouped, so the speaker keeps the same place whether or not the turn
@@ -62,7 +64,7 @@
          at all in the three columns, where every panel has a place of its own.
          The panels themselves stay where they are in the markup - the
          stylesheet's grid places them. -->
-    <nav class="room-tabs" role="tablist" aria-label="Panels" *ngIf="roomLayout === 'tabbed'">
+    <nav class="room-tabs" role="tablist" aria-label="Panels" *ngIf="roomLayout !== 'columns'">
       <button *ngFor="let tab of roomTabs" type="button" role="tab"
               [class.active]="shownTab === tab.id" [attr.aria-selected]="shownTab === tab.id"
               (click)="roomTab = tab.id">{{ tab.label }}</button>
@@ -77,8 +79,8 @@
       <!-- A move is staged on the board until one of these resolves it, so
            they sit with the board rather than off in the rail. -->
       <div class="turn-controls">
-        <button class="undo-btn" type="button" (click)="undoMove()" [disabled]="!canUndo">Undo<span *ngIf="shortcutsActive"> (R)</span></button>
-        <button class="end-turn-btn" type="button" (click)="endTurn()" [disabled]="!canEndTurn">End Turn<span *ngIf="shortcutsActive"> (TAB)</span></button>
+        <button class="undo-btn" type="button" (click)="undoMove()" [disabled]="!canUndo">Undo<span class="key-hint" *ngIf="shortcutsActive"> (R)</span></button>
+        <button class="end-turn-btn" type="button" (click)="endTurn()" [disabled]="!canEndTurn">End Turn<span class="key-hint" *ngIf="shortcutsActive"> (TAB)</span></button>
       </div>
 
       <!-- Two of a kind, half the row each: what the board draws on itself,
@@ -89,14 +91,14 @@
           type="button"
           [class.active]="showHexNumbers"
           (click)="showHexNumbers = !showHexNumbers"
-        >{{ showHexNumbers ? 'Hide' : 'Show' }} Hex<span *ngIf="shortcutsActive"> (S)</span></button>
+        >{{ showHexNumbers ? 'Hide' : 'Show' }} Hex<span class="key-hint" *ngIf="shortcutsActive"> (S)</span></button>
         <button
           class="hex-numbers-btn"
           type="button"
           [class.active]="flipView"
           title="Turn the board round to read it from the other side."
           (click)="flipView = !flipView"
-        >Flip<span *ngIf="shortcutsActive"> (F)</span></button>
+        >Flip<span class="key-hint" *ngIf="shortcutsActive"> (F)</span></button>
       </div>
 
       <section class="match-panel abilities-panel">
@@ -746,7 +748,7 @@
            box holds, so three bordered slabs read as three unrelated things. -->
       <!-- In the tabs History has a tab of its own, and expanding it into
            the whole column would leave the Room tab empty. -->
-      <div class="rail-box" *ngIf="!historyExpanded || roomLayout === 'tabbed'">
+      <div class="rail-box" *ngIf="!historyExpanded || roomLayout !== 'columns'">
       <div class="rail-tabs">
         <button [class.active]="activeSideTab === 'game'" (click)="activeSideTab = 'game'">Game</button>
         <button [class.active]="activeSideTab === 'lobby'" (click)="activeSideTab = 'lobby'">Lobby</button>

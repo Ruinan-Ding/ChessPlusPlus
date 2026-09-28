@@ -1,36 +1,4 @@
-@use 'sass:map';
-
-// The room's one unit. Everything on this screen but the board is sized in
-// it - type, padding, gaps, the two columns' widths - so the rails keep their
-// proportions at any size and the board takes whatever they leave.
-//
-// It replaced a single `zoom` on the whole room, which kept everything on
-// screen by shrinking everything together: at 1366x768 the median text came
-// out at 9.6px and the board shrank exactly as much as the chat did. Now the
-// unit follows the window down to a floor and up to a ceiling, and the board
-// is not in it: the rails give way first, which is the priority the board
-// needs. Measured in headless Chrome over the sizes people play at; see
-// client/scripts/layout-sweep.mjs.
-//
-// The six multiples the stylesheet uses most - a hundred-odd of its paddings
-// and gaps - are named once on the room (--u4 is 4px at the 16px unit) and
-// referred to by name. Written out, each was "calc(.375 * var(--u))" where it
-// had been "6px", and the room's compiled styles ran 2kB over their budget.
-$u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
-
-@function u($n) {
-  @if map.has-key($u-named, $n) {
-    @return var(--#{map.get($u-named, $n)});
-  }
-  @return calc(#{$n} * var(--u));
-}
-
-// Type: n units, and never under 12px. A floor on each size rather than on
-// the unit, so a heading still stands above the body text at the bottom of
-// the range instead of everything landing on the same 12px.
-@function t($n) {
-  @return max(12px, #{u($n)});
-}
+@use 'room-units' as *;
 
 .game-room-container {
   // The lesser of two, between 12px and 20px:
@@ -104,6 +72,16 @@ $u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
         flex-basis: 100%;
         margin: 0;
       }
+    }
+
+    // Narrower still - a phone upright: the turn on a line of its own and
+    // the two scores side by side under it, theirs then yours as before.
+    .turn-indicator.banner-scores-below {
+      flex-wrap: wrap;
+      row-gap: 0;
+
+      .turn-text { order: 0; flex-basis: 100%; }
+      .phase-score { order: 1; }
     }
     flex: 0 0 auto;          // never steal height from the board
     margin-bottom: u(0.5);
@@ -1598,122 +1576,6 @@ $u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
   }
   .disconnect-icon {
     cursor: help;
-  }
-
-  // ============ THE BOARD AND ONE COLUMN (roomLayout 'tabbed') ============
-  //
-  // A landscape window too small for the three columns - a tablet or a phone
-  // on its side, a small browser window. The board takes the left, as big as
-  // the window allows, and one column the right: the turn's controls, the
-  // Unit panel while there is height for it (.unit-pinned), a strip of tabs,
-  // the panel the tab picks, and Resign and Offer Draw. The owner, 27 Sep
-  // 2026: "tabs are fine" - every panel one tap away, and saying so, where
-  // the alternative was every panel on screen at 8px.
-  //
-  // The panels stay in the markup where the columns put them. The columns
-  // stop being boxes (display: contents) and main's grid places what was in
-  // them, so there is one copy of every panel and nothing to keep in step.
-  &.tabbed {
-    // One column of panels, so a measure of its own: the height the column
-    // needs, and the board first across the width - the columns' rule with
-    // one column of 20 units in place of two, u <= (W - 1.194 H) / 16.1.
-    // Capped at 16px: these are the smaller screens.
-    //
-    // The height is the tallest tab under everything that is always there -
-    // the two-row header included (fitHeader stacks it here from the start) -
-    // measured unit by unit, 28 Sep 2026, at 800 and 1000px wide alike: with
-    // the Unit panel pinned 685px at 12px, 752 at 14, 836 at 16; without it
-    // 497, 542, 602. Two straight lines each, as with the columns, with 4px
-    // to spare.
-    --u: clamp(12px, min(calc((100dvh - 266px) / 35.3), calc((100dvh - 120px) / 45),
-      calc((100vw - 119.4dvh) / 16.1)), 16px);
-
-    &:not(.unit-pinned) {
-      --u: clamp(12px, min(calc((100dvh - 210px) / 24.3), calc((100dvh - 94px) / 32),
-        calc((100vw - 119.4dvh) / 16.1)), 16px);
-    }
-
-    main {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) max(248px, #{u(20)});
-      grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
-      grid-template-areas:
-        "board turn"
-        "board view"
-        "board unit"
-        "board tabs"
-        "board panel"
-        "board actions";
-      gap: u(0.5) u(1);
-    }
-
-    .match-panels,
-    .side-rail { display: contents; }
-
-    .game-area { grid-area: board; min-width: 0; }
-    .turn-controls { grid-area: turn; }
-    .view-controls { grid-area: view; }
-    .stats-panel { grid-area: unit; }
-    .room-tabs { grid-area: tabs; }
-    .match-actions { grid-area: actions; }
-
-    // One at a time, in the one place.
-    .abilities-panel,
-    .opponent-panel,
-    .history-panel,
-    .rail-box {
-      grid-area: panel;
-      display: none;
-      min-height: 0;
-    }
-    &[data-tab='yours'] .abilities-panel,
-    &[data-tab='theirs'] .opponent-panel,
-    &[data-tab='history'] .history-panel,
-    &[data-tab='room'] .rail-box { display: flex; }
-
-    // History already has the whole panel; there is nothing to expand it into.
-    .history-panel .expand-btn { display: none; }
-
-    // Short of height for it, the Unit panel is a tab like the rest.
-    &:not(.unit-pinned) {
-      main {
-        grid-template-rows: auto auto auto minmax(0, 1fr) auto;
-        grid-template-areas:
-          "board turn"
-          "board view"
-          "board tabs"
-          "board panel"
-          "board actions";
-      }
-      .stats-panel { grid-area: panel; display: none; min-height: 0; }
-      &[data-tab='unit'] .stats-panel { display: flex; }
-    }
-  }
-
-  // The strip itself, the look of the Game/Lobby tabs it sits above.
-  .room-tabs {
-    display: flex;
-    border-bottom: 1px solid #ddd;
-
-    button {
-      flex: 1 1 0;
-      min-width: 0;
-      padding: u(0.375) u(0.25);
-      background: none;
-      border: none;
-      border-bottom: 3px solid transparent;
-      font-weight: 600;
-      font-size: t(0.88);
-      color: #6b7683;
-      white-space: nowrap;
-      cursor: pointer;
-
-      &:hover { background-color: #f5f5f5; }
-      &.active {
-        border-bottom-color: #3498db;
-        color: #2980b9;
-      }
-    }
   }
 
   // ==================== CONNECTION / END-OF-ROOM MODALS ====================

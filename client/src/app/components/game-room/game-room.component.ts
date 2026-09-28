@@ -447,6 +447,22 @@ const UNIT_PIN_MIN_HEIGHT = 690;
  */
 const TABBED_STACK_WIDTH = 1100;
 
+/**
+ * The least width at which a portrait window's panels stand in two columns
+ * under the board - the Unit panel pinned beside the tabs - rather than the
+ * Unit panel being a tab of its own: two 248px columns and the gap, with
+ * room to spare. A portrait tablet is well over it and a phone well under.
+ */
+const STACKED_TWO_COLUMN_WIDTH = 600;
+
+/**
+ * Below this height the tabbed layout's column gives up two rows - a phone
+ * on its side, whose whole column is a few hundred pixels: the turn's four
+ * controls go on one row, and Resign and Offer Draw to the Room tab
+ * (`.short`). Every tab of the full column fits from about 505px.
+ */
+const TABBED_SHORT_HEIGHT = 520;
+
 /** What the tabbed layout's one column can show under its tab strip. */
 export type RoomTab = 'yours' | 'unit' | 'theirs' | 'history' | 'room';
 
@@ -456,7 +472,7 @@ export type RoomTab = 'yours' | 'unit' | 'theirs' | 'history' | 'room';
   imports: [CommonModule, FormsModule, ConnectionStatusComponent, GameBoardComponent,
     VolumeControlComponent],
   templateUrl: './game-room.component.html',
-  styleUrls: ['./game-room.component.scss'],
+  styleUrls: ['./game-room.component.scss', './game-room.layout.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class GameRoomComponent implements OnInit, OnDestroy {
@@ -4027,18 +4043,21 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   roomHeight: number | null = null;
 
   /**
-   * Three columns, or the board and one column of tabs. The columns hold
-   * down to ROOM_MIN_WIDTH x ROOM_MIN_HEIGHT unscaled, and a little below it
-   * scaled (ROOM_MILD_ZOOM). A landscape window short of that - a tablet on
-   * its side, a phone on its side, a small browser window - gets the tabs:
-   * the board as big as the window allows, and beside it the turn's controls,
-   * the Unit panel while there is height for it, and one of the rest at a
-   * time. A portrait one is still the scaled columns until it has a layout of
-   * its own (PUNCHLIST 6.39, phase C).
+   * Three columns, the board and one column of tabs, or the board over the
+   * tabs. The columns hold down to ROOM_MIN_WIDTH x ROOM_MIN_HEIGHT unscaled,
+   * and a little below it scaled (ROOM_MILD_ZOOM). A landscape window short of
+   * that - a tablet or a phone on its side, a small browser window - gets the
+   * tabs beside the board: the board as big as the window allows, and beside
+   * it the turn's controls, the Unit panel while there is height for it, and
+   * one of the rest at a time. A portrait one - a phone, a tablet upright -
+   * gets the board the whole width on top and the tabs under it, with the
+   * turn's four controls in a bar along the bottom (the owner, 28 Sep 2026).
    */
-  roomLayout: 'columns' | 'tabbed' = 'columns';
+  roomLayout: 'columns' | 'tabbed' | 'stacked' = 'columns';
   /** Tabbed only: whether the Unit panel stays in sight above the tabs. */
   unitPinned = true;
+  /** Tabbed only: a phone on its side - the column's controls on one row. */
+  roomShort = false;
   /** Tabbed only: the panel under the tab strip. */
   roomTab: RoomTab = 'yours';
 
@@ -4061,12 +4080,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const width = window.innerWidth;
     const height = window.innerHeight;
     const zoom = Math.min(1, width / ROOM_MIN_WIDTH, height / ROOM_MIN_HEIGHT);
-    const tabbed = zoom < ROOM_MILD_ZOOM && width >= height;
-    if (tabbed !== (this.roomLayout === 'tabbed')) this.refitHeader?.();
-    this.roomLayout = tabbed ? 'tabbed' : 'columns';
-    this.unitPinned = !tabbed || height >= UNIT_PIN_MIN_HEIGHT;
-    // The tabs are laid out to the window, never scaled.
-    const scale = tabbed ? 1 : zoom;
+    const layout = zoom >= ROOM_MILD_ZOOM ? 'columns' : width >= height ? 'tabbed' : 'stacked';
+    if (layout !== this.roomLayout) this.refitHeader?.();
+    this.roomLayout = layout;
+    this.unitPinned = layout === 'columns'
+      || (layout === 'tabbed' ? height >= UNIT_PIN_MIN_HEIGHT : width >= STACKED_TWO_COLUMN_WIDTH);
+    this.roomShort = layout === 'tabbed' && height < TABBED_SHORT_HEIGHT;
+    // Only the columns are ever scaled; the other two are laid out to the window.
+    const scale = layout === 'columns' ? zoom : 1;
     this.roomZoom = scale;
     this.roomWidth = scale < 1 ? width / scale : null;
     this.roomHeight = scale < 1 ? height / scale : null;
@@ -4976,7 +4997,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     const soon = () => {
       cancelAnimationFrame(this.headerFrame);
       this.headerFrame = requestAnimationFrame(() => fitHeader(header, this.bannerEl,
-        this.roomLayout === 'tabbed' && window.innerWidth < TABBED_STACK_WIDTH));
+        this.roomLayout !== 'columns' && window.innerWidth < TABBED_STACK_WIDTH));
     };
     const resized = new ResizeObserver(soon);
     resized.observe(header);

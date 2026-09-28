@@ -119,6 +119,29 @@ describe('fitHeader', () => {
     expect(narrow.banner.scrollWidth).toBeLessThanOrEqual(narrow.banner.clientWidth + 1);
   });
 
+  it('puts the scores under the turn when even a row of its own is too narrow', () => {
+    // A phone upright: stacked, the scores still squeezed to four lines
+    // beside the turn. Under it, half the width each, they fit.
+    host.innerHTML = '';
+    const { head, banner } = header(360, LONG_SCORE);
+    const style = document.createElement('style');
+    style.textContent = '.b.banner-scores-below { flex-wrap: wrap; } '
+      + '.b.banner-scores-below > span:not(.phase-score) { order: 0; flex-basis: 100%; } '
+      + '.b.banner-scores-below .phase-score { order: 1; }';
+    host.appendChild(style);
+    const got = fitHeader(head, banner, true);
+    expect(got.scoresBelow).toBeTrue();
+    expect(banner.classList.contains('banner-scores-below')).toBeTrue();
+    expect(banner.scrollWidth).toBeLessThanOrEqual(banner.clientWidth + 1);
+    for (const s of Array.from(banner.querySelectorAll<HTMLElement>('.phase-score'))) {
+      expect(s.clientHeight).toBeLessThanOrEqual(got.lines * parseFloat(getComputedStyle(s).lineHeight) + 1);
+    }
+    // And it comes off again once there is room.
+    head.style.width = '3000px';
+    expect(fitHeader(head, banner, true).scoresBelow).toBeUndefined();
+    expect(banner.classList.contains('banner-scores-below')).toBeFalse();
+  });
+
   it('comes all the way back when the room returns', () => {
     const { head, banner } = header(300, LONG_SCORE);
     expect(fitHeader(head, banner).fit).toBeLessThan(1);

@@ -45,9 +45,10 @@ python scripts/e2e/panels.py   # crossings, walks home, blows into a panel - nee
 # Client (from client/)
 ng serve                                              # serve on :4200
 ng test
-# The room at 18 window sizes in headless Chrome, against a running ng serve (4201 spares
-# the owner's 4200): nothing scaled, clipped, cut short or scrolled but the logs, text >= 12px,
-# controls >= 24px. After any change to the room's stylesheet or template. (~4 min)
+# The room in all three layouts, every tab, and the login, lobby and setup, desktop to phone,
+# in headless Chrome against a running ng serve (4201 spares the owner's 4200): nothing
+# scaled, clipped, cut short or scrolled but the logs, text >= 12px, controls >= 24px. After
+# any change to the room's stylesheets or template, or another screen's. (~15 min)
 LAYOUT_URL=http://localhost:4201 node scripts/layout-sweep.mjs
 
 # CI (.github/workflows/tests.yml) runs both suites, the migrations check and the production
@@ -1226,15 +1227,15 @@ Decided so far:
 - **Nothing on the room screen is ever hidden to make room, and it is sized to the window
   rather than scaled to it.** The owner, 25 Sep 2026: *"DO NOT HIDE ANYTHING AS IT MAKES THIS
   GAME UNPLAYABLE"*; and 27 Sep 2026, asked how the room should hold small screens: *"tabs are
-  fine, support all devices, start with phase A"* (PUNCHLIST 6.39, 6.40). Phase A (desktops
-  and laptops) and phase B (tablets on their side, small windows) are done; phase C (portrait,
-  and phones) is not, and until it is the old answer still holds there: the whole room scales
-  down (`fitRoom()`, CSS `zoom`).
-  - **Three columns, or the board and one column of tabs** (`roomLayout`, decided in
-    `fitRoom()`). The columns from 1180x705 up, unscaled; a little short of that (scaled no
-    further than `ROOM_MILD_ZOOM`, 0.9) still the columns, scaled - the band of laptops whose
-    browser window is just short of 705, where a pixel of type is worth every panel in sight;
-    below that, if the window is landscape, the tabs; if portrait, still the scaled columns.
+  fine, support all devices, start with phase A"* (PUNCHLIST 6.39-6.41). Phase A (desktops
+  and laptops), B (tablets on their side, small windows) and C (upright screens, phones,
+  touch, the other screens) are done.
+  - **Three layouts** (`roomLayout`, decided in `fitRoom()`). The three columns from 1180x705
+    up, unscaled; a little short of that (scaled no further than `ROOM_MILD_ZOOM`, 0.9) still
+    the columns, scaled - the band of laptops whose browser window is just short of 705, where
+    a pixel of type is worth every panel in sight. Below that, a landscape window gets the
+    board and one column of tabs (`tabbed`), and a portrait one the board over the tabs
+    (`stacked`). What the two share is one block of the stylesheet, under `.with-tabs`.
   - **One unit sizes everything but the board.** `--u` on `.game-room-container`, between 12px
     and 20px, and every type size, padding, gap and both columns' widths are written in it -
     `u(n)` and `t(n)` in the stylesheet, `t` being type with a 12px floor. The board is not in
@@ -1266,8 +1267,9 @@ Decided so far:
     banner up to a fifth smaller with the scores on one line; then a score may take a second
     line, which is no taller than the banner's own; last, stacked - the banner on a row of its
     own under the title and the buttons (`.header-stacked`). The three columns never need the
-    last step at the sizes the sweep holds. **The tabs under 1100px wide are always stacked**
-    (`TABBED_STACK_WIDTH`): under ~1000px even the opening's banner wants it, and a header that
+    last step at the sizes the sweep holds. **The tabs and the board over them, under 1100px
+    wide, are always stacked** (`TABBED_STACK_WIDTH`): under ~1000px even the opening's banner
+    wants it, and a header that
     changed between one row and two as the turn's words changed length would move every panel
     under it, every turn - so there the window's width decides, never the words. Wider, the
     banner shares the row and the board keeps its height; the tabbed unit is measured with the
@@ -1281,23 +1283,59 @@ Decided so far:
     panels stay in the markup where the columns put them: the columns become `display:
     contents` and `main`'s grid places what was in them, so there is one copy of every panel.
     The unit has formulas of its own there, one pinned and one not, measured the same way
-    (the comment above them). Every tab fits without scrolling down to about 505px tall;
-    below that - a phone on its side - the shown tab's panel scrolls, until phase C gives
-    phones controls and a board of their own. History's expand button is not drawn in the
-    tabs (it has the whole panel already), and the Room tab stays filled if History was
-    expanded before the layout changed.
-  - **Where the room still scales**: a little short of the columns (above), and portrait below
-    them. `ROOM_MIN_WIDTH`/`ROOM_MIN_HEIGHT` (1180 x 705) is the least size at which the sweep
-    finds the columns whole with the unit at its floor. The window's units are safe inside the
+    (the comment above them). Every tab fits without scrolling down to about 505px tall.
+    Below `TABBED_SHORT_HEIGHT` (520) - a phone on its side - the column gives up two rows
+    (`.short`): the turn's four controls share one, and Resign and Offer Draw go to the Room
+    tab. A phone that short still scrolls its tallest tabs (22-115px at 932x430 to 740x360). A
+    panel under a tab strip scrolls rather than clipping: the Unit panel's body and the Room
+    box were `overflow: hidden` for the columns, and on a phone that hid the chat's input.
+    History's expand button is not drawn under the tabs (it has the whole panel already), and
+    the Room tab stays filled if History was expanded before the layout changed.
+  - **The board over the tabs** (`.stacked`, a portrait window - the owner, 28 Sep 2026): the
+    board the whole width on top, the tabs under it, and Undo, End Turn, Show Hex and Flip in
+    a bar along the bottom, 44px tall, where a thumb is. Resign and Offer Draw are on the Room
+    tab. From `STACKED_TWO_COLUMN_WIDTH` (600) wide - a tablet upright - the Unit panel stands
+    in a column beside the tabs; narrower it is a tab. The board is as tall as the width gives
+    it (`--board-h`), unless the panels under it would be left less than they need at the
+    12px unit (`--lower`, measured: the Room tab is the tallest), and never under 45% of the
+    window: an upright tablet gives the board up to the panels, a small phone keeps the board
+    and may scroll its tallest tab (a 360x740 by 53-77px; 390 wide and up fit). The panels
+    under the board are in `game-room.layout.scss`, with the tabs': the room's styles had
+    outgrown their 40kB budget, and the layouts are a subject of their own. The unit's
+    functions (`u()`, `t()`) are in `_room-units.scss`, which both stylesheets use.
+  - **The header's last steps.** Upright phones are too narrow for even the stacked banner, so
+    one more: the turn on a line of its own and the two scores side by side under it
+    (`.banner-scores-below`), where beside the turn they had squeezed to four lines each.
+  - **Touch.** A touch screen has no hover, and the hover is where a trade is read before it
+    is made. So the first tap on an enemy in reach arms it - its forecast on both units, a
+    pulse, "Tap again to strike" - and a second tap on it strikes; any other tap or a change
+    of position disarms (`armedAttack`, the board's `lastPointer`). A mouse's first click
+    strikes as it always has. The owner, 28 Sep 2026. On a coarse pointer the buttons do not
+    name the keys a phone has not got (`.key-hint`).
+  - **Pinch and drag.** A phone shows the whole board at 13-17px a hex whatever the layout, so
+    the board zooms: two fingers zoom it (1x to 4x, the point under them held under them), one
+    finger pans a zoomed board, and "Whole board" puts it back. What changes is the viewBox
+    (`shownViewBox`), so everything drawn on the board zooms with it. The tap that ends a drag
+    chooses nothing (`swallowClick`). The pointer handlers run outside Angular - they come
+    sixty times a second - and the board is `touch-action: none`, so a pinch there never
+    zooms the page.
+  - **Where the room still scales**: only a little short of the columns (above).
+    `ROOM_MIN_WIDTH`/`ROOM_MIN_HEIGHT` (1180 x 705) is the least size at which the sweep finds
+    the columns whole with the unit at its floor. The window's units are safe inside the
     zoomed room: every term only falls as the window does, so below the floor the unit sits at
     12px and the room is laid out at exactly the size that was measured.
+  - **The other screens.** The lobby's header wraps under 720px wide and its roster stands over
+    its chat; held to one row it had run the connection line and the chat off a phone's screen.
+    Its words have the 12px floor. Login and setup held already.
   - **Checked by `client/scripts/layout-sweep.mjs`**, in headless Chrome: the columns at 19
-    window sizes from 3440x1440 to 1180x705, the tabs at 9 from 1366x620 to 800x505 with every
-    tab of each measured, and the longest banner the match can show at all 28: each the layout
-    it should be, nothing scaled, nothing scrolling but the logs, nothing clipped or cut short,
-    nothing off screen, no text under 12px, no control under 24px, and every log with room for
-    its newest entry. Phones on their side and the still-scaled sizes are measured and printed,
-    not failed. Run it after any change to the room's stylesheet or template; a spec
+    window sizes from 3440x1440 to 1180x705; the tabs at 9 from 1366x620 to 800x505 and the
+    board over the tabs on 5 upright tablets, every tab of each, touch emulated for the
+    tablets; the longest banner the match can show at all 33; and the login, lobby and setup
+    at 7 sizes from 1920x1080 to 360x740 - 136 checks. Each the layout it should be, nothing
+    scaled, nothing scrolling but the logs, nothing clipped or cut short, nothing off screen,
+    no text under 12px, no control under 24px, and every log with room for its newest entry.
+    Phones either way up and the still-scaled sizes are measured and printed, not failed. Run
+    it after any change to the room's stylesheet or template; a spec
     cannot see any of this. Chrome fires no `resize` in a hidden tab - drive the size with
     `Emulation.setDeviceMetricsOverride`, as the sweep does.
   - What the zoom-everything room replaced (25 Sep), all measured: the Unit panel crushed to

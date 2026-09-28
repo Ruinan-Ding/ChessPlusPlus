@@ -27,13 +27,18 @@
  *    opening's banner wants it, and a header that went from one row to two as
  *    the turn's words changed length would move every panel under it, every
  *    turn - so there it is the window's width that decides, never the words.
+ * 6. Scores under the turn: in its own row the banner is still too narrow -
+ *    a phone upright - so the turn keeps a line to itself and the two scores
+ *    go side by side on the line under it, half the width each, where they
+ *    had been squeezed beside the turn to four lines apiece. Through 1-4 once
+ *    more there (`.banner-scores-below`).
  *
  * Overrunning is `scrollWidth > clientWidth`: the banner is centred, and a
  * centred row spills both ways, so scrollWidth sees only the half past the
  * right-hand edge - enough to answer yes or no, which is all a bisection asks.
  */
 export function fitHeader(header: HTMLElement, banner: HTMLElement | null, alwaysStacked = false,
-    least = 0.5): { compact: boolean; stacked: boolean; fit: number; lines: number } {
+    least = 0.5): { compact: boolean; stacked: boolean; scoresBelow?: boolean; fit: number; lines: number } {
   const set = (fit: number) => banner?.style.setProperty('--banner-fit', String(fit));
   const scores = banner ? Array.from(banner.querySelectorAll<HTMLElement>('.phase-score')) : [];
   const fits = (lines: number) => header.scrollWidth <= header.clientWidth + 1
@@ -73,6 +78,7 @@ export function fitHeader(header: HTMLElement, banner: HTMLElement | null, alway
 
   header.classList.remove('header-compact');
   header.classList.toggle('header-stacked', alwaysStacked);
+  banner?.classList.remove('banner-scores-below');
   set(1);
   if (fits(1)) return { compact: false, stacked: alwaysStacked, fit: 1, lines: 1 };
   header.classList.add('header-compact');
@@ -84,6 +90,9 @@ export function fitHeader(header: HTMLElement, banner: HTMLElement | null, alway
   }
   const stacked = shrink();
   if (stacked) return { compact: true, stacked: true, ...stacked };
+  banner.classList.add('banner-scores-below');
+  const below = shrink();
+  if (below) return { compact: true, stacked: true, scoresBelow: true, ...below };
   set(least);
-  return { compact: true, stacked: true, fit: least, lines: 2 };
+  return { compact: true, stacked: true, scoresBelow: true, fit: least, lines: 2 };
 }

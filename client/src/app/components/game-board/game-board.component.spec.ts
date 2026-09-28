@@ -2626,3 +2626,189 @@ describe('GameBoardComponent setup deal', () => {
     expect(reserves[freeBase]).toBeUndefined();
   });
 });
+
+/**
+ * A touch screen has no hover and a small screen a small board: the first tap
+ * on an enemy in reach reads the trade and a second makes it, and the board
+ * pinches to zoom and drags to pan. The owner, 28 Sep 2026.
+ */
+describe('GameBoardComponent on a touch screen', () => {
+  let fixture: ComponentFixture<GameBoardComponent>;
+  let board: GameBoardComponent;
+  const anyBoard = () => board as any;
+
+  const config = {
+    board: { radius: 4, orientation: 'edge-up' },
+    units: {
+      archer: { id: 'archer', name: 'Archer', symbol: 'A', move: 1, hp: 5, attack: 4, defense: 1, attackRange: 2 },
+      guard: { id: 'guard', name: 'Guard', symbol: 'G', move: 1, hp: 9, attack: 3, defense: 2, attackRange: 1 },
+    },
+  };
+  const boardState: Record<string, any> = {
+    '0,0': { unit_id: 'archer', color: 'white', hp: 5, max_hp: 5 },
+    '2,0': { unit_id: 'guard', color: 'black', hp: 9, max_hp: 9 },
+    '-2,0': { unit_id: 'guard', color: 'white', hp: 9, max_hp: 9 },
+  };
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({ imports: [GameBoardComponent] }).compileComponents();
+    fixture = TestBed.createComponent(GameBoardComponent);
+    // A real box to lay out in, as the room gives it one.
+    fixture.nativeElement.style.cssText = 'display:block;position:relative;width:600px;height:500px';
+    document.body.appendChild(fixture.nativeElement);
+    board = fixture.componentInstance;
+    board.boardState = boardState;
+    board.config = config;
+    board.radius = 4;
+    board.turnNumber = 20;
+    board.interactive = true;
+    board.controlAllSides = true;
+    board.turnColor = 'white';
+    board.ngOnChanges({
+      boardState: new SimpleChange(null, boardState, true),
+      config: new SimpleChange(null, config, true),
+      radius: new SimpleChange(null, 4, true),
+    });
+    fixture.detectChanges();
+  });
+  afterEach(() => fixture.nativeElement.remove());
+
+  const cell = (key: string) => board.cells.find(c => c.key === key)!;
+  const svg = () => fixture.nativeElement.querySelector('svg.hex-board') as SVGSVGElement;
+  const pointer = (type: string, id: number, x: number, y: number, kind = 'touch') =>
+    svg().dispatchEvent(new PointerEvent(type, {
+      pointerId: id, pointerType: kind, clientX: x, clientY: y, bubbles: true,
+    }));
+  // The archer at 0,0 selected, the guard at 2,0 in its reach.
+  const aim = () => {
+    board.onHexClick(cell('0,0'));
+    expect(board.attackTargets.has('2,0')).toBeTrue();
+  };
+
+  it('reads the trade on the first tap and makes it on the second', () => {
+    const swings: any[] = [];
+    board.attackMade.subscribe((e: any) => swings.push(e));
+    aim();
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    expect(swings).toEqual([]);
+    expect(board.armedAttack).toBe('2,0');
+    // The forecast a hover would have shown, on the target.
+    expect(board.forecastDamage('2,0')).toMatch(/^-\d+$/);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.armed-hint')?.textContent).toContain('Tap again');
+
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    expect(swings.length).toBe(1);
+    expect(swings[0].attack).toBe('2,0');
+    expect(board.armedAttack).toBeNull();
+  });
+
+  it('strikes on the first click with a mouse, which read it by hovering', () => {
+    const swings: any[] = [];
+    board.attackMade.subscribe((e: any) => swings.push(e));
+    aim();
+    pointer('pointerdown', 1, 300, 250, 'mouse');
+    board.onHexClick(cell('2,0'));
+    expect(swings.length).toBe(1);
+  });
+
+  it('disarms on any other tap, so a stray second tap never strikes', () => {
+    const swings: any[] = [];
+    board.attackMade.subscribe((e: any) => swings.push(e));
+    aim();
+    pointer('pointerdown', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    board.onHexClick(cell('-2,0'));      // another unit - not the target
+    expect(board.armedAttack).toBeNull();
+    aim();                               // the archer back, the guard in reach
+    board.onHexClick(cell('2,0'));       // arms afresh rather than striking
+    expect(swings).toEqual([]);
+    expect(board.armedAttack).toBe('2,0');
+    // And a new position disarms it too.
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 21, false) });
+    expect(board.armedAttack).toBeNull();
+  });
+
+  it('pinches to zoom, keeping the board under the fingers, and fits back', () => {
+    const whole = board.shownViewBox;
+    pointer('pointerdown', 1, 250, 250);
+    pointer('pointerdown', 2, 350, 250);
+    pointer('pointermove', 2, 450, 250);   // spread doubled
+    pointer('pointerup', 2, 450, 250);
+    pointer('pointerup', 1, 250, 250);
+    expect(board.boardZoom).toBeCloseTo(2, 5);
+    const [, , w] = board.shownViewBox.split(' ').map(Number);
+    const [, , w0] = whole.split(' ').map(Number);
+    expect(w).toBeCloseTo(w0 / 2, 0);
+
+    // Never past four times, never out past the whole board.
+    pointer('pointerdown', 1, 290, 250);
+    pointer('pointerdown', 2, 310, 250);
+    pointer('pointermove', 2, 590, 250);
+    pointer('pointerup', 2, 590, 250);
+    pointer('pointerup', 1, 290, 250);
+    expect(board.boardZoom).toBe(GameBoardComponent.ZOOM_MAX);
+    pointer('pointerdown', 1, 100, 250);
+    pointer('pointerdown', 2, 500, 250);
+    pointer('pointermove', 2, 101, 250);
+    pointer('pointerup', 2, 101, 250);
+    pointer('pointerup', 1, 100, 250);
+    expect(board.boardZoom).toBe(1);
+    expect(board.shownViewBox).toBe(whole);
+
+    anyBoard().boardZoom = 3;
+    anyBoard().applyZoom();
+    fixture.detectChanges();
+    const fit = fixture.nativeElement.querySelector('.board-fit-btn') as HTMLButtonElement;
+    expect(fit).toBeTruthy();
+    fit.click();
+    fixture.detectChanges();
+    expect(board.boardZoom).toBe(1);
+    expect(board.shownViewBox).toBe(whole);
+    expect(fixture.nativeElement.querySelector('.board-fit-btn')).toBeNull();
+  });
+
+  it('pans a zoomed board with one finger, and the tap that ends the drag chooses nothing', () => {
+    anyBoard().boardZoom = 2;
+    anyBoard().applyZoom();
+    const before = board.shownViewBox;
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointermove', 1, 360, 250);
+    pointer('pointerup', 1, 360, 250);
+    expect(board.shownViewBox).not.toBe(before);
+    // Dragged right, so the view moved left over the board.
+    expect(Number(board.shownViewBox.split(' ')[0])).toBeLessThan(Number(before.split(' ')[0]));
+    board.onHexClick(cell('0,0'));
+    expect(anyBoard().selectedHex).toBeNull();
+    // The next tap is a tap.
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    board.onHexClick(cell('0,0'));
+    expect(anyBoard().selectedHex).toBe('0,0');
+  });
+
+  it('turns a drag round with the board when it is flipped', () => {
+    board.rotateBoard = true;
+    anyBoard().boardZoom = 2;
+    anyBoard().applyZoom();
+    const before = Number(board.shownViewBox.split(' ')[0]);
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointermove', 1, 360, 250);
+    pointer('pointerup', 1, 360, 250);
+    expect(Number(board.shownViewBox.split(' ')[0])).toBeGreaterThan(before);
+  });
+
+  it('does not pan the whole board, and a small wobble is still a tap', () => {
+    const whole = board.shownViewBox;
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointermove', 1, 340, 250);
+    pointer('pointerup', 1, 340, 250);
+    expect(board.shownViewBox).toBe(whole);
+    board.onHexClick(cell('0,0'));
+    expect(anyBoard().selectedHex).toBe('0,0');
+  });
+});
