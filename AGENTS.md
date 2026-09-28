@@ -32,13 +32,15 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (277 tests, 25 Sep 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (297 tests, 26 Sep 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
 python scripts/e2e/match.py    # one full match: lobby, invite, room, moves, rejoin, resign
 python scripts/e2e/edges.py    # races, second tab, token lifetime, disconnect after the result (~90s)
 python scripts/e2e/endings.py  # two matches played out: to turn 50 on passes, and won on points (~1 min)
+python scripts/e2e/panels.py   # crossings, walks home, blows into a panel - needs the server
+                               # started with CPP_DEAL_PANELS=1, or it fails for want of panel units
 
 # Client (from client/)
 ng serve                                              # serve on :4200

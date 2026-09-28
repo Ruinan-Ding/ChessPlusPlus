@@ -1,5 +1,10 @@
 **ChessPlusPlus correctness and readiness review — 26 September 2026**
 
+> **Status, 26 Sep 2026: all eleven findings are fixed**, each with a regression test, in
+> `2b01cb5` (merged as PR #19) - see PUNCHLIST 6.38. The readiness gaps and the recommendations
+> that are not bugs (cross-engine parity for move/combat/panel histories, deployment, moving the
+> rules checklist into config) are still open. The report below is unchanged.
+
 The current working tree has a coherent game architecture and substantial automated coverage, but it is **not ready for public competitive multiplayer or an enterprise deployment**. This review found an authorization bypass, a reproducible lost-update condition, and several gameplay errors that the passing suites do not exercise.
 
 This report reviews the working tree on `feature/dev18`, whose reviewed functional changes are now recorded in commit `4d342bf`. Findings describe current behavior across the codebase; they are not limited to bugs introduced by that commit. No application code or game rules were changed for this review.

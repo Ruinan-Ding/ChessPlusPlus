@@ -1,5 +1,12 @@
 # Handoff: ChessPlusPlus, 23 Sep 2026
 
+> **Historical - a snapshot of `feature/dev18` on 23 Sep 2026.** dev18 has since been merged
+> (PR #19), and much below is out of date: the branch and test counts, the CP rule (a flat
+> `cpPerPhase` 100 is now 5 CP to start and a postmatch award, PUNCHLIST 6.26/6.29), and the
+> housekeeping list, which is done. The working rules under "How this owner works" still hold.
+> [AGENTS.md](AGENTS.md) describes the code as it is and [PUNCHLIST.md](PUNCHLIST.md) what is
+> open. Kept for the record (26 Sep 2026).
+
 Written by the previous agent (Claude Code) for the next one, Codex. **AGENTS.md is the source of
 truth** for how this repo works: architecture, the rules the owner has decided, and why. Read it
 first. This note covers only what AGENTS.md does not: where the work stands, how this owner likes to
