@@ -1,4 +1,70 @@
+@use 'sass:map';
+
+// The room's one unit. Everything on this screen but the board is sized in
+// it - type, padding, gaps, the two columns' widths - so the rails keep their
+// proportions at any size and the board takes whatever they leave.
+//
+// It replaced a single `zoom` on the whole room, which kept everything on
+// screen by shrinking everything together: at 1366x768 the median text came
+// out at 9.6px and the board shrank exactly as much as the chat did. Now the
+// unit follows the window down to a floor and up to a ceiling, and the board
+// is not in it: the rails give way first, which is the priority the board
+// needs. Measured in headless Chrome over the sizes people play at; see
+// client/scripts/layout-sweep.mjs.
+//
+// The six multiples the stylesheet uses most - a hundred-odd of its paddings
+// and gaps - are named once on the room (--u4 is 4px at the 16px unit) and
+// referred to by name. Written out, each was "calc(.375 * var(--u))" where it
+// had been "6px", and the room's compiled styles ran 2kB over their budget.
+$u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
+
+@function u($n) {
+  @if map.has-key($u-named, $n) {
+    @return var(--#{map.get($u-named, $n)});
+  }
+  @return calc(#{$n} * var(--u));
+}
+
+// Type: n units, and never under 12px. A floor on each size rather than on
+// the unit, so a heading still stands above the body text at the bottom of
+// the range instead of everything landing on the same 12px.
+@function t($n) {
+  @return max(12px, #{u($n)});
+}
+
 .game-room-container {
+  // The lesser of two, between 12px and 20px:
+  //
+  // - Height: the window has to hold the taller column, the header and the
+  //   room's padding. Measured unit by unit in headless Chrome, 28 Sep 2026,
+  //   with a line of chat in the chat and History and the chat each held to
+  //   one whole entry: about 700px at 12px, 765 at 14, 850 at 16, 950 at 18,
+  //   1050 at 20. Not one straight line - at the bottom the 12px type and the
+  //   24px buttons are floors that do not shrink with the unit - so two, and
+  //   the lower of the two answers: 36 units + 272px up to about 15px, 49.5
+  //   units + 70px above it, each with a few px to spare. The first also
+  //   covers the longest banner at the narrowest window.
+  // - The board first. It is drawn 1.194 times as wide as it is tall, so
+  //   once the rails leave it that much width for its height it is as big as
+  //   the window allows, and only then do the rails grow into what is left.
+  //   With the rails at 36.25 units, the gaps and padding at 4, and 5.33 of
+  //   header over the board, that is u <= (W - 1.194 H) / 33.9. On a window
+  //   where the board is short of width - any 16:10 screen - this is what
+  //   holds the rails at their floor: they give way before the board does.
+  //
+  // Everything else - the type floor, the 24px targets, the rails' 248px -
+  // bites only at the bottom of the range, which is what the room's least
+  // size (fitRoom) was measured at. Below it the room is still zoomed, and
+  // the window's units are safe in here all the same: every term only falls
+  // as the window does, so there the unit sits at its 12px floor and the
+  // room is laid out at exactly the size that floor was measured at.
+  --u: clamp(12px, min(calc((100dvh - 272px) / 36), calc((100dvh - 70px) / 49.5),
+    calc((100vw - 119.4dvh) / 33.9)), 20px);
+  font-size: var(--u);
+  @each $n, $name in $u-named {
+    --#{$name}: calc(#{$n} * var(--u));
+  }
+
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -7,50 +73,61 @@
 
   width: 100%;
   margin: 0 auto;
-  padding: 10px 12px;
+  padding: u(0.625) u(0.75);
   font-family: Arial, sans-serif;
 
   header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    // A long turn banner - a timer, a stage, two scores with their banked
-    // phases - takes a second row rather than pushing the buttons and the
-    // connection status off the right-hand edge.
-    flex-wrap: wrap;
-    row-gap: 6px;
+    // One row, always. The turn banner between the title and the buttons is
+    // the part that gives: it is fitted to the room it has (fitBanner), where
+    // it used to wrap onto a second row and take that height off the columns.
+    flex-wrap: nowrap;
+    gap: u(0.625);
+
+    // Short of room, "Configure Setup" and "Leave Room" say "Setup" and
+    // "Leave", and the connection status keeps its first word (its own
+    // stylesheet, :host-context). Before the banner shrinks - see fitHeader.
+    &.header-compact .label-long { display: none; }
     flex: 0 0 auto;          // never steal height from the board
-    margin-bottom: 8px;
-    padding-bottom: 6px;
+    margin-bottom: u(0.5);
+    padding-bottom: u(0.375);
     border-bottom: 1px solid #ddd;
 
     h1 {
       margin: 0;
-      font-size: 1.25rem;    // compact: the board is the point of this screen
+      font-size: t(1.25);    // compact: the board is the point of this screen
       color: #2c3e50;
       display: inline-flex;
       align-items: center;
-      gap: 12px;
+      gap: u(0.75);
     }
 
     .title-group {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: u(0.625);
       flex: 0 0 auto;
     }
 
     .turn-indicator {
-      flex: 1 1 auto;
-      margin: 0 20px;
+      // Basis 0 and no floor of its own: it takes the row the title and the
+      // buttons leave, never more, so a long banner cannot push them off.
+      flex: 1 1 0;
+      min-width: 0;
+      margin: 0 u(0.625);
       display: flex;
-      align-items: baseline;
+      // Centred rather than on the baseline: a score that has wrapped to two
+      // lines sits level with the banner instead of hanging below it.
+      align-items: center;
       justify-content: center;
-      gap: 16px;
+      gap: u(1);
       text-align: center;
-      // Not in vw: the room is laid out at least ROOM_MIN_WIDTH wide and
-      // scaled to the window (fitRoom), and vw would read the window instead.
-      font-size: 2rem;
+      // Two units, times what fitBanner worked out it can afford: 1 whenever
+      // the whole line fits, which is every turn of the match on a big
+      // window, and less only when it would otherwise overrun the buttons.
+      font-size: calc(var(--banner-fit, 1) * #{u(2)});
       font-weight: 800;
       letter-spacing: 0.08em;
       white-space: nowrap;
@@ -87,7 +164,17 @@
       // colour with the turn would read as if it had changed.
       .phase-score {
         flex: 1 1 0;
-        font-size: 0.55em;
+        // Its own 12px floor: the banner shrinks to fit, and 0.55 of a
+        // fitted banner is where the scores would stop being readable first.
+        font-size: max(12px, 0.55em);
+        // A score may take a second line; the turn itself never does. Late
+        // in a match a score with a multiplier and three banked phases runs
+        // to forty-odd characters a side, which no laptop header holds on
+        // one line beside the turn at any size worth reading. Two lines of
+        // it are no taller than the banner's own line, so the header keeps
+        // its height; the banner shrinks only if a score would need a third.
+        white-space: normal;
+        line-height: 1.2;
         font-weight: 700;
         letter-spacing: 0.02em;
       }
@@ -169,10 +256,10 @@
     .header-actions {
       display: flex;
       align-items: center;
-      gap: 15px;
+      gap: u(0.9375);
       
       .setup-btn {
-        padding: 8px 15px;
+        padding: u(0.5) u(0.9375);
         background-color: #9b59b6;
         color: white;
         border: none;
@@ -191,7 +278,7 @@
       }
       
       .leave-btn {
-        padding: 8px 15px;
+        padding: u(0.5) u(0.9375);
         background-color: #e74c3c;
         color: white;
         border: none;
@@ -209,7 +296,7 @@
     display: flex;
     flex-direction: row;
     flex: 1;
-    gap: 20px;
+    gap: u(1.25);
     min-height: 0;
     height: 100%;
     box-sizing: border-box;
@@ -421,23 +508,23 @@
     }
   }
 
-  // Left column: the four match panels, plain stacked rectangles.
+  // Left column: your side, in plain stacked rectangles.
   //
-  // The basis gives way on a narrow window. Both rails used to be fixed, so
-  // 260 + 320 + two 20px gaps came off the top whatever the window was: in a
-  // 940px one the board was left about 300px, the whole SVG scaled to roughly
-  // a quarter to fit it, and a 22px end-of-turn mark landed on screen at 6px.
-  // The marks were drawn correctly the whole time and were simply too small
-  // to read. clamp() hands the board back ~160px of that at narrow widths and
-  // still opens out to the full rail once there is room - the board is scaled
-  // to fit, so every pixel the rails give back is board.
+  // Both columns are measured in the room's unit, so they widen with the
+  // type in them and the board takes every pixel they leave - the board
+  // scales to fit its box, so whatever the rails give back is board. They
+  // used to be shares of the room (clamp(190px, 18%, 260px)), which was the
+  // wrong thing to scale on: a percentage of a wide window made a wide rail
+  // whatever size its text was.
+  //
+  // The px floor is what two ability buttons need side by side at the 12px
+  // type floor ("Arc Bolt (0) - 3" on one line). At the bottom of the range
+  // the unit alone would make the column narrower than its own type.
   .match-panels {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    // A share of the room rather than of the window (vw): the room is scaled
-    // to fit the window (fitRoom), so the window's width is not the room's.
-    flex: 0 0 clamp(190px, 18%, 260px);
+    gap: u(0.625);
+    flex: 0 0 max(248px, #{u(16.25)});
     min-height: 0;
     overflow-y: auto;
   }
@@ -469,9 +556,9 @@
     h3 {
       flex: 0 0 auto;
       margin: 0;
-      padding: 8px 12px;
+      padding: u(0.4) u(0.75);
       border-bottom: 1px solid #ddd;
-      font-size: 0.92rem;
+      font-size: t(0.92);
       color: #2c3e50;
     }
 
@@ -479,17 +566,18 @@
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
-      padding: 6px 10px;
+      padding: u(0.375) u(0.625);
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: u(0.5);
     }
   }
 
-  // History gets the slack; the other three size to their content.
-  // Top of the right rail; the Game/Lobby tabs take the rest. Short of half
-  // so the chat under the players list is a chat and not a slot.
-  .history-panel { flex: 0 0 42%; min-height: 120px; }
+  // Under their panel, History and the Game/Lobby box share what is left:
+  // a little more to the box, which holds the roster as well as a chat. Both
+  // are logs that scroll, so each keeps a floor of a few lines rather than a
+  // share - a share of a short column was a slot nobody could read.
+  .history-panel { flex: 1 1 0; min-height: max(66px, #{u(5.2)}); }
   // Expanded, it swallows the rail and the tabs go with it.
   .history-panel.expanded { flex: 1 1 100%; }
 
@@ -497,7 +585,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: u(0.5);
   }
 
   .resign-btn {
@@ -516,13 +604,13 @@
     flex: 0 0 auto;
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 6px;
+    gap: u(0.375);
 
     button {
-      padding: 8px 6px;
+      padding: u(0.5) u(0.375);
       border: none;
       border-radius: 6px;
-      font-size: 0.82rem;
+      font-size: t(0.82);
       font-weight: 600;
       color: #fff;
       cursor: pointer;
@@ -536,9 +624,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    margin: 0 0 8px;
-    font-size: 1rem;
+    gap: u(0.5);
+    margin: 0 0 u(0.5);
+    font-size: t(1);
     color: #2c3e50;
   }
 
@@ -597,19 +685,19 @@
     grid-column: 1 / -1;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-auto-rows: minmax(30px, auto);
-    gap: 6px;
-    margin-top: 6px;
+    grid-auto-rows: minmax(#{u(1.875)}, auto);
+    gap: u(0.375);
+    margin-top: u(0.375);
     // The same height as the three buttons it replaces, so opening one does
     // not move anything under it.
-    min-height: 70px;
+    min-height: u(4.375);
   }
 
   // The passive and its green button, an even half each.
   .path-passive-row {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
+    gap: u(0.375);
   }
 
   // Pick and Back, under whatever the panel is showing. A fixed height: with
@@ -618,7 +706,7 @@
   .path-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
+    gap: u(0.375);
 
     // Height comes from the buttons' own line box, blank ones included - and
     // an explicit line-height, so a space and a word measure the same.
@@ -665,12 +753,12 @@
   // ponytail: a colour and a place, nothing more - it does nothing until
   // there is something for it to do.
   .path-extra-btn {
-    padding: 4px 0;
+    padding: u(0.25) 0;
     border: none;
     border-radius: 6px;
     background: #16a34a;
     color: #fff;
-    font-size: 0.9rem;
+    font-size: t(0.9);
     font-weight: 700;
     line-height: 1;
     cursor: pointer;
@@ -682,7 +770,7 @@
 
   .coming-soon {
     margin: 0;
-    padding: 12px 0;
+    padding: u(0.75) 0;
     text-align: center;
     color: #7a8794;
     font-style: italic;
@@ -716,20 +804,20 @@
     grid-column: 1 / -1;
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-    margin-top: 6px;
+    gap: u(0.375);
+    margin-top: u(0.375);
     // As tall as the two rows each one opens into - passive, then the pair -
     // so choosing one changes what is in the panel, never how much room it
     // takes. Pick and Back live under the panel now, in a row of their own
     // that is there whether anything is open or not.
-    min-height: 70px;
+    min-height: u(4.375);
   }
 
   // Ultimate and skill side by side - one line of the panel, not two.
   .path-pair {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
+    gap: u(0.375);
   }
 
   .path-btn {
@@ -744,12 +832,12 @@
     // Full height of the row it sits in - which is as tall as the rows it
     // opens into, so choosing one shifts nothing.
     height: 100%;
-    padding: 4px 2px;
+    padding: u(0.25) u(0.125);
     border: 1px dashed #b39ddb;
     border-radius: 6px;
     background: #f6f2fc;
     color: #4a3c68;
-    font-size: 0.8rem;
+    font-size: t(0.8);
     font-weight: 700;
     white-space: nowrap;
     overflow: hidden;
@@ -763,7 +851,7 @@
     }
 
     .path-cost {
-      font-size: 0.72rem;
+      font-size: t(0.72);
       font-weight: 600;
       opacity: 0.75;
     }
@@ -773,8 +861,8 @@
   }
 
   .pick-btn {
-    padding: 3px 10px;
-    font-size: 0.78rem;
+    padding: u(0.1875) u(0.625);
+    font-size: t(0.78);
     border: none;
     border-radius: 6px;
     font-weight: 600;
@@ -786,7 +874,7 @@
   }
 
   .coming-soon {
-    margin: 4px 0 8px;
+    margin: u(0.25) 0 u(0.5);
     font-style: italic;
     color: #f1c40f;
   }
@@ -797,9 +885,9 @@
     border-radius: 4px;
     background: #fff;
     cursor: pointer;
-    font-size: 0.95rem;
+    font-size: t(0.95);
     line-height: 1;
-    padding: 3px 7px;
+    padding: u(0.1875) u(0.4375);
     color: #2c3e50;
 
     &:hover { background-color: #f1f4f7; }
@@ -809,22 +897,24 @@
   .stat-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 6px;
+    gap: u(0.375);
   }
 
   .stat-cell {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    // "26,19/26,19" must sit beside its label, not wrap under it - the
-    // component shrinks the text instead (statFontSize).
-    flex-wrap: nowrap;
+    // "26,19/26,19" sits beside its label - the component shrinks the text
+    // to keep it there (statFontSize). The shrinking stops at the 12px type
+    // floor, so at the bottom of the room's range a value that long drops
+    // under its label rather than running out of the cell.
+    flex-wrap: wrap;
     white-space: nowrap;
-    gap: 6px;
-    padding: 4px 8px;
+    gap: u(0.375);
+    padding: u(0.25) u(0.5);
     border-radius: 6px;
     background-color: #f5f7fa;
-    font-size: 0.82rem;
+    font-size: t(0.82);
 
     strong { font-size: 1rem; }
 
@@ -864,7 +954,7 @@
   // Whose unit it is, at the far end of the panel's tab.
   .stats-panel .unit-side {
     margin-left: auto;
-    font-size: 0.82rem;
+    font-size: t(0.82);
     font-weight: 700;
     color: #7f8c8d;
   }
@@ -880,8 +970,8 @@
     // stats and the buttons around it. It takes what the panel has spare and
     // scrolls the rest - what is inside it never moves anything outside it.
     flex: 1 1 0;
-    min-height: 74px;
-    margin: 6px 0 0;
+    min-height: u(4.625);
+    margin: u(0.375) 0 0;
     border: 1px solid #e3e7ec;
     border-radius: 6px;
     background: #fff;
@@ -891,30 +981,29 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
-    padding: 4px 6px;
+    padding: u(0.25) u(0.375);
   }
 
   .effect-row {
     display: flex;
     align-items: baseline;
-    gap: 6px;
-    font-size: 0.72rem;
+    gap: u(0.375);
+    font-size: t(0.72);
     line-height: 1.5;
-    white-space: nowrap;
 
-    .effect-name { font-weight: 700; color: #2c3e50; }
+    .effect-name { font-weight: 700; color: #2c3e50; white-space: nowrap; }
+    // Wraps rather than ending in an ellipsis: the box scrolls, so a second
+    // line costs nothing, and a cut-off detail was the one part worth reading.
     .effect-detail {
       flex: 1 1 auto;
       min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
       color: #7f8c8d;
     }
     .effect-life { flex: 0 0 auto; color: #b7791f; }
   }
 
   .effect-empty {
-    font-size: 0.72rem;
+    font-size: t(0.72);
     font-style: italic;
     color: #95a5a6;
   }
@@ -929,8 +1018,13 @@
   // playable with that gone". The room scales to fit instead (fitRoom).
   .stats-panel { flex: 1 0 auto; min-height: 0; }
 
-  .gear-button {
-    font-size: 15px;
+  // The solo opponent's shortcut to their setup. Sized like the words beside
+  // it, with its padding cut to the 24px target: it took the ⋮ button's 18px
+  // glyph and padding, and made its row half again as tall as yours.
+  .player-list .action-button.gear-button {
+    font-size: t(0.9375);
+    line-height: 1;
+    padding: 0 u(0.375);
   }
 
   /* One row, an equal half each - so neither label's length decides how the
@@ -938,17 +1032,17 @@
   .view-controls {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
+    gap: u(0.375);
   }
 
   .hex-numbers-btn {
     flex: 0 0 auto;
-    padding: 4px 10px;
+    padding: u(0.25) u(0.625);
     border: 1px solid #ddd;
     border-radius: 4px;
     background-color: #fff;
     color: #2c3e50;
-    font-size: 0.88rem;
+    font-size: t(0.88);
     cursor: pointer;
 
     &:hover { background-color: #f1f4f7; }
@@ -980,7 +1074,7 @@
     // minmax(0, 1fr): a plain 1fr floors at the content's own width, which is
     // what let a long label widen the column and scroll the panel.
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
+    gap: u(0.375);
   }
 
   // The path you took: passive, skill and ultimate stacked, each the full
@@ -989,11 +1083,11 @@
     grid-column: 1 / -1;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
+    gap: u(0.375);
     // The same box the three choices and the confirm screen occupy, so the
     // panel is one height for the whole match.
-    margin-top: 6px;
-    min-height: 70px;
+    margin-top: u(0.375);
+    min-height: u(4.375);
     align-content: start;
 
     // Only the passive shares its row; the pair spans both columns.
@@ -1008,29 +1102,29 @@
     // As with the action row: an explicit line-height, so a blank slot and a
     // named one measure the same.
     > button { line-height: 1.2; }
-    gap: 6px;
+    gap: u(0.375);
   }
 
   .panel-empty {
     color: #999;
-    font-size: 0.9rem;
+    font-size: t(0.9);
     text-align: center;
-    padding: 14px 0;
+    padding: u(0.875) 0;
   }
 
   .history-item {
     display: flex;
     justify-content: space-between;
-    gap: 8px;
-    padding: 5px 8px;
+    gap: u(0.5);
+    padding: u(0.3125) u(0.5);
     border-radius: 6px;
     background-color: #f5f7fa;
-    font-size: 0.84rem;
+    font-size: t(0.84);
 
     .history-time {
       flex: 0 0 auto;
       color: #888;
-      font-size: 0.76rem;
+      font-size: t(0.76);
     }
   }
 
@@ -1039,19 +1133,19 @@
     flex: 0 0 auto;
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 6px;
+    gap: u(0.375);
     // Standing on its own above the hex-number toggle now, not closing off a
     // panel, so it carries neither the rule nor the panel's inset.
     padding: 0;
 
     button {
-      padding: 8px 6px;
+      padding: u(0.5) u(0.375);
       border: none;
       border-radius: 6px;
       font-weight: 600;
       // Both labels keep one line at the same size; "End Turn (TAB)" is the
       // one that has to fit, so it sets the size for the pair.
-      font-size: 0.8rem;
+      font-size: t(0.8);
       white-space: nowrap;
       cursor: pointer;
       color: #fff;
@@ -1070,13 +1164,13 @@
   .scaffold-btn {
     // Only as tall as the words in it: the panels have to hold the pool, the
     // path and a line of text without the column running off the bottom.
-    padding: 4px 6px;
+    padding: u(0.25) u(0.375);
     border: none;
     border-radius: 6px;
     background-color: #2e86de;
     color: white;
     cursor: pointer;
-    font-size: 0.88rem;
+    font-size: t(0.88);
     // The panel is 260px wide and a label like "Onslaught (0) - 7" is not.
     // Wrapping is the answer; nowrap only moved the problem sideways.
     min-width: 0;
@@ -1136,14 +1230,14 @@
   .ability-detail {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: u(0.5);
   }
 
   .ability-detail-content {
     display: flex;
     flex-direction: row;
     align-items: baseline;
-    gap: 10px;
+    gap: u(0.625);
     flex-wrap: wrap;
 
     p {
@@ -1154,7 +1248,7 @@
   .ability-detail-actions {
     display: flex;
     flex-direction: row;
-    gap: 6px;
+    gap: u(0.375);
     margin-top: auto;
   }
 
@@ -1163,8 +1257,8 @@
   }
 
   .ability-back-btn {
-    padding: 3px 8px;
-    font-size: 0.78rem;
+    padding: u(0.1875) u(0.5);
+    font-size: t(0.78);
     border: 1px solid #9aa5b1;
     border-radius: 5px;
     background: transparent;
@@ -1172,15 +1266,19 @@
     cursor: pointer;
   }
 
-  // Right column: Game and Lobby share one tabbed rail so they aren't both
-  // claiming screen width at once. Gives way the same way .match-panels does,
-  // and for the same reason - see the note there.
+  // Right column: their panel, History, and one tabbed box for Game and
+  // Lobby, so the two aren't both claiming screen width at once. Sized the
+  // same way as .match-panels, and for the same reason - see the note there.
+  // Like it, it scrolls rather than clips if it is ever shorter than its
+  // contents; the layout sweep holds that to never, at the sizes it covers.
   .side-rail {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    flex: 0 0 clamp(230px, 22%, 320px);
+    gap: u(0.625);
+    // The same floor as the left column: their ability panel is up here now.
+    flex: 0 0 max(248px, #{u(20)});
     min-height: 0;
+    overflow-y: auto;
   }
 
   // One box for the whole rail below History: the tab strip on top, whatever
@@ -1188,8 +1286,11 @@
   .rail-box {
     display: flex;
     flex-direction: column;
-    flex: 1 1 auto;
-    min-height: 0;
+    // A little more of the leftover than History, and never less than what
+    // it holds: min-content, because its own overflow is hidden and a plain
+    // 0 let a short column crush the roster and the chat out of sight.
+    flex: 1.4 1 0;
+    min-height: min-content;
     border: 1px solid #ddd;
     border-radius: 4px;
     background: #fff;
@@ -1204,13 +1305,13 @@
 
     button {
       flex: 1;
-      padding: 9px 10px;
+      padding: u(0.375) u(0.625);
       background: none;
       border: none;
       border-bottom: 3px solid transparent;
       cursor: pointer;
       font-weight: 600;
-      font-size: 0.92rem;
+      font-size: t(0.92);
       color: #6b7683;
 
       &:hover { background-color: #f5f5f5; }
@@ -1231,17 +1332,29 @@
   .side-rail .chat-panel,
   .side-rail .lobby-chat {
     flex: 1 1 auto;
-    min-height: 150px;
+    // Its heading, the box to type in, and one message whole between them -
+    // it scrolls, so this is the floor for reading it, not a share. The px
+    // term is the same at the 12px type floor, where the unit alone came up
+    // short: a chat that showed its heading and its input and no message.
+    min-height: max(118px, calc(#{u(8.9)} + 5px));
     border-top: 1px solid #ddd;
   }
-  .side-rail .users-panel,
-  .side-rail .players-section:not(.expanded) {
+  // The lobby's roster can be anyone online, so it is held to a share of the
+  // box and its list scrolls. The Game tab's is two players and a button: it
+  // takes its full height and never gives any up. Capped at 40% like the
+  // lobby's, it was 117px of a 151px roster, scrolling the Start button out
+  // of sight - and its full height went into the box's least height anyway,
+  // so the cap saved nothing.
+  .side-rail .users-panel {
     max-height: 40%;
+  }
+  .side-rail .players-section:not(.expanded) {
+    flex-shrink: 0;
   }
 
   .game-actions {
     display: flex;
-    gap: 10px;
+    gap: u(0.625);
     width: 100%;
     flex-shrink: 0;
 
@@ -1252,10 +1365,10 @@
       flex: 1 1 0;
       min-width: 0;
       box-sizing: border-box;
-      padding: 8px 12px;
+      padding: u(0.5) u(0.75);
       border: none;
       border-radius: 4px;
-      font-size: 0.95rem;
+      font-size: t(0.95);
       font-weight: 600;
       cursor: pointer;
       transition: background 0.2s;
@@ -1267,20 +1380,20 @@
   .draw-offer-banner {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 14px;
+    gap: u(0.625);
+    padding: u(0.5) u(0.875);
     background: #2c3e50;
     border: 1px solid #f39c12;
     border-radius: 6px;
     color: #ecf0f1;
-    font-size: 0.92rem;
+    font-size: t(0.92);
     width: 100%;
     box-sizing: border-box;
 
     span { flex: 1; }
 
     .accept-btn, .decline-btn {
-      padding: 5px 14px;
+      padding: u(0.3125) u(0.875);
       border: none;
       border-radius: 4px;
       font-weight: 600;
@@ -1319,18 +1432,28 @@
   .game-room-messages,
   .lobby-messages {
     flex-grow: 1;
-    padding: 15px;
+    // Half what it was: the chat shares the right column with their panel
+    // now, and 15px of empty frame was most of an empty chat's height.
+    padding: u(0.375) u(0.5);
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: u(0.375);
     // Ensure scroll container does not expand
     min-height: 0;
+    // Its messages count for nothing in the rail's least height: the log
+    // fills whatever room it is given and scrolls the rest. Without this
+    // every message raised the Game box's min-content, and a long enough
+    // chat pushed the right column past the window.
+    contain: size;
   }
 
+  // Compact for a column shared with their panel and History: the bubble
+  // was 55px for one line of chat, so at the room's least height the chat
+  // had room for its heading and its input and not one message.
   .message-item {
-    padding: 10px;
-    margin: 5px 0;
+    padding: u(0.3125) u(0.5);
+    margin: 0;
     border-radius: 10px;
     background-color: #f1f1f1;
 
@@ -1359,7 +1482,7 @@
         }
 
         .message-time {
-          margin-left: 8px;
+          margin-left: u(0.5);
         }
       }
     }
@@ -1367,42 +1490,41 @@
     .message-header {
       display: flex;
       align-items: center;
-      gap: 8px;
-      margin-bottom: 4px;
+      gap: u(0.5);
+      margin-bottom: 0;
 
       .message-username {
         font-weight: 600;
-        font-size: 1.1em;
         color: #2c3e50;
       }
 
       .message-time {
         margin-left: auto;
         color: #666;
-        font-size: 0.8rem;
+        font-size: t(0.8);
       }
     }
 
     .message-content {
-      margin-top: 5px;
+      margin-top: u(0.125);
     }
   }
 
   .chat-input {
     display: flex;
-    padding: 10px;
+    padding: u(0.4);
     border-top: 1px solid #ddd;
 
     input {
       flex-grow: 1;
-      padding: 8px;
+      padding: u(0.5);
       border: 1px solid #ddd;
       border-radius: 4px;
-      margin-right: 10px;
+      margin-right: u(0.625);
     }
 
     button {
-      padding: 8px 15px;
+      padding: u(0.5) u(0.9375);
       background-color: #3498db;
       color: white;
       border: none;
@@ -1424,9 +1546,9 @@
 
     h3 {
       margin: 0;
-      padding: 10px 15px;
+      padding: u(0.625) u(0.9375);
       border-bottom: 1px solid #ddd;
-      font-size: 1rem;
+      font-size: t(1);
       color: #2c3e50;
     }
   }
@@ -1434,7 +1556,7 @@
   .users-panel {
     display: flex;
     flex-direction: column;
-    padding: 10px;
+    padding: u(0.625);
     background-color: #f8f9fa;
     min-height: 0;
   }
@@ -1445,7 +1567,7 @@
     background-color: #eef6fb;
     border-radius: 4px;
     border-bottom: 2px solid #cfd8dc;
-    margin-bottom: 6px;
+    margin-bottom: u(0.375);
     font-weight: 600;
   }
 
@@ -1453,16 +1575,17 @@
     flex: 1;
     overflow-y: auto;
     min-height: 0;
+    contain: size;    // a log, like the chats - see .game-room-messages
   }
 
   .users-panel .user-item {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 4px 6px;
+    gap: u(0.375);
+    padding: u(0.25) u(0.375);
     border-bottom: 1px solid #eee;
     cursor: context-menu;
-    font-size: 0.85rem;
+    font-size: t(0.85);
   }
 
   // Keep "(You)" on the same line as the name and never let it be the thing
@@ -1473,7 +1596,7 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: u(0.25);
     white-space: nowrap;
     overflow: hidden;
   }
@@ -1493,7 +1616,7 @@
     margin-left: auto;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: u(0.5);
   }
 
   .status-dot {
@@ -1501,7 +1624,7 @@
     height: 10px;
     border-radius: 50%;
     display: inline-block;
-    margin-right: 8px;
+    margin-right: u(0.5);
   }
   .status-dot.online {
     background-color: #2ecc71; /* green */
@@ -1514,8 +1637,8 @@
   }
 
   .username .current-user-tag {
-    margin-left: 5px;
-    font-size: 0.8rem;
+    margin-left: u(0.3125);
+    font-size: t(0.8);
     color: #3498db;
   }
 
@@ -1523,9 +1646,9 @@
     margin-left: auto;
     background: none;
     border: none;
-    font-size: 1.2rem;
+    font-size: t(1.2);
     cursor: pointer;
-    padding: 2px;
+    padding: u(0.125);
   }
   .action-button:disabled {
     opacity: 0.5;
@@ -1541,8 +1664,8 @@
     border: 1px solid #ddd;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 18px;
-    padding: 2px 8px;
+    font-size: t(1.125);
+    padding: u(0.125) u(0.5);
     color: #555;
     margin-left: 0.5em;
     transition: background 0.2s, color 0.2s;
@@ -1567,7 +1690,9 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    padding: 12px;
+    // Tighter than it was, for the same reason as the chat's frame: the
+    // roster is two players and a button, and it shares the column now.
+    padding: u(0.5) u(0.75);
     background-color: #f8f9fa;
     height: auto;
     box-sizing: border-box;
@@ -1575,71 +1700,10 @@
 
     h3 {
       margin-top: 0;
-      margin-bottom: 10px;
-      padding-bottom: 5px;
+      margin-bottom: u(0.375);
+      padding-bottom: u(0.25);
       border-bottom: 1px solid #ddd;
-      font-size: 1.2rem;
-    }
-    
-    .game-mode-selection,
-    .game-mode-display {
-      .mode-options {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        
-        .radio-option {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          
-          input[type="radio"] {
-            margin: 0;
-            cursor: pointer;
-          }
-          
-          label {
-            cursor: pointer;
-          }
-        }
-        
-        .custom-options {
-          margin-top: 8px;
-          margin-left: 20px;
-          
-          .checkbox-option {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            
-            input[type="checkbox"] {
-              margin: 0;
-              cursor: pointer;
-            }
-            
-            label {
-              cursor: pointer;
-            }
-          }
-          
-          .reveal-display {
-            padding: 8px;
-            background-color: #f9f9f9;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            color: #333;
-            font-size: 0.9rem;
-          }
-        }
-      }
-    }
-    
-    .game-mode-display {
-      .custom-options-display {
-        margin-top: 5px;
-        font-size: 0.9rem;
-        color: #666;
-      }
+      font-size: t(1);
     }
     
     .player-list {
@@ -1651,8 +1715,8 @@
       .player-item {
         display: flex;
         align-items: center;
-        gap: 10px;
-        padding: 8px 5px;
+        gap: u(0.625);
+        padding: u(0.3125);
         border-bottom: 1px solid #eee;
         
         .ready-dot {
@@ -1667,21 +1731,21 @@
           
           .crown-icon {
             color: #f39c12;
-            margin-left: 5px;
-            font-size: 14px;
+            margin-left: u(0.3125);
+            font-size: t(0.875);
           }
         }
         
         .player-status {
-          font-size: 14px;
-          margin-left: 5px;
+          font-size: t(0.875);
+          margin-left: u(0.3125);
           cursor: default;
         }
         
         .ready-checkmark {
           color: #2ecc71;
           font-weight: bold;
-          font-size: 18px;
+          font-size: t(1.125);
         }
       }
     }
@@ -1690,7 +1754,7 @@
       margin-top: auto;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: u(0.375);
 
       .ready-btn {
         background-color: #2ecc71;
@@ -1742,7 +1806,7 @@
     background-color: #eef6fb;
     border-radius: 4px;
     border-bottom: 2px solid #cfd8dc;
-    margin-bottom: 4px;
+    margin-bottom: u(0.25);
     font-weight: 600;
   }
 
@@ -1993,10 +2057,30 @@
   }
 }
 
-// No narrow-window layout. Under 900px the columns used to stack, and the
-// board landed below the left column, off the bottom of the window. The room
-// is scaled to fit instead (fitRoom), so it is never laid out narrower than
-// ROOM_MIN_WIDTH and the three columns always stand side by side.
+// Buttons and inputs do not inherit the page's font size: the browser gives
+// them its own 13.33px, so every one the stylesheet did not size - Configure
+// Setup, Leave Room, Send, the box you type a message in - stayed 13.33px at
+// every window size, the smallest words on a 2560px screen. This is their
+// base in the room's unit, at the specificity of an element under the room,
+// so every size a rule above sets still wins.
+.game-room-container :where(button, input, select, textarea) {
+  font-family: inherit;
+  font-size: t(0.875);
+}
+
+// Every control in the header and the two columns is at least 24px each
+// way, WCAG 2.2's least target size (2.5.8). At the full unit they all are;
+// this is what holds at the bottom of the range, where a 12px label on a
+// quarter-unit of padding came out 21px tall. Last in the file, and at the
+// specificity of the rules it has to beat - .path-actions sets its buttons'
+// min-height to 0 on purpose, to size them off their own line box.
+.game-room-container > header button,
+.game-room-container .match-panels button,
+.game-room-container .side-rail button {
+  min-height: 24px;
+  min-width: 24px;
+}
+
 // Roster heading when there is no server behind it.
 .offline-head {
   color: #c0392b;
@@ -2007,7 +2091,7 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: u(0.5);
 
 }
 
@@ -2019,10 +2103,10 @@
   justify-content: center;
   width: 100%;
   box-sizing: border-box;
-  padding: 4px 8px;
+  padding: u(0.25) u(0.5);
   border: 1px dashed #6b7785;
   border-radius: 4px;
-  font-size: 0.8rem;
+  font-size: t(0.8);
   color: #cbd5e0;
   background: rgba(255, 255, 255, 0.04);
   cursor: pointer;
@@ -2065,16 +2149,18 @@
 }
 
 .arming-hint {
-  margin: 2px 0 0;
+  margin: u(0.125) 0 0;
   line-height: 1.2;
-  font-size: 0.72rem;
+  font-size: t(0.72);
   color: #f6c343;
   text-align: center;
-  // One line, always. Wrapping to two made the panel taller and shoved
-  // everything under it, which is the whole reason this line is never empty.
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  // Two lines of room, always, and the words wrap into them. It used to be
+  // one line cut off with an ellipsis, so the panel never grew when a hint
+  // ran long - and "Unavailable: no abilities during the initializati..." was
+  // cut at every window size, 3440px included. Reserving the second line
+  // keeps the first reason (the panel is one height whether the hint is short
+  // or long) without hiding the end of the sentence.
+  min-height: 2.4em;
 }
 
 // A stat currently carrying a boost.

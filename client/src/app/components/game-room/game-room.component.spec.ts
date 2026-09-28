@@ -2920,9 +2920,12 @@ describe('GameRoomComponent leaving', () => {
 });
 
 /**
- * The owner: "DO NOT HIDE ANYTHING AS IT MAKES THIS GAME UNPLAYABLE". A
- * window smaller than the room gets the whole room scaled down, never a panel
- * crushed or a column stacked below the board.
+ * The owner: "DO NOT HIDE ANYTHING AS IT MAKES THIS GAME UNPLAYABLE". Above
+ * its least size the room is laid out to the window by its stylesheet (the
+ * room's unit, --u), and nothing is scaled; below it, until tablets and phones
+ * have a layout of their own, the whole room is scaled down rather than a
+ * panel crushed. What the stylesheet does at each size is measured in a real
+ * browser by client/scripts/layout-sweep.mjs, not here.
  */
 describe('GameRoomComponent fitting the window', () => {
   let innerWidth: jasmine.Spy;
@@ -2942,14 +2945,14 @@ describe('GameRoomComponent fitting the window', () => {
 
   it('scales the room down by whichever side is shorter, laid out at its least', () => {
     // Half the least width, and more than half the least height: width decides.
-    const c = fit(740, 700);
+    const c = fit(590, 900);
     expect(c.roomZoom).toBe(0.5);
-    expect(c.roomWidth).toBe(1480);
-    expect(c.roomHeight).toBe(1400);
+    expect(c.roomWidth).toBe(1180);
+    expect(c.roomHeight).toBe(1800);
     // Height decides here.
-    const d = fit(1904, 560);
-    expect(d.roomZoom).toBe(0.5);
-    expect(d.roomHeight).toBe(1120);
+    const d = fit(1904, 423);
+    expect(d.roomZoom).toBeCloseTo(0.6, 6);
+    expect(d.roomHeight).toBeCloseTo(705, 6);
   });
 
   it('leaves a window big enough for the whole room alone', () => {
@@ -2957,5 +2960,16 @@ describe('GameRoomComponent fitting the window', () => {
     expect(c.roomZoom).toBe(1);
     expect(c.roomWidth).toBeNull();
     expect(c.roomHeight).toBeNull();
+  });
+
+  it('scales none of the windows people play in', () => {
+    // Every one of these was drawn smaller while the room was one picture at
+    // 1480x1120 - a 1080p screen at 96%, the owner's 1904x946 at 85%, a
+    // 1366x768 laptop at 69%. Their layouts are the stylesheet's now.
+    for (const [w, h] of [[1920, 1080], [1904, 946], [1536, 864], [1366, 768], [1280, 720], [1180, 705]]) {
+      expect(fit(w, h).roomZoom).withContext(`${w}x${h}`).toBe(1);
+    }
+    expect(fit(1180, 704).roomZoom).toBeLessThan(1);
+    expect(fit(1179, 705).roomZoom).toBeLessThan(1);
   });
 });

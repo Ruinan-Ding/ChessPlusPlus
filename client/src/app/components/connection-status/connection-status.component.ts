@@ -10,9 +10,13 @@ import { takeUntil } from 'rxjs/operators';
   imports: [CommonModule],
   template: `
     <div class="connection-status">
-      <span [ngClass]="{'connected': isConnected, 'offline': !isConnected && isOffline, 'disconnected': !isConnected && !isOffline}">
-        {{ isConnected ? 'Connected to Game Server' : (isOffline ? 'Offline' : 'Disconnected from Game Server') }}
-      </span>
+      <!-- The state's word, then what it is about. A header short of room
+           (the game room's, marked .header-compact) keeps the word alone:
+           "Connected" says the same as "Connected to Game Server", and it is
+           a quarter of the width the turn banner beside it needs. -->
+      <span [ngClass]="{'connected': isConnected, 'offline': !isConnected && isOffline, 'disconnected': !isConnected && !isOffline}"
+        >{{ isConnected ? 'Connected' : (isOffline ? 'Offline' : 'Disconnected') }}<span class="status-rest"
+        >{{ isConnected ? ' to Game Server' : (isOffline ? '' : ' from Game Server') }}</span></span>
       <!-- Any state without a server needs a visible way back to one. -->
       <button *ngIf="!isConnected" class="reconnect-btn" (click)="reconnect()"
               title="Try the game server again">Reconnect</button>
@@ -53,13 +57,22 @@ import { takeUntil } from 'rxjs/operators';
       border-radius: 4px;
       background: #fff;
       color: #2c3e50;
-      font-size: 0.85em;
+      /* A little under the words beside it, but never under 12px or a 24px
+         target (WCAG 2.2, 2.5.8): the game room's header sizes this off a
+         unit that bottoms out at 12px, and 0.85 of that was an 11px word on
+         an 18px button. */
+      font-size: max(12px, 0.85em);
+      min-height: 24px;
       white-space: nowrap;
       cursor: pointer;
     }
 
     .reconnect-btn:hover {
       background: #eef2f6;
+    }
+
+    :host-context(.header-compact) .status-rest {
+      display: none;
     }
 
   `],

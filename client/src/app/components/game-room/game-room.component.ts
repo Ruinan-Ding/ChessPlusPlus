@@ -1,4 +1,7 @@
-import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, HostListener, ViewChild } from '@angular/core';
+import {
+  Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef, HostListener,
+  ViewChild,
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
@@ -22,6 +25,7 @@ import {
   scheduledPoints, unitValue,
 } from '../../services/match-score';
 import { buildPlayback } from '../../services/playback';
+import { fitHeader } from './banner-fit';
 import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
 import { homecomingsAt, openingMovedHexes } from '../../services/history-rules';
 import {
@@ -392,14 +396,22 @@ function fallen(
 
 /**
  * The least the room is laid out at; a smaller window scales it down to fit
- * (`fitRoom`). Measured, not chosen: 1480 is the header's width with the turn
- * banner at full size and its buttons on one line, and 1120 is the left
- * column at its full 260px - both ability panels, the Unit panel's stats,
- * abilities and effects, and the rows of buttons between them, 1011px - under
- * the header, with room for a hint line or two.
+ * (`fitRoom`). Above it nothing is scaled: the room's unit (`--u` in the
+ * stylesheet) sizes the header and both columns, and the board takes the
+ * rest. Measured, not chosen - the smallest window at which the layout sweep
+ * (client/scripts/layout-sweep.mjs) finds every column whole, nothing cut
+ * short and nothing past the window's edge with the unit at its floor.
+ *
+ * It was 1480 x 1120, when the whole room was one scaled picture: 1120 was
+ * the left column holding both ability panels. Their panel moved to the right
+ * one, and every window shorter than 1120 - a 1080p screen included - had
+ * been drawing the room smaller than it needed to.
+ *
+ * Below it, until the room has a layout of its own for tablets and phones
+ * (PUNCHLIST 6.39), the whole room still scales down rather than lose a panel.
  */
-const ROOM_MIN_WIDTH = 1480;
-const ROOM_MIN_HEIGHT = 1120;
+const ROOM_MIN_WIDTH = 1180;
+const ROOM_MIN_HEIGHT = 705;
 
 @Component({
   selector: 'app-game-room',
@@ -635,6 +647,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.destroy$.next();
     this.destroy$.complete();
+    this.headerEl = this.bannerEl = null;
+    this.watchHeader();
 
     this.clearRevealCountdown();
     this.clearTurnClock();
@@ -2891,7 +2905,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   abilityFontSize(index: number, cooldown: number): string {
     const length = this.abilityLabel(index, cooldown).length;
-    return `${Math.max(9, 14 - Math.max(0, length - 16) * 0.35)}px`;
+    // In the room's unit, as the button around it is: 14px at the 16px unit,
+    // stepping down for a long label, and never under the 12px type floor -
+    // where a label that long wraps inside its button instead.
+    const units = Math.max(9, 14 - Math.max(0, length - 16) * 0.35) / 16;
+    return `max(12px, calc(${+units.toFixed(4)} * var(--u)))`;
   }
 
   /**
@@ -3553,7 +3571,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * half a narrow panel, and "26,19/26,19" is a lot of characters.
    */
   statFontSize(text: string): string {
-    return `${Math.max(0.6, 1 - Math.max(0, text.length - 7) * 0.055)}rem`;
+    const units = Math.max(0.6, 1 - Math.max(0, text.length - 7) * 0.055);
+    return `max(12px, calc(${+units.toFixed(4)} * var(--u)))`;
   }
 
   /** Boosted over base, so a +4 on a base 26 reads "30/26". */
@@ -4848,6 +4867,46 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /** The board, for the walks it keeps its own stack of. */
   @ViewChild(GameBoardComponent) private boardRef?: GameBoardComponent;
+
+  /**
+   * The header, kept to one row (fitHeader): the turn banner at the biggest
+   * size its row can hold, and the words around it shortened first. Re-fitted
+   * whenever the header's box changes - the window - and whenever any of its
+   * text does: the clock, the stage and the scores change what the banner
+   * needs, and the connection status what the buttons take. Straight to the
+   * elements, outside change detection: it is a measurement, and one that
+   * went through a render would run a frame late and flash the overrun.
+   */
+  @ViewChild('roomHeader') private set headerRef(ref: ElementRef<HTMLElement> | undefined) {
+    const el = ref?.nativeElement ?? null;
+    if (el !== this.headerEl) { this.headerEl = el; this.watchHeader(); }
+  }
+  @ViewChild('banner') private set bannerRef(ref: ElementRef<HTMLElement> | undefined) {
+    const el = ref?.nativeElement ?? null;
+    if (el !== this.bannerEl) { this.bannerEl = el; this.watchHeader(); }
+  }
+  private headerEl: HTMLElement | null = null;
+  private bannerEl: HTMLElement | null = null;
+  private headerWatchers: { disconnect(): void }[] = [];
+  private headerFrame = 0;
+
+  private watchHeader(): void {
+    this.headerWatchers.forEach(w => w.disconnect());
+    this.headerWatchers = [];
+    cancelAnimationFrame(this.headerFrame);
+    const header = this.headerEl;
+    if (!header || typeof ResizeObserver === 'undefined') return;
+    const soon = () => {
+      cancelAnimationFrame(this.headerFrame);
+      this.headerFrame = requestAnimationFrame(() => fitHeader(header, this.bannerEl));
+    };
+    const resized = new ResizeObserver(soon);
+    resized.observe(header);
+    const retexted = new MutationObserver(soon);
+    retexted.observe(header, { subtree: true, childList: true, characterData: true });
+    this.headerWatchers = [resized, retexted];
+    soon();
+  }
 
   /** True while the board is playing; the clock waits for it. */
   playbackRunning = false;

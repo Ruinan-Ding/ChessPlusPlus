@@ -45,6 +45,10 @@ python scripts/e2e/panels.py   # crossings, walks home, blows into a panel - nee
 # Client (from client/)
 ng serve                                              # serve on :4200
 ng test
+# The room at 18 window sizes in headless Chrome, against a running ng serve (4201 spares
+# the owner's 4200): nothing scaled, clipped, cut short or scrolled but the logs, text >= 12px,
+# controls >= 24px. After any change to the room's stylesheet or template. (~4 min)
+LAYOUT_URL=http://localhost:4201 node scripts/layout-sweep.mjs
 
 # CI (.github/workflows/tests.yml) runs both suites, the migrations check and the production
 # build on every push and pull request.
@@ -1219,30 +1223,63 @@ Decided so far:
   the one-commit-per-turn guard makes End Turn a no-op for the rest of the turn, and the recap
   curtain leaves the board non-interactive. Together that is what "the game fails to end turn"
   looks like, and it is reachable from any rejection, not just the one that exposed it.
-- **Nothing on the room screen is ever hidden to make room.** The owner, 25 Sep 2026: *"DO
-  NOT HIDE ANYTHING AS IT MAKES THIS GAME UNPLAYABLE"*. The room is laid out at no less than
-  `ROOM_MIN_WIDTH` x `ROOM_MIN_HEIGHT` (1480 x 1120), and a smaller window scales the whole of
-  it down (`fitRoom()`, CSS `zoom` on `.game-room-container`): a smaller window gets a smaller
-  room, never a shorter one. What it replaced, all measured:
-  - the Unit panel was `flex: 1 1 0` and free to shrink, and in any window shorter than the
-    left column the two ability panels above it crushed it to its border - 2px at 1400x800,
-    and on the owner's own 1904x946 window everything below HP/ATK was gone;
-  - the header pushed its buttons and the connection status off the right edge below about
-    1470px;
-  - under 900px the columns stacked, with the board below the bottom of the window.
-  - **The two numbers are measured, not chosen**: 1480 is the header on one line with the
-    banner at full size, 1120 the left column at its full 260px (1011px) under the header,
-    with a hint line to spare. Past them, the header wraps (`flex-wrap`) and the column
-    scrolls - `.stats-panel` is `flex: 1 0 auto`, never less than its contents.
-  - **No `vw` inside the room.** While it is scaled the room is laid out bigger than the
-    window, so a size read off the window is wrong for it: the columns are shares of the room
-    (`clamp(190px, 18%, 260px)`, `clamp(230px, 22%, 320px)`), the banner a flat `2rem`.
-  - **No narrow-window layout.** The `max-width: 900px` stacking is gone. Do not bring back a
-    breakpoint that rearranges or collapses a panel.
-  - Checked in headless Chrome at 1904x946 (drawn at 85%), 1100x650, 880x600 and 700x500:
-    nothing off screen, the left column unscrolled, the Unit panel whole. Chrome fires no
-    `resize` in a hidden tab, so a test driven through a background tab sees the old zoom -
-    drive the size with `Emulation.setDeviceMetricsOverride` instead.
+- **Nothing on the room screen is ever hidden to make room, and it is sized to the window
+  rather than scaled to it.** The owner, 25 Sep 2026: *"DO NOT HIDE ANYTHING AS IT MAKES THIS
+  GAME UNPLAYABLE"*; and 27 Sep 2026, asked how the room should hold small screens: *"tabs are
+  fine, support all devices, start with phase A"* (PUNCHLIST 6.39). Phase A - desktops and
+  laptops - is done; tablets and phones (B, C) are not, and until they are the old answer
+  still holds below the room's least size: the whole room scales down (`fitRoom()`, CSS `zoom`).
+  - **One unit sizes everything but the board.** `--u` on `.game-room-container`, between 12px
+    and 20px, and every type size, padding, gap and both columns' widths are written in it -
+    `u(n)` and `t(n)` in the stylesheet, `t` being type with a 12px floor. The board is not in
+    it: it scales to whatever box the columns leave. The unit is the lesser of a height term
+    (the taller column, header and padding have to fit - measured unit by unit, two straight
+    lines because the 12px and 24px floors do not shrink with it) and a width term that keeps
+    the board first: the rails grow only once the board, 1.194 times as wide as tall, is as big
+    as the window's height allows. On a board short of width - any 16:10 screen - the rails are
+    at their floor. The formula and its measurements are in the comment above `--u`.
+  - **Floors, each on the thing itself.** Type 12px (`t()`, and the `max(12px, ...)` the
+    component's `abilityFontSize`/`statFontSize` return); every control in the header and the
+    columns 24px each way (WCAG 2.2, 2.5.8); each column 248px wide, what two ability buttons
+    need side by side at 12px. Buttons and inputs get a base size in the unit (`:where(button,
+    input, ...)`) - they do not inherit font size, and every one nobody sized stayed 13.33px.
+  - **Their panel is in the right-hand column.** Both ability panels stacked in the left one
+    were what made the room need 1120px of height; theirs sits over History and the Game/Lobby
+    box now, so the two columns are the same height to within a unit.
+  - **The logs scroll, nothing else does.** History, the chats, the rosters and the effects
+    list may scroll, but each has a floor of one whole entry (History `max(66px, u(5.2))`, the
+    chat `max(118px, u(8.9) + 5px)`). The chat's messages are `contain: size`, so a long chat
+    cannot raise the column's least height. The Game tab's roster never shrinks: capped at 40%
+    like the lobby's, it scrolled its own Start button out of sight.
+  - **Nothing is cut short.** The ability hint reserves two lines and wraps into them (it was
+    one line with an ellipsis, cut at every window size); an effect's detail wraps; a long stat
+    value drops under its label rather than out of its cell.
+  - **The header is one row and gives way in order** (`fitHeader`, `banner-fit.ts`, the timer
+    app's way): everything at full size; then compact - "Setup", "Leave", "Connected", the same
+    words shorter (`.header-compact`, and `:host-context` in the connection status); then the
+    banner up to a fifth smaller with the scores on one line; then a score may take a second
+    line, which is no taller than the banner's own. Measured, not chosen: a ResizeObserver and a
+    MutationObserver re-fit it outside change detection, on the window and on every change to
+    its text. `--banner-fit` is what its font sizes multiply by.
+  - **Below 1180 x 705 the room still scales** - `ROOM_MIN_WIDTH`/`ROOM_MIN_HEIGHT`, the least
+    size at which the sweep finds everything whole with the unit at its floor. A 1366x768
+    laptop's browser window, about 650-690px tall, lands just under it and is drawn at 92-98%.
+    The window's units are safe inside the zoomed room: every term only falls as the window
+    does, so below the floor the unit sits at 12px and the room is laid out at exactly the
+    size that was measured.
+  - **Checked by `client/scripts/layout-sweep.mjs`**, in headless Chrome at 18 window sizes from
+    3440x1440 to 1180x705, each with the opening's banner and with the longest one the match
+    can show: nothing scaled, nothing scrolling but the logs, nothing clipped or cut short,
+    nothing off screen, no text under 12px, no control under 24px, and every log with room for
+    its newest entry. Run it after any change to the room's stylesheet or template; a spec
+    cannot see any of this. Chrome fires no `resize` in a hidden tab - drive the size with
+    `Emulation.setDeviceMetricsOverride`, as the sweep does.
+  - What the zoom-everything room replaced (25 Sep), all measured: the Unit panel crushed to
+    its border by the ability panels above it (2px at 1400x800, everything below HP/ATK gone
+    on the owner's 1904x946); the header's buttons pushed off its right edge below ~1470px;
+    and under 900px the columns stacked with the board below the window. What the zoom itself
+    cost (28 Sep): at 1366x768 the median text came out at 9.6px, 81 of 99 pieces of text were
+    under 12px and 38 controls under 24px, and the board shrank exactly as much as the chat.
 - **A finished match stays on screen.** `gameStarted` deliberately stays **true** through
   `game_over`: the last position keeps the panel with the result banner over it
   (`.result-banner.over-board`), the turn indicator and the score go, and abilities shut. What
