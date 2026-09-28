@@ -1,5 +1,7 @@
 <div class="game-room-container" *ngIf="gameState.state$ | async as state"
-     [style.zoom]="roomZoom" [style.width.px]="roomWidth" [style.height.px]="roomHeight">
+     [style.zoom]="roomZoom" [style.width.px]="roomWidth" [style.height.px]="roomHeight"
+     [class.tabbed]="roomLayout === 'tabbed'" [class.unit-pinned]="unitPinned"
+     [attr.data-tab]="shownTab">
   <header #roomHeader>
     <!-- Grouped, so the speaker keeps the same place whether or not the turn
          indicator is there to take the middle. Every move, blow, cast, commit
@@ -55,6 +57,17 @@
   </header>
 
   <main>
+    <!-- The tabbed layout's strip (roomLayout 'tabbed'): the board and one
+         column, and in the column one of these panels at a time. Not drawn
+         at all in the three columns, where every panel has a place of its own.
+         The panels themselves stay where they are in the markup - the
+         stylesheet's grid places them. -->
+    <nav class="room-tabs" role="tablist" aria-label="Panels" *ngIf="roomLayout === 'tabbed'">
+      <button *ngFor="let tab of roomTabs" type="button" role="tab"
+              [class.active]="shownTab === tab.id" [attr.aria-selected]="shownTab === tab.id"
+              (click)="roomTab = tab.id">{{ tab.label }}</button>
+    </nav>
+
     <!-- Left column: your side - the turn's controls, your abilities and the
          Unit panel. Plain stacked rectangles - they used to be clipped into
          the hexagon's corners, which left far too little usable area for
@@ -731,7 +744,9 @@
       </section>
       <!-- Tabs, roster and chat are one box: the tab strip picks what the
            box holds, so three bordered slabs read as three unrelated things. -->
-      <div class="rail-box" *ngIf="!historyExpanded">
+      <!-- In the tabs History has a tab of its own, and expanding it into
+           the whole column would leave the Room tab empty. -->
+      <div class="rail-box" *ngIf="!historyExpanded || roomLayout === 'tabbed'">
       <div class="rail-tabs">
         <button [class.active]="activeSideTab === 'game'" (click)="activeSideTab = 'game'">Game</button>
         <button [class.active]="activeSideTab === 'lobby'" (click)="activeSideTab = 'lobby'">Lobby</button>

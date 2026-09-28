@@ -21,6 +21,8 @@ describe('fitHeader', () => {
       <style>
         .h { display: flex; flex-wrap: nowrap; gap: 8px; width: ${width}px; font: 16px Arial, sans-serif; }
         .h.header-compact .label-long { display: none; }
+        .h.header-stacked { flex-wrap: wrap; }
+        .h.header-stacked .b { order: 1; flex-basis: 100%; }
         .t, .a { flex: 0 0 auto; white-space: nowrap; }
         .b { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center;
              gap: 16px; white-space: nowrap; font-weight: 800; font-size: calc(var(--banner-fit, 1) * 32px); }
@@ -36,9 +38,10 @@ describe('fitHeader', () => {
     return { head: host.querySelector<HTMLElement>('.h')!, banner: host.querySelector<HTMLElement>('.b')! };
   }
 
-  // Where on the ladder an answer is: full, compact, a smaller banner, two lines.
-  const rung = (r: { compact: boolean; fit: number; lines: number }) =>
-    r.lines === 2 ? 3 : r.fit < 1 ? 2 : r.compact ? 1 : 0;
+  // Where on the ladder an answer is: full, compact, a smaller banner, two
+  // lines, and a row of its own.
+  const rung = (r: { compact: boolean; stacked: boolean; fit: number; lines: number }) =>
+    r.stacked ? 4 : r.lines === 2 ? 3 : r.fit < 1 ? 2 : r.compact ? 1 : 0;
 
   function sweep(score: string) {
     const seen: number[] = [];
@@ -48,6 +51,7 @@ describe('fitHeader', () => {
       seen.push(rung(got));
       // It never goes further than it has to, and what it claims fits, fits.
       expect(head.classList.contains('header-compact')).withContext(`${width}px`).toBe(got.compact);
+      expect(head.classList.contains('header-stacked')).withContext(`${width}px`).toBe(got.stacked);
       if (got.fit > 0.5) {
         expect(banner.scrollWidth).withContext(`${width}px`).toBeLessThanOrEqual(banner.clientWidth + 1);
         for (const s of Array.from(banner.querySelectorAll<HTMLElement>('.phase-score'))) {
@@ -77,6 +81,15 @@ describe('fitHeader', () => {
     for (let i = 1; i < seen.length; i++) expect(seen[i]).toBeGreaterThanOrEqual(seen[i - 1]);
   });
 
+  it('gives the banner a row of its own last, and it fits there', () => {
+    // A tablet's width with the longest scores: in the row beside the title
+    // and the buttons they ran to four lines. Stacked, two at most - sweep()
+    // checks every width it settles on.
+    const seen = sweep(LONG_SCORE);
+    expect(seen).toContain(4);
+    expect(seen.indexOf(3)).toBeLessThan(seen.indexOf(4));
+  });
+
   it('shrinks a banner with no scores to fit, where nothing wraps to give it away', () => {
     // No score is shown on some turns, and then the turn is the whole line:
     // too long for the row, only the size can give.
@@ -93,12 +106,26 @@ describe('fitHeader', () => {
     expect(shrank).toBeTrue();
   });
 
+  it('stacks from the start when told to, however wide, and still fits', () => {
+    // The tabbed layout's header: two rows whatever the turn says, so the
+    // panels under it do not move when it says something longer.
+    const { head, banner } = header(3000, '🚩 3 − 💀 1 = 2');
+    const got = fitHeader(head, banner, true);
+    expect(got).toEqual({ compact: false, stacked: true, fit: 1, lines: 1 });
+    expect(head.classList.contains('header-stacked')).toBeTrue();
+    const narrow = header(420, LONG_SCORE);
+    const squeezed = fitHeader(narrow.head, narrow.banner, true);
+    expect(squeezed.stacked).toBeTrue();
+    expect(narrow.banner.scrollWidth).toBeLessThanOrEqual(narrow.banner.clientWidth + 1);
+  });
+
   it('comes all the way back when the room returns', () => {
     const { head, banner } = header(300, LONG_SCORE);
     expect(fitHeader(head, banner).fit).toBeLessThan(1);
     head.style.width = '3000px';
-    expect(fitHeader(head, banner)).toEqual({ compact: false, fit: 1, lines: 1 });
+    expect(fitHeader(head, banner)).toEqual({ compact: false, stacked: false, fit: 1, lines: 1 });
     expect(head.classList.contains('header-compact')).toBeFalse();
+    expect(head.classList.contains('header-stacked')).toBeFalse();
     expect(banner.style.getPropertyValue('--banner-fit')).toBe('1');
   });
 

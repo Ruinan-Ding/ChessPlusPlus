@@ -5,10 +5,12 @@
 //   ng serve --port 4201                                  # in another shell
 //   LAYOUT_URL=http://localhost:4201 node scripts/layout-sweep.mjs
 //
-// CHROME overrides where Chrome is looked for. Exits non-zero if any size in
-// the range the room lays out unscaled fails a check. Sizes below it are
-// still scaled whole (fitRoom) until the room has a layout of its own for
-// tablets and phones, so they are measured and printed but not failed.
+// CHROME overrides where Chrome is looked for. Exits non-zero if any size the
+// room is meant to hold unscaled fails a check: the three columns from
+// 1180x705 up, and the board and one column of tabs (roomLayout 'tabbed') on
+// a landscape window below that, every tab of it. Sizes still scaled - a
+// little short of the columns, or portrait (phase C) - and landscape phones,
+// where a tab may scroll, are measured and printed but not failed.
 //
 // Why a sweep and not a spec: the room's layout is CSS - clamp()s on the
 // window, a unit every size is written in, flex columns - and none of that
@@ -28,10 +30,10 @@ const CHROME = process.env.CHROME ?? (
 );
 const PORT = Number(process.env.LAYOUT_DEBUG_PORT ?? 9333);
 
-// The smallest window the room lays out unscaled: ROOM_MIN_WIDTH x
-// ROOM_MIN_HEIGHT in game-room.component.ts. Kept in step by hand - if the
-// two disagree, the sizes between them are either failed for being scaled
-// or never asserted at all.
+// The smallest window the room lays out in three columns unscaled:
+// ROOM_MIN_WIDTH x ROOM_MIN_HEIGHT in game-room.component.ts. Kept in step by
+// hand - if the two disagree, the sizes between them are either failed for
+// being scaled or never asserted at all.
 const FLOOR = { w: 1180, h: 705 };
 
 // Desktop and laptop windows, by the viewport a browser leaves rather than
@@ -40,10 +42,19 @@ const FLOOR = { w: 1180, h: 705 };
 const ASSERTED = [
   [3440, 1440], [2560, 1440], [1920, 1200], [1920, 1080], [1920, 950], [1904, 946],
   [1680, 1050], [1600, 900], [1536, 864], [1536, 740], [1440, 900], [1440, 780],
-  [1366, 768], [1280, 800], [1280, 720], [1280, 705], [1200, 720], [1180, 705],
+  [1366, 768], [1280, 800], [1280, 720], [1280, 705], [1200, 720], [1180, 820], [1180, 705],
 ];
-// Below the floor: still the whole room scaled. Reported, not failed.
-const REPORTED = [[1366, 690], [1366, 650], [1100, 700], [1024, 768], [1180, 820], [820, 1180], [844, 390], [390, 844]];
+// The board and one column of tabs: tablets on their side and small windows,
+// from 1024x768 (an iPad, Unit pinned) down to 505px tall, about the least
+// at which no tab scrolls. Each size is measured on every tab.
+const TABBED = [
+  [1366, 620], [1280, 600], [1024, 768], [1024, 690], [1024, 600], [1000, 640], [960, 540],
+  [900, 520], [800, 505],
+];
+// Measured, not failed: the columns scaled a little (a laptop just short of
+// 705), portrait (phase C), and phones on their side, whose tabs may scroll.
+const REPORTED = [[1366, 690], [1366, 650], [1100, 700], [820, 1180], [390, 844]];
+const PHONES = [[932, 430], [844, 390], [740, 360]];
 
 const MIN_TEXT = 12;
 const MIN_TARGET = 24;
@@ -224,6 +235,9 @@ const PROBE = `(() => {
     boardShare: Math.round(100 * area.width * area.height / (innerWidth * innerHeight)),
     hex: r1(Math.max(0, ...hexes)),
     bannerFit: banner ? r1(parseFloat(banner.style.getPropertyValue('--banner-fit') || '1')) : null,
+    tabbed: room.classList.contains('tabbed'),
+    pinned: room.classList.contains('unit-pinned'),
+    tabs: [...room.querySelectorAll('.room-tabs button')].map((b) => b.textContent.trim()),
   };
 })()`;
 
@@ -256,50 +270,77 @@ async function measure(send, ev, w, h) {
 
 const { send, ev, close } = await launch();
 let failed = 0;
+let held = 0;
 try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
   await openSoloRoom(send, ev);
 
   const row = (label, w, h, m, bad) =>
-    console.log(`${bad ? 'FAIL' : ' ok '} ${label.padEnd(7)} ${`${w}x${h}`.padEnd(10)} zoom ${String(m.zoom).padEnd(4)} unit ${String(m.unit).padEnd(5)}`
+    console.log(`${bad ? 'FAIL' : ' ok '} ${label.padEnd(9)} ${`${w}x${h}`.padEnd(10)} zoom ${String(m.zoom).padEnd(4)} unit ${String(m.unit).padEnd(5)}`
       + ` text ${String(m.textMin).padEnd(5)} (<12: ${String(m.textUnder).padStart(2)}) target ${String(m.smallest?.side ?? '-').padEnd(5)}`
       + ` hex ${String(m.hex).padEnd(5)} board ${m.boardShare}%` + (m.bannerFit !== null ? ` banner ${m.bannerFit}` : '')
       + (bad ? `\n       ${bad.join('\n       ')}` : ''));
 
-  const judge = (m, w, h) => {
+  // The same checks for both layouts, plus that each size got the layout it
+  // is meant to: the columns unscaled from the floor up, the tabs below it.
+  const judge = (m, w, h, want) => {
     const bad = [...m.faults];
-    if (w >= FLOOR.w && h >= FLOOR.h) {
-      if (m.scaled) bad.push(`scaled to ${m.zoom} at a size the room should lay out unscaled`);
-      if (m.textUnder) bad.push(`${m.textUnder} text runs under ${MIN_TEXT}px, smallest ${m.textMin}px ("${m.textMinWhat}")`);
-      if (m.targetsUnder) bad.push(`${m.targetsUnder} controls under ${MIN_TARGET}px, smallest ${m.smallest.side}px ("${m.smallest.label}")`);
-    }
+    if (want === 'columns' && m.tabbed) bad.push('the tabs, at a size the three columns should hold');
+    if (want === 'tabbed' && !m.tabbed) bad.push('the columns, at a size that should be the tabs');
+    if (m.scaled) bad.push(`scaled to ${m.zoom} at a size the room should lay out unscaled`);
+    if (m.textUnder) bad.push(`${m.textUnder} text runs under ${MIN_TEXT}px, smallest ${m.textMin}px ("${m.textMinWhat}")`);
+    if (m.targetsUnder) bad.push(`${m.targetsUnder} controls under ${MIN_TARGET}px, smallest ${m.smallest.side}px ("${m.smallest.label}")`);
     return bad.length ? bad : null;
   };
+  const record = (label, w, h, m, bad) => {
+    if (bad) failed++; else held++;
+    row(label, w, h, m, bad);
+  };
+  const clickTab = (label) => ev(`(() => {
+    const b = [...document.querySelectorAll('.room-tabs button')].find((x) => x.textContent.trim() === ${JSON.stringify(label)});
+    if (b) b.click();
+    return !!b;
+  })()`);
+  // Every tab at one size, each measured as it shows.
+  const eachTab = async (w, h, judgeIt) => {
+    const first = await measure(send, ev, w, h);
+    for (const tab of first.tabs.length ? first.tabs : ['-']) {
+      if (tab !== '-') await clickTab(tab);
+      await sleep(250);
+      const m = await ev(PROBE);
+      judgeIt(`${tab.toLowerCase()}`.slice(0, 9), m);
+    }
+    if (first.tabs.length) await clickTab(first.tabs[0]);
+  };
 
-  console.log(`The room at the start of a solo game (${URL_BASE}):`);
+  console.log(`The three columns, at the start of a solo game (${URL_BASE}):`);
   for (const [w, h] of ASSERTED) {
     const m = await measure(send, ev, w, h);
-    const bad = judge(m, w, h);
-    if (bad) failed++;
-    row('opening', w, h, m, bad);
+    record('opening', w, h, m, judge(m, w, h, 'columns'));
+  }
+  console.log('\nThe board and one column of tabs, every tab:');
+  for (const [w, h] of TABBED) {
+    await eachTab(w, h, (tab, m) => record(tab, w, h, m, judge(m, w, h, 'tabbed')));
   }
   console.log('\nThe longest banner the match can show:');
-  for (const [w, h] of ASSERTED) {
+  for (const [w, h] of [...ASSERTED, ...TABBED]) {
     await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
     await sleep(500);
     if (!(await ev(LONG_BANNER))) throw new Error('no turn banner to lengthen');
     await sleep(300);
     const m = await ev(PROBE);
-    const bad = judge(m, w, h);
-    if (bad) failed++;
-    row('banner', w, h, m, bad);
+    record('banner', w, h, m, judge(m, w, h, w >= FLOOR.w && h >= FLOOR.h ? 'columns' : 'tabbed'));
     await send('Page.reload', {});
     await sleep(3500);
   }
-  console.log('\nBelow the floor - still scaled whole, reported only:');
+  console.log('\nPhones on their side - the tabs, where a tab may scroll; reported only:');
+  for (const [w, h] of PHONES) {
+    await eachTab(w, h, (tab, m) => row(tab, w, h, m, m.faults.length ? m.faults : null));
+  }
+  console.log('\nStill scaled - a little short of the columns, or portrait; reported only:');
   for (const [w, h] of REPORTED) {
     const m = await measure(send, ev, w, h);
-    row('small', w, h, m, m.faults.length ? m.faults : null);
+    row('scaled', w, h, m, m.faults.length ? m.faults : null);
   }
 } catch (e) {
   console.error(`\n${e.message}`);
@@ -307,5 +348,5 @@ try {
 } finally {
   close();
 }
-console.log(failed ? `\n${failed} check(s) failed` : `\nall ${ASSERTED.length * 2} sizes hold`);
+console.log(failed ? `\n${failed} check(s) failed, ${held} held` : `\nall ${held} checks hold`);
 process.exit(failed ? 1 : 0);

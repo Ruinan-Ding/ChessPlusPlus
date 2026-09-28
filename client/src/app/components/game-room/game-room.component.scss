@@ -90,6 +90,21 @@ $u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
     // "Leave", and the connection status keeps its first word (its own
     // stylesheet, :host-context). Before the banner shrinks - see fitHeader.
     &.header-compact .label-long { display: none; }
+
+    // The last step: the banner under the title and the buttons, a row of
+    // its own at the header's whole width. The title and the buttons keep
+    // the ends of the first row.
+    &.header-stacked {
+      flex-wrap: wrap;
+      row-gap: u(0.25);
+
+      .header-actions { margin-left: auto; }
+      .turn-indicator {
+        order: 1;
+        flex-basis: 100%;
+        margin: 0;
+      }
+    }
     flex: 0 0 auto;          // never steal height from the board
     margin-bottom: u(0.5);
     padding-bottom: u(0.375);
@@ -111,148 +126,6 @@ $u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
       flex: 0 0 auto;
     }
 
-    .turn-indicator {
-      // Basis 0 and no floor of its own: it takes the row the title and the
-      // buttons leave, never more, so a long banner cannot push them off.
-      flex: 1 1 0;
-      min-width: 0;
-      margin: 0 u(0.625);
-      display: flex;
-      // Centred rather than on the baseline: a score that has wrapped to two
-      // lines sits level with the banner instead of hanging below it.
-      align-items: center;
-      justify-content: center;
-      gap: u(1);
-      text-align: center;
-      // Two units, times what fitBanner worked out it can afford: 1 whenever
-      // the whole line fits, which is every turn of the match on a big
-      // window, and less only when it would otherwise overrun the buttons.
-      font-size: calc(var(--banner-fit, 1) * #{u(2)});
-      font-weight: 800;
-      letter-spacing: 0.08em;
-      white-space: nowrap;
-
-      &.your-turn { color: #229954; }
-      &.opponent-turn { color: #c0392b; }
-      // A committed turn playing back: the name holds on whoever moved and
-      // goes yellow, so the pause reads as watching that turn rather than as
-      // the next one having started. Last, so it wins on equal specificity.
-      &.committing { color: #f5c542; }
-
-      .turn-text { flex: 0 0 auto; }
-
-      /* Where the match has got to: the stage of the schedule, or the result
-         once the three phases have settled one. Amber rather than the pale
-         gold it carried while it only ever named overtime - this sits on the
-         light header now on every turn of the match, and pale gold on that
-         ground is barely there. */
-      .verdict {
-        font-weight: 800;
-        letter-spacing: 0.04em;
-        color: #b45309;
-      }
-
-      /* The match score, and the glow on whoever is ahead of it. Level
-         pegging lights neither, so a glow always means a lead. */
-      .match-total {
-        font-weight: 700;
-      }
-
-      // An equal share each, so whose turn it is stays on the centre line
-      // however long the two scores run. Their own colour: the indicator
-      // turns green and red by whose turn it is, and a score that changed
-      // colour with the turn would read as if it had changed.
-      .phase-score {
-        flex: 1 1 0;
-        // Its own 12px floor: the banner shrinks to fit, and 0.55 of a
-        // fitted banner is where the scores would stop being readable first.
-        font-size: max(12px, 0.55em);
-        // A score may take a second line; the turn itself never does. Late
-        // in a match a score with a multiplier and three banked phases runs
-        // to forty-odd characters a side, which no laptop header holds on
-        // one line beside the turn at any size worth reading. Two lines of
-        // it are no taller than the banner's own line, so the header keeps
-        // its height; the banner shrinks only if a score would need a third.
-        white-space: normal;
-        line-height: 1.2;
-        font-weight: 700;
-        letter-spacing: 0.02em;
-      }
-
-      .phase-score.theirs { text-align: right; color: #7c8894; }
-      .phase-score.ours { text-align: left; color: #34404a; }
-
-      // Each half in its own colour, mirrored across the two sides: held
-      // hexes are green for you and dark red for them, dead units red for
-      // you and dark green for them. The same fact reads as good or bad news
-      // depending on whose side of the board it is on, so the colour says
-      // which without the player having to work out which score is theirs.
-      // The total keeps the neutral ink - it is the two halves netted, not
-      // news of its own. Emoji ignore `color`, so only the numbers take it.
-      .phase-score.ours .cap { color: #229954; }
-      .phase-score.ours .death { color: #c0392b; }
-      .phase-score.theirs .cap { color: #7b241c; }
-      .phase-score.theirs .death { color: #14532d; }
-
-      // The three totals, each its own colour so the eye can pick out which
-      // number it wants without counting symbols: the phase running now, the
-      // phases already banked, and what the match comes to. Mirrored like the
-      // pair above - yours saturated, theirs muted - so a glance still says
-      // whose row it is. All readable on a light header, which is what ruled
-      // out the pale gold the match total used to carry.
-      .phase-score.ours .phase-total { color: #1b6ca8; }     // this phase, live
-      .phase-score.theirs .phase-total { color: #5c7a8f; }
-      // Each banked phase its own colour, or the parenthetical is a row of
-      // numbers in one tone and there is no telling which phase is which.
-      .phase-score.ours .banked-1 { color: #8a5a10; }        // phase 1, amber
-      .phase-score.ours .banked-2 { color: #0f766e; }        // phase 2, teal
-      .phase-score.ours .banked-3 { color: #9d174d; }        // phase 3, rose
-      .phase-score.theirs .banked-1 { color: #9b8763; }
-      .phase-score.theirs .banked-2 { color: #6f9490; }
-      .phase-score.theirs .banked-3 { color: #a8798b; }
-      .phase-score.ours .match-total { color: #6b21a8; }     // the match itself
-      .phase-score.theirs .match-total { color: #8b6fa8; }
-
-      /* Ahead on the match, whichever side that is - so it has to outrank the
-         two above, which are a class deeper than the plain .leading rule was.
-         Amber rather than the pale gold it used to carry: the header sits on
-         a light ground, where pale gold all but vanished. */
-      .phase-score.ours .match-total.leading,
-      .phase-score.theirs .match-total.leading {
-        color: #b45309;
-        text-shadow: 0 0 6px rgba(245, 158, 11, 0.55);
-      }
-
-      // The phase running now glows, and the match total waves - the two
-      // numbers that are still moving, told apart from the banked ones that
-      // are not. Two different motions rather than two pulses, or the pair
-      // reads as one effect applied twice.
-      //
-      // The halo is `currentColor`, so each takes its own ink and the one
-      // keyframe serves both sides. White would only blur: the header sits
-      // on a light ground.
-      .phase-total { animation: score-glow 2s ease-in-out infinite; }
-      @keyframes score-glow {
-        50% { text-shadow: 0 0 5px currentColor, 0 0 11px currentColor; }
-      }
-
-      // A transform needs a box to act on, and a bare span has none. The bob
-      // is under a fifth of the line, so nothing below it shifts.
-      .match-total {
-        display: inline-block;
-        animation: score-wave 1.6s ease-in-out infinite;
-      }
-      @keyframes score-wave {
-        25% { transform: translateY(-0.18em); }
-        75% { transform: translateY(0.1em); }
-      }
-
-      // Both are decoration on a number that is legible standing still.
-      @media (prefers-reduced-motion: reduce) {
-        .phase-total, .match-total { animation: none; }
-      }
-    }
-    
     .header-actions {
       display: flex;
       align-items: center;
@@ -416,95 +289,6 @@ $u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
       background: rgba(12, 12, 22, 0.82);
       text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
       pointer-events: none;
-    }
-  }
-
-  .board-game-mode {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    color: #e8ecef;
-    z-index: 1;
-    text-align: center;
-
-    .game-mode-selection,
-    .game-mode-display {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-
-    h3 {
-      margin: 0 0 6px;
-      font-size: 1.15rem;
-      color: #fff;
-    }
-
-    .mode-options {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 10px;
-      font-size: 1rem;
-    }
-
-    // Laid out like the turn timer under it, so the two read as one column
-    // of settings rather than two ideas.
-    .seat-option {
-      margin-top: 10px;
-    }
-
-    .seat-label {
-      display: block;
-      font-weight: 700;
-      margin-bottom: 4px;
-    }
-
-    .seat-choices {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-
-    .turn-time-option {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 8px;
-      margin-top: 12px;
-
-      .turn-time-choices {
-        display: flex;
-        gap: 14px;
-        white-space: nowrap;
-        overflow-x: auto;
-      }
-
-      .radio-option {
-        gap: 4px;
-      }
-    }
-
-    .radio-option,
-    .checkbox-option {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-
-      input { cursor: pointer; }
-      label { cursor: pointer; }
-    }
-
-    .custom-options { margin-top: 8px; margin-left: 20px; }
-
-    .reveal-display,
-    .custom-options-display {
-      font-size: 0.9rem;
-      color: #b9c2cb;
     }
   }
 
@@ -768,11 +552,13 @@ $u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
     &:disabled { background: #b3bfb6; cursor: default; }
   }
 
+  // "Coming soon", where a panel has nothing yet. One rule: it was two, the
+  // later overriding the margin and the colour of the earlier.
   .coming-soon {
-    margin: 0;
+    margin: u(0.25) 0 u(0.5);
     padding: u(0.75) 0;
     text-align: center;
-    color: #7a8794;
+    color: #f1c40f;
     font-style: italic;
   }
 
@@ -871,12 +657,6 @@ $u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
     cursor: pointer;
 
     &:disabled { opacity: 0.5; cursor: not-allowed; }
-  }
-
-  .coming-soon {
-    margin: u(0.25) 0 u(0.5);
-    font-style: italic;
-    color: #f1c40f;
   }
 
   .expand-btn {
@@ -1820,6 +1600,122 @@ $u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
     cursor: help;
   }
 
+  // ============ THE BOARD AND ONE COLUMN (roomLayout 'tabbed') ============
+  //
+  // A landscape window too small for the three columns - a tablet or a phone
+  // on its side, a small browser window. The board takes the left, as big as
+  // the window allows, and one column the right: the turn's controls, the
+  // Unit panel while there is height for it (.unit-pinned), a strip of tabs,
+  // the panel the tab picks, and Resign and Offer Draw. The owner, 27 Sep
+  // 2026: "tabs are fine" - every panel one tap away, and saying so, where
+  // the alternative was every panel on screen at 8px.
+  //
+  // The panels stay in the markup where the columns put them. The columns
+  // stop being boxes (display: contents) and main's grid places what was in
+  // them, so there is one copy of every panel and nothing to keep in step.
+  &.tabbed {
+    // One column of panels, so a measure of its own: the height the column
+    // needs, and the board first across the width - the columns' rule with
+    // one column of 20 units in place of two, u <= (W - 1.194 H) / 16.1.
+    // Capped at 16px: these are the smaller screens.
+    //
+    // The height is the tallest tab under everything that is always there -
+    // the two-row header included (fitHeader stacks it here from the start) -
+    // measured unit by unit, 28 Sep 2026, at 800 and 1000px wide alike: with
+    // the Unit panel pinned 685px at 12px, 752 at 14, 836 at 16; without it
+    // 497, 542, 602. Two straight lines each, as with the columns, with 4px
+    // to spare.
+    --u: clamp(12px, min(calc((100dvh - 266px) / 35.3), calc((100dvh - 120px) / 45),
+      calc((100vw - 119.4dvh) / 16.1)), 16px);
+
+    &:not(.unit-pinned) {
+      --u: clamp(12px, min(calc((100dvh - 210px) / 24.3), calc((100dvh - 94px) / 32),
+        calc((100vw - 119.4dvh) / 16.1)), 16px);
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max(248px, #{u(20)});
+      grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+      grid-template-areas:
+        "board turn"
+        "board view"
+        "board unit"
+        "board tabs"
+        "board panel"
+        "board actions";
+      gap: u(0.5) u(1);
+    }
+
+    .match-panels,
+    .side-rail { display: contents; }
+
+    .game-area { grid-area: board; min-width: 0; }
+    .turn-controls { grid-area: turn; }
+    .view-controls { grid-area: view; }
+    .stats-panel { grid-area: unit; }
+    .room-tabs { grid-area: tabs; }
+    .match-actions { grid-area: actions; }
+
+    // One at a time, in the one place.
+    .abilities-panel,
+    .opponent-panel,
+    .history-panel,
+    .rail-box {
+      grid-area: panel;
+      display: none;
+      min-height: 0;
+    }
+    &[data-tab='yours'] .abilities-panel,
+    &[data-tab='theirs'] .opponent-panel,
+    &[data-tab='history'] .history-panel,
+    &[data-tab='room'] .rail-box { display: flex; }
+
+    // History already has the whole panel; there is nothing to expand it into.
+    .history-panel .expand-btn { display: none; }
+
+    // Short of height for it, the Unit panel is a tab like the rest.
+    &:not(.unit-pinned) {
+      main {
+        grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+        grid-template-areas:
+          "board turn"
+          "board view"
+          "board tabs"
+          "board panel"
+          "board actions";
+      }
+      .stats-panel { grid-area: panel; display: none; min-height: 0; }
+      &[data-tab='unit'] .stats-panel { display: flex; }
+    }
+  }
+
+  // The strip itself, the look of the Game/Lobby tabs it sits above.
+  .room-tabs {
+    display: flex;
+    border-bottom: 1px solid #ddd;
+
+    button {
+      flex: 1 1 0;
+      min-width: 0;
+      padding: u(0.375) u(0.25);
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      font-weight: 600;
+      font-size: t(0.88);
+      color: #6b7683;
+      white-space: nowrap;
+      cursor: pointer;
+
+      &:hover { background-color: #f5f5f5; }
+      &.active {
+        border-bottom-color: #3498db;
+        color: #2980b9;
+      }
+    }
+  }
+
   // ==================== CONNECTION / END-OF-ROOM MODALS ====================
 
   .reconnect-overlay,
@@ -1882,178 +1778,425 @@ $u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
     }
   }
 
-  // ==================== REVEAL MODE REQUEST MODALS ====================
+}
+
+// The reveal dialogs, out of the room's nesting like the banner and the mode
+// picker below: each styles its own box and nothing else does.
+// ==================== REVEAL MODE REQUEST MODALS ====================
+
+// HOST WAITING MODAL: Full screen overlay blocking all except leave button
+.reveal-waiting-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 2000;
+  pointer-events: auto;
   
-  // HOST WAITING MODAL: Full screen overlay blocking all except leave button
-  .reveal-waiting-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0, 0, 0, 0.5);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 2000;
+  .reveal-waiting-modal {
+    background: white;
+    border-radius: 12px;
+    padding: 40px 50px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    max-width: 500px;
+    text-align: center;
     pointer-events: auto;
     
-    .reveal-waiting-modal {
-      background: white;
-      border-radius: 12px;
-      padding: 40px 50px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-      max-width: 500px;
-      text-align: center;
-      pointer-events: auto;
+    .modal-content {
+      h2 {
+        margin: 0 0 20px 0;
+        color: #2c3e50;
+        font-size: 1.8rem;
+      }
       
-      .modal-content {
-        h2 {
-          margin: 0 0 20px 0;
+      .request-message {
+        font-size: 1.1rem;
+        color: #555;
+        margin-bottom: 30px;
+      }
+      
+      .countdown-display {
+        font-size: 3.5rem;
+        font-weight: bold;
+        color: #3498db;
+        margin: 30px 0;
+        font-family: 'Courier New', monospace;
+      }
+      
+      .helper-text {
+        font-size: 0.95rem;
+        color: #7f8c8d;
+        font-style: italic;
+        margin: 0;
+      }
+    }
+  }
+}
+
+// OPPONENT REQUEST MODAL: Popup with Accept/Decline buttons
+.reveal-request-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 3000;
+  pointer-events: auto;
+  
+  .reveal-request-modal {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 15px 50px rgba(0, 0, 0, 0.4);
+    max-width: 450px;
+    pointer-events: auto;
+    
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 25px 30px;
+      border-bottom: 2px solid #ecf0f1;
+      
+      h2 {
+        margin: 0;
+        color: #2c3e50;
+        font-size: 1.6rem;
+      }
+      
+      .countdown-badge {
+        background-color: #e74c3c;
+        color: white;
+        font-size: 1.2rem;
+        font-weight: bold;
+        padding: 8px 16px;
+        border-radius: 20px;
+        min-width: 60px;
+        text-align: center;
+      }
+    }
+    
+    .modal-body {
+      padding: 30px 30px 25px;
+      
+      p {
+        margin: 0 0 12px 0;
+        font-size: 1.1rem;
+        color: #333;
+        
+        strong {
           color: #2c3e50;
-          font-size: 1.8rem;
         }
         
-        .request-message {
-          font-size: 1.1rem;
-          color: #555;
-          margin-bottom: 30px;
-        }
-        
-        .countdown-display {
-          font-size: 3.5rem;
-          font-weight: bold;
-          color: #3498db;
-          margin: 30px 0;
-          font-family: 'Courier New', monospace;
-        }
-        
-        .helper-text {
+        &.info-text {
           font-size: 0.95rem;
           color: #7f8c8d;
-          font-style: italic;
-          margin: 0;
+          margin-top: 8px;
+        }
+      }
+    }
+    
+    .modal-footer {
+      display: flex;
+      gap: 12px;
+      padding: 25px 30px;
+      border-top: 1px solid #ecf0f1;
+      
+      button {
+        flex: 1;
+        padding: 12px 20px;
+        border: none;
+        border-radius: 6px;
+        font-size: 1rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        
+        &.accept-btn {
+          background-color: #27ae60;
+          color: white;
+          order: 2;  // Accept on the right
+          
+          &:hover {
+            background-color: #229954;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(39, 174, 96, 0.3);
+          }
+          
+          &:active {
+            transform: translateY(0);
+          }
+        }
+        
+        &.decline-btn {
+          background-color: #e74c3c;
+          color: white;
+          order: 1;  // Decline on the left
+          
+          &:hover {
+            background-color: #c0392b;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
+          }
+          
+          &:active {
+            transform: translateY(0);
+          }
         }
       }
     }
   }
+}
 
-  // OPPONENT REQUEST MODAL: Popup with Accept/Decline buttons
-  .reveal-request-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0, 0, 0, 0.6);
+// The game-mode picker drawn over the board before a match, out of the
+// room's nesting for the same reason as the turn banner below: its rules
+// style its own controls and nothing else does, so the prefix bought
+// nothing and cost the budget. Inside, the turn timer's radio gap still
+// outranks the general one by a class, as it did.
+.board-game-mode {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #e8ecef;
+  z-index: 1;
+  text-align: center;
+
+  .game-mode-selection,
+  .game-mode-display {
     display: flex;
-    justify-content: center;
+    flex-direction: column;
     align-items: center;
-    z-index: 3000;
-    pointer-events: auto;
-    
-    .reveal-request-modal {
-      background: white;
-      border-radius: 12px;
-      box-shadow: 0 15px 50px rgba(0, 0, 0, 0.4);
-      max-width: 450px;
-      pointer-events: auto;
-      
-      .modal-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 25px 30px;
-        border-bottom: 2px solid #ecf0f1;
-        
-        h2 {
-          margin: 0;
-          color: #2c3e50;
-          font-size: 1.6rem;
-        }
-        
-        .countdown-badge {
-          background-color: #e74c3c;
-          color: white;
-          font-size: 1.2rem;
-          font-weight: bold;
-          padding: 8px 16px;
-          border-radius: 20px;
-          min-width: 60px;
-          text-align: center;
-        }
-      }
-      
-      .modal-body {
-        padding: 30px 30px 25px;
-        
-        p {
-          margin: 0 0 12px 0;
-          font-size: 1.1rem;
-          color: #333;
-          
-          strong {
-            color: #2c3e50;
-          }
-          
-          &.info-text {
-            font-size: 0.95rem;
-            color: #7f8c8d;
-            margin-top: 8px;
-          }
-        }
-      }
-      
-      .modal-footer {
-        display: flex;
-        gap: 12px;
-        padding: 25px 30px;
-        border-top: 1px solid #ecf0f1;
-        
-        button {
-          flex: 1;
-          padding: 12px 20px;
-          border: none;
-          border-radius: 6px;
-          font-size: 1rem;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.3s ease;
-          
-          &.accept-btn {
-            background-color: #27ae60;
-            color: white;
-            order: 2;  // Accept on the right
-            
-            &:hover {
-              background-color: #229954;
-              transform: translateY(-2px);
-              box-shadow: 0 4px 12px rgba(39, 174, 96, 0.3);
-            }
-            
-            &:active {
-              transform: translateY(0);
-            }
-          }
-          
-          &.decline-btn {
-            background-color: #e74c3c;
-            color: white;
-            order: 1;  // Decline on the left
-            
-            &:hover {
-              background-color: #c0392b;
-              transform: translateY(-2px);
-              box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
-            }
-            
-            &:active {
-              transform: translateY(0);
-            }
-          }
-        }
-      }
+  }
+
+  h3 {
+    margin: 0 0 6px;
+    font-size: 1.15rem;
+    color: #fff;
+  }
+
+  .mode-options {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    font-size: 1rem;
+  }
+
+  // Laid out like the turn timer under it, so the two read as one column
+  // of settings rather than two ideas.
+  .seat-option {
+    margin-top: 10px;
+  }
+
+  .seat-label {
+    display: block;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+
+  .seat-choices {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .turn-time-option {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+
+    .turn-time-choices {
+      display: flex;
+      gap: 14px;
+      white-space: nowrap;
+      overflow-x: auto;
     }
+
+    .radio-option {
+      gap: 4px;
+    }
+  }
+
+  .radio-option,
+  .checkbox-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    input { cursor: pointer; }
+    label { cursor: pointer; }
+  }
+
+  .custom-options { margin-top: 8px; margin-left: 20px; }
+
+  .reveal-display,
+  .custom-options-display {
+    font-size: 0.9rem;
+    color: #b9c2cb;
+  }
+}
+
+// The turn banner, out of the room's nesting on purpose. Every rule in it
+// is about the banner's own spans, which nothing else in the room styles, so
+// the `.game-room-container header` in front of each selector bought no
+// specificity that anything needed - and with the encapsulation attribute
+// Angular puts on every part of every selector it was ~70 characters on each
+// of 25-odd rules, the 1.5kB that took the room's styles over their budget.
+// The stacked header's placement of it (.header-stacked, above) is still
+// nested, and so still outranks this.
+.turn-indicator {
+  // Basis 0 and no floor of its own: it takes the row the title and the
+  // buttons leave, never more, so a long banner cannot push them off.
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0 u(0.625);
+  display: flex;
+  // Centred rather than on the baseline: a score that has wrapped to two
+  // lines sits level with the banner instead of hanging below it.
+  align-items: center;
+  justify-content: center;
+  gap: u(1);
+  text-align: center;
+  // Two units, times what fitBanner worked out it can afford: 1 whenever
+  // the whole line fits, which is every turn of the match on a big
+  // window, and less only when it would otherwise overrun the buttons.
+  font-size: calc(var(--banner-fit, 1) * #{u(2)});
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+
+  &.your-turn { color: #229954; }
+  &.opponent-turn { color: #c0392b; }
+  // A committed turn playing back: the name holds on whoever moved and
+  // goes yellow, so the pause reads as watching that turn rather than as
+  // the next one having started. Last, so it wins on equal specificity.
+  &.committing { color: #f5c542; }
+
+  .turn-text { flex: 0 0 auto; }
+
+  /* Where the match has got to: the stage of the schedule, or the result
+     once the three phases have settled one. Amber rather than the pale
+     gold it carried while it only ever named overtime - this sits on the
+     light header now on every turn of the match, and pale gold on that
+     ground is barely there. */
+  .verdict {
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    color: #b45309;
+  }
+
+  /* The match score, and the glow on whoever is ahead of it. Level
+     pegging lights neither, so a glow always means a lead. */
+  .match-total {
+    font-weight: 700;
+  }
+
+  // An equal share each, so whose turn it is stays on the centre line
+  // however long the two scores run. Their own colour: the indicator
+  // turns green and red by whose turn it is, and a score that changed
+  // colour with the turn would read as if it had changed.
+  .phase-score {
+    flex: 1 1 0;
+    // Its own 12px floor: the banner shrinks to fit, and 0.55 of a
+    // fitted banner is where the scores would stop being readable first.
+    font-size: max(12px, 0.55em);
+    // A score may take a second line; the turn itself never does. Late
+    // in a match a score with a multiplier and three banked phases runs
+    // to forty-odd characters a side, which no laptop header holds on
+    // one line beside the turn at any size worth reading. Two lines of
+    // it are no taller than the banner's own line, so the header keeps
+    // its height; the banner shrinks only if a score would need a third.
+    white-space: normal;
+    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  .phase-score.theirs { text-align: right; color: #7c8894; }
+  .phase-score.ours { text-align: left; color: #34404a; }
+
+  // Each half in its own colour, mirrored across the two sides: held
+  // hexes are green for you and dark red for them, dead units red for
+  // you and dark green for them. The same fact reads as good or bad news
+  // depending on whose side of the board it is on, so the colour says
+  // which without the player having to work out which score is theirs.
+  // The total keeps the neutral ink - it is the two halves netted, not
+  // news of its own. Emoji ignore `color`, so only the numbers take it.
+  .phase-score.ours .cap { color: #229954; }
+  .phase-score.ours .death { color: #c0392b; }
+  .phase-score.theirs .cap { color: #7b241c; }
+  .phase-score.theirs .death { color: #14532d; }
+
+  // The three totals, each its own colour so the eye can pick out which
+  // number it wants without counting symbols: the phase running now, the
+  // phases already banked, and what the match comes to. Mirrored like the
+  // pair above - yours saturated, theirs muted - so a glance still says
+  // whose row it is. All readable on a light header, which is what ruled
+  // out the pale gold the match total used to carry.
+  .phase-score.ours .phase-total { color: #1b6ca8; }     // this phase, live
+  .phase-score.theirs .phase-total { color: #5c7a8f; }
+  // Each banked phase its own colour, or the parenthetical is a row of
+  // numbers in one tone and there is no telling which phase is which.
+  .phase-score.ours .banked-1 { color: #8a5a10; }        // phase 1, amber
+  .phase-score.ours .banked-2 { color: #0f766e; }        // phase 2, teal
+  .phase-score.ours .banked-3 { color: #9d174d; }        // phase 3, rose
+  .phase-score.theirs .banked-1 { color: #9b8763; }
+  .phase-score.theirs .banked-2 { color: #6f9490; }
+  .phase-score.theirs .banked-3 { color: #a8798b; }
+  .phase-score.ours .match-total { color: #6b21a8; }     // the match itself
+  .phase-score.theirs .match-total { color: #8b6fa8; }
+
+  /* Ahead on the match, whichever side that is - so it has to outrank the
+     two above, which are a class deeper than the plain .leading rule was.
+     Amber rather than the pale gold it used to carry: the header sits on
+     a light ground, where pale gold all but vanished. */
+  .phase-score.ours .match-total.leading,
+  .phase-score.theirs .match-total.leading {
+    color: #b45309;
+    text-shadow: 0 0 6px rgba(245, 158, 11, 0.55);
+  }
+
+  // The phase running now glows, and the match total waves - the two
+  // numbers that are still moving, told apart from the banked ones that
+  // are not. Two different motions rather than two pulses, or the pair
+  // reads as one effect applied twice.
+  //
+  // The halo is `currentColor`, so each takes its own ink and the one
+  // keyframe serves both sides. White would only blur: the header sits
+  // on a light ground.
+  .phase-total { animation: score-glow 2s ease-in-out infinite; }
+  @keyframes score-glow {
+    50% { text-shadow: 0 0 5px currentColor, 0 0 11px currentColor; }
+  }
+
+  // A transform needs a box to act on, and a bare span has none. The bob
+  // is under a fifth of the line, so nothing below it shifts.
+  .match-total {
+    display: inline-block;
+    animation: score-wave 1.6s ease-in-out infinite;
+  }
+  @keyframes score-wave {
+    25% { transform: translateY(-0.18em); }
+    75% { transform: translateY(0.1em); }
+  }
+
+  // Both are decoration on a number that is legible standing still.
+  @media (prefers-reduced-motion: reduce) {
+    .phase-total, .match-total { animation: none; }
   }
 }
 
@@ -2075,6 +2218,7 @@ $u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
 // specificity of the rules it has to beat - .path-actions sets its buttons'
 // min-height to 0 on purpose, to size them off their own line box.
 .game-room-container > header button,
+.game-room-container .room-tabs button,
 .game-room-container .match-panels button,
 .game-room-container .side-rail button {
   min-height: 24px;

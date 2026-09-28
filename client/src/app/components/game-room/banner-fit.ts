@@ -19,13 +19,21 @@
  *    banked phases runs to forty-odd characters, which no laptop header
  *    holds on one line beside the turn. Two lines of it are no taller than
  *    the banner's own line; a third would take height off both columns.
+ * 5. Stacked: the banner leaves the title and the buttons its row and takes
+ *    one of its own under them, the whole width, and goes through 1-4 again
+ *    there. It costs the columns a row, so in the three columns it comes
+ *    last, where the sweep never finds it needed. The tabbed layout under
+ *    1100px wide (`alwaysStacked`) starts here: under ~1000px even the
+ *    opening's banner wants it, and a header that went from one row to two as
+ *    the turn's words changed length would move every panel under it, every
+ *    turn - so there it is the window's width that decides, never the words.
  *
  * Overrunning is `scrollWidth > clientWidth`: the banner is centred, and a
  * centred row spills both ways, so scrollWidth sees only the half past the
  * right-hand edge - enough to answer yes or no, which is all a bisection asks.
  */
-export function fitHeader(header: HTMLElement, banner: HTMLElement | null, least = 0.5):
-    { compact: boolean; fit: number; lines: number } {
+export function fitHeader(header: HTMLElement, banner: HTMLElement | null, alwaysStacked = false,
+    least = 0.5): { compact: boolean; stacked: boolean; fit: number; lines: number } {
   const set = (fit: number) => banner?.style.setProperty('--banner-fit', String(fit));
   const scores = banner ? Array.from(banner.querySelectorAll<HTMLElement>('.phase-score')) : [];
   const fits = (lines: number) => header.scrollWidth <= header.clientWidth + 1
@@ -51,14 +59,31 @@ export function fitHeader(header: HTMLElement, banner: HTMLElement | null, least
     return good;
   };
 
+  // 2-4, in whichever row the banner is in.
+  const shrink = (): { fit: number; lines: number } | null => {
+    set(1);
+    if (fits(1)) return { fit: 1, lines: 1 };
+    const oneLine = largest(0.8, 1);
+    if (oneLine !== null) return { fit: oneLine, lines: 1 };
+    set(1);
+    if (fits(2)) return { fit: 1, lines: 2 };
+    const twoLines = largest(least, 2);
+    return twoLines === null ? null : { fit: twoLines, lines: 2 };
+  };
+
   header.classList.remove('header-compact');
+  header.classList.toggle('header-stacked', alwaysStacked);
   set(1);
-  if (fits(1)) return { compact: false, fit: 1, lines: 1 };
+  if (fits(1)) return { compact: false, stacked: alwaysStacked, fit: 1, lines: 1 };
   header.classList.add('header-compact');
-  if (fits(1) || !banner) return { compact: true, fit: 1, lines: 1 };
-  const oneLine = largest(0.8, 1);
-  if (oneLine !== null) return { compact: true, fit: oneLine, lines: 1 };
-  set(1);
-  if (fits(2)) return { compact: true, fit: 1, lines: 2 };
-  return { compact: true, fit: largest(least, 2) ?? least, lines: 2 };
+  if (fits(1) || !banner) return { compact: true, stacked: alwaysStacked, fit: 1, lines: 1 };
+  if (!alwaysStacked) {
+    const inRow = shrink();
+    if (inRow) return { compact: true, stacked: false, ...inRow };
+    header.classList.add('header-stacked');
+  }
+  const stacked = shrink();
+  if (stacked) return { compact: true, stacked: true, ...stacked };
+  set(least);
+  return { compact: true, stacked: true, fit: least, lines: 2 };
 }

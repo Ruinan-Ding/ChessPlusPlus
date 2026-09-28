@@ -2949,9 +2949,11 @@ describe('GameRoomComponent fitting the window', () => {
     expect(c.roomZoom).toBe(0.5);
     expect(c.roomWidth).toBe(1180);
     expect(c.roomHeight).toBe(1800);
-    // Height decides here.
-    const d = fit(1904, 423);
-    expect(d.roomZoom).toBeCloseTo(0.6, 6);
+    // Height decides here - a laptop a little short of the columns' least
+    // height, which keeps them, scaled. (Much shorter is the tabs.)
+    const d = fit(1904, 670);
+    expect(d.roomLayout).toBe('columns');
+    expect(d.roomZoom).toBeCloseTo(670 / 705, 6);
     expect(d.roomHeight).toBeCloseTo(705, 6);
   });
 
@@ -2971,5 +2973,61 @@ describe('GameRoomComponent fitting the window', () => {
     }
     expect(fit(1180, 704).roomZoom).toBeLessThan(1);
     expect(fit(1179, 705).roomZoom).toBeLessThan(1);
+  });
+
+  it('keeps the three columns, scaled a little, just short of their least size', () => {
+    // A 1366x768 laptop's browser window: every panel in sight is worth a
+    // pixel of type, so this is not the tabs.
+    for (const [w, h] of [[1366, 650], [1100, 700], [1180, 640]]) {
+      const c = fit(w, h);
+      expect(c.roomLayout).withContext(`${w}x${h}`).toBe('columns');
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBeGreaterThanOrEqual(0.9);
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBeLessThan(1);
+    }
+  });
+
+  it('gives a landscape window short of that the board and one column of tabs, unscaled', () => {
+    for (const [w, h] of [[1024, 768], [1024, 600], [960, 540], [844, 390], [1366, 620]]) {
+      const c = fit(w, h);
+      expect(c.roomLayout).withContext(`${w}x${h}`).toBe('tabbed');
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBe(1);
+      expect(c.roomWidth).withContext(`${w}x${h}`).toBeNull();
+    }
+  });
+
+  it('pins the Unit panel above the tabs only where the window is tall enough for it', () => {
+    expect(fit(1024, 768).unitPinned).toBeTrue();
+    expect(fit(1024, 690).unitPinned).toBeTrue();
+    expect(fit(1024, 689).unitPinned).toBeFalse();
+    expect(fit(844, 390).unitPinned).toBeFalse();
+    // In the columns it is always in sight.
+    expect(fit(1920, 1080).unitPinned).toBeTrue();
+  });
+
+  it('leaves a portrait window the scaled columns until it has a layout of its own', () => {
+    const c = fit(820, 1180);
+    expect(c.roomLayout).toBe('columns');
+    expect(c.roomZoom).toBeCloseTo(820 / 1180, 6);
+  });
+});
+
+/** The tabbed layout's strip: what it offers, and which panel shows. */
+describe('GameRoomComponent tabs', () => {
+  const read = (c: any, name: 'shownTab' | 'roomTabs') =>
+    Object.getOwnPropertyDescriptor(GameRoomComponent.prototype, name)!.get!.call(c);
+
+  it('offers Unit a tab of its own only while it is not pinned', () => {
+    expect(read({ unitPinned: true }, 'roomTabs').map((t: any) => t.id))
+      .toEqual(['yours', 'theirs', 'history', 'room']);
+    expect(read({ unitPinned: false }, 'roomTabs').map((t: any) => t.id))
+      .toEqual(['yours', 'unit', 'theirs', 'history', 'room']);
+  });
+
+  it('shows Yours in place of a Unit tab that pinning took away', () => {
+    // Chosen on a short window, then the window grew: the Unit panel is in
+    // sight above the tabs, and the panel under them must not go blank.
+    expect(read({ unitPinned: true, roomTab: 'unit' }, 'shownTab')).toBe('yours');
+    expect(read({ unitPinned: false, roomTab: 'unit' }, 'shownTab')).toBe('unit');
+    expect(read({ unitPinned: true, roomTab: 'history' }, 'shownTab')).toBe('history');
   });
 });

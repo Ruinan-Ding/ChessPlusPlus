@@ -1226,9 +1226,15 @@ Decided so far:
 - **Nothing on the room screen is ever hidden to make room, and it is sized to the window
   rather than scaled to it.** The owner, 25 Sep 2026: *"DO NOT HIDE ANYTHING AS IT MAKES THIS
   GAME UNPLAYABLE"*; and 27 Sep 2026, asked how the room should hold small screens: *"tabs are
-  fine, support all devices, start with phase A"* (PUNCHLIST 6.39). Phase A - desktops and
-  laptops - is done; tablets and phones (B, C) are not, and until they are the old answer
-  still holds below the room's least size: the whole room scales down (`fitRoom()`, CSS `zoom`).
+  fine, support all devices, start with phase A"* (PUNCHLIST 6.39, 6.40). Phase A (desktops
+  and laptops) and phase B (tablets on their side, small windows) are done; phase C (portrait,
+  and phones) is not, and until it is the old answer still holds there: the whole room scales
+  down (`fitRoom()`, CSS `zoom`).
+  - **Three columns, or the board and one column of tabs** (`roomLayout`, decided in
+    `fitRoom()`). The columns from 1180x705 up, unscaled; a little short of that (scaled no
+    further than `ROOM_MILD_ZOOM`, 0.9) still the columns, scaled - the band of laptops whose
+    browser window is just short of 705, where a pixel of type is worth every panel in sight;
+    below that, if the window is landscape, the tabs; if portrait, still the scaled columns.
   - **One unit sizes everything but the board.** `--u` on `.game-room-container`, between 12px
     and 20px, and every type size, padding, gap and both columns' widths are written in it -
     `u(n)` and `t(n)` in the stylesheet, `t` being type with a 12px floor. The board is not in
@@ -1254,24 +1260,44 @@ Decided so far:
   - **Nothing is cut short.** The ability hint reserves two lines and wraps into them (it was
     one line with an ellipsis, cut at every window size); an effect's detail wraps; a long stat
     value drops under its label rather than out of its cell.
-  - **The header is one row and gives way in order** (`fitHeader`, `banner-fit.ts`, the timer
-    app's way): everything at full size; then compact - "Setup", "Leave", "Connected", the same
-    words shorter (`.header-compact`, and `:host-context` in the connection status); then the
+  - **The header gives way in order** (`fitHeader`, `banner-fit.ts`, the timer app's way):
+    everything at full size; then compact - "Setup", "Leave", "Connected", the same words
+    shorter (`.header-compact`, and `:host-context` in the connection status); then the
     banner up to a fifth smaller with the scores on one line; then a score may take a second
-    line, which is no taller than the banner's own. Measured, not chosen: a ResizeObserver and a
-    MutationObserver re-fit it outside change detection, on the window and on every change to
-    its text. `--banner-fit` is what its font sizes multiply by.
-  - **Below 1180 x 705 the room still scales** - `ROOM_MIN_WIDTH`/`ROOM_MIN_HEIGHT`, the least
-    size at which the sweep finds everything whole with the unit at its floor. A 1366x768
-    laptop's browser window, about 650-690px tall, lands just under it and is drawn at 92-98%.
-    The window's units are safe inside the zoomed room: every term only falls as the window
-    does, so below the floor the unit sits at 12px and the room is laid out at exactly the
-    size that was measured.
-  - **Checked by `client/scripts/layout-sweep.mjs`**, in headless Chrome at 18 window sizes from
-    3440x1440 to 1180x705, each with the opening's banner and with the longest one the match
-    can show: nothing scaled, nothing scrolling but the logs, nothing clipped or cut short,
+    line, which is no taller than the banner's own; last, stacked - the banner on a row of its
+    own under the title and the buttons (`.header-stacked`). The three columns never need the
+    last step at the sizes the sweep holds. **The tabs under 1100px wide are always stacked**
+    (`TABBED_STACK_WIDTH`): under ~1000px even the opening's banner wants it, and a header that
+    changed between one row and two as the turn's words changed length would move every panel
+    under it, every turn - so there the window's width decides, never the words. Wider, the
+    banner shares the row and the board keeps its height; the tabbed unit is measured with the
+    header stacked, so a one-row header only leaves the column room to spare. Measured, not
+    chosen: a ResizeObserver and a MutationObserver re-fit it outside change detection, on the
+    window and on every change to its text. `--banner-fit` is what its font sizes multiply by.
+  - **The tabs** (`.tabbed`): the board on the left, as big as the window allows, and one
+    column: Undo and End Turn, Show Hex and Flip, the Unit panel while the window is at least
+    `UNIT_PIN_MIN_HEIGHT` (690) tall, a strip of tabs - Yours, Unit (only when it is not
+    pinned), Theirs, History, Room - the panel the tab picks, and Resign and Offer Draw. The
+    panels stay in the markup where the columns put them: the columns become `display:
+    contents` and `main`'s grid places what was in them, so there is one copy of every panel.
+    The unit has formulas of its own there, one pinned and one not, measured the same way
+    (the comment above them). Every tab fits without scrolling down to about 505px tall;
+    below that - a phone on its side - the shown tab's panel scrolls, until phase C gives
+    phones controls and a board of their own. History's expand button is not drawn in the
+    tabs (it has the whole panel already), and the Room tab stays filled if History was
+    expanded before the layout changed.
+  - **Where the room still scales**: a little short of the columns (above), and portrait below
+    them. `ROOM_MIN_WIDTH`/`ROOM_MIN_HEIGHT` (1180 x 705) is the least size at which the sweep
+    finds the columns whole with the unit at its floor. The window's units are safe inside the
+    zoomed room: every term only falls as the window does, so below the floor the unit sits at
+    12px and the room is laid out at exactly the size that was measured.
+  - **Checked by `client/scripts/layout-sweep.mjs`**, in headless Chrome: the columns at 19
+    window sizes from 3440x1440 to 1180x705, the tabs at 9 from 1366x620 to 800x505 with every
+    tab of each measured, and the longest banner the match can show at all 28: each the layout
+    it should be, nothing scaled, nothing scrolling but the logs, nothing clipped or cut short,
     nothing off screen, no text under 12px, no control under 24px, and every log with room for
-    its newest entry. Run it after any change to the room's stylesheet or template; a spec
+    its newest entry. Phones on their side and the still-scaled sizes are measured and printed,
+    not failed. Run it after any change to the room's stylesheet or template; a spec
     cannot see any of this. Chrome fires no `resize` in a hidden tab - drive the size with
     `Emulation.setDeviceMetricsOverride`, as the sweep does.
   - What the zoom-everything room replaced (25 Sep), all measured: the Unit panel crushed to
