@@ -1591,8 +1591,85 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.opponentAttackMarkers).toEqual([{ from: '0,-4', to: '-1,-11' }]);
     const lines = logged(c).filter((line: string) => line.startsWith('black '));
     expect(lines.length).toBe(2);
-    expect(lines[0]).toContain('rook survives, 36 HP');
+    expect(lines[0]).toContain('hit white rook in its base for 4 (36 HP left)');
     expect(lines[1]).toContain('black knight');
+  });
+
+  describe('the log line for a blow', () => {
+    // Found playing a solo game, 29 Sep 2026: a blow from where the unit
+    // stood read "black pawn: 200 -> 200 - dealt 4 dmg (pawn survives, 16
+    // HP)" - a move to nowhere, the unit it hit unnamed, the blow back left out.
+    const line = (move: any, board: any = {}) => {
+      const c = watching(20);
+      c.gameState.snapshot.boardState = board;
+      return { text: (c as any).describeMove({ turn: 20, attacked: true, ...move }) as string,
+        n: (key: string) => (c as any).hexLabel(key) as string };
+    };
+    const pawn = { unit_id: 'pawn', color: 'white', hp: 16, max_hp: 20 };
+
+    it('says who it hit, where, what it left, and what came back', () => {
+      const { text, n } = line({
+        color: 'black', unit_id: 'pawn', from: '1,-3', to: '1,-3', attackedHex: '0,-3',
+        damage_dealt: 4, defender_hp: 16, counter_damage: 4, attacker_eliminated: false,
+      }, { '0,-3': pawn });
+      expect(text).toBe(`black pawn ${n('1,-3')} hit white pawn ${n('0,-3')} for 4 (16 HP left), took 4 back`);
+    });
+
+    it('gives the walk first when the unit moved to strike', () => {
+      const { text, n } = line({
+        color: 'white', unit_id: 'archer', from: '-3,3', to: '-1,0', attackedHex: '1,-2',
+        damage_dealt: 6, defender_hp: 10, counter_damage: 0,
+      }, { '1,-2': { ...pawn, color: 'black' } });
+      // Out of the pawn's reach: nothing came back, and the line says nothing of it.
+      expect(text).toBe(`white archer ${n('-3,3')} -> ${n('-1,0')} hit black pawn ${n('1,-2')} for 6 (10 HP left)`);
+    });
+
+    it('says a kill, and an attacker the answer killed', () => {
+      expect(line({
+        color: 'black', unit_id: 'pawn', from: '1,-3', to: '1,-3', attackedHex: '0,-3',
+        damage_dealt: 4, defender_eliminated: true, captured: 'pawn', counter_damage: 0,
+      }).text).toMatch(/hit white pawn \d+ for 4 \(eliminated\)$/);
+      expect(line({
+        color: 'black', unit_id: 'pawn', from: '1,-3', to: '1,-3', attackedHex: '0,-3',
+        damage_dealt: 2, defender_hp: 30, counter_damage: 9, attacker_eliminated: true,
+      }, { '0,-3': { ...pawn, unit_id: 'rook', hp: 30 } }).text)
+        .toMatch(/hit white rook \d+ for 2 \(30 HP left\), took 9 back and was eliminated$/);
+    });
+
+    it('names the panel a blow landed in, a reserve as well as a base', () => {
+      expect(line({
+        color: 'white', unit_id: 'knight', from: '4,-8', to: '4,-8', attackedHex: '12,-9',
+        damage_dealt: 5, intoPanel: true, panelAttack: true, panel: 'br',
+        unit: { unit_id: 'archer', color: 'black' }, defenderHp: 11, counter_damage: 3,
+      }).text).toMatch(/^white knight \d+ hit black archer in its reserve for 5 \(11 HP left\), took 3 back$/);
+    });
+
+    it('reads the server\'s older record, with no attackedHex, as a blow from where it stood', () => {
+      const { text, n } = line({
+        color: 'black', unit_id: 'pawn', from: '1,-3', to: '0,-3',
+        damage_dealt: 4, defender_hp: 16,
+      }, { '0,-3': pawn });
+      expect(text).toBe(`black pawn ${n('1,-3')} hit white pawn ${n('0,-3')} for 4 (16 HP left)`);
+    });
+
+    it('leaves a move without a blow as it was', () => {
+      const c = watching(20);
+      expect((c as any).describeMove({ color: 'black', unit_id: 'pawn', from: '5,-9', to: '1,-3' }))
+        .toBe(`black pawn: ${(c as any).hexLabel('5,-9')} -> ${(c as any).hexLabel('1,-3')}`);
+    });
+  });
+
+  it('fits the header again when the pointer changes, layout or no layout', () => {
+    // The "?" beside the turn comes and goes with the same media query, and
+    // a banner fitted without it ran 16px over once it was there.
+    const c = room();
+    let refits = 0;
+    c.refitHeader = () => refits++;
+    c.roomLayout = 'columns';
+    spyOn(c, 'fitRoom');
+    c.onPointerChange();
+    expect(c.fitRoom).toHaveBeenCalled();
+    expect(refits).toBe(1);
   });
 
   it('logs a turn that wrapped and then ended as what it did, not as a pass', () => {

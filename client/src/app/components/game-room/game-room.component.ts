@@ -468,6 +468,17 @@ const UNIT_PIN_MIN_HEIGHT = 690;
 const TABBED_STACK_WIDTH = 1100;
 
 /**
+ * Below this width, as well, the scores go under the turn from the start, in
+ * a taller banner (fitHeader's `scoresBelow`, `.header-narrow`): a phone
+ * upright. The banner's height is held - the window's, not the words' - and
+ * the shorter box that holds the scores beside the turn holds every stage of
+ * a match from 700px up, the clock and "PHASE 3 POSTMATCH" included; at 600
+ * and 640 the longest of them had to go under the turn in it and ran 3px
+ * over. Measured in headless Chrome, 29 Sep 2026.
+ */
+const TABBED_SCORES_BELOW_WIDTH = 700;
+
+/**
  * The least width at which a portrait window's panels stand in two columns
  * under the board - the Unit panel pinned beside the tabs - rather than the
  * Unit panel being a tab of its own: two 248px columns and the gap, with
@@ -4268,7 +4279,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   private pointerQuery?: MediaQueryList;
-  private onPointerChange = () => this.fitRoom();
+  // The header too, whether or not the layout changes: the same query draws
+  // the "?" beside the turn (game-room.tips.scss), and the banner fitted
+  // without it ran 16px over once it was there.
+  private onPointerChange = () => { this.fitRoom(); this.refitHeader(); };
 
   /** A touch screen with no mouse - a phone, a tablet - rather than a
    *  computer's window, which keeps the columns further down (ROOM_DESKTOP_ZOOM). */
@@ -4665,27 +4679,49 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
     for (const move of records) this.addSystemMessage(this.describeMove(move));
   }
 
-  /** One line of the log for one record, quoting the hex numbers the board draws. */
+  /**
+   * One line of the log for one record, quoting the hex numbers the board
+   * draws. A move is where it went; a blow is a sentence - who struck whom,
+   * where, and what came back. It read "black pawn: 200 -> 200 - dealt 4 dmg
+   * (pawn survives, 16 HP)": a move to where it already stood, the unit it hit
+   * named by type alone, and the blow it took back left out. Now "black pawn
+   * 200 hit white pawn 199 for 4 (16 HP left), took 4 back" - the wording the
+   * owner agreed to, 29 Sep 2026.
+   */
   private describeMove(move: any): string {
-    let text = `${move.color} ${move.unit_id}: ${this.hexLabel(move.from)} -> ${this.hexLabel(move.to)}`;
-    if (move.entered) text += ' (out of the reserve)';
-    else if (move.panelMove) text += move.price ? ` (wrapped, ${move.price} pts)` : ' (in its panel)';
-    else if (move.withdrawn) text += ' (walked home)';
-    if (move.attacked) {
-      text += ` - dealt ${move.damage_dealt} dmg`;
-      if (move.defender_eliminated) {
-        text += ` (eliminated ${move.captured ?? 'enemy unit'})`;
-      } else {
-        // The defender stands on the hex that was struck; move.to is where
-        // the attacker ended up, which is a different unit for every ranged
-        // trade. A panel defender is on no board: its record carries it.
-        const struck = move.attackedHex ?? move.to;
-        const defenderUnit = (move.intoPanel ? move.unit?.unit_id : undefined)
-          ?? this.gameState.snapshot.boardState[struck]?.unit_id ?? 'unit';
-        // A blow into a panel writes `defenderHp`; one on the board writes
-        // `defender_hp`. Without both keys the line read "survives, undefined HP".
-        text += ` (${defenderUnit} survives, ${move.defenderHp ?? move.defender_hp} HP)`;
-      }
+    let where = '';
+    if (move.entered) where = ' (out of the reserve)';
+    else if (move.panelMove) where = move.price ? ` (wrapped, ${move.price} pts)` : ' (in its panel)';
+    else if (move.withdrawn) where = ' (walked home)';
+    const path = `${this.hexLabel(move.from)} -> ${this.hexLabel(move.to)}${where}`;
+    if (!move.attacked) return `${move.color} ${move.unit_id}: ${path}`;
+
+    // Struck from `to`, where the attacker ended up - a different hex from the
+    // struck one for every ranged trade. A record without `attackedHex` is the
+    // server's older shape: the attacker never left `from`, and `to` is the
+    // defender's hex.
+    const struck = move.attackedHex ?? move.to;
+    const stood = move.attackedHex ? move.to : move.from;
+    const walked = !!move.attackedHex && move.from !== move.to;
+    const other = String(move.color).toLowerCase() === 'white' ? 'black' : 'white';
+    // A panel defender is on no board: its record carries it, and its hex has
+    // no number drawn - the panel is named instead.
+    const defender = move.captured
+      ?? (move.intoPanel ? move.unit?.unit_id : undefined)
+      ?? this.gameState.snapshot.boardState[struck]?.unit_id ?? 'unit';
+    const target = move.intoPanel
+      ? `in its ${move.panel ? (BASE_PANELS.has(move.panel) ? 'base' : 'reserve') : 'panel'}`
+      : this.hexLabel(struck);
+    let text = `${move.color} ${move.unit_id} ${walked ? path : this.hexLabel(stood)}`
+      + ` hit ${other} ${defender} ${target} for ${move.damage_dealt}`;
+    // A blow into a panel writes `defenderHp`; one on the board writes
+    // `defender_hp`. Without both keys the line read "survives, undefined HP".
+    const left = move.defenderHp ?? move.defender_hp;
+    if (move.defender_eliminated) text += ' (eliminated)';
+    else if (left != null) text += ` (${left} HP left)`;
+    if (move.counter_damage > 0) {
+      text += `, took ${move.counter_damage} back`;
+      if (move.attacker_eliminated) text += ' and was eliminated';
     }
     return text;
   }
@@ -5211,8 +5247,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
     const fit = () => {
       cancelAnimationFrame(this.headerFrame);
       fitted = shape();
-      fitHeader(header, this.bannerEl,
-        this.roomLayout !== 'columns' && window.innerWidth < TABBED_STACK_WIDTH);
+      const tabs = this.roomLayout !== 'columns';
+      fitHeader(header, this.bannerEl, tabs && window.innerWidth < TABBED_STACK_WIDTH, 0.5,
+        tabs && window.innerWidth < TABBED_SCORES_BELOW_WIDTH);
     };
     const soon = () => {
       cancelAnimationFrame(this.headerFrame);

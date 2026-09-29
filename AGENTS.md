@@ -1308,13 +1308,29 @@ Decided so far:
     wide, are always stacked** (`TABBED_STACK_WIDTH`): under ~1000px even the opening's banner
     wants it, and a header that
     changed between one row and two as the turn's words changed length would move every panel
-    under it, every turn - so there the window's width decides, never the words. Wider, the
+    under it, every turn - so there the window's width decides, never the words. **And held**
+    (`.header-held`): the banner is a box of fixed height, worked out from the turn's line at
+    full size, and the words shrink to fit inside it; whether the buttons go compact is the
+    first row's own question - the title beside the buttons - and not the banner's. Only the
+    row count was held before: the banner's own height followed its words, and a phone's
+    board moved between 106px and 142px down over a match, at some stages between one turn
+    and the next (found playing on an emulated phone, 29 Sep 2026). **Everywhere, the banner
+    is never shorter than its line at full size** (a min-height `fitHeader` measures): shrunk
+    for a long stage it took height with it, 9px at 1536x864. The line is measured rather than
+    written in the stylesheet because it is the font's - weight 800 is Arial Black on Windows,
+    1.41 of the size, and Arial Bold elsewhere, 1.15 - and the font's line over the fit, in
+    CSS, rounds at each size and still moved the board a pixel or two. Measured in headless
+    Chrome, 29 Sep 2026: 18 windows from 360x780 to 2560x1440, twelve banner states each (the
+    opening to overtime, and an online clock at halftime and at Phase 3's postmatch), and the
+    board's top the same in every state of each. Wider than 1100px, the
     banner shares the row and the board keeps its height; the tabbed unit is measured with the
     header stacked, so a one-row header only leaves the column room to spare. Measured, not
     chosen (`watchHeader`), and outside Angular, so none of it runs a change detection: a
     ResizeObserver on the room's box - not the header's, whose height the fit itself changes -
     fits it there and then, before the frame is drawn (left to the next frame, one frame of
-    the old fit showed); a MutationObserver fits it again when its text changes length. A tick
+    the old fit showed); a MutationObserver fits it again when its text changes length, and a
+    change of pointer does too - the "?" beside the turn comes with a coarse one, and a banner
+    fitted without it ran 16px over once it was there. A tick
     of the clock does not count - the banner's digits are tabular - so the fit is not worked
     through afresh every second. `--banner-fit` is what its font sizes multiply by.
   - **The tabs** (`.tabbed`): the board on the left, as big as the window allows, and one
@@ -1384,7 +1400,14 @@ Decided so far:
     `_room-units.scss`, which the first two use.
   - **The header's last steps.** Upright phones are too narrow for even the stacked banner, so
     one more: the turn on a line of its own and the two scores side by side under it
-    (`.banner-scores-below`), where beside the turn they had squeezed to four lines each.
+    (`.banner-scores-below`), where beside the turn they had squeezed to four lines each. Under
+    700px wide (`TABBED_SCORES_BELOW_WIDTH`) that is where they are from the start, in a taller
+    box (`.header-narrow`: two lines of scores at their 12px floor and the turn at 0.65 of its
+    size) - late in a match they need it, and a box that grew when they did moved the board.
+    It costs a phone about 18px of the tab's panel against the opening's banner (22 in
+    Windows' fonts), and none of the board, which is as wide as the phone. **Still open**: at
+    360-390px the longest online states ("OPPONENT'S TURN - 4:59 - PHASE 3 POSTMATCH") are
+    wider than the phone at the 12px floor and run 4-11px into the margin each side.
   - **Touch.** A touch screen has no hover, and the hover is where a trade is read before it
     is made. So the first tap on an enemy in reach arms it - its forecast on both units, a
     pulse, "Tap again to strike" - and a second tap on it strikes; any other tap or a change
@@ -2268,6 +2291,16 @@ every record of the finished ply - not off the message that closed it. Read off 
 the first unit of an overtime turn left no arrow and no line, and a turn that wrapped a unit
 and then ended was logged as a pass (it now says "ended the turn"). Panel walks get a line and
 no arrow, as before.
+
+**A blow's line says who hit whom** (`describeMove`): "black pawn 200 hit white pawn 199 for 4
+(16 HP left), took 4 back" - the walk first when it moved to strike ("180 -> 200 hit ..."),
+"(eliminated)" for a kill, "took 9 back and was eliminated" when the answer killed it, and the
+panel named for a blow into one ("in its base", "in its reserve"), whose hexes have no number
+drawn. It read "black pawn: 200 -> 200 - dealt 4 dmg (pawn survives, 16 HP)": a move to where it
+already stood, the unit it hit named by type alone, and the blow back left out. The wording is
+the one the owner agreed to, 29 Sep 2026. A record without `attackedHex` is the server's older
+shape - the attacker never left `from`, the defender is on `to` - and reads that way. A move
+without a blow reads as it always did.
 
 **The recap follows each unit on its own** (`buildPlayback`). Every staged action carries the
 hex its unit set off from, and that origin is the key: a walk collapses per unit, the units play

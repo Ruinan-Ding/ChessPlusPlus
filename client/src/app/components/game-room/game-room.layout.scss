@@ -256,6 +256,17 @@
     .room-tabs button { min-height: 44px; }
   }
 
+  // ================ THE HEADER'S BANNER, HELD (fitHeader, alwaysStacked) ================
+  //
+  // Under 1100px wide the banner has a row of its own, and a box of fixed
+  // height in it: the words shrink to fit the box, and the box never moves
+  // what is under it. It grew and shrank with the words - a phone's board
+  // between 106px and 142px down over a match - where the owner's rule is
+  // that the panels do not move with the turn. The height is fitHeader's,
+  // measured off the turn's line at full size, the font's own; what is here
+  // is where the rows sit in it when they take less.
+  header.header-held .turn-indicator { align-content: center; }
+
   // No keyboard, no keys to name: a phone or a tablet without one is told
   // "End Turn", not "End Turn (TAB)".
   @media (hover: none) and (pointer: coarse) {

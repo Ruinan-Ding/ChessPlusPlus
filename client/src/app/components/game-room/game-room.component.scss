@@ -2078,6 +2078,9 @@
   // the whole line fits, which is every turn of the match on a big
   // window, and less only when it would otherwise overrun the buttons.
   font-size: calc(var(--banner-fit, 1) * #{u(2)});
+  // Never shorter than its line at full size, however small the words are
+  // made (fitHeader sets the min-height, measured), and under 1100px wide
+  // a box of fixed height (.header-held, the layout stylesheet).
   font-weight: 800;
   letter-spacing: 0.08em;
   white-space: nowrap;

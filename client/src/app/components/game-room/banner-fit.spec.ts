@@ -142,6 +142,85 @@ describe('fitHeader', () => {
     expect(banner.classList.contains('banner-scores-below')).toBeFalse();
   });
 
+  it('keeps a one-row header at its full-size line when the banner shrinks to fit', () => {
+    // 9px came off the header at 1536x864 on a stage long enough to shrink
+    // the banner, and the columns under it moved with the turn.
+    const { head, banner } = header(1300, '🚩 3 − 💀 1 = 2');
+    const turn = banner.children[1];
+    turn.textContent = 'YOUR TURN - PHASE 1';
+    expect(fitHeader(head, banner).fit).toBe(1);
+    const full = head.getBoundingClientRect().height;
+    turn.textContent = "OPPONENT'S TURN - 4:59 - PHASE 3 POSTMATCH";
+    const got = fitHeader(head, banner);
+    expect(got.stacked).toBeFalse();
+    expect(got.fit).toBeLessThan(1);
+    expect(head.getBoundingClientRect().height).toBe(full);
+  });
+
+  describe('held - the tabbed layouts\' header', () => {
+    // The room's banner at its 12px unit: 24px, in the font's own line, the
+    // rows under it with no gap between them. fitHeader sizes the box.
+    function held(width: number, score: string) {
+      const got = header(width, score);
+      const style = document.createElement('style');
+      style.textContent = '.h .b { font-size: calc(var(--banner-fit, 1) * 24px); letter-spacing: 0.08em; } '
+        + '.h.header-held .b { align-content: center; } '
+        + '.b.banner-scores-below { flex-wrap: wrap; row-gap: 0; } '
+        + '.b.banner-scores-below > span:not(.phase-score) { order: 0; flex-basis: 100%; } '
+        + '.b.banner-scores-below .phase-score { order: 1; }';
+      host.appendChild(style);
+      return got;
+    }
+    const TURNS = ['YOUR TURN - INITIALIZATION', "OPPONENT'S TURN - PHASE 1",
+      "OPPONENT'S TURN - 4:59 - PHASE 2 HALFTIME", 'YOUR TURN - OVERTIME 3'];
+    const SCORES = ['🚩 0 − 💀 0 = 0', '🚩 10 − 💀 0 = 10', '(🚩 14 − 💀 3) ×2 = 22 (+ 12 = 34)', LONG_SCORE];
+
+    it('keeps the header one height whatever the banner says, and fits inside it', () => {
+      // A phone upright (390px, less the room's padding) and a tablet (820).
+      for (const [width, below] of [[366, true], [796, false]] as const) {
+        const { head, banner } = held(width, SCORES[0]);
+        const heights = new Set<number>();
+        for (const turn of TURNS) {
+          for (const score of SCORES) {
+            banner.children[1].textContent = turn;
+            banner.querySelectorAll('.phase-score').forEach(s => { s.textContent = score; });
+            const got = fitHeader(head, banner, true, 0.5, below);
+            const at = `${width}px, "${turn}", "${score}"`;
+            heights.add(Math.round(head.getBoundingClientRect().height));
+            expect(head.classList.contains('header-held')).withContext(at).toBeTrue();
+            expect(banner.scrollWidth).withContext(at).toBeLessThanOrEqual(banner.clientWidth + 1);
+            expect(banner.scrollHeight).withContext(at).toBeLessThanOrEqual(banner.clientHeight + 1);
+            expect(got.fit).withContext(at).toBeGreaterThanOrEqual(0.5);
+          }
+        }
+        expect([...heights]).withContext(`${width}px`).toHaveSize(1);
+      }
+    });
+
+    it('puts the scores under the turn from the start when told to, however short they are', () => {
+      const { head, banner } = held(3000, '🚩 0 − 💀 0 = 0');
+      expect(fitHeader(head, banner, true, 0.5, true)).toEqual(
+        { compact: false, stacked: true, scoresBelow: true, fit: 1, lines: 1 });
+      expect(head.classList.contains('header-narrow')).toBeTrue();
+      expect(banner.classList.contains('banner-scores-below')).toBeTrue();
+      // And off again, told otherwise.
+      expect(fitHeader(head, banner, true).scoresBelow).toBeUndefined();
+      expect(head.classList.contains('header-narrow')).toBeFalse();
+      expect(banner.classList.contains('banner-scores-below')).toBeFalse();
+    });
+
+    it('goes compact for the title and the buttons alone, never for the banner', () => {
+      // The buttons used to say "Setup" whenever the banner did not fit at
+      // full size - in a row of its own, where their words give it nothing.
+      const roomy = held(600, LONG_SCORE);
+      expect(fitHeader(roomy.head, roomy.banner, true).compact).toBeFalse();
+      expect(roomy.head.classList.contains('header-compact')).toBeFalse();
+      const tight = held(250, '');
+      expect(fitHeader(tight.head, tight.banner, true).compact).toBeTrue();
+      expect(tight.head.classList.contains('header-compact')).toBeTrue();
+    });
+  });
+
   it('comes all the way back when the room returns', () => {
     const { head, banner } = header(300, LONG_SCORE);
     expect(fitHeader(head, banner).fit).toBeLessThan(1);
