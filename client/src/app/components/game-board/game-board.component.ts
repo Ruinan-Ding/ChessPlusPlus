@@ -1807,6 +1807,63 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       50% { opacity: 0.6; }
     }
 
+    /* Asked for less motion (prefers-reduced-motion): nothing on the board
+       pulses. A pulse stopped falls back to the element's own style, which
+       for most of these says nothing happened - a stat off its printed value
+       looks printed - and the owner's rule is that nothing is hidden, so each
+       holds still in a state that says what its pulse said. The units'
+       walks, lunges and swells stop in the recap (reducedMotion). Last in the
+       sheet, so each wins the rule it answers. */
+    @media (prefers-reduced-motion: reduce) {
+      /* Their colour says it already: the armed target's deeper red, given a
+         ring as well to stand out without its pulse; an ability's targets;
+         the forecast's red over the face; the clock's red badge. */
+      .hex-attack-armed,
+      .panel-wash.wash-attack-armed,
+      .ability-friendly-target,
+      .ability-enemy-target,
+      .damage-forecast,
+      .timer-low { animation: none; }
+      .hex-cell.hex-attack-armed { stroke: #450a0a; stroke-width: 3; }
+
+      /* A glow held where the pulse passes. Both at once on a unit carrying a
+         boost and a drag, where the pulse took turns. */
+      .unit-plate.unit-buffed { animation: none; filter: drop-shadow(0 0 6px #2ecc71); }
+      .unit-plate.unit-debuffed { animation: none; filter: drop-shadow(0 0 6px #e74c3c); }
+      .unit-plate.unit-both-effects {
+        animation: none;
+        filter: drop-shadow(-3px 0 4px #2ecc71) drop-shadow(3px 0 4px #e74c3c);
+      }
+      .acting-ring { animation: none; filter: drop-shadow(0 0 5px #ffcc00); }
+
+      /* A number off its printed value: its halo takes the effect arrows'
+         green for a lift and their red for a drag or a wound. Held at a paler
+         or darker cast of itself, it read worse than either end of the pulse
+         - a lifted MOV pales into the plate. */
+      .stat.wave-up { animation: none; stroke: #86efac; stroke-width: 3.5; }
+      .stat.wave-down,
+      .stat.wave-hurt { animation: none; stroke: #fca5a5; stroke-width: 3.5; }
+      .stat.wave-up.on-dark { stroke: #15803d; }
+      .stat.wave-down.on-dark,
+      .stat.wave-hurt.on-dark { stroke: #b91c1c; }
+
+      /* Spent an ability: the face held grey, which the pulse passes through
+         on its way to the side's own colour - where the face is the plate's
+         colour, and gone. */
+      .piece-symbol.wave-acted-light,
+      .piece-symbol.wave-acted-dark { animation: none; fill: #8a8a8a; }
+
+      .hex-cell.reach-up { animation: none; filter: brightness(1.2); }
+      .hex-cell.reach-down { animation: none; filter: brightness(0.75); }
+
+      /* The skull in sight, never at the nothing it waves from; the warning
+         still fainter than the last call. */
+      .doom-skull,
+      .doom-skull.imminent { animation: none; }
+      .doom-skull { opacity: 0.6; }
+      .doom-skull.imminent { opacity: 1; }
+    }
+
   `],
 })
 export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterViewInit {
@@ -2383,6 +2440,16 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     return !!this.mover && this.moverHex === key;
   }
 
+  /**
+   * The player's system asks for less motion (prefers-reduced-motion): no unit
+   * walks, lunges or swells in the recap, and the board's pulses hold still in
+   * the stylesheet under the same query. Asked at each beat rather than once,
+   * so a setting changed mid-match holds from the next one.
+   */
+  get reducedMotion(): boolean {
+    return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
   private async runPlayback(steps: AnimStep[]): Promise<void> {
     this.stopPlayback();
     const token = this.playbackToken;
@@ -2469,6 +2536,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         return this.slide(to, from, to, MOVE_MS);
       case 'attack':
       case 'counter': {
+        // Asked for less motion there is no lunge: the hex the blow lands on
+        // is lit for the whole beat, the lunge's time and the flash's.
+        if (this.reducedMotion) return this.flash('hitHex', step.to, 2 * STRIKE_MS + HIT_MS);
         // A lunge, not a walk: part way in and back, then the hex it landed on
         // flashes. The counter is the same beat with the two ends swapped.
         const lunge = { cx: from.cx + (to.cx - from.cx) * 0.45, cy: from.cy + (to.cy - from.cy) * 0.45 };
@@ -2491,7 +2561,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       ? this.host.nativeElement.querySelector<SVGGElement>(`[data-pop="${key}"]`)
       : null;
     if (!el?.animate) return;
-    const peak = hostile ? 0.55 : 1.55;
+    // Asked for less motion, the glow without the swell: its colour already
+    // tells a boost from something taken away.
+    const peak = this.reducedMotion ? 1 : hostile ? 0.55 : 1.55;
     const glow = tint ?? (hostile ? '#b07cd6' : '#ffe066');
     el.animate([
       { transform: 'scale(1)', filter: 'drop-shadow(0 0 0 transparent)' },
@@ -2518,10 +2590,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     const piece = cell.piece;
     if (!piece) return Promise.resolve();
     this.moverHex = cell.key;
+    const jump = this.reducedMotion;
     return new Promise<void>(resolve => {
       const began = performance.now();
       const tick = () => {
-        const t = Math.min(1, (performance.now() - began) / ms);
+        const run = Math.min(1, (performance.now() - began) / ms);
+        // Asked for less motion, a jump rather than a walk: the copy stands
+        // where it started for half the beat and where it ends for the rest,
+        // with nothing drawn between.
+        const t = jump ? (run < 0.5 ? 0 : 1) : run;
         this.mover = {
           points: cell.innerPoints,
           symbol: this.getPieceSymbol(piece),
@@ -2532,7 +2609,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
           y: start.cy + (end.cy - start.cy) * t - cell.cy,
         };
         this.cdr.markForCheck();
-        if (t < 1) { this.frame = requestAnimationFrame(tick); return; }
+        if (run < 1) { this.frame = requestAnimationFrame(tick); return; }
         this.mover = null;
         this.moverHex = '';
         this.cdr.markForCheck();

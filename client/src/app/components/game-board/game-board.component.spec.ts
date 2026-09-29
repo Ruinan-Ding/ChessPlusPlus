@@ -357,6 +357,124 @@ describe('GameBoardComponent reach preview', () => {
     expect(fixture.nativeElement.querySelectorAll('[data-pop] ').length).toBeGreaterThan(0);
   });
 
+  describe('asked for less motion', () => {
+    beforeEach(() => spyOnProperty(board, 'reducedMotion').and.returnValue(true));
+    const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+    it('jumps a moved unit from where it stood to where it went, never between', async () => {
+      const from = cell('0,0');
+      const to = cell('3,0');
+      const steps = [{ kind: 'move' as const, from: '0,0', to: '3,0' }];
+      board.playback = steps;
+      board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
+
+      // The first half of the beat on the hex it left, the second on the one
+      // it went to - the copy is drawn at the landing hex and pushed back.
+      await pause(120);
+      expect(board.mover!.x).toBeCloseTo(from.cx - to.cx, 6);
+      expect(board.mover!.y).toBeCloseTo(from.cy - to.cy, 6);
+      await pause(300);
+      expect(board.mover!.x).toBeCloseTo(0, 6);
+      expect(board.mover!.y).toBeCloseTo(0, 6);
+      await pause(600);
+      expect(board.mover).toBeNull();
+    });
+
+    it('lights the hex a blow lands on for the whole beat, with no lunge', async () => {
+      const steps = [{ kind: 'attack' as const, from: '0,0', to: '3,0' }];
+      board.playback = steps;
+      board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
+
+      await pause(60);
+      expect(board.mover).toBeNull();
+      expect(board.hitHex).toBe('3,0');
+      // Past where the lunge ended and the flash began: nobody moved.
+      await pause(440);
+      expect(board.mover).toBeNull();
+      expect(board.hitHex).toBe('3,0');
+      // And out when the beat is, the lunge's time and the flash's.
+      await pause(500);
+      expect(board.hitHex).toBe('');
+    });
+
+    it('glows a unit an ability lands on without swelling or shrinking it', () => {
+      (board as any).popUnit('0,0', false, 400);
+      (board as any).popUnit('0,0', true, 400);
+      const group = fixture.nativeElement.querySelector('[data-pop="0,0"]') as SVGGElement;
+      const peaks = group.getAnimations().map(a => (a as any).effect.getKeyframes()[1]);
+      expect(peaks.length).toBe(2);
+      for (const peak of peaks) {
+        expect(peak.transform).toBe('scale(1)');
+        expect(peak.filter).toContain('drop-shadow');
+      }
+    });
+
+    it('holds every pulse on the board still, in a state that says what it said', () => {
+      // The stylesheet's rules for prefers-reduced-motion: reduce, lifted out
+      // of the query and laid over the page - so they are what is tested,
+      // whatever the machine running the specs asks for.
+      const style = document.createElement('style');
+      for (const sheet of Array.from(document.styleSheets)) {
+        for (const rule of Array.from(sheet.cssRules)) {
+          if (rule instanceof CSSMediaRule && rule.media.mediaText.includes('prefers-reduced-motion')) {
+            style.textContent += Array.from(rule.cssRules, inner => inner.cssText).join('\n');
+          }
+        }
+      }
+      expect(style.textContent).not.toBe('');
+
+      // Each state on a copy of an element the board drew, so the copy carries
+      // the component's style scope. [copy of, its classes, a still style.]
+      const host = fixture.nativeElement as HTMLElement;
+      const cases: [string, string, [string, string]?][] = [
+        ['polygon.hex-cell', 'hex-cell hex-attack-armed', ['stroke-width', '3px']],
+        ['polygon.hex-cell', 'panel-wash wash-attack-armed'],
+        ['polygon.hex-cell', 'hex-cell ability-friendly-target'],
+        ['polygon.hex-cell', 'hex-cell ability-enemy-target'],
+        ['polygon.hex-cell', 'hex-cell reach-up', ['filter', 'brightness(1.2)']],
+        ['polygon.hex-cell', 'hex-cell reach-down', ['filter', 'brightness(0.75)']],
+        ['polygon.unit-plate', 'unit-plate unit-buffed', ['filter', 'rgb(46, 204, 113)']],
+        ['polygon.unit-plate', 'unit-plate unit-debuffed', ['filter', 'rgb(231, 76, 60)']],
+        ['polygon.unit-plate', 'unit-plate unit-buffed unit-debuffed unit-both-effects', ['filter', 'rgb(46, 204, 113)']],
+        ['polygon.unit-plate', 'unit-plate unit-buffed unit-debuffed unit-both-effects', ['filter', 'rgb(231, 76, 60)']],
+        ['polygon.unit-plate', 'acting-ring', ['filter', 'rgb(255, 204, 0)']],
+        ['text.stat-atk', 'stat stat-atk wave-up', ['stroke', 'rgb(134, 239, 172)']],
+        ['text.stat-def', 'stat stat-def wave-down', ['stroke', 'rgb(252, 165, 165)']],
+        ['text.stat-hp', 'stat stat-hp wave-hurt on-dark', ['stroke', 'rgb(185, 28, 28)']],
+        ['text.piece-symbol', 'piece-symbol piece-white wave-acted-light', ['fill', 'rgb(138, 138, 138)']],
+        ['text.piece-symbol', 'piece-symbol piece-black wave-acted-dark', ['fill', 'rgb(138, 138, 138)']],
+        ['text.stat-hp', 'doom-skull', ['opacity', '0.6']],
+        ['text.stat-hp', 'doom-skull imminent', ['opacity', '1']],
+        ['text.stat-hp', 'damage-forecast'],
+        ['text.stat-hp', 'timer-low'],
+      ];
+      const copies = cases.map(([of, classes]) => {
+        const original = host.querySelector(of)!;
+        const copy = original.cloneNode(true) as SVGElement;
+        copy.setAttribute('class', classes);
+        return original.parentNode!.appendChild(copy);
+      });
+      // Every one of them pulses as things stand - unless this machine asks
+      // for less motion already.
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        copies.forEach((copy, i) => expect(copy.getAnimations().length).withContext(cases[i][1]).toBeGreaterThan(0));
+      }
+
+      document.head.appendChild(style);
+      try {
+        copies.forEach((copy, i) => {
+          const [, classes, still] = cases[i];
+          expect(copy.getAnimations().length).withContext(classes).toBe(0);
+          if (still) {
+            expect(getComputedStyle(copy).getPropertyValue(still[0])).withContext(classes).toContain(still[1]);
+          }
+        });
+      } finally {
+        style.remove();
+      }
+    });
+  });
+
   it('drops the rest of an attack when a new turn interrupts it', async () => {
     // Cancelling resolves the promise the chain is waiting on; it does not
     // unwind the chain. Without a token check between beats the abandoned

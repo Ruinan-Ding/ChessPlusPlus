@@ -99,7 +99,22 @@
       .atk strong { color: #b91c1c; }
       .def strong { color: #1d4ed8; }
       .mov strong { color: #b58900; }
+
+      // The HP a hovered trade would leave, waving as the panel's does - or
+      // it reads as the HP the unit has. Its own keyframes: a name is scoped
+      // to the stylesheet that defines it, and the panel's is the other file.
+      // Asked for less motion, italics and an underline, as the panel.
+      .hp strong.forecast { animation: strip-forecast 1s ease-in-out infinite; }
+      @media (prefers-reduced-motion: reduce) {
+        .hp strong.forecast {
+          animation: none;
+          font-style: italic;
+          text-decoration: underline dotted;
+          text-underline-offset: 0.2em;
+        }
+      }
     }
+    @keyframes strip-forecast { 50% { opacity: 0.35; } }
   }
 
   &.tabbed {

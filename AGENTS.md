@@ -1182,7 +1182,8 @@ Decided so far:
       `currentColor` halo, so one keyframe serves both sides' inks) and `f` **waves**
       (`score-wave`, a bob - which needs `display: inline-block`, a span having no box for a
       transform to act on). Deliberately two different motions: two pulses would read as one
-      effect applied twice. Both are off under `prefers-reduced-motion`.
+      effect applied twice. Under `prefers-reduced-motion` the bob stops and the glow is
+      held, still telling the running phase from the banked ones (*Less motion*, below).
     - The banked numbers are separated by a literal `&ngsp;`. A plain space there is a line
       break in the wrapped markup, and Angular strips those - which is how `+ 0 + 0` once
       rendered as `+ 0+ 0`.
@@ -1512,6 +1513,34 @@ Decided so far:
 - **One dial sets the pace of a recap** (`PLAYBACK_SPEED` in `game-board.component.ts`). Every
   beat is written at its 1x length and divided by it, so the recap keeps its shape and only
   its speed changes. Currently **1.5** - the owner's "about 50% faster".
+- **Less motion, when the system asks for it** (`prefers-reduced-motion: reduce` - Windows'
+  "Show animations" off, Reduce Motion on a Mac, an iPhone or an iPad). Nothing on screen
+  moves, swells, spins or pulses, and every animation keeps what it said as a still state -
+  the owner's rule that nothing is hidden holds here too: a pulse stopped falls back to the
+  element's own style, which for most of them says nothing happened.
+  - **The recap** (`reducedMotion` on the board, asked at each beat): a move is a jump - the
+    unit on the hex it left for half the beat, then on the one it went to - and a blow has no
+    lunge, the struck hex lit for the whole beat instead. An ability landing keeps its glow
+    and loses its swell; the glow's colour tells a boost from something taken away.
+  - **The board's pulses** hold still, in one block last in its styles: the armed target's
+    red with a dark ring, a boost's green glow and a drag's red (both on a unit carrying
+    both), the acting ring's glow, a spent unit's face grey, a meddled reach a shade lighter
+    or darker, the skull faint for the warning and solid for the last call. A number off its
+    printed value takes a halo in the effect arrows' colours - green for a lift, red for a
+    drag or a wound: held at a paler or darker cast of itself, it read worse than either end
+    of its pulse, and a lifted MOV paled into the plate.
+  - **The room's**: the Unit panel's numbers stop waving - "12/20" says it - and a forecast
+    HP, which would read as the unit's own, is set in italics and underlined, in the panel
+    and in the Unit strip - which, without the preference, now waves its forecast HP as the
+    panel does; it had shown it as the unit's own. An ability's slot keeps its glows, the one
+    being cast without its swell; the Room tab's cue stays orange; the running phase's glow
+    is held; the match total's bob, the modal buttons' hover lift and the connecting spinner
+    stop.
+  - One-off fades stay - a slot taken up, setup's "Saved": a fade is what the preference asks
+    motion to be replaced with.
+  - Checked by the board's specs, which lift its block out of the media query and lay it over
+    the page, so it is tested whatever the machine running them asks for; the room's rules in
+    headless Chrome with the preference emulated, on, off and on again.
 - **The third phase ending settles the match, or sends it to overtime** (`decidedOnPoints()` /
   `decided_on_points()`, shown by `matchVerdict`). White must finish **more than 10** clear to
   take it outright; black only **more than 5** (`OVERTIME_MARGIN`, in `match-score.ts` and

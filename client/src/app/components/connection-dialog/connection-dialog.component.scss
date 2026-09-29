@@ -36,6 +36,12 @@
   100% { transform: rotate(360deg); }
 }
 
+// Asked for less motion (prefers-reduced-motion), the ring holds still: the
+// attempt count under it is what says the dialog is still trying.
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}
+
 .error-icon {
   font-size: 48px;
   margin-bottom: 20px;
