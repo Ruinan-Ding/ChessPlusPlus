@@ -167,7 +167,10 @@ describe('fitHeader', () => {
         + '.h.header-held .b { align-content: center; } '
         + '.b.banner-scores-below { flex-wrap: wrap; row-gap: 0; } '
         + '.b.banner-scores-below > span:not(.phase-score) { order: 0; flex-basis: 100%; } '
-        + '.b.banner-scores-below .phase-score { order: 1; }';
+        + '.b.banner-scores-below .phase-score { order: 1; } '
+        + '.b .turn-short { display: none; } .b.banner-short .turn-long { display: none; } '
+        + '.b.banner-short .turn-short { display: inline; } '
+        + '.b.banner-turn-wraps > span:not(.phase-score) { white-space: normal; flex-shrink: 1; min-width: 0; }';
       host.appendChild(style);
       return got;
     }
@@ -195,6 +198,35 @@ describe('fitHeader', () => {
         }
         expect([...heights]).withContext(`${width}px`).toHaveSize(1);
       }
+    });
+
+    it('gives way in the turn\'s own words, then a second line, then under 12px - in that order', () => {
+      // The longest online stage was wider than a 360-390px phone at 12px and
+      // ran into the margin. "OPPONENT'S TURN" stays whenever the line fits.
+      const order = ['whole', 'short', 'wrapped', 'under'];
+      const seen: string[] = [];
+      for (let width = 520; width >= 160; width -= 10) {
+        const { head, banner } = held(width, '🚩 0 − 💀 0 = 0');
+        const turn = banner.children[1] as HTMLElement;
+        turn.innerHTML = '<span class="turn-long">OPPONENT\'S</span><span class="turn-short">THEIR</span>'
+          + ' TURN - 4:59 - PHASE 3 POSTMATCH';
+        const got = fitHeader(head, banner, true, 0.5, true);
+        const at = `${width}px`;
+        seen.push(got.fit < 0.5 ? 'under' : got.wrapped ? 'wrapped' : got.short ? 'short' : 'whole');
+        expect(banner.classList.contains('banner-short')).withContext(at).toBe(!!got.short);
+        expect(banner.classList.contains('banner-turn-wraps')).withContext(at).toBe(!!got.wrapped);
+        const shown = (sel: string) => getComputedStyle(turn.querySelector(sel)!).display !== 'none';
+        expect(shown('.turn-long')).withContext(at).toBe(!got.short);
+        expect(shown('.turn-short')).withContext(at).toBe(!!got.short);
+        if (got.fit > 0.41) {
+          expect(banner.scrollWidth).withContext(at).toBeLessThanOrEqual(banner.clientWidth + 1);
+          expect(banner.scrollHeight).withContext(at).toBeLessThanOrEqual(banner.clientHeight + 1);
+        }
+      }
+      for (let i = 1; i < seen.length; i++) {
+        expect(order.indexOf(seen[i])).withContext(seen.join(' ')).toBeGreaterThanOrEqual(order.indexOf(seen[i - 1]));
+      }
+      for (const step of order) expect(seen).withContext(seen.join(' ')).toContain(step);
     });
 
     it('puts the scores under the turn from the start when told to, however short they are', () => {

@@ -28,6 +28,19 @@
  *    go side by side on the line under it, half the width each, where they
  *    had been squeezed beside the turn to four lines apiece. Through 1-4 once
  *    more there (`.banner-scores-below`).
+ * 7. The short word: "THEIR TURN" for "OPPONENT'S TURN" (`.banner-short`),
+ *    through 1-4 again. Only here - the turn's own words are the thing the
+ *    banner is for, and they give way after everything around them.
+ * 8. In the held box (below), the turn may take a second line
+ *    (`.banner-turn-wraps`), which the box's fixed height makes safe; a
+ *    one-row header's would grow, so there it is skipped.
+ * 9. Under the 12px floor, the turn's line alone - the scores keep theirs -
+ *    as far as `DEEPEST`. Nothing else at the size the text is at, on a phone
+ *    in the longest online stages: "OPPONENT'S TURN - 4:59 - PHASE 3
+ *    POSTMATCH" was wider than a 360-390px phone at 12px, and ran into the
+ *    margin. The owner, 29 Sep 2026, offered the three as choices: "do it
+ *    all" - so each in turn: a shorter word keeps the line whole at 12px, a
+ *    second line keeps the 12px, and only then does the size give.
  *
  * **Held** (`alwaysStacked`): the header of the tabbed and stacked layouts
  * under 1100px wide. It is stacked from the start - under ~1000px even the
@@ -63,9 +76,15 @@ const SCORE_FLOOR_LINES = 2 * 1.2 * 12;
  */
 const NARROW_TURN = 0.65;
 
+/** The last step's floor (9): the turn at 9.6px at the 12px unit, a fifth under `least`'s 12. */
+const DEEPEST = 0.4;
+
 export function fitHeader(header: HTMLElement, banner: HTMLElement | null, alwaysStacked = false,
     least = 0.5, scoresBelow = false,
-): { compact: boolean; stacked: boolean; scoresBelow?: boolean; fit: number; lines: number } {
+): {
+  compact: boolean; stacked: boolean; scoresBelow?: boolean; short?: boolean; wrapped?: boolean;
+  fit: number; lines: number;
+} {
   const set = (fit: number) => banner?.style.setProperty('--banner-fit', String(fit));
   const scores = banner ? Array.from(banner.querySelectorAll<HTMLElement>('.phase-score')) : [];
   const fits = (lines: number) => header.scrollWidth <= header.clientWidth + 1
@@ -92,6 +111,23 @@ export function fitHeader(header: HTMLElement, banner: HTMLElement | null, alway
     return good;
   };
 
+  // 7-9, once every size and arrangement above has failed: the words, then
+  // the turn's own line, then the floor. Wrapping is for the held box only,
+  // where it cannot move anything; a one-row header's line would grow.
+  type Fitted = { fit: number; lines: number; short: true; wrapped?: true };
+  const lastResort = (canWrap: boolean): Fitted => {
+    banner!.classList.add('banner-short');
+    const short = shrink();
+    if (short) return { short: true, ...short };
+    if (canWrap) {
+      banner!.classList.add('banner-turn-wraps');
+      const wrapped = shrink();
+      if (wrapped) return { short: true, wrapped: true, ...wrapped };
+    }
+    const under = largest(DEEPEST, 2);
+    return { short: true, ...(canWrap ? { wrapped: true } : {}), fit: under ?? DEEPEST, lines: 2 };
+  };
+
   // 2-4, in whichever row the banner is in.
   const shrink = (): { fit: number; lines: number } | null => {
     set(1);
@@ -105,7 +141,7 @@ export function fitHeader(header: HTMLElement, banner: HTMLElement | null, alway
   };
 
   header.classList.remove('header-compact', 'header-stacked', 'header-held', 'header-narrow');
-  banner?.classList.remove('banner-scores-below');
+  banner?.classList.remove('banner-scores-below', 'banner-short', 'banner-turn-wraps');
   set(1);
   // The turn's line at full size: one line whatever it says, and as tall as
   // its font makes it - weight 800 is Arial Black on Windows, 1.41 of the
@@ -146,8 +182,7 @@ export function fitHeader(header: HTMLElement, banner: HTMLElement | null, alway
       const below = shrink();
       if (below) return { compact, stacked: true, scoresBelow: true, ...below };
     }
-    set(least);
-    return { compact, stacked: true, scoresBelow: true, fit: least, lines: 2 };
+    return { compact, stacked: true, scoresBelow: true, ...lastResort(true) };
   }
   if (fits(1)) return { compact: false, stacked: false, fit: 1, lines: 1 };
   header.classList.add('header-compact');
@@ -160,6 +195,5 @@ export function fitHeader(header: HTMLElement, banner: HTMLElement | null, alway
   banner.classList.add('banner-scores-below');
   const below = shrink();
   if (below) return { compact: true, stacked: true, scoresBelow: true, ...below };
-  set(least);
-  return { compact: true, stacked: true, scoresBelow: true, fit: least, lines: 2 };
+  return { compact: true, stacked: true, scoresBelow: true, ...lastResort(false) };
 }

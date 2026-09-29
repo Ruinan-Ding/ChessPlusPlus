@@ -28,7 +28,11 @@
             *ngFor="let banked of them.banked; let i = index">+ <span
               class="banked" [ngClass]="'banked-' + (i + 1)">{{ banked }}</span>&ngsp;</ng-container>= <span
             class="match-total" [class.leading]="them.leading">{{ them.match }}</span>)</ng-container></span>
-      <span class="turn-text">{{ indicatorMine ? 'YOUR TURN' : "OPPONENT'S TURN" }}<ng-container
+      <!-- Theirs in a long word and a short one, the short one drawn only
+           where nothing else lets the line fit (fitHeader, .banner-short). -->
+      <span class="turn-text"><ng-container *ngIf="indicatorMine">YOUR</ng-container><ng-container
+        *ngIf="!indicatorMine"><span class="turn-long">OPPONENT'S</span><span
+        class="turn-short">THEIR</span></ng-container> TURN<ng-container
         *ngIf="state.turnTimeLimit > 0"> - {{ formattedTurnTime }}</ng-container><span
         class="verdict" *ngIf="stageLabel"> - {{ stageLabel }}</span><!-- How the two scores
         either side are counted, on a touch screen (toggleTip). --><button *ngIf="showScore"

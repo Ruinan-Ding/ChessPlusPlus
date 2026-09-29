@@ -267,6 +267,20 @@
   // is where the rows sit in it when they take less.
   header.header-held .turn-indicator { align-content: center; }
 
+  // fitHeader's last steps, when no size and no arrangement lets the turn's
+  // line fit: "THEIR" for "OPPONENT'S", then (in the held box) the turn on
+  // two lines, then the turn under 12px.
+  .turn-indicator {
+    .turn-short { display: none; }
+    &.banner-short .turn-long { display: none; }
+    &.banner-short .turn-short { display: inline; }
+    &.banner-turn-wraps .turn-text {
+      white-space: normal;
+      flex-shrink: 1;
+      min-width: 0;
+    }
+  }
+
   // No keyboard, no keys to name: a phone or a tablet without one is told
   // "End Turn", not "End Turn (TAB)".
   @media (hover: none) and (pointer: coarse) {

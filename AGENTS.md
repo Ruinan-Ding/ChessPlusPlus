@@ -1405,9 +1405,15 @@ Decided so far:
     box (`.header-narrow`: two lines of scores at their 12px floor and the turn at 0.65 of its
     size) - late in a match they need it, and a box that grew when they did moved the board.
     It costs a phone about 18px of the tab's panel against the opening's banner (22 in
-    Windows' fonts), and none of the board, which is as wide as the phone. **Still open**: at
-    360-390px the longest online states ("OPPONENT'S TURN - 4:59 - PHASE 3 POSTMATCH") are
-    wider than the phone at the 12px floor and run 4-11px into the margin each side.
+    Windows' fonts), and none of the board, which is as wide as the phone.
+  - **And when even that is not enough**, the turn's own words give way, each in turn and only
+    then: "THEIR TURN" for "OPPONENT'S TURN" (`.banner-short` - the template carries both words
+    on their turn, the short one hidden), then in the held box a second line for the turn
+    (`.banner-turn-wraps`), then the turn alone under 12px, as far as 9.6px (`DEEPEST`); the
+    scores keep their 12px. "OPPONENT'S TURN - 4:59 - PHASE 3 POSTMATCH", online, was wider
+    than a 360-390px phone at 12px and ran 4-11px into the margin. Now, measured: at 390 it
+    says "THEIR" at 13.5px, at 360 "THEIR" at 12.2px, and only a 320px phone goes under the
+    floor, to 10.5px. Nothing wider than 390 takes any of the three steps.
   - **Touch.** A touch screen has no hover, and the hover is where a trade is read before it
     is made. So the first tap on an enemy in reach arms it - its forecast on both units, a
     pulse, "Tap again to strike" - and a second tap on it strikes; any other tap or a change
