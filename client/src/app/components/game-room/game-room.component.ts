@@ -404,9 +404,11 @@ function fallen(
  * short and nothing past the window's edge with the unit at its floor.
  *
  * It was 1480 x 1120, when the whole room was one scaled picture: 1120 was
- * the left column holding both ability panels. Their panel moved to the right
- * one, and every window shorter than 1120 - a 1080p screen included - had
- * been drawing the room smaller than it needed to.
+ * the left column holding both ability panels and the Unit panel. Their panel
+ * went to the right one (28 Sep 2026, 705 tall), and came back over yours at
+ * the owner's word (29 Sep: "put it back", "we need to make it try to fit")
+ * - with the Unit panel crossing to the right in its place, 730: both ability
+ * panels over the Unit panel, as they had been, wanted 910.
  *
  * A little below it the three columns are scaled, no further than
  * ROOM_MILD_ZOOM; below that the room changes layout instead (`roomLayout`) -
@@ -414,7 +416,7 @@ function fallen(
  * the window and never scaled.
  */
 const ROOM_MIN_WIDTH = 1180;
-const ROOM_MIN_HEIGHT = 705;
+const ROOM_MIN_HEIGHT = 730;
 
 /**
  * How far the three columns may be scaled on a touch screen - a tablet, a
@@ -431,12 +433,15 @@ const ROOM_MILD_ZOOM = 0.9;
  * 28 Sep 2026, asked whether their own 1284x649 window should go to the
  * tabs for bigger type: *"its weird you considered that since the game is
  * unplayable with anything tucked away"*. So a computer's window keeps every
- * panel in sight, smaller, down to where its type would fall under 9px -
- * a 960x540 window is 77% - and only a window smaller than that gets the
- * tabs. A touch screen keeps ROOM_MILD_ZOOM: there the choice was a tablet
- * at 69% or a phone at 33%, and the owner took the tabs ("tabs are fine").
+ * panel in sight, smaller, down to where its type would fall under about 9px
+ * - a 960x540 window is 74% - and only a window smaller than that gets the
+ * tabs. It was 75% until ROOM_MIN_HEIGHT went from 705 to 730: 72% keeps the
+ * columns on every window that had them (529px tall and up), at 8.6px at the
+ * very least. A touch screen keeps ROOM_MILD_ZOOM: there the choice was a
+ * tablet at 69% or a phone at 33%, and the owner took the tabs ("tabs are
+ * fine").
  */
-const ROOM_DESKTOP_ZOOM = 0.75;
+const ROOM_DESKTOP_ZOOM = 0.72;
 
 /**
  * The least window height at which the tabbed layout keeps the Unit panel

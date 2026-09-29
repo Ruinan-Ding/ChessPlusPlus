@@ -17,8 +17,8 @@
 // prose and forms, and may scroll down.
 //
 // CHROME overrides where Chrome is looked for. Exits non-zero if any size the
-// room is meant to hold fails a check: the three columns from 1180x705 up,
-// and on a computer's window short of that, scaled down to 75% (their type's
+// room is meant to hold fails a check: the three columns from 1180x730 up,
+// and on a computer's window short of that, scaled down to 72% (their type's
 // floor reported, not failed); the board and one column of tabs (roomLayout
 // 'tabbed') on a landscape touch screen, or a computer window smaller still,
 // every tab of it; and the board over the tabs (roomLayout 'stacked') on an
@@ -52,15 +52,17 @@ const PORT = Number(process.env.LAYOUT_DEBUG_PORT ?? 9333);
 // ROOM_MIN_WIDTH x ROOM_MIN_HEIGHT in game-room.component.ts. Kept in step by
 // hand - if the two disagree, the sizes between them are either failed for
 // being scaled or never asserted at all.
-const FLOOR = { w: 1180, h: 705 };
+const FLOOR = { w: 1180, h: 730 };
 
 // Desktop and laptop windows, by the viewport a browser leaves rather than
 // the screen: a 1920x1080 screen is about 1920x950 inside Chrome, and a
-// 1366x768 laptop about 1366x650.
+// 1366x768 laptop about 1366x650. (1280x720, 1280x705, 1200x720 and 1180x705
+// were here until the floor went from 705 to 730 - their ability panel back in
+// the left column, 29 Sep 2026 - and are reported now, scaled a little.)
 const ASSERTED = [
   [3440, 1440], [2560, 1440], [1920, 1200], [1920, 1080], [1920, 950], [1904, 946],
   [1680, 1050], [1600, 900], [1536, 864], [1536, 740], [1440, 900], [1440, 780],
-  [1366, 768], [1280, 800], [1280, 720], [1280, 705], [1200, 720], [1180, 820], [1180, 705],
+  [1366, 768], [1280, 800], [1180, 820], [1180, 730],
 ];
 // The board and one column of tabs: touch screens on their side, from
 // 1024x768 (an iPad, Unit pinned) down to 505px tall; under 560 the tallest
@@ -70,7 +72,7 @@ const TABBED = [
   [1366, 620], [1280, 600], [1024, 768], [1024, 690], [1024, 600], [1000, 640], [960, 540],
   [900, 520], [800, 505],
 ];
-// A computer's window short of the columns keeps them, scaled, down to 75%
+// A computer's window short of the columns keeps them, scaled, down to 72%
 // (ROOM_DESKTOP_ZOOM - the owner: "the game is unplayable with anything
 // tucked away"): these are the columns, their type under 12px and reported,
 // everything else held as ever. Smaller still, the tabs after all.
@@ -80,20 +82,20 @@ const TINY_WINDOWS = [[900, 520], [800, 505]];
 // 10.2" iPad, an iPad mini, and the older 768x1024. Touch emulated, every tab.
 const STACKED = [[1024, 1366], [820, 1180], [810, 1080], [744, 1133], [768, 1024]];
 // Measured, not failed: the columns scaled a little (a laptop just short of
-// 705), and phones either way up, whose tallest tab may scroll - though on
+// 730), and phones either way up, whose tallest tab may scroll - though on
 // a phone too, what the Room tab's cue leads to has to be in sight, and no
 // control may be cut off, and those are failed. A phone's by what its
 // browser leaves, not its screen: an
 // iPhone's Safari with both its bars, an Android's Chrome, a small Android.
 // (Its screen's own size was what the sweep had measured, and at that
 // height nothing scrolled that scrolls in the hand.)
-const REPORTED = [[1366, 690], [1366, 650], [1100, 700]];
+const REPORTED = [[1366, 690], [1366, 650], [1280, 720], [1280, 705], [1200, 720], [1180, 705], [1100, 700]];
 const PHONES = [[932, 370], [844, 340], [740, 330]];
 const PHONES_UPRIGHT = [[430, 739], [412, 804], [390, 664], [360, 640]];
 // The room before a match, at a few of each: the columns, the tabs, the
 // board over the tabs, and a phone each way up (reported only - `want` null).
 const PREGAME = [
-  [1920, 1080, 'columns', false], [1180, 705, 'columns', false],
+  [1920, 1080, 'columns', false], [1180, 730, 'columns', false],
   [1024, 768, 'tabbed', true], [1024, 600, 'tabbed', true], [800, 505, 'tabbed', false],
   [820, 1180, 'stacked', true], [768, 1024, 'stacked', true],
   [844, 340, null, true], [390, 664, null, true],
@@ -101,7 +103,7 @@ const PREGAME = [
 // An offer of a draw waiting, at the least size of each layout and on a
 // phone each way up: a strip over the board, which gives up the height.
 const DRAW_OFFER = [
-  [1180, 705, 'columns', false], [1366, 768, 'columns', false], [1920, 950, 'columns', false],
+  [1180, 730, 'columns', false], [1366, 768, 'columns', false], [1920, 950, 'columns', false],
   [1024, 768, 'tabbed', true], [800, 505, 'tabbed', false], [768, 1024, 'stacked', true],
   [844, 340, null, true], [390, 664, null, true], [360, 640, null, true],
 ];
@@ -414,7 +416,9 @@ const PROBE = `(() => {
   if (touching) faults.push(touching + " labels on a unit's face touch another unit's");
 
   return {
-    scaled, zoom: r1(zoom), unit: r1(u), faults,
+    // The zoom to the hundredth: to the tenth, a 960x540 window's 0.74 read
+    // 0.7 and failed a floor of 0.72 it clears.
+    scaled, zoom: Math.round(zoom * 100) / 100, unit: r1(u), faults,
     textMin: r1(texts[0]?.px ?? 0), textMinWhat: texts[0]?.t ?? '', textUnder: small.length, textCount: texts.length,
     smallest,
     targetsUnder: buttons.filter((b) => { const r = b.getBoundingClientRect(); return Math.min(r.width, r.height) * 1 < ${MIN_TARGET} - 0.5; }).length,
@@ -580,7 +584,7 @@ try {
   const judgeScaled = (m, w, h) => {
     const bad = [...m.faults];
     if (layoutOf(m) !== 'columns') bad.push(`the ${layoutOf(m)} layout, at a size that should be the columns, scaled`);
-    if (!m.scaled || m.zoom < 0.75) bad.push(`scaled to ${m.zoom}, where it should be 0.75 or more and under 1`);
+    if (!m.scaled || m.zoom < 0.72) bad.push(`scaled to ${m.zoom}, where it should be 0.72 or more and under 1`);
     return bad.length ? bad : null;
   };
   const record = (label, w, h, m, bad) => {

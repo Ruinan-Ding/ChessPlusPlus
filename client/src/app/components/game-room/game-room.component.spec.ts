@@ -2984,8 +2984,8 @@ describe('GameRoomComponent fitting the window', () => {
     // height, which keeps them, scaled. (Much shorter is the tabs.)
     const d = fit(1904, 670);
     expect(d.roomLayout).toBe('columns');
-    expect(d.roomZoom).toBeCloseTo(670 / 705, 6);
-    expect(d.roomHeight).toBeCloseTo(705, 6);
+    expect(d.roomZoom).toBeCloseTo(670 / 730, 6);
+    expect(d.roomHeight).toBeCloseTo(730, 6);
   });
 
   it('leaves a window big enough for the whole room alone', () => {
@@ -2998,35 +2998,45 @@ describe('GameRoomComponent fitting the window', () => {
   it('scales none of the windows people play in', () => {
     // Every one of these was drawn smaller while the room was one picture at
     // 1480x1120 - a 1080p screen at 96%, the owner's 1904x946 at 85%, a
-    // 1366x768 laptop at 69%. Their layouts are the stylesheet's now.
-    for (const [w, h] of [[1920, 1080], [1904, 946], [1536, 864], [1366, 768], [1280, 720], [1180, 705]]) {
+    // 1366x768 laptop at 69%. Their layouts are the stylesheet's now. (1280x720
+    // was one of them until their ability panel went back in the left column,
+    // 29 Sep 2026, and the columns' least height went from 705 to 730.)
+    for (const [w, h] of [[1920, 1080], [1904, 946], [1536, 864], [1366, 768], [1280, 800], [1180, 730]]) {
       expect(fit(w, h).roomZoom).withContext(`${w}x${h}`).toBe(1);
     }
-    expect(fit(1180, 704).roomZoom).toBeLessThan(1);
-    expect(fit(1179, 705).roomZoom).toBeLessThan(1);
+    expect(fit(1180, 729).roomZoom).toBeLessThan(1);
+    expect(fit(1179, 730).roomZoom).toBeLessThan(1);
   });
 
   it('keeps the three columns, scaled a little, just short of their least size', () => {
     // A 1366x768 laptop's browser window: every panel in sight is worth a
-    // pixel of type, so this is not the tabs - on a touch screen either.
-    for (const [w, h] of [[1366, 650], [1100, 700], [1180, 640]]) {
-      for (const touch of [false, true]) {
-        const c = fit(w, h, touch);
-        expect(c.roomLayout).withContext(`${w}x${h}`).toBe('columns');
-        expect(c.roomZoom).withContext(`${w}x${h}`).toBeGreaterThanOrEqual(0.9);
-        expect(c.roomZoom).withContext(`${w}x${h}`).toBeLessThan(1);
-      }
+    // pixel of type, so this is not the tabs.
+    for (const [w, h] of [[1366, 650], [1100, 700], [1180, 640], [1280, 720]]) {
+      const c = fit(w, h);
+      expect(c.roomLayout).withContext(`${w}x${h}`).toBe('columns');
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBeGreaterThanOrEqual(0.87);
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBeLessThan(1);
     }
+    // A touch screen as far as ROOM_MILD_ZOOM, and no further.
+    for (const [w, h] of [[1366, 670], [1100, 700], [1180, 660]]) {
+      const c = fit(w, h, true);
+      expect(c.roomLayout).withContext(`${w}x${h} held`).toBe('columns');
+      expect(c.roomZoom).withContext(`${w}x${h} held`).toBeGreaterThanOrEqual(0.9);
+      expect(c.roomZoom).withContext(`${w}x${h} held`).toBeLessThan(1);
+    }
+    expect(fit(1366, 650, true).roomLayout).toBe('tabbed');
   });
 
   it("keeps a computer's window in the columns much further down than a touch screen", () => {
     // The owner, 28 Sep 2026: "the game is unplayable with anything tucked
     // away". A window with a mouse keeps every panel in sight, scaled, down
-    // to 75%; the same size held in the hand is a tablet, and has the tabs.
+    // to 72%; the same size held in the hand is a tablet, and has the tabs.
+    // (75% until the columns' least height went from 705 to 730: 72% keeps
+    // every window that had them - 960x540 is 74% now.)
     for (const [w, h] of [[1366, 620], [1280, 600], [1024, 768], [1024, 600], [960, 540]]) {
       const c = fit(w, h);
       expect(c.roomLayout).withContext(`${w}x${h}`).toBe('columns');
-      expect(c.roomZoom).withContext(`${w}x${h}`).toBeGreaterThanOrEqual(0.75);
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBeGreaterThanOrEqual(0.72);
       expect(c.roomZoom).withContext(`${w}x${h}`).toBeLessThan(0.9);
       expect(c.unitPinned).withContext(`${w}x${h}`).toBeTrue();
       expect(fit(w, h, true).roomLayout).withContext(`${w}x${h} held`).toBe('tabbed');

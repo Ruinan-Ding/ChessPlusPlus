@@ -1234,13 +1234,15 @@ Decided so far:
   and laptops), B (tablets on their side, small windows) and C (upright screens, phones,
   touch, the other screens) are done, and what two reviews of them found is fixed (6.42,
   6.43).
-  - **Three layouts** (`roomLayout`, decided in `fitRoom()`). The three columns from 1180x705
-    up, unscaled; short of that still the columns, scaled - on a computer's window down to 75%
-    (`ROOM_DESKTOP_ZOOM`: a 960x540 window is 77%), on a touch screen only to 90%
+  - **Three layouts** (`roomLayout`, decided in `fitRoom()`). The three columns from 1180x730
+    up, unscaled; short of that still the columns, scaled - on a computer's window down to 72%
+    (`ROOM_DESKTOP_ZOOM`: a 960x540 window is 74%), on a touch screen only to 90%
     (`ROOM_MILD_ZOOM`), `touchOnly` telling the two apart by `(hover: none) and (pointer:
     coarse)` and a change of it choosing again. The owner, 28 Sep 2026: *"the game is
     unplayable with anything tucked away"* - a computer keeps every panel in sight as far as
-    its type stays 9px or more. Below that, a landscape window gets the board and one column
+    its type stays about 9px (8.6 at the very least: 72% was chosen when the floor went from
+    705 to 730, so that every window that had the columns kept them, 529px tall and up). Below
+    that, a landscape window gets the board and one column
     of tabs (`tabbed`), and a portrait one the board over the tabs (`stacked`) - for a phone or
     a tablet, which the owner took the tabs for ("tabs are fine"), and a tiny computer window.
     What the two share is one block of the stylesheet, under `.with-tabs`.
@@ -1259,9 +1261,18 @@ Decided so far:
     ability buttons need side by side at 12px. Buttons and inputs get a base size in the unit
     (`:where(button, input, ...)`) - they do not inherit font size, and every one nobody sized
     stayed 13.33px.
-  - **Their panel is in the right-hand column.** Both ability panels stacked in the left one
-    were what made the room need 1120px of height; theirs sits over History and the Game/Lobby
-    box now, so the two columns are the same height to within a unit.
+  - **Their panel is over yours in the left column; the Unit panel tops the right one.** Both
+    ability panels with the Unit panel under them were what made the room need 1120px of
+    height. Phase A (28 Sep 2026) put theirs over History and the chat, and the owner, 29 Sep:
+    *"why did you move opponent ... almost blocking the chat box"* - put it back, and *"we need
+    to make it try to fit"*. Back over yours with the Unit panel still in the left column, the
+    columns wanted a window 910px tall at the 12px unit (705 before); with the Unit panel moved
+    to the top of the right column - it reads either side's unit, beside the board - 730. The
+    Unit panel is its own height there (`flex: 0 0 auto`; it had taken the left column's spare,
+    and in the right one it would take the chat's), and History and the Game/Lobby box share
+    the rest 1 : 3 (it was 1 : 1.4) - the chat showed one message on the owner's 1284x649 window
+    (43px to History's 174), and is about even with History now (110, 107; 156, 149 at 1080p).
+    Measured with `--u` forced unit by unit and the window bisected, in headless Chrome.
   - **The logs scroll, nothing else does.** History and the chats keep to their newest line
     (`scrollChatToBottom`): a line coming in moves one only if it was at its newest, so a
     player reading back is not pulled off it, and one coming into sight - its tab chosen, the
@@ -1437,14 +1448,15 @@ Decided so far:
     its place set the line 2-3px taller at every size, so the panel's numbers jumped between
     a unit with a star and one without. 1.12 is under Arial's own at every size the room
     draws, so no heading grew for it.
-  - **Where the room still scales**: short of the columns - on a computer to 75%, on a touch
+  - **Where the room still scales**: short of the columns - on a computer to 72%, on a touch
     screen to 90% (above).
-    `ROOM_MIN_WIDTH`/`ROOM_MIN_HEIGHT` (1180 x 705) is the least size at which the sweep finds
+    `ROOM_MIN_WIDTH`/`ROOM_MIN_HEIGHT` (1180 x 730) is the least size at which the sweep finds
     the columns whole with the unit at its floor. The window's units are safe inside the
     zoomed room: every term only falls as the window does, so below the floor the unit sits at
     12px and the room is laid out at exactly the size that was measured. **The floors give way
-    there, not a panel**: the owner's own window, 1284x649, draws the columns at 0.92 - most
-    text at 11px and 37 controls at 21-23px - and that is the right trade. Holding the floors
+    there, not a panel**: the owner's own window, 1284x649, draws the columns at 0.89 - its
+    text at 10.7px and 37 controls under 24px (0.92 and 11px before their panel went back to
+    the left column) - and that is the right trade. Holding the floors
     would take the tabs, at a size where every panel fits in sight at once, and the owner,
     28 Sep 2026, asked whether it should: *"its weird you considered that since the game is
     unplayable with anything tucked away"*. So never offer hiding a panel to make type bigger;
@@ -1489,15 +1501,16 @@ Decided so far:
     before it for a browser without: 100vh is the window with the browser's toolbar tucked
     away, and the room ran 56-90px under the toolbar showing - the bar along the bottom with
     it. The unit's own terms were in `dvh` already.
-  - **Checked by `client/scripts/layout-sweep.mjs`**, in headless Chrome - 337 checks, all
-    holding, 28 Sep 2026 - in two runs of a
+  - **Checked by `client/scripts/layout-sweep.mjs`**, in headless Chrome - 329 checks, all
+    holding, 29 Sep 2026 - in two runs of a
     Chrome each - a computer's sizes, then a touch screen's: once touch has been emulated in a
     headless tab it stays a touch screen (`pointer: coarse`, `hover: none`), turned off or
     reloaded, and every computer size measured after a phone's had been measured as one - no
     keys named on its buttons, and the tabs where a computer keeps the columns. The room
-    before the match at 9 sizes, and in it - the columns at 19 window sizes from 3440x1440 to
-    1180x705, a computer's window short of them at 5 (the columns scaled, their floors
-    reported) and smaller still at 2 (the tabs), the tabs on a touch screen at 9 from 1366x620
+    before the match at 9 sizes, and in it - the columns at 16 window sizes from 3440x1440 to
+    1180x730, a computer's window short of them at 5 (the columns scaled, their floors
+    reported, the zoom checked to the hundredth) and smaller still at 2 (the tabs), the tabs
+    on a touch screen at 9 from 1366x620
     to 800x505 and the board over the tabs on 5 upright
     tablets, every tab of each and the rail's Lobby tab with two dozen online and a line of
     chat from somebody else in each chat (put there through Angular's development hooks - a

@@ -4,14 +4,17 @@
   // The lesser of two, between 12px and 20px:
   //
   // - Height: the window has to hold the taller column, the header and the
-  //   room's padding. Measured unit by unit in headless Chrome, 28 Sep 2026,
+  //   room's padding. Measured unit by unit in headless Chrome, 29 Sep 2026,
   //   with a line of chat in the chat and History and the chat each held to
-  //   one whole entry: about 700px at 12px, 765 at 14, 850 at 16, 950 at 18,
-  //   1050 at 20. Not one straight line - at the bottom the 12px type and the
+  //   one whole entry, both ability panels in the left column and the Unit
+  //   panel atop the right: 725px at 12px, 791 at 14, 877 at 16, 973 at 18,
+  //   1084 at 20. Not one straight line - at the bottom the 12px type and the
   //   24px buttons are floors that do not shrink with the unit - so two, and
-  //   the lower of the two answers: 36 units + 272px up to about 15px, 49.5
-  //   units + 70px above it, each with a few px to spare. The first also
-  //   covers the longest banner at the narrowest window.
+  //   the lower of the two answers: 35 units + 309px up to about 15px, 52
+  //   units + 49px above it, each with a few px to spare. (Their panel had
+  //   been atop the right column, 28 Sep to 29 Sep, at 700px to 1050: back
+  //   in the left one with the Unit panel still there it was 910px to 1379,
+  //   and the Unit panel crossing over is what brought it back to this.)
   // - The board first. It is drawn 1.194 times as wide as it is tall, so
   //   once the rails leave it that much width for its height it is as big as
   //   the window allows, and only then do the rails grow into what is left.
@@ -26,7 +29,7 @@
   // the window's units are safe in here all the same: every term only falls
   // as the window does, so there the unit sits at its 12px floor and the
   // room is laid out at exactly the size that floor was measured at.
-  --u: clamp(12px, min(calc((100dvh - 272px) / 36), calc((100dvh - 70px) / 49.5),
+  --u: clamp(12px, min(calc((100dvh - 309px) / 35), calc((100dvh - 49px) / 52),
     calc((100vw - 119.4dvh) / 33.9)), 20px);
   font-size: var(--u);
   @each $n, $name in $u-named {
@@ -274,7 +277,7 @@
     }
   }
 
-  // Left column: your side, in plain stacked rectangles.
+  // Left column: their abilities over yours, in plain stacked rectangles.
   //
   // Both columns are measured in the room's unit, so they widen with the
   // type in them and the board takes every pixel they leave - the board
@@ -802,13 +805,14 @@
 
   .opponent-panel,
   .abilities-panel { flex: 0 0 auto; }
-  // The unit panel takes whatever height the column has left, and the effects
-  // box is what grows into it - but never less than its own contents. It was
-  // basis 0 and free to shrink, and in any window shorter than the column the
-  // two ability panels above it crushed it to its border: the stats, the
-  // unit's abilities and its effects, gone. The owner: "this game is NOT
-  // playable with that gone". The room scales to fit instead (fitRoom).
-  .stats-panel { flex: 1 0 auto; min-height: 0; }
+  // The unit panel is its own height, never less: it was basis 0 and free to
+  // shrink, and in any window shorter than its column the two ability panels
+  // above it crushed it to its border - the stats, the unit's abilities and
+  // its effects, gone. The owner: "this game is NOT playable with that gone".
+  // The room scales to fit instead (fitRoom). Nor more, now it tops the right
+  // column: it took whatever the left one had left over, and there it would
+  // take the chat's share (History and the chat grow instead).
+  .stats-panel { flex: 0 0 auto; min-height: 0; }
 
   // The solo opponent's shortcut to their setup. Sized like the words beside
   // it, with its padding cut to the 24px target: it took the ⋮ button's 18px
@@ -1072,7 +1076,7 @@
     cursor: pointer;
   }
 
-  // Right column: their panel, History, and one tabbed box for Game and
+  // Right column: the Unit panel, History, and one tabbed box for Game and
   // Lobby, so the two aren't both claiming screen width at once. Sized the
   // same way as .match-panels, and for the same reason - see the note there.
   // Like it, it scrolls rather than clips if it is ever shorter than its
@@ -1081,7 +1085,7 @@
     display: flex;
     flex-direction: column;
     gap: u(0.625);
-    // The same floor as the left column: their ability panel is up here now.
+    // The same floor as the left column: the Unit panel's stats want it.
     flex: 0 0 max(248px, #{u(20)});
     min-height: 0;
     overflow-y: auto;
@@ -1092,10 +1096,14 @@
   .rail-box {
     display: flex;
     flex-direction: column;
-    // A little more of the leftover than History, and never less than what
+    // Three times History's share of the leftover, and never less than what
     // it holds: min-content, because its own overflow is hidden and a plain
-    // 0 let a short column crush the roster and the chat out of sight.
-    flex: 1.4 1 0;
+    // 0 let a short column crush the roster and the chat out of sight. It
+    // was 1.4, and the chat - what is left of this box after the roster -
+    // showed one message on the owner's 1284x649 window (43px) to History's
+    // 174; at 3 the two are about even there (110 and 107) and at 1080p
+    // (156, 149). The owner, 29 Sep 2026: the chat "almost blocked".
+    flex: 3 1 0;
     min-height: min-content;
     border: 1px solid #ddd;
     border-radius: 4px;
