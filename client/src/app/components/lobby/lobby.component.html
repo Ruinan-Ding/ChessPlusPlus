@@ -59,8 +59,9 @@
           </span>
           <button 
             class="action-button" 
-            (click)="openUserMenu($event, user)" 
+            (click)="openUserMenu($event, user)"
             [disabled]="user.username === username"
+            [attr.aria-label]="'Options for ' + user.username"
           >⋮</button>
         </div>
       </div>
@@ -83,6 +84,7 @@
               *ngIf="message.username !== 'System' && message.username !== username"
               class="action-button" 
               (click)="openUserMenu($event, { username: message.username, status: 'online' })"
+              [attr.aria-label]="'Options for ' + message.username"
             >
               ⋮
             </button>

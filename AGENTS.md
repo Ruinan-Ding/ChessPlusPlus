@@ -1368,8 +1368,9 @@ Decided so far:
     the board wraps its rows, and scrolls on a board too short for it: the turn timer's nine
     choices had run off both edges of a phone's board, 15s, 30s and Unlimited out of reach.
     The panels under the board are in `game-room.layout.scss`, with the tabs': the room's
-    styles had outgrown their 40kB budget, and the layouts are a subject of their own. The
-    unit's functions (`u()`, `t()`) are in `_room-units.scss`, which both stylesheets use.
+    styles had outgrown their 40kB budget, and the layouts are a subject of their own (as are
+    the "?"s, in `game-room.tips.scss`, below). The unit's functions (`u()`, `t()`) are in
+    `_room-units.scss`, which the first two use.
   - **The header's last steps.** Upright phones are too narrow for even the stacked banner, so
     one more: the turn on a line of its own and the two scores side by side under it
     (`.banner-scores-below`), where beside the turn they had squeezed to four lines each.
@@ -1400,6 +1401,32 @@ Decided so far:
     captured pointer's click goes to the board, not the hex under it. Board units per pixel
     come from the board's size on screen, not its laid-out size, so a drag in the CSS-zoomed
     columns follows the finger (it fell 10% short).
+  - **A "?" where a tooltip explains a rule** (`toggleTip`, `.tip-btn`). A touch screen never
+    shows a tooltip, and the room's rules were in theirs: how a score is counted, what Points
+    and CP buy, what the Unit panel's two tallies count, why Start is greyed. On a touch screen
+    each has a "?" - beside the turn in the header, in each Abilities panel's heading, in the
+    Unit panel's heading, beside Start - and a tap opens its words in a bubble, under the "?"
+    in the window's top half and over it in the bottom, inside the 16px gutter; a tap anywhere
+    else, Escape, a scroll or a resize shuts it. The owner, 28 Sep 2026: *"do the ⋮ labels and
+    the tap-to-read ?"*. A computer's hover still has the tooltips, and no "?" is drawn there,
+    so its layout is as it was. The words are one string each (`scoreTitle`, `pointsTitle`,
+    `cpTitle`, `tallyTitles`, `startButtonHint`), read by the tooltip and the bubble alike;
+    Start's "?" says nothing while a match runs (`startTip`), a greyed Start saying so itself. A
+    "?" with nothing to say just now keeps its place (`.idle`), so what is beside it never
+    moves; and it is drawn over its line rather than in it (8px of it in the line), where 16px
+    had grown the Unit panel's heading and jumped its numbers at every unit crossed. **Angular
+    scopes each part of a selector** with an attribute of its own, so `.a .b > button`
+    outranks `.a button.c` though both name two classes: the Start row's
+    `.game-actions > button` drew its "?" as wide as Start until the "?"'s rule named that row
+    too. The bubble is outside the room's box, which a scaled room zooms. Tooltips an ability
+    already has on a tap (its description opens) or that only say the button's own word got
+    no "?"; nor did Flip, which shows what it does when tapped. The "?"s and the bubble are
+    styled in `game-room.tips.scss`, loaded last: in the room's own stylesheet they took it
+    934 bytes past its 40kB budget, and it is only just back under - the next thing it gains
+    may want a stylesheet of its own too.
+  - **Every button whose only word is a symbol has a name** for a screen reader: each ⋮ is
+    "Options for <name>", each ⤢ "Expand <panel>" or "Shrink <panel>"; the ⚠️ and ⚙️ beside a
+    player are images named for what they mean.
   - **Where the room still scales**: short of the columns - on a computer to 75%, on a touch
     screen to 90% (above).
     `ROOM_MIN_WIDTH`/`ROOM_MIN_HEIGHT` (1180 x 705) is the least size at which the sweep finds

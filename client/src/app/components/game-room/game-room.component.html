@@ -19,8 +19,7 @@
          [class.committing]="recapRunning">
       <!-- Their standing, the turn, then yours. Both scores take an equal
            share of the row so the turn itself stays on the centre line. -->
-      <span class="phase-score theirs" *ngIf="showScore && phaseScore('opponent') as them"
-        title="Victory points: what the capture hexes held are worth - 3 a hex in the zone in each side's half, 2 in the middle, 1 at the sides - less what this phase's losses cost, never below 0, doubled in Phase 2 and tripled in Phase 3. The opening shows what is held but banks none of it."
+      <span class="phase-score theirs" *ngIf="showScore && phaseScore('opponent') as them" [title]="scoreTitle"
       ><ng-container *ngIf="them.multiplier > 1">(</ng-container>🚩 <span class="cap">{{ them.cap }}</span> &minus;
         💀 <span class="death">{{ them.death }}</span><ng-container
           *ngIf="them.multiplier > 1">) &times;<span class="multiplier">{{ them.multiplier }}</span></ng-container> =
@@ -31,9 +30,11 @@
             class="match-total" [class.leading]="them.leading">{{ them.match }}</span>)</ng-container></span>
       <span class="turn-text">{{ indicatorMine ? 'YOUR TURN' : "OPPONENT'S TURN" }}<ng-container
         *ngIf="state.turnTimeLimit > 0"> - {{ formattedTurnTime }}</ng-container><span
-        class="verdict" *ngIf="stageLabel"> - {{ stageLabel }}</span></span>
-      <span class="phase-score ours" *ngIf="showScore && phaseScore('mine') as us"
-        title="Victory points: what the capture hexes held are worth - 3 a hex in the zone in each side's half, 2 in the middle, 1 at the sides - less what this phase's losses cost, never below 0, doubled in Phase 2 and tripled in Phase 3. The opening shows what is held but banks none of it."
+        class="verdict" *ngIf="stageLabel"> - {{ stageLabel }}</span><!-- How the two scores
+        either side are counted, on a touch screen (toggleTip). --><button *ngIf="showScore"
+        type="button" class="tip-btn" aria-label="How the scores are counted"
+        [attr.aria-expanded]="tip?.id === 'score'" (click)="toggleTip('score', $event)">?</button></span>
+      <span class="phase-score ours" *ngIf="showScore && phaseScore('mine') as us" [title]="scoreTitle"
       ><ng-container *ngIf="us.multiplier > 1">(</ng-container>🚩 <span class="cap">{{ us.cap }}</span> &minus;
         💀 <span class="death">{{ us.death }}</span><ng-container
           *ngIf="us.multiplier > 1">) &times;<span class="multiplier">{{ us.multiplier }}</span></ng-container> =
@@ -124,7 +125,9 @@
 
       <section class="match-panel abilities-panel">
         <h3 class="panel-head"><span>{{ abilityHeader('mine', 'Abilities') }}</span><span
-          class="points">{{ abilityPurseLabel('mine') }}</span></h3>
+          class="points">{{ abilityPurseLabel('mine') }}<button type="button" class="tip-btn"
+            aria-label="What Points and CP are" [attr.aria-expanded]="tip?.id === 'purse-mine'"
+            (click)="toggleTip('purse-mine', $event)">?</button></span></h3>
         <div class="panel-body" *ngIf="abilitiesComingSoon">
           <p class="coming-soon">Coming soon.</p>
         </div>
@@ -268,7 +271,7 @@
                     [class.blank]="!actionLabel('mine')"
                     [class.tally]="!actionLabel('mine')"
                     [disabled]="!actionEnabled('mine')"
-                    [title]="actionLabel('mine') ? '' : 'Points - what a pool ability costs, and what the wrap charges.'"
+                    [title]="actionLabel('mine') ? '' : pointsTitle"
                     (click)="takeAction('mine')"
             >{{ actionLabel('mine') || ('Points: ' + myPoints) }}</button>
             <button class="ability-back-btn" type="button"
@@ -285,7 +288,12 @@
 
       <section class="match-panel stats-panel" [class.theirs]="unitPanelDim">
         <h3 class="panel-head"><span>{{ unitAbilityTitle }}</span>
-          <span class="unit-side">{{ unitSideLabel }}</span></h3>
+          <!-- The "?" is for the two tallies drawn with nobody selected. Its
+               place is kept while a unit is shown, so the side label beside
+               it does not move as the pointer crosses the board. -->
+          <span class="unit-side">{{ unitSideLabel }}<button type="button" class="tip-btn"
+            [class.idle]="!!displayUnit" aria-label="What the two counts are"
+            [attr.aria-expanded]="tip?.id === 'tally'" (click)="toggleTip('tally', $event)">?</button></span></h3>
         <div class="panel-body" *ngIf="abilitiesComingSoon">
           <p class="coming-soon">Coming soon.</p>
         </div>
@@ -347,10 +355,10 @@
                  nothing to press. -->
             <div class="unit-ability-row" *ngIf="!displayUnit">
               <button class="passive-row locked blank tally" type="button" disabled
-                      title="Your units still on the battlefield."
+                      [title]="tallyTitles.mine"
               >Total: {{ liveUnits }}</button>
               <button class="scaffold-btn locked blank tally" type="button" disabled
-                      title="Their units still on the battlefield."
+                      [title]="tallyTitles.theirs"
               >Opponent: {{ opponentUnits }}</button>
             </div>
             <div class="unit-ability-row" *ngIf="displayUnit">
@@ -605,7 +613,9 @@
            in one column were what made the room need 1120px of height. -->
       <section class="match-panel opponent-panel">
         <h3 class="panel-head"><span>{{ abilityHeader('opponent', 'Opponent') }}</span><span
-          class="points">{{ abilityPurseLabel('opponent') }}</span></h3>
+          class="points">{{ abilityPurseLabel('opponent') }}<button type="button" class="tip-btn"
+            aria-label="What Points and CP are" [attr.aria-expanded]="tip?.id === 'purse-opponent'"
+            (click)="toggleTip('purse-opponent', $event)">?</button></span></h3>
         <div class="panel-body" *ngIf="abilitiesComingSoon">
           <p class="coming-soon">Coming soon.</p>
         </div>
@@ -749,7 +759,7 @@
                     [class.blank]="!actionLabel('opponent')"
                     [class.tally]="!actionLabel('opponent')"
                     [disabled]="!actionEnabled('opponent')"
-                    [title]="actionLabel('opponent') ? '' : 'Points - what a pool ability costs, and what the wrap charges.'"
+                    [title]="actionLabel('opponent') ? '' : pointsTitle"
                     (click)="takeAction('opponent')"
             >{{ actionLabel('opponent') || ('Points: ' + opponentPoints) }}</button>
             <button class="ability-back-btn" type="button"
@@ -799,6 +809,7 @@
              [class.expanded]="playersExpanded">
           <h3 class="rail-head"><span>Players</span>
             <button class="expand-btn" type="button" (click)="playersExpanded = !playersExpanded"
+                    [attr.aria-label]="playersExpanded ? 'Shrink Players' : 'Expand Players'"
             >{{ playersExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="player-list">
             <div class="player-item"
@@ -813,9 +824,11 @@
                 <span class="crown-icon" *ngIf="player.isInviter">👑</span>
               </span>
               <span class="player-status disconnect-icon"
-                    *ngIf="isDisconnected(player.username)"
+                    *ngIf="isDisconnected(player.username)" role="img"
+                    aria-label="Disconnected - waiting for them to reconnect"
                     title="Disconnected - waiting for them to reconnect">⚠️</span>
-              <span class="player-status" *ngIf="player.status === 'configuring'" title="Configuring setup">⚙️</span>
+              <span class="player-status" *ngIf="player.status === 'configuring'" role="img"
+                    aria-label="Configuring setup" title="Configuring setup">⚙️</span>
               <span class="ready-checkmark" *ngIf="player.isReady">✓</span>
               <!-- Solo rooms: the placeholder seat has no user to act on, so
                    the menu becomes a shortcut to configure its setup. -->
@@ -831,6 +844,7 @@
                 (click)="openUserMenu($event, { username: player.username, status: player.status || 'in-game' })"
                 [disabled]="player.username === username"
                 *ngIf="!isSinglePlayer && player.username !== username"
+                [attr.aria-label]="'Options for ' + player.username"
               >⋮</button>
             </div>
           </div>
@@ -858,6 +872,12 @@
             >
               {{ gameOver ? 'Restart Game' : 'Start Game' }}
             </button>
+            <!-- Why it is greyed, or what it will do (startTip); its place
+                 kept when there is nothing to say, so Start does not change
+                 width. -->
+            <button *ngIf="isInviter" type="button" class="tip-btn" [class.idle]="!startTip"
+                    [attr.aria-label]="gameOver ? 'About Restart Game' : 'About Start Game'"
+                    [attr.aria-expanded]="tip?.id === 'start'" (click)="toggleTip('start', $event)">?</button>
             </div>
           </div>
         </div>
@@ -866,6 +886,7 @@
              [class.expanded]="chatExpanded">
           <h3 class="rail-head"><span>Chat</span>
             <button class="expand-btn" type="button" (click)="chatExpanded = !chatExpanded"
+                    [attr.aria-label]="chatExpanded ? 'Shrink Chat' : 'Expand Chat'"
             >{{ chatExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="chat-content">
             <div class="game-room-messages" #gameChat>
@@ -880,6 +901,7 @@
                     *ngIf="message.username !== 'System' && message.username !== username"
                     class="action-button"
                     (click)="openUserMenu($event, { username: message.username, status: 'in-game' })"
+                    [attr.aria-label]="'Options for ' + message.username"
                   >⋮</button>
                   <span class="message-time">{{ message.timestamp | date:'shortTime' }}</span>
                 </div>
@@ -908,6 +930,7 @@
         <div class="rail-section users-panel" [class.expanded]="usersExpanded">
           <h3 class="rail-head"><span [class.offline-head]="!serverOnline">{{ serverOnline ? 'Online Users' : 'Offline' }}</span>
             <button class="expand-btn" type="button" (click)="usersExpanded = !usersExpanded"
+                    [attr.aria-label]="usersExpanded ? 'Shrink Online Users' : 'Expand Online Users'"
             >{{ usersExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="users-list">
             <div
@@ -935,6 +958,7 @@
                   class="action-button"
                   (click)="openUserMenu($event, user)"
                   [disabled]="user.username === username"
+                  [attr.aria-label]="'Options for ' + user.username"
                 >⋮</button>
               </span>
             </div>
@@ -944,6 +968,7 @@
         <div class="rail-section lobby-chat" [class.expanded]="lobbyChatExpanded">
           <h3 class="rail-head"><span>Lobby</span>
             <button class="expand-btn" type="button" (click)="lobbyChatExpanded = !lobbyChatExpanded"
+                    [attr.aria-label]="lobbyChatExpanded ? 'Shrink Lobby chat' : 'Expand Lobby chat'"
             >{{ lobbyChatExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="lobby-messages" #lobbyChat>
             <div class="message-item" *ngFor="let message of lobbyMessages"
@@ -954,6 +979,7 @@
                   *ngIf="message.username !== 'System' && message.username !== username"
                   class="action-button"
                   (click)="openUserMenu($event, getLobbyUserByUsername(message.username) || { username: message.username, status: 'online' })"
+                  [attr.aria-label]="'Options for ' + message.username"
                 >⋮</button>
                 <span class="message-time">{{ message.timestamp | date:'shortTime' }}</span>
               </div>
@@ -1030,3 +1056,11 @@
       </div>
     </div>
   </main>
+</div>
+
+<!-- A "?"'s explanation, on a touch screen, where a tooltip never shows
+     (toggleTip). Outside the room's box, which a scaled room zooms: it stands
+     where the "?" is on the screen, in the screen's own pixels. -->
+<div class="tip-bubble" *ngIf="tip" role="note"
+     [style.left.px]="tip.left" [style.width.px]="tip.width"
+     [style.top.px]="tip.top" [style.bottom.px]="tip.bottom">{{ tipText(tip.id) }}</div>

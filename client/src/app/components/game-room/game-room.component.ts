@@ -490,13 +490,19 @@ const TABS_UNIT_TAB: readonly { id: RoomTab; label: string }[] = [
   TABS_UNIT_PINNED[0], { id: 'unit', label: 'Unit' }, ...TABS_UNIT_PINNED.slice(1),
 ];
 
+/** What a "?" explains on a touch screen, where a tooltip never shows (toggleTip). */
+export type TipId = 'score' | 'purse-mine' | 'purse-opponent' | 'tally' | 'start';
+/** A "?"'s bubble at most this wide, and no nearer the window's edge than the gutter. */
+const TIP_WIDTH = 320;
+const TIP_GUTTER = 16;
+
 @Component({
   selector: 'app-game-room',
   standalone: true,
   imports: [CommonModule, FormsModule, ConnectionStatusComponent, GameBoardComponent,
     VolumeControlComponent],
   templateUrl: './game-room.component.html',
-  styleUrls: ['./game-room.component.scss', './game-room.layout.scss'],
+  styleUrls: ['./game-room.component.scss', './game-room.layout.scss', './game-room.tips.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
@@ -733,6 +739,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.pointerQuery?.removeEventListener?.('change', this.onPointerChange);
     this.headerEl = this.bannerEl = null;
     this.watchHeader();
+    this.closeTip();
 
     this.clearRevealCountdown();
     this.clearTurnClock();
@@ -5992,6 +5999,97 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (this.gameStarted) return true;
     return !this.canStartGame();
   }
+
+  /** How the header's scores are counted: their tooltip, and their "?". */
+  readonly scoreTitle = "Victory points: what the capture hexes held are worth - 3 a hex in the zone in each side's"
+    + ' half, 2 in the middle, 1 at the sides - less what this phase\'s losses cost, never below 0, doubled in'
+    + ' Phase 2 and tripled in Phase 3. The opening shows what is held but banks none of it.';
+  /** What the Points tally counts: its tooltip, and with CP the panel's "?". */
+  readonly pointsTitle = 'Points - what a pool ability costs, and what the wrap charges.';
+  /** The Unit panel's two tallies, with nobody selected. */
+  readonly tallyTitles = {
+    mine: 'Your units still on the battlefield.',
+    theirs: 'Their units still on the battlefield.',
+  };
+
+  /**
+   * The "?" open, and where its bubble stands on the screen. A touch screen
+   * has no hover, so a tooltip never shows there - and the rules the header
+   * and the panels explain in theirs, how a score is counted, what Points
+   * and CP buy, why Start is greyed, were nowhere a phone could read them.
+   * Touch screens are shown the "?"s (the stylesheet); a computer's hover
+   * still has the tooltips. Under the "?" in the top half of the window,
+   * over it in the bottom, and inside the window's gutter either way. The
+   * text is read when drawn (tipText), so an open one follows the room.
+   */
+  tip: { id: TipId; left: number; width: number; top: number | null; bottom: number | null } | null = null;
+
+  tipText(id: TipId): string {
+    switch (id) {
+      case 'score': return this.scoreTitle;
+      case 'purse-mine':
+      case 'purse-opponent': return `${this.pointsTitle} ${this.cpTitle}`;
+      case 'tally': return `Total - ${this.tallyTitles.mine} Opponent - ${this.tallyTitles.theirs}`;
+      case 'start': return this.startTip;
+    }
+  }
+
+  /**
+   * What Start's "?" says: why Start is greyed before a match, or what
+   * Restart will do after one. Nothing while a match runs - "The match is
+   * running." is what a greyed Start says for itself.
+   */
+  get startTip(): string {
+    return this.gameStarted && !this.gameOver ? '' : this.startButtonHint;
+  }
+
+  /** A "?" pressed: its bubble opened - or closed, if it was the one open. */
+  toggleTip(id: TipId, event: Event): void {
+    const again = this.tip?.id === id;
+    this.closeTip();
+    if (again) return;
+    const r = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const width = Math.min(TIP_WIDTH, window.innerWidth - 2 * TIP_GUTTER);
+    const left = Math.min(Math.max(TIP_GUTTER, r.left + r.width / 2 - width / 2),
+      window.innerWidth - TIP_GUTTER - width);
+    const below = r.top + r.height / 2 < window.innerHeight / 2;
+    this.tip = {
+      id, width, left,
+      top: below ? r.bottom + 6 : null,
+      bottom: below ? null : window.innerHeight - r.top + 6,
+    };
+    // Listened for only while one is open, and outside Angular: a room
+    // checked on every press anywhere, for the sake of a bubble that is
+    // mostly shut, is the cost the header's watch was rewritten to be rid of.
+    this.zone.runOutsideAngular(() => {
+      document.addEventListener('pointerdown', this.onTipPress, true);
+      document.addEventListener('keydown', this.onTipKey, true);
+      window.addEventListener('resize', this.onTipAway);
+      window.addEventListener('scroll', this.onTipAway, true);
+    });
+  }
+
+  closeTip(): void {
+    if (!this.tip) return;
+    this.tip = null;
+    document.removeEventListener('pointerdown', this.onTipPress, true);
+    document.removeEventListener('keydown', this.onTipKey, true);
+    window.removeEventListener('resize', this.onTipAway);
+    window.removeEventListener('scroll', this.onTipAway, true);
+    this.cdr.markForCheck();
+  }
+
+  // A press anywhere but a "?" (which answers on its click) or the bubble
+  // (its words can be pressed to select them) closes it; so does Escape,
+  // and the room moving under it.
+  private onTipPress = (event: Event) => {
+    if ((event.target as Element | null)?.closest?.('.tip-btn, .tip-bubble')) return;
+    this.zone.run(() => this.closeTip());
+  };
+  private onTipKey = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') this.zone.run(() => this.closeTip());
+  };
+  private onTipAway = () => this.zone.run(() => this.closeTip());
 
   get startButtonHint(): string {
     if (this.gameOver) {

@@ -3284,4 +3284,89 @@ describe('GameRoomComponent tabs', () => {
     c.selectRoomTab('room');
     expect(scrolled).toEqual(['gameRoom', 'lobby']);
   });
+
+  describe('a "?" on a touch screen', () => {
+    // A "?" at (left, top), 24px square, as its click hands it over.
+    const press = (left: number, top: number) => ({
+      currentTarget: { getBoundingClientRect: () => ({ left, top, width: 24, height: 24, right: left + 24, bottom: top + 24 }) },
+    });
+    let width: jasmine.Spy;
+    beforeEach(() => {
+      width = spyOnProperty(window, 'innerWidth').and.returnValue(390);
+      spyOnProperty(window, 'innerHeight').and.returnValue(664);
+    });
+
+    it('opens under it in the top half of the window and over it in the bottom, inside the gutter', () => {
+      const c = make();
+      // By the right-hand edge, near the top: under it, drawn in to the gutter.
+      c.toggleTip('score', press(360, 40));
+      expect(c.tip).toEqual({ id: 'score', width: 320, left: 390 - 16 - 320, top: 70, bottom: null });
+      // Pressed again: shut.
+      c.toggleTip('score', press(360, 40));
+      expect(c.tip).toBeNull();
+      // Near the bottom: over it - and another "?" pressed while one is open
+      // takes its place.
+      c.toggleTip('purse-mine', press(180, 100));
+      c.toggleTip('start', press(4, 600));
+      expect(c.tip).toEqual({ id: 'start', width: 320, left: 16, top: null, bottom: 664 - 600 + 6 });
+      // A window narrower than the bubble: the window less its gutters.
+      c.closeTip();
+      width.and.returnValue(300);
+      c.toggleTip('tally', press(100, 100));
+      expect(c.tip.width).toBe(268);
+      expect(c.tip.left).toBe(16);
+      c.closeTip();
+    });
+
+    it('shuts on a press anywhere but a "?" or itself, on Escape, and when the room moves under it', () => {
+      const c = make();
+      const other = document.createElement('button');
+      other.className = 'tip-btn';
+      document.body.appendChild(other);
+      try {
+        c.toggleTip('score', press(10, 10));
+        // Another "?" answers on its own click; the bubble's words can be pressed.
+        other.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        expect(c.tip).not.toBeNull();
+        document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        expect(c.tip).toBeNull();
+
+        c.toggleTip('score', press(10, 10));
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+        expect(c.tip).not.toBeNull();
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        expect(c.tip).toBeNull();
+
+        c.toggleTip('score', press(10, 10));
+        window.dispatchEvent(new Event('resize'));
+        expect(c.tip).toBeNull();
+        c.toggleTip('score', press(10, 10));
+        document.body.dispatchEvent(new Event('scroll'));
+        expect(c.tip).toBeNull();
+
+        // And once shut it is listening to nothing: a press then is nobody's.
+        const shut = spyOn(c, 'closeTip').and.callThrough();
+        document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        expect(shut).not.toHaveBeenCalled();
+      } finally {
+        other.remove();
+        c.closeTip();
+      }
+    });
+
+    it('says what the tooltip it stands for says, as the room stands now', () => {
+      const c = make();
+      expect(c.tipText('score')).toBe(c.scoreTitle);
+      expect(c.tipText('purse-mine')).toContain(c.pointsTitle);
+      expect(c.tipText('purse-opponent')).toContain(c.cpTitle);
+      expect(c.tipText('tally')).toContain(c.tallyTitles.mine);
+      expect(c.tipText('tally')).toContain(c.tallyTitles.theirs);
+      // Start's: why it is greyed before a match - and nothing during one,
+      // where a greyed Start says so for itself.
+      expect(c.tipText('start')).toBe('Waiting for both players to be ready.');
+      c.gameStarted = true;
+      expect(c.startButtonHint).toBe('The match is running.');
+      expect(c.tipText('start')).toBe('');
+    });
+  });
 });
