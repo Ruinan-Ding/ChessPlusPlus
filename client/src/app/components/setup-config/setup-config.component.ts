@@ -1,4 +1,7 @@
-import { Component, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
+import {
+  ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, OnDestroy, OnInit,
+  ViewChild,
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
@@ -24,7 +27,16 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   jsonConfig = '';
   savedConfig = '';
   savedSuccessfully = false;
-  saveError = '';
+  /**
+   * What is wrong with the configuration, over the editor where it is being
+   * fixed: the validator's list when a save is refused, the server's word when
+   * it refuses one sent from a game room, and a Format of JSON that does not
+   * parse. The first and last were an alert - the list gone the moment it was
+   * dismissed, while the fixing had only begun.
+   */
+  errors: string[] = [];
+  /** Back pressed with changes unsaved: the choice is up (leaveChoice). */
+  leaving = false;
   username = '';
   /** Game room this config applies to, if opened from an active game room. */
   private gameId: string | null = null;
@@ -34,8 +46,14 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
     private router: Router,
     private configService: ConfigService,
     private wsService: WebsocketService,
-    private navigationState: NavigationStateService
+    private navigationState: NavigationStateService,
+    private cdr: ChangeDetectorRef,
   ) {}
+
+  /** Where Back goes: the room this was opened from, or the lobby. */
+  get backLabel(): string {
+    return this.gameId ? 'Back to Room' : 'Back to Lobby';
+  }
 
   ngOnInit(): void {
     this.username = readStore('local', 'username') || '';
@@ -54,19 +72,22 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
       const newJsonString = JSON.stringify(config, null, 2);
       if (this.jsonConfig !== newJsonString) {
         this.jsonConfig = newJsonString;
+        this.cdr.markForCheck();
       }
     });
 
     // Listen for the server's response to a saved config (only relevant
-    // when this.gameId is set - see saveConfig()).
+    // when this.gameId is set - see saveConfig()). This screen is OnPush, so
+    // an answer arriving on the socket has to mark it: it was taken and never
+    // drawn - a configuration the server refused looked saved.
     this.wsService.messages$.pipe(takeUntil(this.destroy$)).subscribe(message => {
       if (!message) return;
       if (message.type === 'custom_config_saved') {
-        this.savedSuccessfully = true;
-        this.saveError = '';
-        setTimeout(() => { this.savedSuccessfully = false; }, 2000);
+        this.errors = [];
+        this.showSaved();
       } else if (message.type === 'error' && message.code === 'INVALID_CONFIG') {
-        this.saveError = message.message || 'The server rejected this configuration.';
+        this.errors = [message.message || 'The server rejected this configuration.'];
+        this.cdr.markForCheck();
       }
     });
   }
@@ -115,17 +136,45 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
     return value;
   }
 
+  /**
+   * Back. With changes unsaved it asks first - save and go, discard and go,
+   * or stay (leaveChoice). It was the browser's confirm(): "save before going
+   * back?", where Cancel - the button anyone wanting to stay would press -
+   * went back without saving.
+   */
   onBack(): void {
-    // Save first, if asked to, and only then decide where Back goes. A save
-    // the validator refuses keeps the editor open - and the room it was opened
-    // from with it: this used to clear the way back before asking, so fixing
-    // the JSON and pressing Back again landed in the lobby, the room lost.
-    if (this.hasUnsavedChanges
-        && confirm('You have unsaved changes. Do you want to save before going back?')
-        && !this.saveConfig()) {
+    if (this.hasUnsavedChanges) {
+      this.leaving = true;
       return;
     }
+    this.leave();
+  }
 
+  /**
+   * The choice Back put up. A save the validator refuses keeps the editor
+   * open, its errors over it - and the room it was opened from with it: this
+   * used to clear the way back before asking, so fixing the JSON and pressing
+   * Back again landed in the lobby, the room lost.
+   */
+  leaveChoice(choice: 'save' | 'discard' | 'stay'): void {
+    this.leaving = false;
+    if (choice === 'stay') return;
+    if (choice === 'save' && !this.saveConfig()) return;
+    this.leave();
+  }
+
+  // Escape is Stay, as it is wherever a dialog is up.
+  @HostListener('document:keydown.escape')
+  onEscape(): void {
+    if (this.leaving) this.leaveChoice('stay');
+  }
+
+  // Stay has the focus as the choice goes up: the one that loses nothing.
+  @ViewChild('stayButton') set stayButton(button: ElementRef<HTMLButtonElement> | undefined) {
+    button?.nativeElement.focus();
+  }
+
+  private leave(): void {
     const returnToGameRoom = readStore('local', 'returnToGameRoom');
     const gameRoomToken = readStore('local', 'gameRoomToken');
     
@@ -161,12 +210,13 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
     const result = this.configService.updateConfig(this.jsonConfig);
 
     if (!result.valid) {
-      alert(result.errors?.join('\n') || 'Invalid configuration');
+      this.errors = result.errors?.length ? result.errors : ['Invalid configuration'];
+      this.cdr.markForCheck();
       return false;
     }
 
     this.savedConfig = this.jsonConfig;
-    this.saveError = '';
+    this.errors = [];
 
     if (this.gameId) {
       // Push to the server so it actually takes effect at game start.
@@ -179,11 +229,20 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
     } else {
       // No active game room to attach this config to (opened straight from
       // the lobby) - just confirm the local save.
-      this.savedSuccessfully = true;
-      setTimeout(() => { this.savedSuccessfully = false; }, 2000);
+      this.showSaved();
     }
 
     return true;
+  }
+
+  /** "Saved!" for two seconds - marked each way, the screen being OnPush. */
+  private showSaved(): void {
+    this.savedSuccessfully = true;
+    this.cdr.markForCheck();
+    setTimeout(() => {
+      this.savedSuccessfully = false;
+      this.cdr.markForCheck();
+    }, 2000);
   }
 
   onConfigChange(): void {
@@ -195,9 +254,12 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
       const parsed = JSON.parse(this.jsonConfig);
       this.jsonConfig = JSON.stringify(parsed, null, 2);
       this.savedSuccessfully = false;
+      // It parses: whatever said it did not is out of date. What the
+      // validator said about its rules stands until the next save.
+      this.errors = this.errors.filter(error => !/^Invalid JSON/.test(error));
     } catch (e) {
       const errorMsg = typeof e === 'object' && e !== null && 'message' in e ? (e as Error).message : String(e);
-      alert('Invalid JSON: ' + errorMsg);
+      this.errors = ['Invalid JSON: ' + errorMsg];
     }
   }
 

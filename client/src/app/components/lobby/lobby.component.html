@@ -13,18 +13,25 @@
           "{{ username }}" is yours for now - the name you asked for was taken. Pick another, or
           keep this one.
         </p>
-        <input 
-          type="text" 
-          [(ngModel)]="newUsername" 
-          placeholder="New username" 
-          maxlength="24" 
+        <input
+          type="text"
+          [(ngModel)]="newUsername"
+          (ngModelChange)="renameError = ''"
+          placeholder="New username"
+          aria-label="New username"
+          [attr.aria-invalid]="renameError ? true : null"
+          maxlength="24"
           (keyup.enter)="changeUsername()"
         >
         <div class="char-counter" [ngClass]="{'near-limit': newUsername.length > 20}">
           {{ newUsername.length }}/24
         </div>
-        <button (click)="changeUsername()">Save</button>
-        <button (click)="keepAssignedName()">{{ nameWasTaken ? 'Keep' : 'Cancel' }}</button>
+        <!-- Why the name was refused, here where it was asked for (renameError). -->
+        <p class="rename-error" *ngIf="renameError" role="alert">{{ renameError }}</p>
+        <div class="rename-actions">
+          <button type="button" class="rename-save" (click)="changeUsername()">Save</button>
+          <button type="button" (click)="keepAssignedName()">{{ nameWasTaken ? 'Keep' : 'Cancel' }}</button>
+        </div>
       </div>
       <button class="setup-btn" (click)="openSetup()">Configure Setup</button>
       <button class="single-player-btn" (click)="startSinglePlayer()">Single Player</button>
@@ -68,7 +75,7 @@
     </div>
     
     <div class="chat-panel">
-      <div class="chat-messages">
+      <div class="chat-messages" #lobbyChat>
         <div 
           class="message-item" 
           *ngFor="let message of messages"

@@ -35,6 +35,7 @@ import {
 } from '../../services/phases';
 import { AudioService } from '../../services/audio.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
+import { closeUserMenu, openUserMenu as showUserMenu } from '../../services/user-menu';
 
 interface GameOptions {
   reveal?: boolean;
@@ -740,6 +741,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.headerEl = this.bannerEl = null;
     this.watchHeader();
     this.closeTip();
+    closeUserMenu();
 
     this.clearRevealCountdown();
     this.clearTurnClock();
@@ -6133,55 +6135,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   openUserMenu(event: MouseEvent, user: User): void {
     event.preventDefault();
-
     if (user.username === this.username) return;
-
-    // When in a game room, you cannot invite anyone
-    const canInvite = false;
-    const disabledReason = "Can't invite while in a game room";
-
-    const existingMenus = document.querySelectorAll('.user-context-menu');
-    existingMenus.forEach(menu => document.body.removeChild(menu));
-
-    const menu = document.createElement('div');
-    menu.className = 'user-context-menu';
-    menu.innerHTML = canInvite ?
-      `<button>Invite</button>` :
-      `<button disabled>${disabledReason}</button>`;
-    menu.style.position = 'absolute';
-
-    if (event.target instanceof HTMLButtonElement && event.target.classList.contains('action-button')) {
-      const rect = (event.target as HTMLElement).getBoundingClientRect();
-      menu.style.left = `${rect.left}px`;
-      menu.style.top = `${rect.bottom + 5}px`;
-    } else {
-      menu.style.left = `${event.pageX}px`;
-      menu.style.top = `${event.pageY}px`;
-    }
-
-    menu.querySelector('button')?.addEventListener('click', () => {
-      if (canInvite) {
-        this.inviteLobbyUser(user.username);
-      }
-      if (document.body.contains(menu)) {
-        document.body.removeChild(menu);
-      }
-    });
-
-    document.body.appendChild(menu);
-
-    // Close menu when clicking elsewhere
-    const closeMenu = (e: MouseEvent) => {
-      if (!menu.contains(e.target as Node)) {
-        if (document.body.contains(menu)) {
-          document.body.removeChild(menu);
-        }
-        document.removeEventListener('click', closeMenu);
-      }
-    };
-    setTimeout(() => {
-      document.addEventListener('click', closeMenu);
-    }, 100);
+    // Nobody is invited from inside a game room; the menu says so.
+    showUserMenu(event, "Can't invite while in a game room", false, () => {});
   }
 
   inviteLobbyUser(opponent: string): void {

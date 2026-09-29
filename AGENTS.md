@@ -1455,6 +1455,29 @@ Decided so far:
     the lobby's Change, Configure Setup and Single Player fell to 22px on a phone, and setup's
     Format JSON was the browser's own 21px button, its style under a class nothing had any
     more.
+    - **The ⋮ menu beside a player is one function** (`openUserMenu` in
+      `services/user-menu.ts`), the lobby's and the room's. It is built on the body, outside
+      every component, so its look is in the global `styles.scss`: a component's styles are
+      scoped to its own template's elements, and it drew as a bare 21px browser button (the
+      room's had no style anywhere). Kept inside the window, under its ⋮ or over it; shut by a
+      press elsewhere, Escape, a scroll, a resize, or its ⋮ again, and on leaving the screen;
+      its words set as text, not markup.
+    - **Setup asks before Back loses anything** - save and go, discard and go, or stay
+      (`leaveChoice`, Stay focused, Escape is Stay). It was `confirm()`, whose Cancel went
+      back without saving. What is wrong with a configuration is listed over the editor
+      (`errors`) - the validator's list, the server's refusal of one sent from a room, JSON
+      Format could not parse - where they were alerts, or, the server's, never drawn: the
+      screen is OnPush, and an answer on the socket must mark it (`markForCheck`). Back says
+      where it goes ("Back to Room" when opened from one). The editor has the screen's height,
+      the "Coming Soon" box above it only its words'; Arial, one size of button.
+    - **The lobby**: a rename the server refuses is said in the rename panel (`renameError`,
+      `RENAME_ERRORS`), not the chat; a rename that goes through shuts it. Its chat follows its
+      newest line only when its reader is at it, or the line is theirs (`onLobbyMessages`).
+      There is no `username_error`: the server refuses a name with an `error` like any other.
+    - **Testing these in headless Chrome**: open a screen by a real click. One the router
+      builds from a script's call (`ng.getComponent(...).openSetup()`) is built outside
+      Angular's zone, and its own clicks never redraw it - found chasing a Back dialog that
+      never appeared, which a real click showed at once.
   - **A unit's face is its own hex's.** The numbers, arrows and pips round a unit are drawn at
     `FACE_SCALE` (0.9) around its hex's centre (`faceTransform`), the owner's layout as it was,
     and the two that reached furthest drawn in - the pair of effect arrows two units from the
