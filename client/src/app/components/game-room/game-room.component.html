@@ -371,7 +371,7 @@
                         [style.font-size]="abilityFontSize(path.passive, 0)"
                         [class.locked]="displayUnit.vet < 1"
                         [class.picked-recent]="isRecentPick('mine', path.passive)"
-                        [disabled]="displayUnit.vet < 1 || !!displayUnit.panel"
+                        [disabled]="!!displayUnit.panel"
                         (click)="selectUnitAbility(path.passive)"
                 >{{ abilityLabel(path.passive, 0) }}</button>
               </ng-container>
@@ -381,14 +381,19 @@
                 >Passive</button>
               </ng-template>
               <!-- The unit type's own ability (`units.<id>.ability`), with its
-                   own cooldown. `!== null`, because slot 0 is an ability. -->
+                   own cooldown. `!== null`, because slot 0 is an ability.
+                   Locked until the unit has the stars it needs, but not
+                   disabled, and nor is the passive: a tap opens what it does
+                   and what it needs ("Unavailable: needs ★★"), with Use off.
+                   Disabled, a touch screen could not read it at all - its
+                   words were in a tooltip. A unit in a panel still is. -->
               <button class="scaffold-btn" type="button" *ngIf="displayUnitAbility !== null; else noOwnAbility"
                       [style.font-size]="abilityFontSize(displayUnitAbility, unitCooldownOf(displayUnit.uid))"
                       [title]="unitAbilityHint(displayUnitAbility)"
                       [class.focused]="unitAbilityFocus?.index === displayUnitAbility"
                       [class.locked]="!vetUnlocked(displayUnitAbility)"
                       [class.ability-unavailable]="!displayUnitAbilityReady"
-                      [disabled]="!vetUnlocked(displayUnitAbility) || !!displayUnit.panel"
+                      [disabled]="!!displayUnit.panel"
                       (click)="selectUnitAbility(displayUnitAbility)"
               >{{ abilityLabel(displayUnitAbility, unitCooldownOf(displayUnit.uid)) }}</button>
               <ng-template #noOwnAbility>

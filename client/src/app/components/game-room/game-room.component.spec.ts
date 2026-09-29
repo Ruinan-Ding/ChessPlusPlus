@@ -2677,6 +2677,26 @@ describe('GameRoomComponent ability panel', () => {
       c.selectedUnit = unit('3,0', 'wk', 'king', 'white');
       expect(c.displayUnitAbility).toBeNull();
     });
+
+    it("opens a unit's own ability it has not the stars for, and says what it needs", () => {
+      // Its button is not disabled for want of stars - disabled, a touch
+      // screen could not read what it does at all - so a tap lands here.
+      const c = tuned(config => { config.units.pawn.ability = 'focus'; });
+      const focus = c.slotOfAbility('focus');
+      c.selectedUnit = { ...WP, vet: 1 };
+      expect(c.vetUnlocked(focus)).toBeFalse();
+      c.selectUnitAbility(focus);
+      expect(c.unitAbilityFocus).toEqual({ index: focus });
+      expect(c.unitAbilityNote).toBe('Unavailable: needs ★★.');
+      expect(c.unitAbilityCanActivate()).toBeFalse();
+      c.activateUnitAbility();
+      expect(c.myPoints).toBe(100);
+      // A unit in a panel still opens nothing.
+      c.unitAbilityFocus = null;
+      c.selectedUnit = { ...WP, panel: 'base' };
+      c.selectUnitAbility(focus);
+      expect(c.unitAbilityFocus).toBeNull();
+    });
   });
 });
 

@@ -1427,6 +1427,16 @@ Decided so far:
   - **Every button whose only word is a symbol has a name** for a screen reader: each ⋮ is
     "Options for <name>", each ⤢ "Expand <panel>" or "Shrink <panel>"; the ⚠️ and ⚙️ beside a
     player are images named for what they mean.
+  - **A unit's ability it has not the stars for opens on a tap** - its own and its passive
+    alike: "Unavailable: needs ★★" (or "Always on at ★") over what it does, and Use off. They
+    were disabled, which left what they do in a tooltip a touch screen never shows. Greyed as
+    before (`.scaffold-btn.locked`); a unit in a panel still opens nothing
+    (`selectUnitAbility`).
+  - **A panel's heading is one height whatever it holds** (`.panel-head`, `line-height: 1.12`).
+    The Unit panel's names a unit's stars, and Arial has no ★: at `normal` the font drawn in
+    its place set the line 2-3px taller at every size, so the panel's numbers jumped between
+    a unit with a star and one without. 1.12 is under Arial's own at every size the room
+    draws, so no heading grew for it.
   - **Where the room still scales**: short of the columns - on a computer to 75%, on a touch
     screen to 90% (above).
     `ROOM_MIN_WIDTH`/`ROOM_MIN_HEIGHT` (1180 x 705) is the least size at which the sweep finds

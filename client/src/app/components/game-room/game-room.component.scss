@@ -995,6 +995,9 @@
   }
 
   .scaffold-btn.ability-unavailable { background: #8d98a3; color: #e1e5e8; }
+  // A unit's own ability it has not the stars for: the grey a disabled one
+  // wears, though it is not disabled - a tap opens what it does and needs.
+  .scaffold-btn.locked:not(:disabled) { background-color: #b9c2cb; }
 
   // Taken up last turn: filled yellow rather than ringed, because a pick and
   // a cast are different news and should not look like the same thing.
@@ -1637,8 +1640,7 @@
           }
         }
         
-        &:disabled,
-        &.gray {
+        &:disabled {
           background-color: #95a5a6;
           cursor: not-allowed;
           opacity: 0.7;
@@ -2230,12 +2232,19 @@
 }
 
 // Panel heading with its points pushed to the far side.
+//
+// One height whatever it holds. The Unit panel's names a unit's stars, and
+// Arial has no ★: at `line-height: normal` the font drawn in its place sets
+// the line, 2-3px taller at every size - so its numbers jumped at every unit
+// crossed between one with a star and one without. A line-height of its own
+// is the heading's font's, whatever else is drawn in it; 1.12 is under
+// Arial's own at every size the room draws, so no heading grew for it.
 .panel-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: u(0.5);
-
+  line-height: 1.12;
 }
 
 // Passive slots are informational controls: they open the description but
