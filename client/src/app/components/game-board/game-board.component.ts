@@ -208,6 +208,16 @@ const HEX_SIZE = 28; // radius of a single hex in SVG pixels
 const HEX_INRADIUS = HEX_SIZE * Math.sqrt(3) / 2;
 const PLATE_SIZE = 25;
 /**
+ * What a unit's face - its numbers, arrows and pips - is drawn at, around the
+ * hex's centre (faceTransform). At full size a unit's DEF and ATK sat in the
+ * next row's HP and its pips in the next row's MOV and reach: 174 labels
+ * touching another unit's in the opening's full bases, 28 Sep 2026. The
+ * layout is the one the owner has; only its size gives. Measured in the same
+ * bases: 99 still touching at 0.94, none at 0.92, and 0.9 for a little room
+ * between them - a tenth off every number.
+ */
+const FACE_SCALE = 0.9;
+/**
  * How fast a committed turn plays back. Every beat below is written at its
  * 1x length and divided by this, so the recap keeps its shape and only its
  * pace changes - one dial rather than seven numbers to keep in step.
@@ -560,7 +570,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [class.hex-move-preview]="!hex.panel && previewMoves.has(hex.key) && (!showingSelection || !legalTargets.has(hex.key))"
             [class.hex-attack-preview]="!hex.panel && previewAttacks.has(hex.key)"
             [class.hex-attack-target]="!hex.panel && showingSelection && attackTargets.has(hex.key)"
-            [class.hex-attack-armed]="hex.key === armedAttack"
+            [class.hex-attack-armed]="!hex.panel && hex.key === armedAttack"
             [class.preview-dim]="previewDim"
             [class.reach-up]="movWave === 'up' && (legalTargets.has(hex.key) || previewMoves.has(hex.key))"
             [class.reach-down]="movWave === 'down' && (legalTargets.has(hex.key) || previewMoves.has(hex.key))"
@@ -801,7 +811,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
              the hex it points at is the one that cannot be read. -->
         <g *ngFor="let hex of cells; trackBy: trackByKey">
           <ng-container *ngIf="hex.piece as pc">
-            <ng-container *ngIf="!showNumbers">
+            <ng-container *ngIf="!showNumbers"><g [attr.transform]="faceTransform(hex)">
               <!-- Hovering a reachable enemy answers the only question that
                    matters before swinging: what does this cost both of us. -->
               <text *ngIf="hex.stats?.hp != null"
@@ -890,7 +900,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
                     [attr.transform]="textTransform(hex.cx, hex.cy)"
                     class="vet-star" [class.on-dark]="pc.color === 'black' && hex.key !== selectedHex"
               >{{ pip.glyph }}</text>
-            </ng-container>
+            </g></ng-container>
           </ng-container>
           <!-- Numbering mode replaces every face with its hex number. -->
           <text
@@ -922,13 +932,15 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
           >{{ mark }}</text>
         </g>
 
-        <!-- Touch only: an enemy in reach tapped once is armed - the trade's
-             forecast on both units, as a hover shows it - and says so here;
-             a second tap on it strikes (armedAttack). -->
-        <text *ngIf="armedCell as armed" class="armed-hint"
-              [attr.x]="armed.cx" [attr.y]="armed.cy - 34"
-              [attr.transform]="textTransform(armed.cx, armed.cy)">Tap again to strike</text>
       </svg>
+
+      <!-- Touch only: an enemy in reach tapped once is armed - the trade's
+           forecast on both units, as a hover shows it, and the hex pulsing -
+           and says so here; a second tap on it strikes (armedAttack). Over
+           the board rather than drawn on it: the board's own text is sized
+           to the board, a few pixels tall on a phone, and next to the target
+           it sat on the forecast of whoever stood beside it. -->
+      <div *ngIf="armedAttack" class="armed-hint" [class.high]="armedHintHigh">Tap again to strike</div>
 
       <!-- Zoomed in by a pinch: the way back to the whole board. -->
       <button *ngIf="boardZoom > 1" type="button" class="board-fit-btn"
@@ -989,23 +1001,44 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       cursor: pointer;
     }
 
-    /* An enemy a first tap armed: the target's red, pulsing, so the second
-       tap has somewhere to land. */
-    .hex-attack-armed {
+    /* An enemy a first tap armed: a deeper red than any other target,
+       pulsing, so the second tap has somewhere to land. The pulse is its
+       brightness, not its fill - a fill with !important outranks an
+       animation, and it held still. Two classes, so it outranks
+       .hex-attack-target, which the same hex can carry and which comes
+       later.
+       A panel hex takes it as a wash instead (panelWash). */
+    .hex-cell.hex-attack-armed {
       fill: #b91c1c !important;
+    }
+    .hex-attack-armed,
+    .panel-wash.wash-attack-armed {
       animation: armed-pulse 0.8s ease-in-out infinite alternate;
     }
     @keyframes armed-pulse {
-      to { fill: #f87171; }
+      to { filter: brightness(1.7); }
     }
     .armed-hint {
-      font: 700 13px Arial, sans-serif;
-      fill: #fff;
-      stroke: #7f1d1d;
-      stroke-width: 3px;
-      paint-order: stroke;
-      text-anchor: middle;
+      position: absolute;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 4;
+      padding: 6px 12px;
+      border-radius: 6px;
+      background: rgba(127, 29, 29, 0.9);
+      color: #fff;
+      font: 700 14px Arial, sans-serif;
+      white-space: nowrap;
       pointer-events: none;
+    }
+    /* The target in the board's lower half (armedHintHigh): the hint over
+       the top instead, at the left - "Whole board" has the right. */
+    .armed-hint.high {
+      top: 8px;
+      bottom: auto;
+      left: 8px;
+      transform: none;
     }
 
     .hex-board.board-flipped {
@@ -1061,6 +1094,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
     .panel-wash.wash-move { fill: #7ee08a; fill-opacity: 0.34; }
     .panel-wash.wash-attack { fill: #ff6b63; fill-opacity: 0.38; }
     .panel-wash.wash-attack-target { fill: #ff2d24; fill-opacity: 0.62; }
+    .panel-wash.wash-attack-armed { fill: #b91c1c; fill-opacity: 0.72; }
 
     /* Held: the zone's own blue gives way to the side holding it. Amber and
        violet rather than the sides' own white and black - a white wash is
@@ -2052,7 +2086,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     const dragged = this.hasDrag(uid);
     // Both stand side by side on the one line, up first. A unit with nothing
     // on it keeps the slot with a dash, so the row never looks half-drawn.
-    if (boosted && dragged) return [{ x: hex.cx - 23, ...up }, { x: hex.cx - 15, ...down }];
+    // The pair two in from the edge: at -23 the outer one sat in the next
+    // unit's reach.
+    if (boosted && dragged) return [{ x: hex.cx - 21, ...up }, { x: hex.cx - 13, ...down }];
     if (boosted) return [{ x: hex.cx - 19, ...up }];
     if (dragged) return [{ x: hex.cx - 19, ...down }];
     return [{ x: hex.cx - 19, glyph: '-', kind: 'none' }];
@@ -2063,6 +2099,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * else is drawn. One sits on the centre line, two straddle it, and three
    * make a triangle that narrows the way the hex does.
    */
+  /** A unit's face drawn at FACE_SCALE around its hex's centre. */
+  faceTransform(hex: HexCell): string {
+    return `translate(${hex.cx} ${hex.cy}) scale(${FACE_SCALE}) translate(${-hex.cx} ${-hex.cy})`;
+  }
+
   vetPips(hex: HexCell): Array<{ x: number; y: number; glyph: string }> {
     const { cx, cy } = hex;
     const star = '★';
@@ -2073,10 +2114,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     if (hex.vet === 2) {
       return [{ x: cx - 7, y: cy + 19, glyph: star }, { x: cx + 7, y: cy + 19, glyph: star }];
     }
+    // The triangle's point well up from the hex's own: at +25 it sat in the
+    // top corners of both units below.
     return [
-      { x: cx - 7, y: cy + 16, glyph: star },
-      { x: cx + 7, y: cy + 16, glyph: star },
-      { x: cx, y: cy + 25, glyph: star },
+      { x: cx - 7, y: cy + 15, glyph: star },
+      { x: cx + 7, y: cy + 15, glyph: star },
+      { x: cx, y: cy + 21, glyph: star },
     ];
   }
 
@@ -4281,8 +4324,18 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    */
   armedAttack: string | null = null;
 
-  get armedCell(): HexCell | null {
-    return this.armedAttack ? this.cellsByKey.get(this.armedAttack) ?? null : null;
+  /**
+   * Whether the hint goes over the top of the board: while the armed target
+   * is in its lower half as it shows - where a player's own rows are, and
+   * where a hint along the foot sat on the target and its forecast. From the
+   * view as it stands: zoomed, panned, turned round.
+   */
+  get armedHintHigh(): boolean {
+    const cell = this.armedAttack ? this.cellsByKey.get(this.armedAttack) : undefined;
+    if (!cell) return false;
+    const [, y, , h] = this.shownViewBox.split(' ').map(Number);
+    const down = (cell.cy - y) / h;
+    return (this.rotateBoard ? 1 - down : down) > 0.5;
   }
 
   // -- Pinch to zoom, drag to pan ---------------------------------------
@@ -4346,11 +4399,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // this tap with it.
     this.swallowClick = false;
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    // A finger joining a drag under way is the board's as the rest are.
+    if (this.moved) this.hold(e.pointerId);
     this.beginGesture();
   }
 
   onBoardPointerMove(e: PointerEvent): void {
     if (!this.pointers.has(e.pointerId) || !this.gestureStart) return;
+    // A mouse or a pen let go of off the board, before its drag was caught
+    // (holdPointers): its button is up, so the gesture is over.
+    if (e.pointerType !== 'touch' && e.buttons === 0) {
+      this.onBoardPointerUp(e);
+      return;
+    }
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const start = this.gestureStart;
     const ids = [...start.at.keys()].filter(id => this.pointers.has(id));
@@ -4372,7 +4433,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         x: held.x - (mid1.x - mid.x) * perPx * sign,
         y: held.y - (mid1.y - mid.y) * perPx * sign,
       };
-      this.moved = true;
+      this.holdPointers();
       this.showZoom();
       return;
     }
@@ -4388,8 +4449,27 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       x: start.center.x - dx * perPx * sign,
       y: start.center.y - dy * perPx * sign,
     };
-    this.moved = true;
+    this.holdPointers();
     this.showZoom();
+  }
+
+  /**
+   * A gesture under way: every pointer in it is the board's until it lets
+   * go (pointer capture), wherever it goes. Without this a mouse dragged off
+   * the board and let go there never told the board so - the next hover
+   * panned it, and the next click was swallowed as the drag's end. Caught
+   * only once it is a drag: a pointer captured by the board has its click
+   * sent to the board rather than the hex under it, which is what a drag's
+   * closing click wants and a tap must not have.
+   */
+  private holdPointers(): void {
+    if (this.moved) return;          // held already, from the first frame of it
+    this.moved = true;
+    for (const id of this.pointers.keys()) this.hold(id);
+  }
+
+  private hold(id: number): void {
+    try { this.boardSvg?.nativeElement.setPointerCapture(id); } catch { /* already let go */ }
   }
 
   onBoardPointerUp(e: PointerEvent): void {
@@ -4421,12 +4501,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
 
   /**
    * Board units per screen pixel at `zoom`. The svg letterboxes the viewBox
-   * (meet), so the tighter of the two axes decides.
+   * (meet), so the tighter of the two axes decides. Its size on screen, as
+   * the fingers are measured, not its laid-out size: the room's columns are
+   * CSS-zoomed a little on a laptop just short of them, and by the laid-out
+   * size a drag moved the board 10% less than the finger.
    */
   private unitsPerPx(zoom: number): number {
-    const svg = this.boardSvg?.nativeElement;
-    const w = svg?.clientWidth || 1;
-    const h = svg?.clientHeight || 1;
+    const r = this.boardSvg?.nativeElement.getBoundingClientRect();
+    const w = r?.width || 1;
+    const h = r?.height || 1;
     return Math.max(this.baseBox.w / w, this.baseBox.h / h) / zoom;
   }
 
@@ -4999,6 +5082,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    */
   panelWash(hex: HexCell): string {
     if (!hex.panel) return '';
+    if (hex.key === this.armedAttack) return 'wash-attack-armed';
     if (this.showingSelection && this.attackTargets.has(hex.key)) return 'wash-attack-target';
     if (this.showingSelection && this.legalTargets.has(hex.key)) return 'wash-legal';
     if (this.previewAttacks.has(hex.key)) return 'wash-attack';

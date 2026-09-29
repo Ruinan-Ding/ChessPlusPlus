@@ -67,8 +67,28 @@
     <nav class="room-tabs" role="tablist" aria-label="Panels" *ngIf="roomLayout !== 'columns'">
       <button *ngFor="let tab of roomTabs" type="button" role="tab"
               [class.active]="shownTab === tab.id" [attr.aria-selected]="shownTab === tab.id"
-              (click)="roomTab = tab.id">{{ tab.label }}</button>
+              (click)="selectRoomTab(tab.id)">{{ tab.label }}<span
+                class="tab-cue" *ngIf="tab.id === 'room'" [class.act]="roomNeedsYou"
+                [class.empty]="shownTab === 'room' || !roomCue"
+              >{{ (shownTab !== 'room' && roomCue) || '0' }}</span></button>
     </nav>
+
+    <!-- The Unit panel in two lines, wherever the panel itself is a tab (a
+         phone, a short window): what a hover or a tap on the board fills in,
+         in sight whatever tab is showing - behind its tab it filled in where
+         nobody could see it, and the numbers drawn on a phone's board are a
+         few pixels tall. Pressed, it opens the whole panel. -->
+    <button class="unit-strip" type="button" *ngIf="roomLayout !== 'columns' && !unitPinned"
+            [class.theirs]="unitPanelDim" (click)="selectRoomTab('unit')">
+      <span class="strip-name">{{ displayUnit ? displayUnit.name + ' - ' + unitSideLabel : 'Unit' }}</span>
+      <span class="strip-stats" *ngIf="displayUnit; else noStripUnit">
+        <span class="hp">HP <strong [class.forecast]="displayUnit.hpAfter != null">{{ statHp }}</strong></span>
+        <span class="atk">ATK <strong>{{ statAtk }}</strong></span>
+        <span class="def">DEF <strong>{{ statDef }}</strong></span>
+        <span class="mov">MOV <strong>{{ statMov }}</strong></span>
+      </span>
+      <ng-template #noStripUnit><span class="strip-stats">Tap a unit to read it here</span></ng-template>
+    </button>
 
     <!-- Left column: your side - the turn's controls, your abilities and the
          Unit panel. Plain stacked rectangles - they used to be clipped into
@@ -79,8 +99,9 @@
       <!-- A move is staged on the board until one of these resolves it, so
            they sit with the board rather than off in the rail. -->
       <div class="turn-controls">
-        <button class="undo-btn" type="button" (click)="undoMove()" [disabled]="!canUndo">Undo<span class="key-hint" *ngIf="shortcutsActive"> (R)</span></button>
-        <button class="end-turn-btn" type="button" (click)="endTurn()" [disabled]="!canEndTurn">End Turn<span class="key-hint" *ngIf="shortcutsActive"> (TAB)</span></button>
+        <!-- The words held to one line (.label); only the key goes under them. -->
+        <button class="undo-btn" type="button" (click)="undoMove()" [disabled]="!canUndo"><span class="label">Undo</span><span class="key-hint" *ngIf="shortcutsActive"> (R)</span></button>
+        <button class="end-turn-btn" type="button" (click)="endTurn()" [disabled]="!canEndTurn"><span class="label">End Turn</span><span class="key-hint" *ngIf="shortcutsActive"> (TAB)</span></button>
       </div>
 
       <!-- Two of a kind, half the row each: what the board draws on itself,
@@ -91,14 +112,14 @@
           type="button"
           [class.active]="showHexNumbers"
           (click)="showHexNumbers = !showHexNumbers"
-        >{{ showHexNumbers ? 'Hide' : 'Show' }} Hex<span class="key-hint" *ngIf="shortcutsActive"> (S)</span></button>
+        ><span class="label">{{ showHexNumbers ? 'Hide' : 'Show' }} Hex</span><span class="key-hint" *ngIf="shortcutsActive"> (S)</span></button>
         <button
           class="hex-numbers-btn"
           type="button"
           [class.active]="flipView"
           title="Turn the board round to read it from the other side."
           (click)="flipView = !flipView"
-        >Flip<span class="key-hint" *ngIf="shortcutsActive"> (F)</span></button>
+        ><span class="label">Flip</span><span class="key-hint" *ngIf="shortcutsActive"> (F)</span></button>
       </div>
 
       <section class="match-panel abilities-panel">
@@ -273,7 +294,7 @@
             <!-- Only the current half of "x/20" answers for the unit's state,
                  so only it waves. -->
             <div class="stat-cell hp"><span>HP</span>
-              <strong [class.forecast]="displayUnit?.hpAfter != null">
+              <strong [class.forecast]="displayUnit?.hpAfter != null" [style.font-size]="statFontSize(statHp)">
                 <ng-container *ngIf="displayUnit; else noUnitHp"><span
                   [ngClass]="hpWave">{{ displayUnit.hpAfter ?? displayUnit.hp }}</span>/{{ displayUnit.hpMax }}</ng-container>
                 <ng-template #noUnitHp>—</ng-template>
@@ -395,8 +416,10 @@
       <div class="match-actions"
            *ngIf="gameStarted && gameState.isGameActive && gameState.myColor(username)">
         <button class="resign-btn" type="button" (click)="resign()">Resign</button>
+        <!-- Your own offer, waiting on them, says so here. -->
         <button class="draw-btn" type="button" (click)="offerDraw()"
-                [disabled]="!!state.drawOfferedBy">Offer Draw</button>
+                [disabled]="!!state.drawOfferedBy"
+        >{{ state.drawOfferedBy === username ? 'Draw Offered' : 'Offer Draw' }}</button>
       </div>
     </div>
 
@@ -406,7 +429,19 @@
            [class.your-turn]="gameStarted && !state.endReason && state.currentTurn === username"
            [class.their-turn]="gameStarted && !state.endReason && !!state.currentTurn && state.currentTurn !== username"
            [class.committing-mine]="recapRunning && indicatorMine"
-           [class.committing-theirs]="recapRunning && !indicatorMine">
+           [class.committing-theirs]="recapRunning && !indicatorMine"
+           [class.offer]="drawOfferToYou">
+        <!-- An offer of a draw from the other side, over the board it is about
+             until it is answered, the board giving up the height. Nothing can
+             put it out of sight here: in the rail it went with the roster
+             whenever the chat was expanded, sat under another tab, and took
+             height the column had not got - 20-59px past the window on a
+             desktop, and Start below the fold on a phone. -->
+        <div class="draw-offer-banner" *ngIf="drawOfferToYou">
+          <span>{{ state.drawOfferedBy }} offers a draw.</span>
+          <button class="accept-btn" type="button" (click)="respondToDraw(true)">Accept</button>
+          <button class="decline-btn" type="button" (click)="respondToDraw(false)">Decline</button>
+        </div>
         <!-- A finished game keeps its board: the last position is the thing
              worth looking at, and the result sits over it. The panel goes
              back to the mode screen only when the host resets the room. -->
@@ -736,7 +771,7 @@
                   [title]="historyExpanded ? 'Collapse history' : 'Expand history'"
           >{{ historyExpanded ? '⤡' : '⤢' }}</button>
         </h3>
-        <div class="panel-body">
+        <div class="panel-body" #historyLog>
           <div class="history-item" *ngFor="let message of historyMessages">
             <span class="history-text">{{ message.content }}</span>
             <span class="history-time">{{ message.timestamp | date:'shortTime' }}</span>
@@ -750,7 +785,9 @@
            the whole column would leave the Room tab empty. -->
       <div class="rail-box" *ngIf="!historyExpanded || roomLayout !== 'columns'">
       <div class="rail-tabs">
-        <button [class.active]="activeSideTab === 'game'" (click)="activeSideTab = 'game'">Game</button>
+        <button [class.active]="activeSideTab === 'game'" (click)="activeSideTab = 'game'">Game<span
+          class="tab-cue" [class.act]="roomNeedsYou" [class.empty]="activeSideTab !== 'lobby' || !roomCue"
+        >{{ (activeSideTab === 'lobby' && roomCue) || '0' }}</span></button>
         <button [class.active]="activeSideTab === 'lobby'" (click)="activeSideTab = 'lobby'">Lobby</button>
       </div>
 
@@ -823,17 +860,6 @@
             </button>
             </div>
           </div>
-
-          <div class="ready-section" *ngIf="gameStarted">
-            <div class="draw-offer-banner" *ngIf="state.drawOfferedBy">
-              <span *ngIf="state.drawOfferedBy === username">Draw offer sent - waiting...</span>
-              <ng-container *ngIf="state.drawOfferedBy !== username">
-                <span>{{ state.drawOfferedBy }} offers a draw.</span>
-                <button class="accept-btn" (click)="respondToDraw(true)">Accept</button>
-                <button class="decline-btn" (click)="respondToDraw(false)">Decline</button>
-              </ng-container>
-            </div>
-          </div>
         </div>
 
         <div class="rail-section chat-panel" *ngIf="!playersExpanded"
@@ -842,7 +868,7 @@
             <button class="expand-btn" type="button" (click)="chatExpanded = !chatExpanded"
             >{{ chatExpanded ? '⤡' : '⤢' }}</button></h3>
           <div class="chat-content">
-            <div class="game-room-messages">
+            <div class="game-room-messages" #gameChat>
               <div
                 class="message-item"
                 *ngFor="let message of gameRoomChatMessages"
@@ -919,7 +945,7 @@
           <h3 class="rail-head"><span>Lobby</span>
             <button class="expand-btn" type="button" (click)="lobbyChatExpanded = !lobbyChatExpanded"
             >{{ lobbyChatExpanded ? '⤡' : '⤢' }}</button></h3>
-          <div class="lobby-messages">
+          <div class="lobby-messages" #lobbyChat>
             <div class="message-item" *ngFor="let message of lobbyMessages"
               [ngClass]="{'system-message': message.type === 'system','my-message': message.username === username}">
               <div class="message-header">

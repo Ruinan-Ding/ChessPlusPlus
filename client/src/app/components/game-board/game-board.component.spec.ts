@@ -2811,4 +2811,156 @@ describe('GameBoardComponent on a touch screen', () => {
     board.onHexClick(cell('0,0'));
     expect(anyBoard().selectedHex).toBe('0,0');
   });
+
+  it('pulses the armed target, in a red deeper than any other target', () => {
+    aim();
+    pointer('pointerdown', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    fixture.detectChanges();
+    const hex = fixture.nativeElement.querySelector('polygon.hex-attack-armed') as SVGPolygonElement;
+    expect(hex).toBeTruthy();
+    expect(getComputedStyle(hex).fill).toBe('rgb(185, 28, 28)');
+    // A target as well - the target's own red comes later in the
+    // stylesheet, and the armed one has to win all the same. (The hex's
+    // fill transition off, or the colour read is the one it sets out from.)
+    hex.style.transition = 'none';
+    hex.classList.add('hex-attack-target');
+    expect(getComputedStyle(hex).fill).toBe('rgb(185, 28, 28)');
+    // And the pulse moves. A fill with !important outranks an animation of
+    // the fill, so one that animated the fill held still.
+    const pulse = hex.getAnimations().find(a => /armed-pulse/.test((a as CSSAnimation).animationName))!;
+    expect(pulse).withContext('the pulse').toBeTruthy();
+    pulse.pause();
+    pulse.currentTime = 0;
+    const look = () => `${getComputedStyle(hex).fill} ${getComputedStyle(hex).filter}`;
+    const rest = look();
+    pulse.currentTime = 790;
+    expect(look()).not.toBe(rest);
+  });
+
+  it('says to tap again over the board, at a size a phone can read', () => {
+    // Drawn on the board it was sized to the board: about 4px tall on a
+    // phone, and sat on the forecast of the unit beside the target.
+    aim();
+    pointer('pointerdown', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    fixture.detectChanges();
+    const hint = fixture.nativeElement.querySelector('.armed-hint') as HTMLElement;
+    expect(hint.closest('svg')).toBeNull();
+    expect(parseFloat(getComputedStyle(hint).fontSize)).toBeGreaterThanOrEqual(12);
+  });
+
+  it("draws each unit's face a tenth smaller, clear of its neighbours'", () => {
+    // At full size a unit's DEF and ATK sat in the next row's HP and its pips
+    // in the next row's MOV and reach. The layout stays; the face is drawn at
+    // FACE_SCALE around its hex's centre.
+    const archer = cell('0,0');
+    expect(board.faceTransform(archer)).toContain('scale(0.9)');
+    const hp = fixture.nativeElement.querySelector('text.stat-hp') as SVGTextElement;
+    expect(hp.closest('g[transform]')?.getAttribute('transform')).toContain('scale(0.9)');
+    // And the two that reached furthest, drawn in from where they were.
+    const pips = board.vetPips({ ...archer, vet: 3 });
+    expect(Math.max(...pips.map(p => p.y - archer.cy))).toBeLessThanOrEqual(21);
+    spyOn<any>(board, 'hasLift').and.returnValue(true);
+    spyOn<any>(board, 'hasDrag').and.returnValue(true);
+    const arrows = board.effectArrows(archer);
+    expect(arrows.length).toBe(2);
+    expect(Math.min(...arrows.map(a => a.x - archer.cx))).toBeGreaterThanOrEqual(-21);
+  });
+
+  it('puts the hint over the half of the board the target is not in', () => {
+    // Along the foot it sat on a player's own rows - where a target in reach
+    // often is, and its forecast with it.
+    const byY = [...board.cells].sort((a, b) => a.cy - b.cy);
+    const [top, bottom] = [byY[0], byY[byY.length - 1]];
+    board.armedAttack = bottom.key;
+    expect(board.armedHintHigh).toBeTrue();
+    board.armedAttack = top.key;
+    expect(board.armedHintHigh).toBeFalse();
+    // Turned round, the bottom row is at the top.
+    board.rotateBoard = true;
+    expect(board.armedHintHigh).toBeTrue();
+    // And zoomed onto the top of the board, the top row is low in the view.
+    board.rotateBoard = false;
+    anyBoard().boardZoom = 4;
+    anyBoard().zoomCenter = { x: top.cx, y: top.cy - 1000 };
+    anyBoard().applyZoom();
+    board.armedAttack = byY.find(c => c.cy > top.cy + 40)!.key;
+    expect(board.armedHintHigh).toBeTrue();
+  });
+
+  it('washes an armed panel hex rather than filling it', () => {
+    // Reach on a reserve or a base is a wash over the panel's own colour, so
+    // the panel still reads as one; a solid red fill wiped it out.
+    const panel = board.cells.find(c => !!c.panel)!;
+    expect(panel).withContext('a panel hex').toBeTruthy();
+    board.armedAttack = panel.key;
+    anyBoard().cdr.markForCheck();
+    fixture.detectChanges();
+    expect(board.panelWash(panel)).toBe('wash-attack-armed');
+    expect(fixture.nativeElement.querySelectorAll('polygon.hex-attack-armed').length).toBe(0);
+    expect(fixture.nativeElement.querySelector('polygon.panel-wash.wash-attack-armed')).toBeTruthy();
+  });
+
+  it('holds on to a drag until it lets go, wherever it goes', () => {
+    anyBoard().boardZoom = 2;
+    anyBoard().applyZoom();
+    const held = spyOn(svg(), 'setPointerCapture');
+    // A tap is not held: its click belongs to the hex under it.
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    expect(held).not.toHaveBeenCalled();
+    // A drag is: let go of off the board, it still ends. Once, not on every
+    // frame of it.
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointermove', 1, 360, 250);
+    pointer('pointermove', 1, 380, 250);
+    pointer('pointermove', 1, 400, 250);
+    expect(held).toHaveBeenCalledOnceWith(1);
+    // A finger that joins it is held too.
+    pointer('pointerdown', 2, 200, 250);
+    expect(held).toHaveBeenCalledWith(2);
+  });
+
+  it('ends a mouse drag let go of off the board, and the next click is a click', () => {
+    anyBoard().boardZoom = 2;
+    anyBoard().applyZoom();
+    const mouse = (type: string, x: number, buttons: number) =>
+      svg().dispatchEvent(new PointerEvent(type, {
+        pointerId: 7, pointerType: 'mouse', clientX: x, clientY: 250, buttons, bubbles: true,
+      }));
+    mouse('pointerdown', 300, 1);
+    mouse('pointermove', 360, 1);           // a drag; the button comes up off the board
+    const after = board.shownViewBox;
+    mouse('pointermove', 420, 0);           // back over it, no button down
+    expect(board.shownViewBox).withContext('a hover does not pan').toBe(after);
+    mouse('pointerdown', 300, 1);
+    mouse('pointerup', 300, 0);
+    board.onHexClick(cell('0,0'));
+    expect(anyBoard().selectedHex).toBe('0,0');
+  });
+
+  it('pans by the board under the finger when the room is scaled', () => {
+    // The columns are CSS-zoomed a little on a laptop just short of them.
+    // Measured by its laid-out size the board moved 10% less than the finger.
+    // Laid out as the room lays it out, a column the board fills - the
+    // fixture's block box leaves it no height, and the width alone is not
+    // what decides how far a pixel goes.
+    fixture.nativeElement.style.display = 'flex';
+    const drag = () => {
+      board.fitBoard();
+      anyBoard().boardZoom = 2;
+      anyBoard().applyZoom();
+      const x0 = anyBoard().zoomCenter.x;
+      pointer('pointerdown', 1, 300, 250);
+      pointer('pointermove', 1, 280, 250);
+      pointer('pointerup', 1, 280, 250);
+      return anyBoard().zoomCenter.x - x0;
+    };
+    const unscaled = drag();
+    fixture.nativeElement.style.zoom = '0.5';
+    const scaled = drag();
+    expect(unscaled).toBeGreaterThan(0);
+    expect(scaled / unscaled).toBeCloseTo(2, 3);
+  });
 });

@@ -63,6 +63,43 @@
     // phone that hid the box you type a message in.
     .stats-panel .panel-body,
     .rail-box { overflow-y: auto; }
+
+    // What the Room tab's cue sends a player there for - Ready, Start - at
+    // its top, over the roster: a phone's browser leaves the tab a few
+    // hundred pixels, and under the roster they were below its fold.
+    .players-section .ready-section {
+      order: -1;
+      margin: 0;
+    }
+
+    // The Unit panel in two lines - the unit, then its four numbers - where
+    // the panel is a tab (.unit-pinned off). Pressed, it opens the panel.
+    .unit-strip {
+      grid-area: strip;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      padding: u(0.25) u(0.5);
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: #f8f9fa;
+      color: #2c3e50;
+      font-size: t(0.85);
+      text-align: left;
+      cursor: pointer;
+
+      &.theirs { background: #f1f1f4; }
+      .strip-name { font-weight: 700; }
+      .strip-stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0 u(0.75);
+      }
+      .hp strong { color: #15803d; }
+      .atk strong { color: #b91c1c; }
+      .def strong { color: #1d4ed8; }
+      .mov strong { color: #b58900; }
+    }
   }
 
   &.tabbed {
@@ -76,12 +113,13 @@
     // measured unit by unit, 28 Sep 2026, at 800 and 1000px wide alike: with
     // the Unit panel pinned 685px at 12px, 752 at 14, 836 at 16; without it
     // 497, 542, 602. Two straight lines each, as with the columns, with 4px
-    // to spare.
+    // to spare. Without it the Unit panel's strip stands in its place - two
+    // lines and a gap, three units and 2px more.
     --u: clamp(12px, min(calc((100dvh - 266px) / 35.3), calc((100dvh - 120px) / 45),
       calc((100vw - 119.4dvh) / 16.1)), 16px);
 
     &:not(.unit-pinned) {
-      --u: clamp(12px, min(calc((100dvh - 210px) / 24.3), calc((100dvh - 94px) / 32),
+      --u: clamp(12px, min(calc((100dvh - 212px) / 27.3), calc((100dvh - 96px) / 35),
         calc((100vw - 119.4dvh) / 16.1)), 16px);
     }
 
@@ -99,12 +137,14 @@
       gap: u(0.5) u(1);
     }
 
-    // Short of height for it, the Unit panel is a tab like the rest.
+    // Short of height for it, the Unit panel is a tab like the rest, and its
+    // two-line strip (.unit-strip) stands where the panel stood.
     &:not(.unit-pinned) main {
-      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+      grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
       grid-template-areas:
         "board turn"
         "board view"
+        "board strip"
         "board tabs"
         "board panel"
         "board actions";
@@ -117,15 +157,21 @@
     &.short {
       main {
         grid-template-columns: minmax(0, 1fr) repeat(2, max(124px, #{u(10)}));
-        grid-template-rows: auto auto minmax(0, 1fr) auto;
+        grid-template-rows: auto auto auto minmax(0, 1fr) auto;
         grid-template-areas:
           "board turn view"
+          "board strip strip"
           "board tabs tabs"
           "board panel panel"
           "board actions actions";
       }
       .match-actions { display: none; }
       &[data-tab='room'] .match-actions { display: grid; }
+
+      // Each of the four has half of a 124px column: a sliver of side
+      // padding, or "Show Hex" held to its one line ran out of its button.
+      .turn-controls button,
+      .view-controls button { padding-inline: u(0.125); }
     }
   }
 
@@ -144,10 +190,11 @@
     // less than they need at the 12px unit (--lower: the tallest tab, Room,
     // with the header, the strip, the bar and the gaps - measured, 28 Sep
     // 2026, 507px with the Unit panel pinned beside the tabs and 538px with
-    // it a tab, plus 4 to spare) - and never under 45% of the window. A tablet
-    // upright gives the board up to the panels; a small phone keeps the board
-    // the width of the screen, and its tallest tab may scroll a little.
-    --lower: 542px;
+    // it a tab, plus 4 to spare, and 42px more for the Unit panel's strip
+    // when it is a tab) - and never under 45% of the window. A tablet
+    // upright gives the board up to the panels; a phone keeps the board the
+    // width of the screen, and its tallest tab scrolls.
+    --lower: 584px;
     --board-h: min(calc((100vw - 18px) / 1.194), max(calc(100dvh - var(--lower)), 45dvh));
     // The unit: 12px on a phone, up to 16px on a tablet (across the width),
     // and only as far as the height left under the board allows - two
@@ -160,9 +207,10 @@
     main {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
       grid-template-areas:
         "board board"
+        "strip strip"
         "tabs tabs"
         "panel panel"
         "actions actions"
@@ -177,6 +225,7 @@
 
     // A tablet upright: the Unit panel in a column of its own beside the tabs.
     &.unit-pinned main {
+      grid-template-rows: auto auto minmax(0, 1fr) auto auto;
       grid-template-areas:
         "board board"
         "unit tabs"
@@ -204,7 +253,9 @@
     border-bottom: 1px solid #ddd;
 
     button {
-      flex: 1 1 0;
+      // Each as wide as its name, and the rest shared: equal fifths left
+      // "Room" and its cue (roomCue) wider than their share on a tablet.
+      flex: 1 1 auto;
       min-width: 0;
       padding: u(0.375) u(0.25);
       background: none;

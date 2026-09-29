@@ -35,7 +35,11 @@
 
   display: flex;
   flex-direction: column;
+  // The height the player can see: on a phone 100vh is the window with the
+  // browser's toolbar tucked away, so the room ran 56-90px under the toolbar
+  // showing - the bar along the bottom with it. The unit is in dvh already.
   height: 100vh;
+  height: 100dvh;
   box-sizing: border-box;  // include padding in height calculation
   overflow: auto;        // allow outer scrolling to prevent clipping
 
@@ -49,7 +53,7 @@
     justify-content: space-between;
     align-items: center;
     // One row, always. The turn banner between the title and the buttons is
-    // the part that gives: it is fitted to the room it has (fitBanner), where
+    // the part that gives: it is fitted to the room it has (fitHeader), where
     // it used to wrap onto a second row and take that height off the columns.
     flex-wrap: nowrap;
     gap: u(0.625);
@@ -674,7 +678,8 @@
     background-color: #f5f7fa;
     font-size: t(0.82);
 
-    strong { font-size: 1rem; }
+    // The room's unit, as statFontSize gives each value - HP included.
+    strong { font-size: t(1); }
 
     &.hp strong { color: #15803d; }
 
@@ -793,6 +798,10 @@
     gap: u(0.375);
   }
 
+  // A turn or view button's words, on one line - see .turn-controls.
+  .turn-controls .label,
+  .view-controls .label { white-space: nowrap; }
+
   .hex-numbers-btn {
     flex: 0 0 auto;
     padding: u(0.25) u(0.625);
@@ -890,7 +899,10 @@
   .turn-controls {
     flex: 0 0 auto;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    // An equal half each, as with Show Hex and Flip: a plain 1fr floors at
+    // the label's width, and "End Turn (TAB)" in a phone-on-its-side's 124px
+    // column ran 24px over Show Hex beside it.
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: u(0.375);
     // Standing on its own above the hex-number toggle now, not closing off a
     // panel, so it carries neither the rule nor the panel's inset.
@@ -901,10 +913,11 @@
       border: none;
       border-radius: 6px;
       font-weight: 600;
-      // Both labels keep one line at the same size; "End Turn (TAB)" is the
-      // one that has to fit, so it sets the size for the pair.
+      // One line wherever the column has the width for it - the columns, the
+      // tabs on a tablet. Short of it the key goes under the words rather
+      // than out past the button; the words themselves hold one line
+      // (.label - with nothing holding them, "End / Turn / (TAB)" was three).
       font-size: t(0.8);
-      white-space: nowrap;
       cursor: pointer;
       color: #fff;
 
@@ -1081,6 +1094,33 @@
     }
   }
 
+  // On a tab, what the room's business holds for you while another tab is
+  // showing (roomCue): amber and pulsing for something to answer or press,
+  // blue with a count for chat come in since you last had it in sight. A
+  // slot of one width, there whether or not it has anything to say (.empty):
+  // a cue that came and went, or grew a digit, moved every tab in the strip
+  // under the finger.
+  .tab-cue {
+    display: inline-block;
+    box-sizing: border-box;
+    width: 1.9em;
+    margin-left: u(0.25);
+    padding: 0;
+    &.empty { visibility: hidden; }
+    border-radius: 999px;
+    background: #2e86de;
+    color: #fff;
+    font-size: t(0.75);
+    line-height: 1.5;
+    text-align: center;
+
+    &.act {
+      background: #e67e22;
+      animation: tab-cue 0.9s ease-in-out infinite alternate;
+    }
+  }
+  @keyframes tab-cue { to { background: #f5b041; } }
+
   // Panes inside the rail. Chat takes the slack; the rest size to content.
   .rail-section {
     flex: 0 0 auto;
@@ -1097,14 +1137,20 @@
     min-height: max(118px, calc(#{u(8.9)} + 5px));
     border-top: 1px solid #ddd;
   }
-  // The lobby's roster can be anyone online, so it is held to a share of the
-  // box and its list scrolls. The Game tab's is two players and a button: it
-  // takes its full height and never gives any up. Capped at 40% like the
-  // lobby's, it was 117px of a 151px roster, scrolling the Start button out
-  // of sight - and its full height went into the box's least height anyway,
-  // so the cap saved nothing.
+  // The lobby's roster can be anyone online, so it is held to a little under
+  // the Game tab's roster in height - four or five names - and its list
+  // scrolls: whichever tab is open, the column needs no more than the Game
+  // tab does, which is what the room's unit is measured with. Measured with
+  // two dozen online, 28 Sep 2026: a cap of 150px, or 11 units, ran the
+  // column 4-21px past the window, and 132px 2px at 1280x705. A length and not a share of the box: a
+  // 40% cap counts for nothing in the box's least height, and the list's
+  // size containment that stood in for it left the list 0px tall - "Online
+  // Users" over nobody at all, not even you. The Game tab's is two players
+  // and a button: it takes its full height and never gives any up. Capped
+  // like the lobby's, it was 117px of a 151px roster, scrolling the Start
+  // button out of sight.
   .side-rail .users-panel {
-    max-height: 40%;
+    max-height: max(126px, #{u(9.25)});
   }
   .side-rail .players-section:not(.expanded) {
     flex-shrink: 0;
@@ -1135,27 +1181,48 @@
   }
 
 
+  // An offer of a draw to you, over the top of the board (drawOfferToYou).
+  // The panel is a column while it is up and the board takes what is left,
+  // so it covers none of the board and changes no other panel's height.
+  .game-board-panel.offer {
+    display: flex;
+    flex-direction: column;
+
+    app-game-board {
+      position: relative;
+      inset: auto;
+      flex: 1 1 0;
+      min-height: 0;
+    }
+  }
   .draw-offer-banner {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     gap: u(0.625);
-    padding: u(0.5) u(0.875);
+    margin: 6px 6px 0;
+    padding: u(0.375) u(0.75);
     background: #2c3e50;
     border: 1px solid #f39c12;
     border-radius: 6px;
     color: #ecf0f1;
     font-size: t(0.92);
-    width: 100%;
     box-sizing: border-box;
 
-    span { flex: 1; }
+    span { flex: 1; min-width: 0; }
 
     .accept-btn, .decline-btn {
+      flex: 0 0 auto;
+      min-height: 24px;
       padding: u(0.3125) u(0.875);
       border: none;
       border-radius: 4px;
       font-weight: 600;
       cursor: pointer;
+    }
+    // A finger's width on a touch screen, as the bar along the bottom is.
+    @media (hover: none) and (pointer: coarse) {
+      .accept-btn, .decline-btn { min-height: 44px; }
     }
     .accept-btn {
       background: #27ae60;
@@ -1251,6 +1318,16 @@
       gap: u(0.5);
       margin-bottom: 0;
 
+      // The ⋮ on someone else's line keeps its 24px target but not the
+      // line's height: its box reaches into the bubble's padding, so their
+      // line is as tall as your own and the chat's floor holds one whole. It
+      // made theirs ~10px taller, cut at every desktop size.
+      .action-button {
+        margin-block: -5px;
+        padding-block: 0;
+        line-height: 1;
+      }
+
       .message-username {
         font-weight: 600;
         color: #2c3e50;
@@ -1295,20 +1372,15 @@
     }
   }
 
+  // Its heading is the game chat's (.rail-head), so the two chats are one
+  // shape and the floor they share holds a message in either. A heading of
+  // its own, padded and ruled, left the lobby's 10px short of one.
   .lobby-chat {
     display: flex;
     flex-direction: column;
     flex: 1;
     min-height: 0;
     background-color: white;
-
-    h3 {
-      margin: 0;
-      padding: u(0.625) u(0.9375);
-      border-bottom: 1px solid #ddd;
-      font-size: t(1);
-      color: #2c3e50;
-    }
   }
 
   .users-panel {
@@ -1333,7 +1405,6 @@
     flex: 1;
     overflow-y: auto;
     min-height: 0;
-    contain: size;    // a log, like the chats - see .game-room-messages
   }
 
   .users-panel .user-item {
@@ -1829,11 +1900,26 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  // Centred while it fits; a board shorter than the picker - a phone's -
+  // scrolls it from the top rather than cutting off both ends.
+  justify-content: safe center;
+  overflow-y: auto;
+  padding: 8px;
+  box-sizing: border-box;
   gap: 10px;
   color: #e8ecef;
   z-index: 1;
   text-align: center;
+
+  // Each no wider than the board, so a row of choices wraps rather than
+  // running off both edges of it.
+  .game-mode-selection,
+  .game-mode-display,
+  .mode-options,
+  .seat-option,
+  .turn-time-option {
+    max-width: 100%;
+  }
 
   .game-mode-selection,
   .game-mode-display {
@@ -1881,11 +1967,15 @@
     gap: 8px;
     margin-top: 12px;
 
+    // Nine of them: on a phone they take two rows. Held to one with
+    // `nowrap`, they ran off both edges of a 390px board - 30s and 10m
+    // out of reach - since nothing held the row to the board's width.
     .turn-time-choices {
       display: flex;
-      gap: 14px;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 6px 14px;
       white-space: nowrap;
-      overflow-x: auto;
     }
 
     .radio-option {
@@ -1933,13 +2023,16 @@
   justify-content: center;
   gap: u(1);
   text-align: center;
-  // Two units, times what fitBanner worked out it can afford: 1 whenever
+  // Two units, times what fitHeader worked out it can afford: 1 whenever
   // the whole line fits, which is every turn of the match on a big
   // window, and less only when it would otherwise overrun the buttons.
   font-size: calc(var(--banner-fit, 1) * #{u(2)});
   font-weight: 800;
   letter-spacing: 0.08em;
   white-space: nowrap;
+  // Every digit one width, so the clock ticking over is the same length and
+  // the header need not be fitted again for it (watchHeader).
+  font-variant-numeric: tabular-nums;
 
   &.your-turn { color: #229954; }
   &.opponent-turn { color: #c0392b; }

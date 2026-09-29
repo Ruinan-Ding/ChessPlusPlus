@@ -1,6 +1,7 @@
 .setup-container {
   padding: 20px;
   height: 100vh;
+  height: 100dvh;  // the height a phone shows, its toolbar in sight (see the game room)
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -66,35 +67,6 @@
         box-sizing: border-box;
       }
     }
-    .json-actions {
-      display: flex;
-      align-items: center;
-      margin-bottom: 8px;
-
-      .format-json-btn {
-        background-color: #28a745;
-        color: white;
-        border: none;
-        border-radius: 4px;
-        padding: 8px 16px;
-        font-size: 1rem;
-        font-weight: 500;
-        cursor: pointer;
-        transition: background-color 0.2s;
-        box-shadow: 0 2px 4px rgba(40, 167, 69, 0.08);
-        margin-left: 0;
-        margin-top: 0;
-        margin-bottom: 0;
-
-        &:hover {
-          background-color: #218838;
-        }
-        &:disabled {
-          background-color: #6c757d;
-          cursor: not-allowed;
-        }
-      }
-    }
   }
 }
 
@@ -106,6 +78,29 @@
 
   h3 {
     margin: 0;
+  }
+
+  // Its style had sat under a .json-actions nothing is called any more,
+  // so the button drew as the browser's own, 21px tall.
+  .format-json-btn {
+    background-color: #28a745;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-size: 1rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    box-shadow: 0 2px 4px rgba(40, 167, 69, 0.08);
+
+    &:hover {
+      background-color: #218838;
+    }
+    &:disabled {
+      background-color: #6c757d;
+      cursor: not-allowed;
+    }
   }
 }
 
