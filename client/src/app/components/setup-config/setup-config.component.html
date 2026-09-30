@@ -1,9 +1,11 @@
 <div class="setup-container">
   <div class="header">
-    <button class="back-button" type="button" (click)="onBack()">{{ backLabel }}</button>
+    <button class="back-button" type="button" [disabled]="saving" (click)="onBack()">{{ backLabel }}</button>
     <div class="save-section">
+      <!-- Sent to the room's server, waiting on its word (saving). -->
+      <span class="save-pending" *ngIf="saving" role="status">Saving…</span>
       <span class="save-success" *ngIf="savedSuccessfully" role="status">Saved!</span>
-      <button class="save-button" type="button" [disabled]="!hasUnsavedChanges" (click)="saveConfig()">Save Configuration</button>
+      <button class="save-button" type="button" [disabled]="!hasUnsavedChanges || saving" (click)="saveConfig()">Save Configuration</button>
     </div>
   </div>
 

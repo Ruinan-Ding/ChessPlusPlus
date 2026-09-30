@@ -172,6 +172,8 @@ interface HexCell {
   num: number;
   /** Smaller hex drawn under an occupying unit. */
   innerPoints: string;
+  /** A unit's face drawn at FACE_SCALE around the centre: made with the hex, as its points are. */
+  faceTransform: string;
   /** Stats shown around the unit; null when the hex is empty. */
   stats: {
     hp: number | null;
@@ -209,7 +211,7 @@ const HEX_INRADIUS = HEX_SIZE * Math.sqrt(3) / 2;
 const PLATE_SIZE = 25;
 /**
  * What a unit's face - its numbers, arrows and pips - is drawn at, around the
- * hex's centre (faceTransform). At full size a unit's DEF and ATK sat in the
+ * hex's centre (each cell's faceTransform). At full size a unit's DEF and ATK sat in the
  * next row's HP and its pips in the next row's MOV and reach: 174 labels
  * touching another unit's in the opening's full bases, 28 Sep 2026. The
  * layout is the one the owner has; only its size gives. Measured in the same
@@ -811,7 +813,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
              the hex it points at is the one that cannot be read. -->
         <g *ngFor="let hex of cells; trackBy: trackByKey">
           <ng-container *ngIf="hex.piece as pc">
-            <ng-container *ngIf="!showNumbers"><g [attr.transform]="faceTransform(hex)">
+            <ng-container *ngIf="!showNumbers"><g [attr.transform]="hex.faceTransform">
               <!-- Hovering a reachable enemy answers the only question that
                    matters before swinging: what does this cost both of us. -->
               <text *ngIf="hex.stats?.hp != null"
@@ -2156,11 +2158,6 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * else is drawn. One sits on the centre line, two straddle it, and three
    * make a triangle that narrows the way the hex does.
    */
-  /** A unit's face drawn at FACE_SCALE around its hex's centre. */
-  faceTransform(hex: HexCell): string {
-    return `translate(${hex.cx} ${hex.cy}) scale(${FACE_SCALE}) translate(${-hex.cx} ${-hex.cy})`;
-  }
-
   vetPips(hex: HexCell): Array<{ x: number; y: number; glyph: string }> {
     const { cx, cy } = hex;
     const star = '★';
@@ -2746,7 +2743,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   onHexClick(hex: HexCell): void {
     // The tap that ends a drag or a pinch is the gesture's, not a choice of
     // hex - a pan across the board would otherwise land a move where it
-    // stopped.
+    // stopped. In Chrome it never gets here: the drag's pointers are the
+    // board's (holdPointers), so its click goes to the board, not a hex. This
+    // is for a browser that aims a tap's click by where the finger lifted -
+    // iOS Safari's taps are its own - on a pan short enough (8px starts one)
+    // to still count as a tap. Kept on that account, 29 Sep 2026: a review
+    // found it dead in Chrome, and Safari could not be tried.
     if (this.swallowClick) {
       this.swallowClick = false;
       return;
@@ -3130,6 +3132,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         cy: c.y,
         points: hexPoints(c.x, c.y, orientation),
         innerPoints: hexPoints(c.x, c.y, orientation, PLATE_SIZE),
+        // Once here rather than in the template: a method there made the same
+        // string for every unit on every check.
+        faceTransform: `translate(${c.x} ${c.y}) scale(${FACE_SCALE}) translate(${-c.x} ${-c.y})`,
         piece,
         stats: piece
           ? {
@@ -4445,6 +4450,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   } | null = null;
   /** Set once a gesture has moved the view; its closing tap is swallowed. */
   private moved = false;
+  /** That closing tap, in a browser that aims it at a hex anyway (onHexClick). */
   private swallowClick = false;
   private unlistenGestures: () => void = () => {};
 

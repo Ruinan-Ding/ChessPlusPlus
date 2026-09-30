@@ -815,11 +815,12 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
 
   private scrollChatToBottom(): void {
-    // After the new line is drawn.
-    setTimeout(() => {
+    // After the new line is drawn: the next frame comes after the check that
+    // draws it. A 100ms guess pulled a reader scrolling up back down.
+    requestAnimationFrame(() => {
       const log = this.chatLog?.nativeElement;
       if (log) log.scrollTop = log.scrollHeight;
-    }, 100);
+    });
   }
 
   private generateRandomUsername(): string {

@@ -233,12 +233,13 @@ describe('fitHeader', () => {
       const { head, banner } = held(3000, '🚩 0 − 💀 0 = 0');
       expect(fitHeader(head, banner, true, 0.5, true)).toEqual(
         { compact: false, stacked: true, scoresBelow: true, fit: 1, lines: 1 });
-      expect(head.classList.contains('header-narrow')).toBeTrue();
       expect(banner.classList.contains('banner-scores-below')).toBeTrue();
-      // And off again, told otherwise.
+      // In a taller box: the turn's line and two of the scores'.
+      const under = parseFloat(banner.style.height);
+      // And off again, told otherwise, in the shorter one.
       expect(fitHeader(head, banner, true).scoresBelow).toBeUndefined();
-      expect(head.classList.contains('header-narrow')).toBeFalse();
       expect(banner.classList.contains('banner-scores-below')).toBeFalse();
+      expect(parseFloat(banner.style.height)).toBeLessThan(under);
     });
 
     it('goes compact for the title and the buttons alone, never for the banner', () => {

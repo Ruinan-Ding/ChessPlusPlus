@@ -85,7 +85,7 @@ describe('the ⋮ menu', () => {
     expect(none).not.toHaveBeenCalled();
   });
 
-  it('shuts on a press elsewhere, on Escape, on a scroll, and on its own ⋮ pressed again', () => {
+  it('shuts on a press elsewhere, on Escape, and on its own ⋮ pressed again', () => {
     place(100, 100);
     open('Invite');
     // A press in the menu keeps it.
@@ -100,10 +100,6 @@ describe('the ⋮ menu', () => {
     // Back where the keyboard was.
     expect(document.activeElement).toBe(dots);
 
-    open('Invite');
-    document.body.dispatchEvent(new Event('scroll'));
-    expect(menu()).toBeNull();
-
     // Its own ⋮: a press on it is not "elsewhere", and its click shuts it.
     open('Invite');
     dots.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
@@ -113,6 +109,40 @@ describe('the ⋮ menu', () => {
     // Pressed once more, it opens again.
     press();
     expect(menu()).not.toBeNull();
+  });
+
+  it('stays through a scroll that leaves its ⋮ be, follows one that moves it, shuts once it is gone', () => {
+    // A chat keeping to its newest line is a scroll, and any scroll shut it:
+    // a busy lobby shut the menu before Invite could be pressed.
+    const elsewhere = document.createElement('div');
+    const log = document.createElement('div');
+    log.style.cssText = 'position: fixed; left: 50px; top: 50px; width: 200px; height: 100px; overflow: auto';
+    const lines = document.createElement('div');
+    lines.style.cssText = 'height: 400px; padding-top: 20px';
+    document.body.append(elsewhere, log);
+    log.appendChild(lines);
+    dots.style.cssText = 'display: block; width: 24px; height: 24px';
+    lines.appendChild(dots);
+    try {
+      open('Invite');
+      const under = () => dots.getBoundingClientRect().bottom + 4;
+      expect(menu()!.getBoundingClientRect().top).toBeCloseTo(under(), 0);
+
+      elsewhere.dispatchEvent(new Event('scroll'));
+      expect(menu()).not.toBeNull();
+
+      log.scrollTop = 30;
+      log.dispatchEvent(new Event('scroll'));
+      expect(menu()).not.toBeNull();
+      expect(menu()!.getBoundingClientRect().top).toBeCloseTo(under(), 0);
+
+      log.scrollTop = 200;
+      log.dispatchEvent(new Event('scroll'));
+      expect(menu()).toBeNull();
+    } finally {
+      elsewhere.remove();
+      log.remove();
+    }
   });
 
   it('is one menu at a time, and gone once shut from outside', () => {

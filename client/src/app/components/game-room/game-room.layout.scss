@@ -285,6 +285,19 @@
   // "End Turn", not "End Turn (TAB)".
   @media (hover: none) and (pointer: coarse) {
     .key-hint { display: none; }
+
+    // The chat boxes at a touch screen's 16px (styles.scss - iOS zooms into
+    // anything smaller) and in the room they had at the room's own size. A
+    // box is never narrower than its words' width to begin with, and at 16px
+    // that crowded "Send" out of its button (15px, a tablet's tabs); its line
+    // is taller, and the chat lost the 2px its one entry needed (960x540).
+    // So it may shrink, and its padding gives back what the line took: half
+    // of 1.15 times the difference between 16px and the size it was.
+    .chat-input input {
+      min-width: 0;
+      line-height: 1.15;
+      padding-block: calc(#{u(0.5)} + 0.575 * (#{t(0.875)} - 16px));
+    }
   }
 
   // The strip itself, the look of the Game/Lobby tabs it sits above.

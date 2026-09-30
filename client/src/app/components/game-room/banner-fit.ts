@@ -54,7 +54,7 @@
  *   phone, 29 Sep 2026.
  * - Narrow enough that the scores will need to go under the turn before the
  *   match is out (`scoresBelow`, a phone upright), they go there from the
- *   start, in a taller box (`.header-narrow` on the header).
+ *   start (`.banner-scores-below` from the first), in a taller box.
  * - Compact or not is the first row's own question - does the title fit
  *   beside the buttons - and not the banner's: in a row of its own, a
  *   shorter "Setup" gives it nothing, and the buttons changed their words
@@ -140,7 +140,7 @@ export function fitHeader(header: HTMLElement, banner: HTMLElement | null, alway
     return twoLines === null ? null : { fit: twoLines, lines: 2 };
   };
 
-  header.classList.remove('header-compact', 'header-stacked', 'header-held', 'header-narrow');
+  header.classList.remove('header-compact', 'header-stacked', 'header-held');
   banner?.classList.remove('banner-scores-below', 'banner-short', 'banner-turn-wraps');
   set(1);
   // The turn's line at full size: one line whatever it says, and as tall as
@@ -165,7 +165,6 @@ export function fitHeader(header: HTMLElement, banner: HTMLElement | null, alway
     const compact = header.scrollWidth > header.clientWidth + 1;
     if (banner) banner.style.display = '';
     header.classList.add('header-stacked', 'header-held');
-    header.classList.toggle('header-narrow', scoresBelow);
     header.classList.toggle('header-compact', compact);
     if (!banner) return { compact, stacked: true, fit: 1, lines: 1 };
     // The box: beside the turn, its line or two lines of the scores at their

@@ -1,5 +1,5 @@
 import { Subject } from 'rxjs';
-import { SetupConfigComponent } from './setup-config.component';
+import { SAVE_ANSWER_MS, SetupConfigComponent } from './setup-config.component';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 
 /**
@@ -10,6 +10,7 @@ describe('SetupConfigComponent', () => {
   let navigated: any[][];
   let intents: string[];
   let socket: Subject<any>;
+  let sent: any[];
   let marked: jasmine.Spy;
 
   const editor = () => {
@@ -26,7 +27,8 @@ describe('SetupConfigComponent', () => {
       },
     } as any;
     socket = new Subject();
-    const ws = { messages$: socket, sendMessage: () => {} } as any;
+    sent = [];
+    const ws = { messages$: socket, sendMessage: (m: any) => sent.push(m) } as any;
     const navigation = { setIntentionalNavigation: (to: string) => intents.push(to) } as any;
     marked = jasmine.createSpy('markForCheck');
     const c = new SetupConfigComponent(router, configService, ws, navigation, { markForCheck: marked } as any);
@@ -83,9 +85,78 @@ describe('SetupConfigComponent', () => {
     c.onBack();
     c.leaveChoice('save');
     expect(c.errors).toEqual([]);
+    socket.next({ type: 'custom_config_saved' });
     expect(navigated).toEqual([[['/game-room', 'room-1'], { queryParams: { token: 'tok-1' } }]]);
     expect(intents).toEqual(['game-room']);
     expect(readStore('local', 'returnToGameRoom')).toBeNull();
+  });
+
+  it('goes back to the room once its server takes the save, and not before', () => {
+    // It went the moment the save was sent: a refusal arrived to a screen
+    // already gone, and the match started on the old config.
+    const c = editor();
+    c.jsonConfig = '{ "edited": true }';
+    c.onBack();
+    c.leaveChoice('save');
+    expect(sent.map(m => m.type)).toEqual(['set_custom_config']);
+    expect(c.saving).toBeTrue();
+    expect(navigated).toEqual([]);
+    expect(c.hasUnsavedChanges).toBeTrue();
+    socket.next({ type: 'custom_config_saved' });
+    expect(c.saving).toBeFalse();
+    expect(c.hasUnsavedChanges).toBeFalse();
+    expect(navigated).toEqual([[['/game-room', 'room-1'], { queryParams: { token: 'tok-1' } }]]);
+  });
+
+  it('stays, with the server\'s reason and the changes still unsaved, when it refuses', () => {
+    const c = editor();
+    c.jsonConfig = '{ "edited": true }';
+    c.onBack();
+    c.leaveChoice('save');
+    socket.next({ type: 'error', code: 'INVALID_CONFIG', message: 'units.king.move must be at most 20' });
+    expect(navigated).toEqual([]);
+    expect(c.saving).toBeFalse();
+    expect(c.errors).toEqual(['units.king.move must be at most 20']);
+    // Not saved, so Back asks again rather than leaving it behind quietly.
+    expect(c.hasUnsavedChanges).toBeTrue();
+    c.onBack();
+    expect(c.leaving).toBeTrue();
+    // Any refusal while a save waits is its answer.
+    c.leaveChoice('save');
+    socket.next({ type: 'error', code: 'PERMISSION_DENIED', message: 'Only the host can set the game config' });
+    expect(navigated).toEqual([]);
+    expect(c.errors).toEqual(['Only the host can set the game config']);
+  });
+
+  it('calls a save unsaved when the room\'s server never answers', () => {
+    jasmine.clock().install();
+    try {
+      const c = editor();
+      c.jsonConfig = '{ "edited": true }';
+      c.onBack();
+      c.leaveChoice('save');
+      jasmine.clock().tick(SAVE_ANSWER_MS);
+      expect(c.saving).toBeFalse();
+      expect(c.errors).toEqual(['The server did not answer, so this was not saved. Try again.']);
+      expect(navigated).toEqual([]);
+      expect(c.hasUnsavedChanges).toBeTrue();
+    } finally {
+      jasmine.clock().uninstall();
+    }
+  });
+
+  it('saves a solo room\'s config itself - no server answers for one', () => {
+    // 'local' is the solo room. Its save went to the server in the lobby,
+    // which has no room for it, and "Saved!" never showed.
+    writeStore('local', 'returnToGameRoom', 'local');
+    const c = editor();
+    c.jsonConfig = '{ "edited": true }';
+    c.onBack();
+    c.leaveChoice('save');
+    expect(sent.map(m => m.type)).not.toContain('set_custom_config');
+    expect(c.savedSuccessfully).toBeTrue();
+    expect(navigated.length).toBe(1);
+    expect(navigated[0][0]).toEqual(['/game-room', 'local']);
   });
 
   it('goes back to the room without saving when told to discard', () => {

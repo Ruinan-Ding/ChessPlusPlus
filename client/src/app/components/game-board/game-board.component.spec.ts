@@ -2973,7 +2973,7 @@ describe('GameBoardComponent on a touch screen', () => {
     // in the next row's MOV and reach. The layout stays; the face is drawn at
     // FACE_SCALE around its hex's centre.
     const archer = cell('0,0');
-    expect(board.faceTransform(archer)).toContain('scale(0.9)');
+    expect(archer.faceTransform).toContain('scale(0.9)');
     const hp = fixture.nativeElement.querySelector('text.stat-hp') as SVGTextElement;
     expect(hp.closest('g[transform]')?.getAttribute('transform')).toContain('scale(0.9)');
     // And the two that reached furthest, drawn in from where they were.

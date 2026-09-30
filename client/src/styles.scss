@@ -13,6 +13,22 @@ app-root {
   height: 100%;
 }
 
+// A touch screen's text boxes at 16px at the least. iOS Safari zooms the page
+// in on any box under 16px as it takes the focus, and does not zoom back out:
+// the room's chat boxes are 12px on a phone, and the room was left zoomed, its
+// board partly off the screen - where a pinch is the board's own zoom
+// (touch-action: none), so there was no pinching the page back. The lobby's
+// boxes, the login's and Setup's editor were all under 16px as well. Here,
+// once for every screen, and !important because each screen's own size is
+// scoped to its component and would outrank a rule written here plainly.
+@media (hover: none) and (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
 // The ⋮ menu beside a player, in the lobby and the game room (openUserMenu in
 // services/user-menu.ts). It is built on the body, outside every component,
 // so its look is here: in a component's stylesheet it was scoped to that

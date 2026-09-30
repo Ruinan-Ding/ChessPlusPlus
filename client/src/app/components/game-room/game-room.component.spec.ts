@@ -1659,6 +1659,20 @@ describe('GameRoomComponent ability panel', () => {
     });
   });
 
+  it('reads a unit\'s HP as "16/20", a forecast first - and never "/null"', () => {
+    // A unit its config gives no maximum read "HP 20/null" on the Unit strip.
+    const c = room();
+    expect(c.statHp).toBe('—');
+    const unit = { key: '0,0', uid: 'u', unitId: 'pawn', name: 'Pawn', color: 'white', hp: 20, hpMax: 20,
+      hpAfter: null, atk: '14', def: 10, mv: 6, points: 5, vet: 0, drivable: true };
+    c.selectedUnit = unit;
+    expect(c.statHp).toBe('20/20');
+    c.selectedUnit = { ...unit, hpAfter: 16 };
+    expect(c.statHp).toBe('16/20');
+    c.selectedUnit = { ...unit, hpMax: null };
+    expect(c.statHp).toBe('20');
+  });
+
   it('fits the header again when the pointer changes, layout or no layout', () => {
     // The "?" beside the turn comes and goes with the same media query, and
     // a banner fitted without it ran 16px over once it was there.
@@ -3241,9 +3255,15 @@ describe('GameRoomComponent tabs', () => {
     d.handleWebSocketMessage({ type: 'game_started', playerWhite: 'me', playerBlack: 'them' });
     expect(d.shownTab).toBe('history');
 
-    // Back to waiting: back to Room.
+    // Back to waiting: back to Room - and its chats to their newest, which
+    // spent the match under another tab where nothing could scroll them.
+    const scrolled: string[] = [];
+    const scroll = d.scrollChatToBottom.bind(d);
+    d.scrollChatToBottom = (which: string, ...rest: any[]) => { scrolled.push(which); scroll(which, ...rest); };
     d.handleWebSocketMessage({ type: 'game_reset' });
     expect(d.shownTab).toBe('room');
+    expect(scrolled).toContain('gameRoom');
+    expect(scrolled).toContain('lobby');
   });
 
   it('marks the Room tab while something on it is waiting on you', () => {
@@ -3380,6 +3400,24 @@ describe('GameRoomComponent tabs', () => {
     expect(later).toHaveBeenCalledTimes(2);
   });
 
+  it('follows the reader\'s own line in either chat, even while they read back', () => {
+    // Sent from a chat scrolled back, it landed below the fold and nothing
+    // seemed to happen. The lobby kept this rule; the room's chats had not.
+    const c = make();
+    const later = jasmine.createSpy('runOutsideAngular');
+    c.zone = { runOutsideAngular: later };
+    c.gameChatEl = { clientHeight: 100, scrollHeight: 500, scrollTop: 0 };  // reading back
+    c.handleWebSocketMessage({ type: 'game_room_message', username: 'them', content: 'hi', timestamp: '' });
+    expect(later).not.toHaveBeenCalled();
+    c.handleWebSocketMessage({ type: 'game_room_message', username: 'me', content: 'gg', timestamp: '' });
+    expect(later).toHaveBeenCalledTimes(1);
+    c.lobbyChatEl = { clientHeight: 100, scrollHeight: 500, scrollTop: 0 };
+    c.scrollChatToBottom('lobby', true);
+    expect(later).toHaveBeenCalledTimes(1);
+    c.scrollChatToBottom('lobby', true, true);
+    expect(later).toHaveBeenCalledTimes(2);
+  });
+
   it('brings the chats to their newest when the Room tab is chosen', () => {
     // One that is not drawn cannot be scrolled, so while it sat under
     // another tab it kept its place, above everything that came in.
@@ -3398,16 +3436,19 @@ describe('GameRoomComponent tabs', () => {
       currentTarget: { getBoundingClientRect: () => ({ left, top, width: 24, height: 24, right: left + 24, bottom: top + 24 }) },
     });
     let width: jasmine.Spy;
+    let height: jasmine.Spy;
     beforeEach(() => {
       width = spyOnProperty(window, 'innerWidth').and.returnValue(390);
-      spyOnProperty(window, 'innerHeight').and.returnValue(664);
+      height = spyOnProperty(window, 'innerHeight').and.returnValue(664);
     });
 
     it('opens under it in the top half of the window and over it in the bottom, inside the gutter', () => {
       const c = make();
       // By the right-hand edge, near the top: under it, drawn in to the gutter.
       c.toggleTip('score', press(360, 40));
-      expect(c.tip).toEqual({ id: 'score', width: 320, left: 390 - 16 - 320, top: 70, bottom: null });
+      expect(c.tip).toEqual({
+        id: 'score', width: 320, left: 390 - 16 - 320, top: 70, bottom: null, maxHeight: 664 - 64 - 6 - 16,
+      });
       // Pressed again: shut.
       c.toggleTip('score', press(360, 40));
       expect(c.tip).toBeNull();
@@ -3415,7 +3456,9 @@ describe('GameRoomComponent tabs', () => {
       // takes its place.
       c.toggleTip('purse-mine', press(180, 100));
       c.toggleTip('start', press(4, 600));
-      expect(c.tip).toEqual({ id: 'start', width: 320, left: 16, top: null, bottom: 664 - 600 + 6 });
+      expect(c.tip).toEqual({
+        id: 'start', width: 320, left: 16, top: null, bottom: 664 - 600 + 6, maxHeight: 600 - 6 - 16,
+      });
       // A window narrower than the bubble: the window less its gutters.
       c.closeTip();
       width.and.returnValue(300);
@@ -3447,9 +3490,25 @@ describe('GameRoomComponent tabs', () => {
         c.toggleTip('score', press(10, 10));
         window.dispatchEvent(new Event('resize'));
         expect(c.tip).toBeNull();
-        c.toggleTip('score', press(10, 10));
-        document.body.dispatchEvent(new Event('scroll'));
-        expect(c.tip).toBeNull();
+
+        // A scroll that moves its "?" shuts it; one elsewhere - History or a
+        // chat keeping to its newest line - does not. Any scroll shut it, and
+        // a move coming in closed the bubble being read.
+        const panel = document.createElement('div');
+        const log = document.createElement('div');
+        const q = document.createElement('button');
+        panel.appendChild(q);
+        document.body.append(panel, log);
+        try {
+          c.toggleTip('score', { currentTarget: q });
+          log.dispatchEvent(new Event('scroll'));
+          expect(c.tip).not.toBeNull();
+          panel.dispatchEvent(new Event('scroll'));
+          expect(c.tip).toBeNull();
+        } finally {
+          panel.remove();
+          log.remove();
+        }
 
         // And once shut it is listening to nothing: a press then is nobody's.
         const shut = spyOn(c, 'closeTip').and.callThrough();
@@ -3459,6 +3518,36 @@ describe('GameRoomComponent tabs', () => {
         other.remove();
         c.closeTip();
       }
+    });
+
+    it('shuts once its "?" has nothing left to say', () => {
+      // Start's bubble stayed an empty dark box once the match began, and the
+      // tally's stayed over a panel a unit had filled.
+      const c = make();
+      c.toggleTip('start', press(4, 600));
+      c.ngDoCheck();
+      expect(c.tip).not.toBeNull();
+      c.gameStarted = true;
+      c.ngDoCheck();
+      expect(c.tip).toBeNull();
+
+      c.toggleTip('tally', press(100, 100));
+      c.ngDoCheck();
+      expect(c.tip).not.toBeNull();
+      c.selectedUnit = { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20 };
+      c.ngDoCheck();
+      expect(c.tip).toBeNull();
+    });
+
+    it('stays inside the window top to bottom, what is past it scrolling in the bubble', () => {
+      // A phone on its side: the Points/CP bubble ran off the foot of the
+      // screen, fixed where nothing could scroll to it.
+      height.and.returnValue(330);
+      const c = make();
+      c.toggleTip('purse-mine', press(100, 150));
+      expect(c.tip.top).toBe(180);
+      expect(c.tip.maxHeight).toBe(330 - 174 - 6 - 16);
+      c.closeTip();
     });
 
     it('says what the tooltip it stands for says, as the room stands now', () => {

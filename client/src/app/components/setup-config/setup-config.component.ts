@@ -15,6 +15,9 @@ import { takeUntil } from 'rxjs/operators';
 // the whole screen down rather than losing one remembered value.
 import { readStore, removeStore } from '../../services/storage';
 
+/** How long a room's server has to answer a save before it is called unsaved. */
+export const SAVE_ANSWER_MS = 8000;
+
 @Component({
   selector: 'app-setup-config',
   standalone: true,
@@ -37,9 +40,21 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   errors: string[] = [];
   /** Back pressed with changes unsaved: the choice is up (leaveChoice). */
   leaving = false;
+  /**
+   * Sent to the room's server and not yet answered. A networked room's config
+   * is the server's, so it is saved when the server says it is - not when it
+   * is sent: "Save and go back" left at once, the server's refusal arrived to
+   * a screen already gone, and the match started on the old config.
+   */
+  saving = false;
   username = '';
   /** Game room this config applies to, if opened from an active game room. */
   private gameId: string | null = null;
+  /** What was sent, to be the saved config once the server takes it. */
+  private sentConfig: string | null = null;
+  /** "Save and go back": go once the save is taken. */
+  private leaveWhenSaved = false;
+  private answerTimer: ReturnType<typeof setTimeout> | undefined;
   private destroy$ = new Subject<void>();
 
   constructor(
@@ -83,13 +98,36 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
     this.wsService.messages$.pipe(takeUntil(this.destroy$)).subscribe(message => {
       if (!message) return;
       if (message.type === 'custom_config_saved') {
-        this.errors = [];
-        this.showSaved();
-      } else if (message.type === 'error' && message.code === 'INVALID_CONFIG') {
-        this.errors = [message.message || 'The server rejected this configuration.'];
-        this.cdr.markForCheck();
+        this.taken();
+      } else if (message.type === 'error' && (message.code === 'INVALID_CONFIG' || this.saving)) {
+        // While a save waits, any refusal is its answer: not the host, not in
+        // the room, the server's own failure - each leaves it unsaved.
+        this.refused(message.message || 'The server rejected this configuration.');
       }
     });
+  }
+
+  /** The server took what was sent: saved, and gone if that was the choice. */
+  private taken(): void {
+    clearTimeout(this.answerTimer);
+    this.saving = false;
+    if (this.sentConfig !== null) this.savedConfig = this.sentConfig;
+    this.sentConfig = null;
+    this.errors = [];
+    this.showSaved();
+    if (this.leaveWhenSaved) {
+      this.leaveWhenSaved = false;
+      this.leave();
+    }
+  }
+
+  /** Not saved: the editor stays, and says why. */
+  private refused(reason: string): void {
+    clearTimeout(this.answerTimer);
+    this.saving = false;
+    this.leaveWhenSaved = false;
+    this.errors = [reason];
+    this.cdr.markForCheck();
   }
 
   get hasUnsavedChanges(): boolean {
@@ -159,7 +197,15 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   leaveChoice(choice: 'save' | 'discard' | 'stay'): void {
     this.leaving = false;
     if (choice === 'stay') return;
-    if (choice === 'save' && !this.saveConfig()) return;
+    if (choice === 'save') {
+      if (!this.saveConfig()) return;
+      // Sent to a room's server: go when it is taken (taken()), or stay with
+      // its reason if it is not (refused()).
+      if (this.saving) {
+        this.leaveWhenSaved = true;
+        return;
+      }
+    }
     this.leave();
   }
 
@@ -215,20 +261,28 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
       return false;
     }
 
-    this.savedConfig = this.jsonConfig;
     this.errors = [];
 
-    if (this.gameId) {
-      // Push to the server so it actually takes effect at game start.
-      // Success/failure is reported via the custom_config_saved / error
-      // messages handled in ngOnInit().
+    // A solo room ('local', a literal) has no server to push to: the browser
+    // engine reads this config, and nothing answers a set_custom_config -
+    // so "Saved!" never showed there, and it went to the server in the lobby.
+    if (this.gameId && this.gameId !== 'local') {
+      // Push to the server so it actually takes effect at game start. Saved
+      // when it answers (custom_config_saved / error, in ngOnInit()), or
+      // called unsaved if it never does.
+      this.saving = true;
+      this.sentConfig = this.jsonConfig;
       this.wsService.sendMessage({
         type: 'set_custom_config',
         config: JSON.parse(this.jsonConfig),
       });
+      clearTimeout(this.answerTimer);
+      this.answerTimer = setTimeout(
+        () => this.refused('The server did not answer, so this was not saved. Try again.'), SAVE_ANSWER_MS);
+      this.cdr.markForCheck();
     } else {
-      // No active game room to attach this config to (opened straight from
-      // the lobby) - just confirm the local save.
+      // No room's server to attach this config to - the lobby, or a solo room.
+      this.savedConfig = this.jsonConfig;
       this.showSaved();
     }
 
@@ -264,6 +318,7 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    clearTimeout(this.answerTimer);
     this.destroy$.next();
     this.destroy$.complete();
   }

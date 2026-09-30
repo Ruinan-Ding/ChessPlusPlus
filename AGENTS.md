@@ -1275,8 +1275,13 @@ Decided so far:
     Measured with `--u` forced unit by unit and the window bisected, in headless Chrome.
   - **The logs scroll, nothing else does.** History and the chats keep to their newest line
     (`scrollChatToBottom`): a line coming in moves one only if it was at its newest, so a
-    player reading back is not pulled off it, and one coming into sight - its tab chosen, the
-    layout changed, drawn afresh - goes there whatever. History is oldest first, and at the
+    player reading back is not pulled off it - unless the line is their own (`own`), which
+    always shows: sent from a room's chat scrolled back, it landed below the fold and nothing
+    seemed to happen (the lobby kept that rule; the room's chats had not). One coming into
+    sight - its tab chosen, a restart putting the Room tab up as a tap would, the layout
+    changed, drawn afresh - goes there whatever. On the next frame, which comes after the
+    check that draws the line: it was a 100ms guess, and a reader scrolling up inside it was
+    pulled back down. History is oldest first, and at the
     columns' least height it has room for about one line: with nothing scrolling it, it showed
     "Game started!" all match and the move just made out of sight below. History, the chats,
     the rosters and the effects list may scroll, but each has a floor of one whole entry
@@ -1402,7 +1407,7 @@ Decided so far:
     one more: the turn on a line of its own and the two scores side by side under it
     (`.banner-scores-below`), where beside the turn they had squeezed to four lines each. Under
     700px wide (`TABBED_SCORES_BELOW_WIDTH`) that is where they are from the start, in a taller
-    box (`.header-narrow`: two lines of scores at their 12px floor and the turn at 0.65 of its
+    box (two lines of scores at their 12px floor and the turn at 0.65 of its
     size) - late in a match they need it, and a box that grew when they did moved the board.
     It costs a phone about 18px of the tab's panel against the opening's banner (22 in
     Windows' fonts), and none of the board, which is as wide as the phone.
@@ -1432,7 +1437,10 @@ Decided so far:
     the board zooms: two fingers zoom it (1x to 4x, the point under them held under them), one
     finger pans a zoomed board, and "Whole board" puts it back. What changes is the viewBox
     (`shownViewBox`), so everything drawn on the board zooms with it. The tap that ends a drag
-    chooses nothing (`swallowClick`). The pointer handlers run outside Angular - they come
+    chooses nothing (`swallowClick`) - in Chrome the capture below already sends its click to
+    the board, not a hex; the flag stays for a browser that aims a tap's click by where the
+    finger lifted (iOS Safari's taps are its own) on a pan short enough to count as a tap. A
+    review found it dead in Chrome, 29 Sep 2026; Safari could not be tried. The pointer handlers run outside Angular - they come
     sixty times a second - and the board is `touch-action: none`, so a pinch there never
     zooms the page. Once a gesture is a drag the board captures its pointers - once, and any
     finger that joins it (`holdPointers`) - so one let go of off the board still ends it: a
@@ -1446,8 +1454,12 @@ Decided so far:
     and CP buy, what the Unit panel's two tallies count, why Start is greyed. On a touch screen
     each has a "?" - beside the turn in the header, in each Abilities panel's heading, in the
     Unit panel's heading, beside Start - and a tap opens its words in a bubble, under the "?"
-    in the window's top half and over it in the bottom, inside the 16px gutter; a tap anywhere
-    else, Escape, a scroll or a resize shuts it. The owner, 28 Sep 2026: *"do the ⋮ labels and
+    in the window's top half and over it in the bottom, inside the 16px gutter, and no taller
+    than the window leaves it (`maxHeight`, the rest scrolling in it: a phone on its side ran the
+    Points/CP bubble off the foot of the screen); a tap anywhere else, Escape, a resize or a
+    scroll that moves its "?" shuts it - not History or a chat following a new line, which shut
+    it too - and so does its "?" going idle (`tipLive`, checked in `ngDoCheck`): Start's bubble
+    stayed an empty dark box once the match began. The owner, 28 Sep 2026: *"do the ⋮ labels and
     the tap-to-read ?"*. A computer's hover still has the tooltips, and no "?" is drawn there,
     so its layout is as it was. The words are one string each (`scoreTitle`, `pointsTitle`,
     `cpTitle`, `tallyTitles`, `startButtonHint`), read by the tooltip and the bubble alike;
@@ -1464,6 +1476,14 @@ Decided so far:
     styled in `game-room.tips.scss`, loaded last: in the room's own stylesheet they took it
     934 bytes past its 40kB budget, and it is only just back under - the next thing it gains
     may want a stylesheet of its own too.
+  - **A touch screen's text boxes are 16px** (`styles.scss`, for every screen at once, and
+    `!important` because each screen's own size is scoped and would outrank it). iOS Safari
+    zooms the page into any box under 16px as it takes the focus, and does not zoom back out:
+    the room's chat boxes were 12px on a phone, and the room was left zoomed, the board partly
+    off screen - where a pinch is the board's own zoom, so there was no pinching back. The
+    room's chat boxes keep the room they had (`game-room.layout.scss`): free to shrink, or a
+    box's width at 16px crowded "Send" out of its button, and their padding giving back what
+    the taller line takes, or the chat lost the 2px its one entry needed at 960x540.
   - **Every button whose only word is a symbol has a name** for a screen reader: each ⋮ is
     "Options for <name>", each ⤢ "Expand <panel>" or "Shrink <panel>"; the ⚠️ and ⚙️ beside a
     player are images named for what they mean.
@@ -1501,15 +1521,23 @@ Decided so far:
       every component, so its look is in the global `styles.scss`: a component's styles are
       scoped to its own template's elements, and it drew as a bare 21px browser button (the
       room's had no style anywhere). Kept inside the window, under its ⋮ or over it; shut by a
-      press elsewhere, Escape, a scroll, a resize, or its ⋮ again, and on leaving the screen;
-      its words set as text, not markup.
+      press elsewhere, Escape, a resize, or its ⋮ again, and on leaving the screen; a scroll
+      moves it with its ⋮ and shuts it only once the ⋮ is out of sight - any scroll shut it,
+      and a chat following its newest line shut it before Invite could be pressed. Its words
+      are set as text, not markup.
     - **Setup asks before Back loses anything** - save and go, discard and go, or stay
       (`leaveChoice`, Stay focused, Escape is Stay). It was `confirm()`, whose Cancel went
       back without saving. What is wrong with a configuration is listed over the editor
       (`errors`) - the validator's list, the server's refusal of one sent from a room, JSON
       Format could not parse - where they were alerts, or, the server's, never drawn: the
       screen is OnPush, and an answer on the socket must mark it (`markForCheck`). Back says
-      where it goes ("Back to Room" when opened from one). The editor has the screen's height,
+      where it goes ("Back to Room" when opened from one). **A save from a networked room is
+      saved when its server says so** (`saving`, "Saving..."): "Save and go back" goes on
+      `custom_config_saved`, stays with the server's reason on any refusal, and is called
+      unsaved after `SAVE_ANSWER_MS` (8s) with no answer. It went the moment it was sent - the
+      refusal arrived to a screen already gone, and the match started on the old config. A
+      solo room ('local') saves itself: nothing answers a `set_custom_config` for it, and
+      "Saved!" never showed there. The editor has the screen's height,
       the "Coming Soon" box above it only its words'; Arial, one size of button.
     - **The lobby**: a rename the server refuses is said in the rename panel (`renameError`,
       `RENAME_ERRORS`), not the chat; a rename that goes through shuts it. Its chat follows its

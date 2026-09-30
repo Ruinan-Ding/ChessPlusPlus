@@ -123,17 +123,36 @@ async function launch(port = PORT) {
   const profile = mkdtempSync(join(tmpdir(), 'cpp-layout-'));
   const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`,
     '--no-first-run', '--no-default-browser-check', '--hide-scrollbars', 'about:blank'], { stdio: 'ignore' });
-  let wsUrl;
-  for (let i = 0; i < 100 && !wsUrl; i++) {
+  // The profile goes once Chrome has let it go. Removed the moment it was
+  // killed, Chrome still held it, and every run left one in the temp folder;
+  // the retries wait up to a second on the busy files a Windows exit leaves.
+  const kill = () => {
+    chrome.kill();
     try {
-      const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-      wsUrl = list.find((t) => t.type === 'page')?.webSocketDebuggerUrl;
-    } catch { /* not up yet */ }
-    if (!wsUrl) await sleep(100);
+      rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch { /* Chrome still has it */ }
+  };
+  // Until close() is handed back, the caller has nothing to shut it with: a
+  // Chrome slow to start, or a port already taken, left a headless Chrome
+  // listening on it and its profile in the temp folder.
+  let ws;
+  try {
+    let wsUrl;
+    for (let i = 0; i < 100 && !wsUrl; i++) {
+      try {
+        const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+        wsUrl = list.find((t) => t.type === 'page')?.webSocketDebuggerUrl;
+      } catch { /* not up yet */ }
+      if (!wsUrl) await sleep(100);
+    }
+    if (!wsUrl) throw new Error(`no Chrome on ${port} (CHROME=${CHROME})`);
+    ws = new WebSocket(wsUrl);
+    await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
+  } catch (e) {
+    try { ws?.close(); } catch { /* gone */ }
+    kill();
+    throw e;
   }
-  if (!wsUrl) throw new Error(`no Chrome on ${port} (CHROME=${CHROME})`);
-  const ws = new WebSocket(wsUrl);
-  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
   let id = 1;
   const pending = new Map();
   ws.onmessage = (m) => {
@@ -148,13 +167,17 @@ async function launch(port = PORT) {
     if (r?.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
     return r?.result?.value;
   };
-  await send('Page.enable');
-  await send('Runtime.enable');
   const close = () => {
     try { ws.close(); } catch { /* gone */ }
-    chrome.kill();
-    try { rmSync(profile, { recursive: true, force: true }); } catch { /* Chrome still has it */ }
+    kill();
   };
+  try {
+    await send('Page.enable');
+    await send('Runtime.enable');
+  } catch (e) {
+    close();
+    throw e;
+  }
   return { send, ev, close };
 }
 

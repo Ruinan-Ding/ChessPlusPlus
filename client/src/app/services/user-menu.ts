@@ -10,8 +10,11 @@
  * had no style anywhere. The two were one function written twice; this is it
  * once. It stays inside the window whatever the length of its words (a phone's
  * ⋮ is at the right-hand edge, and "Invite pending. Wait for response or
- * timeout." ran off it), and shuts on a press anywhere else, Escape, a scroll
- * or a resize - it is fixed where the ⋮ was, and would be left behind.
+ * timeout." ran off it), and shuts on a press anywhere else, Escape or a
+ * resize. A scroll moves it only if it moves the ⋮: it follows the ⋮, and
+ * shuts once the ⋮ is scrolled out of sight. It used to shut on any scroll at
+ * all, and a chat keeping to its newest line is one - a busy lobby shut the
+ * menu before Invite could be pressed.
  */
 const GUTTER = 8;
 
@@ -39,21 +42,40 @@ export function openUserMenu(event: MouseEvent, label: string, enabled: boolean,
   document.body.appendChild(menu);
 
   // Placed once it has a size: under the ⋮ (over it when there is no room
-  // below), or at the click; then drawn in to the window's gutter.
+  // below), or at the click; then drawn in to the window's gutter. Again
+  // whenever a scroll moves the ⋮.
   const width = menu.offsetWidth;
   const height = menu.offsetHeight;
-  let x: number;
-  let y: number;
-  if (anchor) {
-    const r = anchor.getBoundingClientRect();
-    x = r.left;
-    y = r.bottom + 4 + height > window.innerHeight - GUTTER ? r.top - 4 - height : r.bottom + 4;
-  } else {
-    x = event.clientX;
-    y = event.clientY + height > window.innerHeight - GUTTER ? event.clientY - height : event.clientY;
-  }
-  menu.style.left = `${Math.max(GUTTER, Math.min(x, window.innerWidth - GUTTER - width))}px`;
-  menu.style.top = `${Math.max(GUTTER, Math.min(y, window.innerHeight - GUTTER - height))}px`;
+  const place = () => {
+    let x: number;
+    let y: number;
+    if (anchor) {
+      const r = anchor.getBoundingClientRect();
+      x = r.left;
+      y = r.bottom + 4 + height > window.innerHeight - GUTTER ? r.top - 4 - height : r.bottom + 4;
+    } else {
+      x = event.clientX;
+      y = event.clientY + height > window.innerHeight - GUTTER ? event.clientY - height : event.clientY;
+    }
+    menu.style.left = `${Math.max(GUTTER, Math.min(x, window.innerWidth - GUTTER - width))}px`;
+    menu.style.top = `${Math.max(GUTTER, Math.min(y, window.innerHeight - GUTTER - height))}px`;
+  };
+  place();
+
+  // What was pressed: the ⋮, or the line a right-click landed on.
+  const origin = anchor ?? (event.target as Element | null);
+  const onScroll = (e: Event) => {
+    const scroller = e.target === document ? document.documentElement : e.target as Element | null;
+    // A log or a panel the menu has nothing to do with.
+    if (!origin || !scroller?.contains?.(origin)) return;
+    // A right-click's menu stands where the click was, and the line has moved.
+    if (!anchor) return shut();
+    const a = anchor.getBoundingClientRect();
+    const view = scroller === document.documentElement
+      ? { top: 0, bottom: window.innerHeight } : scroller.getBoundingClientRect();
+    if (a.bottom <= view.top || a.top >= view.bottom) shut();
+    else place();
+  };
 
   const onPress = (e: Event) => {
     const target = e.target as Node | null;
@@ -71,7 +93,7 @@ export function openUserMenu(event: MouseEvent, label: string, enabled: boolean,
     document.removeEventListener('pointerdown', onPress, true);
     document.removeEventListener('keydown', onKey, true);
     window.removeEventListener('resize', shut);
-    window.removeEventListener('scroll', shut, true);
+    window.removeEventListener('scroll', onScroll, true);
     shutOpen = null;
     openFor = null;
   };
@@ -82,7 +104,7 @@ export function openUserMenu(event: MouseEvent, label: string, enabled: boolean,
   document.addEventListener('pointerdown', onPress, true);
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', shut);
-  window.addEventListener('scroll', shut, true);
+  window.addEventListener('scroll', onScroll, true);
   shutOpen = shut;
   openFor = anchor;
   if (enabled) item.focus({ preventScroll: true });

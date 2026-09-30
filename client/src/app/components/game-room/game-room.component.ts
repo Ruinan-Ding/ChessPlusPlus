@@ -1,5 +1,5 @@
 import {
-  AfterViewChecked, Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef,
+  AfterViewChecked, Component, DoCheck, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef,
   HostListener, NgZone, ViewChild,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
@@ -469,7 +469,7 @@ const TABBED_STACK_WIDTH = 1100;
 
 /**
  * Below this width, as well, the scores go under the turn from the start, in
- * a taller banner (fitHeader's `scoresBelow`, `.header-narrow`): a phone
+ * a taller banner (fitHeader's `scoresBelow`): a phone
  * upright. The banner's height is held - the window's, not the words' - and
  * the shorter box that holds the scores beside the turn holds every stage of
  * a match from 700px up, the clock and "PHASE 3 POSTMATCH" included; at 600
@@ -522,7 +522,7 @@ const TIP_GUTTER = 16;
   styleUrls: ['./game-room.component.scss', './game-room.layout.scss', './game-room.tips.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
+export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, DoCheck {
   gameId: string = '';
   username: string = '';
   accessToken: string = '';  // Token for secure game room access
@@ -593,8 +593,6 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.fitRoom();
     // A tablet given a trackpad is a computer from then on, and the other
     // way about: the layout is chosen again, as on a resize (touchOnly).
-    this.pointerQuery = typeof matchMedia === 'function'
-      ? matchMedia('(hover: none) and (pointer: coarse)') : undefined;
     this.pointerQuery?.addEventListener?.('change', this.onPointerChange);
     // Only clear messages if not returning from setup
     const isReturningFromSetup = this.navigationState.getNavigationContext() === 'game-room' && 
@@ -637,7 +635,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.lobbyUsers = this.sharedDataService.getLobbyUsers();
     this.sharedDataService.lobbyMessages$.pipe(takeUntil(this.destroy$)).subscribe(msgs => {
       this.lobbyMessages = msgs;
-      this.scrollChatToBottom('lobby', true);
+      this.scrollChatToBottom('lobby', true, msgs[msgs.length - 1]?.username === this.username);
     });
     this.sharedDataService.lobbyUsers$.pipe(takeUntil(this.destroy$)).subscribe(users => this.lobbyUsers = users);
 
@@ -965,7 +963,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
         // match owns is zeroed by `game_started` when the next one is dealt.
         this.gameStarted = false;
         this.isReady = false;
-        this.roomTab = 'room';
+        // Through selectRoomTab, as a press would: the chats spent the match
+        // under another tab on a phone, where they cannot be scrolled, and
+        // came back at wherever they were then.
+        this.selectRoomTab('room');
         this.gameState.reset();
         this.stagedActions = [];
         this.submittedTurn = -1;
@@ -1305,7 +1306,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
             type: system ? 'system' : undefined
           }];
           if (!system) this.onChatLine(actualMessage.username);
-          this.scrollChatToBottom(system ? 'history' : 'gameRoom', true);
+          this.scrollChatToBottom(system ? 'history' : 'gameRoom', true,
+            !system && actualMessage.username === this.username);
         }
         this.persistLocalUiState();
         this.cdr.markForCheck();
@@ -1315,13 +1317,13 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
         // Handle lobby chat messages received while in game room
         console.log('[GameRoom] Received lobby chat_message:', actualMessage);
         // Only add via sharedDataService - the subscription to lobbyMessages$ will update our local array
+        // Followed there too (the lobbyMessages$ subscription), own lines and all.
         this.sharedDataService.addLobbyMessage({
           username: actualMessage.username,
           content: actualMessage.content,
           timestamp: actualMessage.timestamp || new Date().toISOString(),
           room: 'lobby'
         });
-        this.scrollChatToBottom('lobby', true);
         this.cdr.markForCheck();
         break;
         
@@ -1668,17 +1670,24 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
    * changed has been drawn: the list as it is by then (the refs below), and
    * outside Angular - a scroll is nothing change detection has to answer.
    * A line arriving (`follow`) moves it only if it was at its newest already,
-   * so a player reading back is not pulled off what they are reading; a log
-   * coming into sight goes to its newest whatever.
+   * so a player reading back is not pulled off what they are reading - unless
+   * the line is the reader's own (`own`), which always shows: sent from a log
+   * scrolled back, it landed below the fold and nothing seemed to happen. The
+   * lobby has kept that rule (onLobbyMessages); the room's chats had not. A
+   * log coming into sight goes to its newest whatever.
+   *
+   * On the next frame, which comes after the check that draws the line. It
+   * was a 100ms guess: a reader scrolling up inside it was pulled back down,
+   * and a check slower than it scrolled to the old bottom.
    */
-  private scrollChatToBottom(log: 'gameRoom' | 'lobby' | 'history', follow = false): void {
+  private scrollChatToBottom(log: 'gameRoom' | 'lobby' | 'history', follow = false, own = false): void {
     const find = () => (log === 'gameRoom' ? this.gameChatEl : log === 'lobby' ? this.lobbyChatEl : this.historyEl);
     const was = find();
-    if (follow && was?.clientHeight && was.scrollHeight - was.scrollTop - was.clientHeight > 4) return;
-    this.zone.runOutsideAngular(() => setTimeout(() => {
+    if (follow && !own && was?.clientHeight && was.scrollHeight - was.scrollTop - was.clientHeight > 4) return;
+    this.zone.runOutsideAngular(() => requestAnimationFrame(() => {
       const el = find();
       if (el) el.scrollTop = el.scrollHeight;
-    }, 100));
+    }));
   }
 
   private scrollChatsToBottom(): void {
@@ -3756,10 +3765,16 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
   get statAtk(): string { return this.statText('atk'); }
   get statDef(): string { return this.statText('def'); }
   get statMov(): string { return this.statText('mov'); }
-  /** "12/20" - the HP the panel shows, a forecast's included. */
+  /**
+   * "12/20" - the HP the panel shows, a forecast's included; "12" when the
+   * config gives the unit no maximum. A null went into the string as it was:
+   * the Unit strip read "HP 20/null".
+   */
   get statHp(): string {
     const u = this.displayUnit;
-    return u ? `${u.hpAfter ?? u.hp}/${u.hpMax}` : '—';
+    if (!u) return '—';
+    const now = u.hpAfter ?? u.hp;
+    return `${now ?? '—'}${u.hpMax != null ? `/${u.hpMax}` : ''}`;
   }
 
   private statText(stat: 'atk' | 'def' | 'mov'): string {
@@ -4278,16 +4293,19 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (this.chatUnread && this.chatInView) this.chatUnread = 0;
   }
 
-  private pointerQuery?: MediaQueryList;
+  /** A touch screen with no mouse (touchOnly), asked once and listened to (ngOnInit). */
+  private pointerQuery?: MediaQueryList = typeof matchMedia === 'function'
+    ? matchMedia('(hover: none) and (pointer: coarse)') : undefined;
   // The header too, whether or not the layout changes: the same query draws
   // the "?" beside the turn (game-room.tips.scss), and the banner fitted
   // without it ran 16px over once it was there.
   private onPointerChange = () => { this.fitRoom(); this.refitHeader(); };
 
   /** A touch screen with no mouse - a phone, a tablet - rather than a
-   *  computer's window, which keeps the columns further down (ROOM_DESKTOP_ZOOM). */
+   *  computer's window, which keeps the columns further down (ROOM_DESKTOP_ZOOM).
+   *  The list it reads answers for now, whatever has changed since it was made. */
   get touchOnly(): boolean {
-    return typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: coarse)').matches;
+    return !!this.pointerQuery?.matches;
   }
 
   @HostListener('window:resize')
@@ -6066,7 +6084,31 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
    * over it in the bottom, and inside the window's gutter either way. The
    * text is read when drawn (tipText), so an open one follows the room.
    */
-  tip: { id: TipId; left: number; width: number; top: number | null; bottom: number | null } | null = null;
+  tip: {
+    id: TipId; left: number; width: number; top: number | null; bottom: number | null; maxHeight: number;
+  } | null = null;
+  /** The "?" the open bubble belongs to: what a scroll has to move to close it. */
+  private tipAnchor: HTMLElement | null = null;
+
+  /**
+   * Whether the open bubble's "?" still has anything to say. Start's says
+   * nothing while a match runs and the tally's is idle while a unit fills
+   * the panel (both .idle), and the score's goes when the scores do; a bubble
+   * open on one of them stayed - Start's an empty dark box, once the match
+   * began. Closed before the room is drawn (ngDoCheck).
+   */
+  private tipLive(id: TipId): boolean {
+    switch (id) {
+      case 'start': return !!this.startTip;
+      case 'tally': return !this.displayUnit;
+      case 'score': return this.showScore;
+      default: return true;
+    }
+  }
+
+  ngDoCheck(): void {
+    if (this.tip && !this.tipLive(this.tip.id)) this.closeTip();
+  }
 
   tipText(id: TipId): string {
     switch (id) {
@@ -6092,7 +6134,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
     const again = this.tip?.id === id;
     this.closeTip();
     if (again) return;
-    const r = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    this.tipAnchor = event.currentTarget as HTMLElement;
+    const r = this.tipAnchor.getBoundingClientRect();
     const width = Math.min(TIP_WIDTH, window.innerWidth - 2 * TIP_GUTTER);
     const left = Math.min(Math.max(TIP_GUTTER, r.left + r.width / 2 - width / 2),
       window.innerWidth - TIP_GUTTER - width);
@@ -6101,6 +6144,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
       id, width, left,
       top: below ? r.bottom + 6 : null,
       bottom: below ? null : window.innerHeight - r.top + 6,
+      // No further than the window's gutter, and what is past that scrolls in
+      // the bubble: it is fixed, and on a phone on its side the Points/CP one
+      // ran off the foot of the screen, where nothing could scroll to it.
+      maxHeight: below ? window.innerHeight - r.bottom - 6 - TIP_GUTTER : r.top - 6 - TIP_GUTTER,
     };
     // Listened for only while one is open, and outside Angular: a room
     // checked on every press anywhere, for the sake of a bubble that is
@@ -6109,17 +6156,18 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
       document.addEventListener('pointerdown', this.onTipPress, true);
       document.addEventListener('keydown', this.onTipKey, true);
       window.addEventListener('resize', this.onTipAway);
-      window.addEventListener('scroll', this.onTipAway, true);
+      window.addEventListener('scroll', this.onTipScroll, true);
     });
   }
 
   closeTip(): void {
     if (!this.tip) return;
     this.tip = null;
+    this.tipAnchor = null;
     document.removeEventListener('pointerdown', this.onTipPress, true);
     document.removeEventListener('keydown', this.onTipKey, true);
     window.removeEventListener('resize', this.onTipAway);
-    window.removeEventListener('scroll', this.onTipAway, true);
+    window.removeEventListener('scroll', this.onTipScroll, true);
     this.cdr.markForCheck();
   }
 
@@ -6134,6 +6182,13 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (event.key === 'Escape') this.zone.run(() => this.closeTip());
   };
   private onTipAway = () => this.zone.run(() => this.closeTip());
+  // Only a scroll that moves its "?": History and the chats keeping to their
+  // newest line are scrolls too, and any scroll closed it - a move coming in
+  // shut the bubble being read.
+  private onTipScroll = (event: Event) => {
+    const scroller = event.target === document ? document.documentElement : event.target as Element | null;
+    if (this.tipAnchor && scroller?.contains?.(this.tipAnchor)) this.onTipAway();
+  };
 
   get startButtonHint(): string {
     if (this.gameOver) {

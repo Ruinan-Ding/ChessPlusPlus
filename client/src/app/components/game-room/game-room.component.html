@@ -674,7 +674,8 @@
             <div class="stat-cell hp"><span>HP</span>
               <strong [class.forecast]="displayUnit?.hpAfter != null" [style.font-size]="statFontSize(statHp)">
                 <ng-container *ngIf="displayUnit; else noUnitHp"><span
-                  [ngClass]="hpWave">{{ displayUnit.hpAfter ?? displayUnit.hp }}</span>/{{ displayUnit.hpMax }}</ng-container>
+                  [ngClass]="hpWave">{{ displayUnit.hpAfter ?? displayUnit.hp }}</span><ng-container
+                  *ngIf="displayUnit.hpMax != null">/{{ displayUnit.hpMax }}</ng-container></ng-container>
                 <ng-template #noUnitHp>—</ng-template>
               </strong></div>
             <div class="stat-cell atk"><span>ATK</span>
@@ -1080,4 +1081,5 @@
      where the "?" is on the screen, in the screen's own pixels. -->
 <div class="tip-bubble" *ngIf="tip" role="note"
      [style.left.px]="tip.left" [style.width.px]="tip.width"
-     [style.top.px]="tip.top" [style.bottom.px]="tip.bottom">{{ tipText(tip.id) }}</div>
+     [style.top.px]="tip.top" [style.bottom.px]="tip.bottom"
+     [style.max-height.px]="tip.maxHeight">{{ tipText(tip.id) }}</div>

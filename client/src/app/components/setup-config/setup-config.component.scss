@@ -23,6 +23,11 @@
         font-weight: 500;
         animation: fadeOut 2s forwards;
       }
+      // Waiting on the room's server; steady, not fading - it has not happened.
+      .save-pending {
+        color: #5a6570;
+        font-weight: 500;
+      }
     }
   }
 
@@ -150,7 +155,12 @@
     color: #2c3e50;
     border: 1px solid #adb5bd;
 
-    &:hover { background-color: #f1f3f5; }
+    &:hover:not(:disabled) { background-color: #f1f3f5; }
+    // Held while a save waits on the server.
+    &:disabled {
+      color: #6b7280;
+      cursor: not-allowed;
+    }
   }
 }
 
