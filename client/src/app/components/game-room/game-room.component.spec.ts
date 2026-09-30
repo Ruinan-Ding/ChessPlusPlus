@@ -1689,9 +1689,9 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.stripShown).toBeFalse();
   });
 
-  it('leaves Tab to the keyboard on the board, and ends the turn with it elsewhere', () => {
-    // The board is played from the keys once it has them; Tab there ending
-    // the turn would end it for anyone moving past the board.
+  it('leaves Tab to a board played from the keys, and ends the turn with it otherwise', () => {
+    // A click on the board focuses it too: a mouse player's TAB there is End
+    // Turn, as ever. Only a board the keys are playing moves on with it.
     const c = room();
     c.windowFocused = true;
     c.chatFocused = false;
@@ -1700,10 +1700,43 @@ describe('GameRoomComponent ability panel', () => {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     board.appendChild(svg);
     const tab = (target: Element) => c.onShortcut({ key: 'Tab', target, preventDefault: () => {} } as any);
+    c.boardRef = { keyFocused: false };
     tab(svg);
-    expect(ended).not.toHaveBeenCalled();
-    tab(document.createElement('div'));
     expect(ended).toHaveBeenCalledTimes(1);
+    c.boardRef.keyFocused = true;
+    tab(svg);
+    expect(ended).toHaveBeenCalledTimes(1);
+    tab(document.createElement('div'));
+    expect(ended).toHaveBeenCalledTimes(2);
+  });
+
+  it('fits the header two frames on when the room changes under it', () => {
+    // Its classes are drawn by the change detection the next frame brings; a
+    // fit one frame on measured the layout that was.
+    const c = room();
+    const roomEl = document.createElement('div');
+    const header = document.createElement('header');
+    const banner = document.createElement('div');
+    header.appendChild(banner);
+    roomEl.appendChild(header);
+    document.body.appendChild(roomEl);
+    const frames: FrameRequestCallback[] = [];
+    try {
+      c.headerEl = header;
+      c.bannerEl = banner;
+      c.watchHeader();
+      spyOn(window, 'requestAnimationFrame').and.callFake((cb: FrameRequestCallback) => frames.push(cb));
+      banner.style.removeProperty('--banner-fit');
+      c.refitHeader();
+      frames.shift()!(0);
+      expect(banner.style.getPropertyValue('--banner-fit')).toBe('');
+      frames.shift()!(0);
+      expect(banner.style.getPropertyValue('--banner-fit')).not.toBe('');
+    } finally {
+      c.headerEl = c.bannerEl = null;
+      c.watchHeader();
+      roomEl.remove();
+    }
   });
 
   it('fits the header again when the pointer changes, layout or no layout', () => {
@@ -3568,6 +3601,18 @@ describe('GameRoomComponent tabs', () => {
       c.ngDoCheck();
       expect(c.tip).not.toBeNull();
       c.selectedUnit = { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20 };
+      c.ngDoCheck();
+      expect(c.tip).toBeNull();
+
+      // The score's "?" is in the turn banner, which goes with the match: its
+      // bubble floated over the end of it.
+      c.selectedUnit = null;
+      c.gameState.snapshot.turnNumber = 10;          // Phase 1: the scores up
+      expect(c.showScore).toBeTrue();
+      c.toggleTip('score', press(10, 10));
+      c.ngDoCheck();
+      expect(c.tip).not.toBeNull();
+      c.gameState.snapshot.endReason = 'resignation';
       c.ngDoCheck();
       expect(c.tip).toBeNull();
     });

@@ -2701,9 +2701,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   ngOnChanges(changes: SimpleChanges): void {
     // A target armed on one position is not armed on the next - and the room
     // told so once its own check is over, not in the middle of it.
-    if (changes['boardState'] || changes['currentTurn'] || changes['turnNumber']) {
-      if (this.armedAttack) queueMicrotask(() => this.armedChange.emit(false));
-      this.armedAttack = null;
+    // And an ability armed for a target: the next tap is its, not a blow's.
+    if (changes['boardState'] || changes['currentTurn'] || changes['turnNumber']
+        || (changes['abilityMode'] && this.abilityMode)) {
+      this.disarm(true);
     }
     // The board's own zoom to a unit's reach is the turn's: the next one is
     // seen whole, recap and all (zoomToReach).
@@ -4616,9 +4617,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   }
 
   onBoardFocus(): void {
-    // A click's focus draws nothing: the pointer is where the player is.
-    if (!this.boardSvg?.nativeElement.matches(':focus-visible')) return;
-    this.takeKeys();
+    // A click's focus draws nothing: the pointer is where the player is. A
+    // browser without :focus-visible (Safari before 15.4) throws on it; there
+    // the focus is taken as the keys', rather than keyboard play never
+    // starting at all.
+    let byKeys = true;
+    try {
+      byKeys = !!this.boardSvg?.nativeElement.matches(':focus-visible');
+    } catch { /* no :focus-visible */ }
+    if (byKeys) this.takeKeys();
   }
 
   onBoardBlur(): void {
@@ -4627,6 +4634,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   }
 
   onBoardKey(e: KeyboardEvent): void {
+    // Alt+Left is the browser's Back, Ctrl and Shift with the arrows the
+    // system's own: none of them is the board's.
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
     const dirs: Record<string, [number, number]> = {
       ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
     };
@@ -4634,22 +4644,47 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       e.preventDefault();
       if (this.keyFocused && this.keyCursorCell) this.stepCursor(dirs[e.key]);
       this.takeKeys();
-    } else if ((e.key === 'Enter' || e.key === ' ') && this.keyCursorCell) {
+    } else if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
+      // Only on a hex the player can see: a board focused by a click draws
+      // no cursor, and Enter there chose the hex the keys had left, hidden -
+      // a blow could land on it. Pressed there, it shows the cursor first.
+      if (!this.keyFocused || !this.keyCursorCell) {
+        this.takeKeys();
+        return;
+      }
       // Chosen, not tapped: a blow lands on the first press, as a click's
-      // does - the forecast was read on landing.
+      // does - the forecast was read on landing. And not a drag's end: a
+      // mouse's drag leaves its closing click to swallow (swallowClick), and
+      // in Chrome that click never reaches a hex to spend it - it swallowed
+      // the next Enter instead.
       this.lastPointer = 'keyboard';
+      this.swallowClick = false;
       this.onHexClick(this.keyCursorCell);
       this.keyLanded();
-    } else if (e.key === 'Escape' && this.selectedHex) {
+    } else if (e.key === 'Escape' && (this.selectedHex || this.armedAttack)) {
       e.preventDefault();
       this.selectedHex = null;
       this.clearTargets();
       this.hexSelected.emit(null);
+      this.disarm();
       this.unzoomFromReach();
       this.invalidatePreview();
       this.keyLanded();
     }
+  }
+
+  /**
+   * No enemy armed any more, and the room told - at once from an event, or
+   * once the check is over from inside one (ngOnChanges). Escape and an
+   * ability armed after an enemy left the armed hex pulsing and "Tap again to
+   * strike" up, with nothing to strike with.
+   */
+  private disarm(later = false): void {
+    if (!this.armedAttack) return;
+    this.armedAttack = null;
+    if (later) queueMicrotask(() => this.armedChange.emit(false));
+    else this.armedChange.emit(false);
   }
 
   /** The keys have the board: its cursor where it was, on the selection, or on a unit that can act. */
@@ -4856,12 +4891,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    */
   private zoomToReach(from: HexCell): void {
     if (this.lastPointer !== 'touch' || (this.boardZoom > 1 && !this.autoZoomed)) return;
+    // From here on, a unit not worth zooming to is seen on the whole board -
+    // not framed on the last one's reach, most of its own off the screen.
     const hexPx = this.hexOnScreen();
-    if (!(hexPx > 0) || hexPx >= GameBoardComponent.TAP_ZOOM_BELOW) return;
+    if (!(hexPx > 0) || hexPx >= GameBoardComponent.TAP_ZOOM_BELOW) return this.unzoomFromReach();
     const reach = [from.key, ...this.legalTargets, ...this.attackTargets]
       .map(key => this.cellsByKey.get(key))
       .filter((cell): cell is HexCell => !!cell);
-    if (reach.length < 2) return;
+    if (reach.length < 2) return this.unzoomFromReach();
     const xs = reach.map(c => c.cx);
     const ys = reach.map(c => c.cy);
     // A hex's breadth round the edges, so the outermost are whole.
@@ -4870,7 +4907,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     const h = Math.max(...ys) - Math.min(...ys) + pad;
     const zoom = Math.min(GameBoardComponent.ZOOM_MAX, this.baseBox.w / w, this.baseBox.h / h,
       GameBoardComponent.FINGER / hexPx);
-    if (zoom < GameBoardComponent.ZOOM_WORTH) return;
+    if (zoom < GameBoardComponent.ZOOM_WORTH) return this.unzoomFromReach();
     this.boardZoom = zoom;
     this.zoomCenter = { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 };
     this.autoZoomed = true;

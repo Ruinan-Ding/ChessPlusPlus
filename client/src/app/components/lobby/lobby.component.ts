@@ -13,6 +13,7 @@ import { NavigationStateService } from '../../services/navigation-state.service'
 import { AuthService } from '../../services/auth.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 import { closeUserMenu, openUserMenu as showUserMenu } from '../../services/user-menu';
+import { afterDraw, atNewest } from '../../services/scrolling';
 
 /** What the server answers a refused rename with (validators.py, consumers.py). */
 const RENAME_ERRORS = ['USERNAME_TAKEN', 'INVALID_USERNAME', 'USERNAME_TOO_LONG'];
@@ -808,16 +809,15 @@ export class LobbyComponent implements OnInit, OnDestroy {
     if (follow) this.scrollChatToBottom();
   }
 
-  /** At its newest line, give or take a few pixels - or not drawn yet. */
+  /** At its newest line, give or take a few pixels - or not drawn yet: the room's rule too. */
   private chatAtNewest(): boolean {
-    const log = this.chatLog?.nativeElement;
-    return !log || log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+    return atNewest(this.chatLog?.nativeElement);
   }
 
   private scrollChatToBottom(): void {
-    // After the new line is drawn: the next frame comes after the check that
-    // draws it. A 100ms guess pulled a reader scrolling up back down.
-    requestAnimationFrame(() => {
+    // Once the new line is drawn (afterDraw). A 100ms guess pulled a reader
+    // scrolling up back down.
+    afterDraw(() => {
       const log = this.chatLog?.nativeElement;
       if (log) log.scrollTop = log.scrollHeight;
     });

@@ -267,6 +267,14 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
     // engine reads this config, and nothing answers a set_custom_config -
     // so "Saved!" never showed there, and it went to the server in the lobby.
     if (this.gameId && this.gameId !== 'local') {
+      // Not with the server away: the socket queues what it cannot send and
+      // sends it when it is back - after this screen had said "not saved",
+      // and after a player told so had chosen Discard. Refused here instead,
+      // where nothing is waiting to go.
+      if (!this.wsService.isConnected()) {
+        this.refused('Not connected to the server, so this was not saved. Try again once it is back.');
+        return false;
+      }
       // Push to the server so it actually takes effect at game start. Saved
       // when it answers (custom_config_saved / error, in ngOnInit()), or
       // called unsaved if it never does.
@@ -278,7 +286,10 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
       });
       clearTimeout(this.answerTimer);
       this.answerTimer = setTimeout(
-        () => this.refused('The server did not answer, so this was not saved. Try again.'), SAVE_ANSWER_MS);
+        // It went: the server has it, and may yet take it - a late
+        // custom_config_saved still marks it saved (taken()).
+        () => this.refused('The server did not answer, so this may not have been saved. Try again.'),
+        SAVE_ANSWER_MS);
       this.cdr.markForCheck();
     } else {
       // No room's server to attach this config to - the lobby, or a solo room.

@@ -16,7 +16,19 @@
  * all, and a chat keeping to its newest line is one - a busy lobby shut the
  * menu before Invite could be pressed.
  */
+import { scrollerMoving } from './scrolling';
+
 const GUTTER = 8;
+
+/**
+ * `fn` in zone.js's root zone, so what it listens for runs no change
+ * detection. A function, not a service: there is no NgZone to hand here.
+ */
+function outsideAngular(fn: () => void): void {
+  const root = (globalThis as { Zone?: { root?: { run(f: () => void): void } } }).Zone?.root;
+  if (root) root.run(fn);
+  else fn();
+}
 
 let shutOpen: (() => void) | null = null;
 let openFor: Element | null = null;
@@ -65,9 +77,9 @@ export function openUserMenu(event: MouseEvent, label: string, enabled: boolean,
   // What was pressed: the ⋮, or the line a right-click landed on.
   const origin = anchor ?? (event.target as Element | null);
   const onScroll = (e: Event) => {
-    const scroller = e.target === document ? document.documentElement : e.target as Element | null;
     // A log or a panel the menu has nothing to do with.
-    if (!origin || !scroller?.contains?.(origin)) return;
+    const scroller = scrollerMoving(e, origin);
+    if (!scroller) return;
     // A right-click's menu stands where the click was, and the line has moved.
     if (!anchor) return shut();
     const a = anchor.getBoundingClientRect();
@@ -101,10 +113,16 @@ export function openUserMenu(event: MouseEvent, label: string, enabled: boolean,
     shut();
     if (enabled) pick();
   });
-  document.addEventListener('pointerdown', onPress, true);
-  document.addEventListener('keydown', onKey, true);
-  window.addEventListener('resize', shut);
-  window.addEventListener('scroll', onScroll, true);
+  // Every press, key and scroll on the page, while it is open - outside
+  // Angular, as the room's "?" bubble listens: none of them changes anything
+  // Angular draws, and inside it each one checked the whole room. The entry's
+  // own click stays inside, where an invite is something the screen draws.
+  outsideAngular(() => {
+    document.addEventListener('pointerdown', onPress, true);
+    document.addEventListener('keydown', onKey, true);
+    window.addEventListener('resize', shut);
+    window.addEventListener('scroll', onScroll, true);
+  });
   shutOpen = shut;
   openFor = anchor;
   if (enabled) item.focus({ preventScroll: true });

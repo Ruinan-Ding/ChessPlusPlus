@@ -145,6 +145,20 @@ describe('the ⋮ menu', () => {
     }
   });
 
+  it('listens to the page outside Angular, where none of it runs a check', () => {
+    // Inside it, every scroll, key and press anywhere checked the whole room
+    // while a menu was open - as the room's "?" bubble had long avoided.
+    const zones: string[] = [];
+    const add = document.addEventListener.bind(document);
+    spyOn(document, 'addEventListener').and.callFake((type: string, ...rest: any[]) => {
+      zones.push(`${type}:${(globalThis as any).Zone.current.name}`);
+      return (add as any)(type, ...rest);
+    });
+    place(100, 100);
+    open('Invite');
+    expect(zones).toEqual(['pointerdown:<root>', 'keydown:<root>']);
+  });
+
   it('is one menu at a time, and gone once shut from outside', () => {
     place(100, 100);
     open('Invite');

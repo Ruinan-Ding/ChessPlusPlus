@@ -2919,6 +2919,79 @@ describe('GameBoardComponent on a touch screen', () => {
     expect(board.keyCursor).toBe('-1,0');
   });
 
+  it('chooses only a hex it can see, and only for the keys alone', () => {
+    const key = (k: string, mods: KeyboardEventInit = {}) => {
+      const e = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...mods });
+      svg().dispatchEvent(e);
+      return e;
+    };
+    const blows: any[] = [];
+    board.attackMade.subscribe((e: any) => blows.push(e));
+    aim();
+    // The keys left their cursor on the target and went; then a click focused
+    // the board, which draws no cursor. Enter there chose the hidden hex.
+    anyBoard().keyCursor = '2,0';
+    anyBoard().keyFocused = false;
+    key('Enter');
+    expect(blows).toEqual([]);
+    expect(board.keyFocused).toBeTrue();          // the cursor shown instead
+    // A mouse's drag left its closing click to swallow: it swallowed the
+    // next Enter.
+    anyBoard().swallowClick = true;
+    key('Enter');
+    expect(blows.length).toBe(1);
+    // Alt+Left is the browser's Back; Ctrl and Shift with the arrows the system's.
+    const at = board.keyCursor;
+    for (const mods of [{ altKey: true }, { ctrlKey: true }, { shiftKey: true }, { metaKey: true }]) {
+      const e = key('ArrowLeft', mods);
+      expect(e.defaultPrevented).withContext(JSON.stringify(mods)).toBeFalse();
+      expect(board.keyCursor).toBe(at);
+    }
+  });
+
+  it('takes the focus as the keys\' where there is no :focus-visible to ask', () => {
+    // Safari before 15.4 throws on it, and keyboard play never started.
+    spyOn(svg(), 'matches').and.throwError(new SyntaxError("':focus-visible' is not a valid selector"));
+    expect(() => board.onBoardFocus()).not.toThrow();
+    expect(board.keyFocused).toBeTrue();
+  });
+
+  it('disarms on Escape, and when an ability is armed, and says so', async () => {
+    // The armed hex pulsed on, and "Tap again to strike" stayed up, with
+    // nothing to strike with.
+    const said: boolean[] = [];
+    board.armedChange.subscribe((armed: boolean) => said.push(armed));
+    const arm = () => {
+      aim();
+      pointer('pointerdown', 1, 300, 250);
+      pointer('pointerup', 1, 300, 250);
+      board.onHexClick(cell('2,0'));
+      expect(board.armedAttack).toBe('2,0');
+    };
+    arm();
+    svg().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(board.armedAttack).toBeNull();
+    expect(said).toEqual([true, false]);
+    arm();
+    board.abilityMode = 'enemy';
+    board.ngOnChanges({ abilityMode: new SimpleChange(null, 'enemy', false) });
+    expect(board.armedAttack).toBeNull();
+    await Promise.resolve();
+    expect(said).toEqual([true, false, true, false]);
+  });
+
+  it("lets go of a tap's zoom for a unit not worth zooming to", () => {
+    // Framed on the last unit's reach, most of the new one's was off screen.
+    const size = spyOn(board, 'hexOnScreen').and.returnValue(15);
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    aim();
+    expect(board.boardZoom).toBeGreaterThan(1);
+    size.and.returnValue(30);
+    board.onHexClick(cell('0,0'));
+    expect(board.boardZoom).toBe(1);
+  });
+
   it("zooms a phone's board to a unit's reach on a tap, and back with the turn", () => {
     // At 15px a hex a finger lands on the one beside it, and a pinch before
     // every move took two hands.

@@ -36,6 +36,7 @@ import {
 import { AudioService } from '../../services/audio.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 import { closeUserMenu, openUserMenu as showUserMenu } from '../../services/user-menu';
+import { afterDraw, atNewest, scrollerMoving } from '../../services/scrolling';
 
 interface GameOptions {
   reveal?: boolean;
@@ -1678,15 +1679,14 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * lobby has kept that rule (onLobbyMessages); the room's chats had not. A
    * log coming into sight goes to its newest whatever.
    *
-   * On the next frame, which comes after the check that draws the line. It
-   * was a 100ms guess: a reader scrolling up inside it was pulled back down,
-   * and a check slower than it scrolled to the old bottom.
+   * Once the line is drawn (afterDraw): it was a 100ms guess, and then a
+   * single frame, which the change detection that draws the line can come
+   * after. "At its newest" is the lobby's rule too (atNewest).
    */
   private scrollChatToBottom(log: 'gameRoom' | 'lobby' | 'history', follow = false, own = false): void {
     const find = () => (log === 'gameRoom' ? this.gameChatEl : log === 'lobby' ? this.lobbyChatEl : this.historyEl);
-    const was = find();
-    if (follow && !own && was?.clientHeight && was.scrollHeight - was.scrollTop - was.clientHeight > 4) return;
-    this.zone.runOutsideAngular(() => requestAnimationFrame(() => {
+    if (follow && !own && !atNewest(find())) return;
+    this.zone.runOutsideAngular(() => afterDraw(() => {
       const el = find();
       if (el) el.scrollTop = el.scrollHeight;
     }));
@@ -4362,9 +4362,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       // swallowing it everywhere put Undo, End Turn and Resign out of reach
       // of the keyboard, and ended a turn on every attempt to reach them.
       if (target && /^(BUTTON|A)$/.test(target.tagName)) return;
-      // Nor on the board, which is played from the keys once it has them
-      // (the board's onBoardKey): Tab there moves on, as off any control.
-      if (target?.closest?.('app-game-board')) return;
+      // Nor on a board being played from the keys (the board's keyFocused):
+      // Tab there moves on, as off any control. Only then - a click on the
+      // board focuses it too, and a mouse player who has clicked a unit and
+      // where it goes still ends the turn with TAB, as ever.
+      if (target?.closest?.('app-game-board') && this.boardRef?.keyFocused) return;
       event.preventDefault();
       this.endTurn();
     } else if (event.key === 'r' || event.key === 'R') {
@@ -5308,7 +5310,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       retexted.observe(header, { subtree: true, childList: true, characterData: true });
       this.headerWatchers = [resized, retexted];
     });
-    this.refitHeader = () => this.zone.runOutsideAngular(soon);
+    // The room's state changed, not yet its classes: they are drawn by the
+    // change detection that frame brings (eventCoalescing), so one frame on
+    // the fit could measure the layout that was - a tablet that gained or
+    // lost a mouse kept the old one's banner. A frame more, as afterDraw.
+    this.refitHeader = () => this.zone.runOutsideAngular(() => requestAnimationFrame(soon));
   }
 
   /** True while the board is playing; the clock waits for it. */
@@ -6125,7 +6131,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     switch (id) {
       case 'start': return !!this.startTip;
       case 'tally': return !this.displayUnit;
-      case 'score': return this.showScore;
+      // The score's "?" is in the turn banner, which goes when the match ends:
+      // its bubble floated over the end of the match.
+      case 'score': return this.showScore && this.gameStarted && !this.gameState.snapshot.endReason;
       default: return true;
     }
   }
@@ -6210,8 +6218,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   // newest line are scrolls too, and any scroll closed it - a move coming in
   // shut the bubble being read.
   private onTipScroll = (event: Event) => {
-    const scroller = event.target === document ? document.documentElement : event.target as Element | null;
-    if (this.tipAnchor && scroller?.contains?.(this.tipAnchor)) this.onTipAway();
+    if (scrollerMoving(event, this.tipAnchor)) this.onTipAway();
   };
 
   get startButtonHint(): string {

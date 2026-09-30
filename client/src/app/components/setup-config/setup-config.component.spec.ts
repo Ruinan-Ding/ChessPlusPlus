@@ -11,6 +11,7 @@ describe('SetupConfigComponent', () => {
   let intents: string[];
   let socket: Subject<any>;
   let sent: any[];
+  let connected: boolean;
   let marked: jasmine.Spy;
 
   const editor = () => {
@@ -28,7 +29,8 @@ describe('SetupConfigComponent', () => {
     } as any;
     socket = new Subject();
     sent = [];
-    const ws = { messages$: socket, sendMessage: (m: any) => sent.push(m) } as any;
+    connected = true;
+    const ws = { messages$: socket, sendMessage: (m: any) => sent.push(m), isConnected: () => connected } as any;
     const navigation = { setIntentionalNavigation: (to: string) => intents.push(to) } as any;
     marked = jasmine.createSpy('markForCheck');
     const c = new SetupConfigComponent(router, configService, ws, navigation, { markForCheck: marked } as any);
@@ -137,12 +139,27 @@ describe('SetupConfigComponent', () => {
       c.leaveChoice('save');
       jasmine.clock().tick(SAVE_ANSWER_MS);
       expect(c.saving).toBeFalse();
-      expect(c.errors).toEqual(['The server did not answer, so this was not saved. Try again.']);
+      expect(c.errors).toEqual(['The server did not answer, so this may not have been saved. Try again.']);
       expect(navigated).toEqual([]);
       expect(c.hasUnsavedChanges).toBeTrue();
     } finally {
       jasmine.clock().uninstall();
     }
+  });
+
+  it('refuses a save with the server away, sending nothing to go out later', () => {
+    // The socket queues what it cannot send, and sent it on its return -
+    // after "not saved", and after a player told so had chosen Discard.
+    const c = editor();
+    connected = false;
+    c.jsonConfig = '{ "edited": true }';
+    c.onBack();
+    c.leaveChoice('save');
+    expect(sent).toEqual([]);
+    expect(c.saving).toBeFalse();
+    expect(navigated).toEqual([]);
+    expect(c.errors).toEqual(['Not connected to the server, so this was not saved. Try again once it is back.']);
+    expect(c.hasUnsavedChanges).toBeTrue();
   });
 
   it('saves a solo room\'s config itself - no server answers for one', () => {

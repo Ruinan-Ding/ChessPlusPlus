@@ -1279,9 +1279,12 @@ Decided so far:
     always shows: sent from a room's chat scrolled back, it landed below the fold and nothing
     seemed to happen (the lobby kept that rule; the room's chats had not). One coming into
     sight - its tab chosen, a restart putting the Room tab up as a tap would, the layout
-    changed, drawn afresh - goes there whatever. On the next frame, which comes after the
-    check that draws the line: it was a 100ms guess, and a reader scrolling up inside it was
-    pulled back down. History is oldest first, and at the
+    changed, drawn afresh - goes there whatever. Once the line is drawn: two frames on
+    (`afterDraw`, `services/scrolling.ts`), since the change detection that draws it is itself
+    put off to a frame (`eventCoalescing`) scheduled after whoever asks - it was a 100ms
+    guess, a reader scrolling up inside it pulled back down, and then one frame, which could
+    come first. "At its newest" is one rule for the room and the lobby (`atNewest`, 24px):
+    they had drifted to 4px and 24. History is oldest first, and at the
     columns' least height it has room for about one line: with nothing scrolling it, it showed
     "Game started!" all match and the move just made out of sight below. History, the chats,
     the rosters and the effects list may scroll, but each has a floor of one whole entry
@@ -1424,8 +1427,9 @@ Decided so far:
     floor, to 10.5px. Nothing wider than 390 takes any of the three steps.
   - **Touch.** A touch screen has no hover, and the hover is where a trade is read before it
     is made. So the first tap on an enemy in reach arms it - its forecast on both units, a
-    pulse, "Tap again to strike" - and a second tap on it strikes; any other tap or a change
-    of position disarms (`armedAttack`, the board's `lastPointer`). A mouse's first click
+    pulse, "Tap again to strike" - and a second tap on it strikes; any other tap, a change
+    of position, Escape, or an ability armed for a target disarms (`armedAttack`, `disarm`,
+    the board's `lastPointer`) - the last two had left the pulse and the hint up. A mouse's first click
     strikes as it always has. The owner, 28 Sep 2026. On a coarse pointer the buttons do not
     name the keys a phone has not got (`.key-hint`). The hint is laid over the board, 14px,
     not drawn on it: drawn to the board's scale it was ~4px tall on a phone. The armed hex is
@@ -1448,8 +1452,9 @@ Decided so far:
     drag runs outside Angular). **A tap zooms too** (`zoomToReach`): a tap on a unit that can
     act, where the hexes are under 24px on screen, zooms the board to fit everything it can
     reach or hit, no further than 44px a hex (a finger); the next turn is seen whole again, and
-    so is a tap on nothing. Not for a mouse, not over a zoom the player made, and not for a
-    reach of most of the board (under 1.2x). **The wheel zooms on a computer**
+    so is a tap on nothing, and a unit not worth zooming to (its reach most of the board,
+    under 1.2x, or hexes big enough) - the view had stayed on the last unit's reach. Not for a
+    mouse, and not over a zoom the player made. **The wheel zooms on a computer**
     (`onBoardWheel`), about the point under the pointer as a pinch does: a unit's numbers are
     7px on a laptop's window, and this reads a crowd of them where the Unit panel reads one. A
     trackpad's pinch - the wheel with Ctrl - zooms the board, not the page. It stands in for a
@@ -1477,8 +1482,9 @@ Decided so far:
     than the window leaves it (`maxHeight`, the rest scrolling in it: a phone on its side ran the
     Points/CP bubble off the foot of the screen); a tap anywhere else, Escape, a resize or a
     scroll that moves its "?" shuts it - not History or a chat following a new line, which shut
-    it too - and so does its "?" going idle (`tipLive`, checked in `ngDoCheck`): Start's bubble
-    stayed an empty dark box once the match began. The owner, 28 Sep 2026: *"do the ⋮ labels and
+    it too - and so does its "?" going idle or going (`tipLive`, checked in `ngDoCheck`):
+    Start's bubble stayed an empty dark box once the match began, and the score's, whose "?" is
+    in the turn banner, over the end of the match. The owner, 28 Sep 2026: *"do the ⋮ labels and
     the tap-to-read ?"*. A computer's hover still has the tooltips, and no "?" is drawn there,
     so its layout is as it was. The words are one string each (`scoreTitle`, `pointsTitle`,
     `cpTitle`, `tallyTitles`, `startButtonHint`), read by the tooltip and the bubble alike;
@@ -1504,13 +1510,20 @@ Decided so far:
     box's width at 16px crowded "Send" out of its button, and their padding giving back what
     the taller line takes, or the chat lost the 2px its one entry needed at 960x540.
   - **The board is played from the keys** (`onBoardKey`). It is a stop on Tab's way round the
-    room (a Tab on nothing is still End Turn, the owner's shortcut; a Tab on the board moves
-    on). Once it has the focus the arrows move a cursor over it the way the screen shows it,
+    room. A Tab on a board the keys are playing moves on (`keyFocused`); anywhere else that
+    is not a control, the board clicked included, it is End Turn, the owner's shortcut - a
+    click focuses the board too, and for a day a mouse player's TAB there moved the focus
+    instead. Once it has the focus the arrows move a cursor over it the way the screen shows it,
     flipped included, up and down keeping to a column rather than zigzagging (`stepCursor`);
     landing on a hex is a hover (the Unit panel, a trade's forecast), Enter or Space is a
     click (a blow lands on the first press, its forecast read on landing), and Escape lets go
-    of the unit. The cursor is drawn for the keys alone (`:focus-visible`: a click's focus
-    draws nothing), and a screen reader is told each hex as it lands (`keyWordsFor`, "Hex 200:
+    of the unit. Enter chooses only a cursor the player can see - on a board focused by a
+    click it shows the cursor first, where it had chosen the hex the keys left, hidden - and
+    never one a mouse's drag left to swallow (`swallowClick`). Alt, Ctrl, Shift and Meta with
+    a key are the browser's and the system's, not the board's. The cursor is drawn for the
+    keys alone (`:focus-visible`: a click's focus draws nothing; a browser without it, Safari
+    before 15.4, threw there, and now takes the focus as the keys'), and a screen reader is
+    told each hex as it lands (`keyWordsFor`, "Hex 200:
     white pawn, HP 20 of 20, can move here"). Every panel could be worked from the keys and
     the board could not. The owner, 30 Sep 2026.
   - **MOV is a dark gold** (`#8b6800`), 4.5:1 on every ground it is drawn on - a unit's face,
@@ -1555,8 +1568,11 @@ Decided so far:
       room's had no style anywhere). Kept inside the window, under its ⋮ or over it; shut by a
       press elsewhere, Escape, a resize, or its ⋮ again, and on leaving the screen; a scroll
       moves it with its ⋮ and shuts it only once the ⋮ is out of sight - any scroll shut it,
-      and a chat following its newest line shut it before Invite could be pressed. Its words
-      are set as text, not markup.
+      and a chat following its newest line shut it before Invite could be pressed (the check
+      is `scrollerMoving`, the room's "?" bubble's too). Its listeners on the page run outside
+      Angular - inside, every press, key and scroll checked the whole room while it was open -
+      and its entry's click inside, where an invite is drawn. Its words are set as text, not
+      markup.
     - **Setup asks before Back loses anything** - save and go, discard and go, or stay
       (`leaveChoice`, Stay focused, Escape is Stay). It was `confirm()`, whose Cancel went
       back without saving. What is wrong with a configuration is listed over the editor
@@ -1566,7 +1582,10 @@ Decided so far:
       where it goes ("Back to Room" when opened from one). **A save from a networked room is
       saved when its server says so** (`saving`, "Saving..."): "Save and go back" goes on
       `custom_config_saved`, stays with the server's reason on any refusal, and is called
-      unsaved after `SAVE_ANSWER_MS` (8s) with no answer. It went the moment it was sent - the
+      unsaved after `SAVE_ANSWER_MS` (8s) with no answer ("may not have been", since it went,
+      and a late answer still marks it saved). With the server away it is refused there and
+      then: the socket queues what it cannot send, and sent the save on its return - after
+      "not saved", and after a player told so had chosen Discard. It went the moment it was sent - the
       refusal arrived to a screen already gone, and the match started on the old config. A
       solo room ('local') saves itself: nothing answers a `set_custom_config` for it, and
       "Saved!" never showed there. The editor has the screen's height,
