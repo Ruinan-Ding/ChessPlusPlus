@@ -2851,6 +2851,122 @@ describe('GameBoardComponent on a touch screen', () => {
     expect(board.armedAttack).toBeNull();
   });
 
+  it('tells the room a target is armed, and leaves the hint to it when told to', async () => {
+    // On a phone the room says "Tap again to strike" in its Unit strip: the
+    // board's own hint lay over a dozen 15px hexes wherever it stood.
+    const said: boolean[] = [];
+    board.armedChange.subscribe((armed: boolean) => said.push(armed));
+    aim();
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    expect(said).toEqual([true]);
+    board.hintOutside = true;
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.armed-hint')).toBeNull();
+    // Another tap disarms it, and says so.
+    board.onHexClick(cell('-2,0'));
+    expect(said).toEqual([true, false]);
+    // A new position too - once the check that brought it is over.
+    aim();
+    board.onHexClick(cell('2,0'));
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 21, false) });
+    expect(said).toEqual([true, false, true]);
+    await Promise.resolve();
+    expect(said).toEqual([true, false, true, false]);
+  });
+
+  it('is played from the keys: arrows move over it, Enter chooses, Escape lets go', () => {
+    // A move or a blow needed a pointer; every panel could be worked from the
+    // keys but the board.
+    const key = (k: string) => svg().dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+    const blows: any[] = [];
+    board.attackMade.subscribe((e: any) => blows.push(e));
+    expect(svg().getAttribute('tabindex')).toBe('0');
+    anyBoard().keyCursor = '0,0';
+    anyBoard().keyFocused = true;
+    key('ArrowRight');
+    expect(board.keyCursor).toBe('1,0');
+    key('ArrowLeft');
+    expect(board.keyCursor).toBe('0,0');
+    // Up twice and it is back in its own column, not two zigzags off it.
+    key('ArrowUp');
+    key('ArrowUp');
+    expect(cell(board.keyCursor!).cx).toBeCloseTo(cell('0,0').cx, 1);
+    key('ArrowDown');
+    key('ArrowDown');
+    expect(board.keyCursor).toBe('0,0');
+    // Enter chooses, as a click does - and lands a blow on the first press,
+    // its forecast read on landing.
+    key('Enter');
+    expect(anyBoard().selectedHex).toBe('0,0');
+    key('ArrowRight');
+    key('ArrowRight');
+    expect(board.keyCursor).toBe('2,0');
+    expect(board.keyWords).toMatch(/^Hex \d+: .+, can attack$/);
+    key('Enter');
+    expect(blows.length).toBe(1);
+    expect(blows[0].attack).toBe('2,0');
+    // Escape lets go of the unit.
+    anyBoard().keyCursor = '0,0';
+    key('Enter');
+    expect(anyBoard().selectedHex).toBe('0,0');
+    key('Escape');
+    expect(anyBoard().selectedHex).toBeNull();
+    // Flipped, the screen's right is the board's left.
+    board.rotateBoard = true;
+    key('ArrowRight');
+    expect(board.keyCursor).toBe('-1,0');
+  });
+
+  it("zooms a phone's board to a unit's reach on a tap, and back with the turn", () => {
+    // At 15px a hex a finger lands on the one beside it, and a pinch before
+    // every move took two hands.
+    spyOn(board, 'hexOnScreen').and.returnValue(15);
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    aim();
+    expect(board.boardZoom).toBeGreaterThan(1);
+    expect(board.boardZoom).toBeLessThanOrEqual(GameBoardComponent.FINGER / 15 + 1e-9);
+    // Everything it can reach or hit, in the view.
+    const [x, y, w, h] = board.shownViewBox.split(' ').map(Number);
+    for (const key of ['0,0', ...board.legalTargets, ...board.attackTargets]) {
+      const c = cell(key);
+      expect(c.cx >= x && c.cx <= x + w && c.cy >= y && c.cy <= y + h).withContext(key).toBeTrue();
+    }
+    // The next turn is seen whole.
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 21, false) });
+    expect(board.boardZoom).toBe(1);
+    // And a tap on nothing puts it back too.
+    aim();
+    expect(board.boardZoom).toBeGreaterThan(1);
+    board.onHexClick(board.cells.find(c => !c.piece && !c.panel && !board.legalTargets.has(c.key))!);
+    expect(board.boardZoom).toBe(1);
+  });
+
+  it('leaves the view be for a mouse, for hexes big enough, and over a zoom the player made', () => {
+    const size = spyOn(board, 'hexOnScreen').and.returnValue(15);
+    pointer('pointerdown', 1, 300, 250, 'mouse');
+    aim();
+    expect(board.boardZoom).toBe(1);
+    board.onHexClick(cell('0,0'));                 // deselected
+    size.and.returnValue(30);                       // a tablet's hexes
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    aim();
+    expect(board.boardZoom).toBe(1);
+    board.onHexClick(cell('0,0'));
+    // The player's own zoom stands, and a turn does not take it away.
+    size.and.returnValue(15);
+    anyBoard().boardZoom = 3;
+    anyBoard().applyZoom();
+    const theirs = board.shownViewBox;
+    aim();
+    expect(board.shownViewBox).toBe(theirs);
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 21, false) });
+    expect(board.shownViewBox).toBe(theirs);
+  });
+
   it('pinches to zoom, keeping the board under the fingers, and fits back', () => {
     const whole = board.shownViewBox;
     pointer('pointerdown', 1, 250, 250);
@@ -2883,11 +2999,42 @@ describe('GameBoardComponent on a touch screen', () => {
     fixture.detectChanges();
     const fit = fixture.nativeElement.querySelector('.board-fit-btn') as HTMLButtonElement;
     expect(fit).toBeTruthy();
+    // A finger's width square, named for what it does: its words made it a
+    // 115px bar over the corner of a zoomed board.
+    expect(fit.getAttribute('aria-label')).toBe('Whole board');
+    const r = fit.getBoundingClientRect();
+    expect([Math.round(r.width), Math.round(r.height)]).toEqual([44, 44]);
     fit.click();
     fixture.detectChanges();
     expect(board.boardZoom).toBe(1);
     expect(board.shownViewBox).toBe(whole);
     expect(fixture.nativeElement.querySelector('.board-fit-btn')).toBeNull();
+  });
+
+  it('zooms with the wheel about the point under the pointer, as a pinch does', () => {
+    // A unit's numbers are 7px on a laptop's window; the wheel reads a crowd
+    // of them, where the Unit panel reads one.
+    const whole = board.shownViewBox;
+    // A board on the screen at a size, as in the room: the fixture lays it out at none.
+    svg().style.width = '600px';
+    svg().style.height = '500px';
+    const r = svg().getBoundingClientRect();
+    const at = { x: r.left + r.width * 0.3, y: r.top + r.height * 0.6 };
+    const under = anyBoard().toBoard(at, board.boardZoom, anyBoard().zoomCenter);
+    const wheel = (deltaY: number) => {
+      const e = new WheelEvent('wheel', { deltaY, clientX: at.x, clientY: at.y, bubbles: true, cancelable: true });
+      svg().dispatchEvent(e);
+      return e;
+    };
+    const e = wheel(-300);
+    expect(e.defaultPrevented).toBeTrue();         // the page does not scroll or zoom
+    expect(board.boardZoom).toBeGreaterThan(1);
+    const still = anyBoard().toBoard(at, board.boardZoom, anyBoard().zoomCenter);
+    expect(still.x).toBeCloseTo(under.x, 0);
+    expect(still.y).toBeCloseTo(under.y, 0);
+    wheel(3000);
+    expect(board.boardZoom).toBe(1);
+    expect(board.shownViewBox).toBe(whole);
   });
 
   it('pans a zoomed board with one finger, and the tap that ends the drag chooses nothing', () => {
@@ -2896,7 +3043,10 @@ describe('GameBoardComponent on a touch screen', () => {
     const before = board.shownViewBox;
     pointer('pointerdown', 1, 300, 250);
     pointer('pointermove', 1, 360, 250);
+    // "Whole board" out of the way while the drag lasts, back once it ends.
+    expect(svg().parentElement!.classList.contains('gesturing')).toBeTrue();
     pointer('pointerup', 1, 360, 250);
+    expect(svg().parentElement!.classList.contains('gesturing')).toBeFalse();
     expect(board.shownViewBox).not.toBe(before);
     // Dragged right, so the view moved left over the board.
     expect(Number(board.shownViewBox.split(' ')[0])).toBeLessThan(Number(before.split(' ')[0]));
@@ -2966,6 +3116,25 @@ describe('GameBoardComponent on a touch screen', () => {
     const hint = fixture.nativeElement.querySelector('.armed-hint') as HTMLElement;
     expect(hint.closest('svg')).toBeNull();
     expect(parseFloat(getComputedStyle(hint).fontSize)).toBeGreaterThanOrEqual(12);
+  });
+
+  it('draws every number on a white unit face at 4.5:1 or better', () => {
+    // MOV was #e0a800 - 2:1 on white, where HP, ATK and DEF were 4.5:1 and more.
+    const lin = (c: number) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    const luminance = (rgb: string) => {
+      const [r, g, b] = (rgb.match(/\d+/g) ?? []).map(Number);
+      return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    };
+    const faces = Array.from(fixture.nativeElement.querySelectorAll('text.stat:not(.on-dark)')) as SVGTextElement[];
+    const kinds = new Set<string>();
+    for (const t of faces) {
+      const kind = t.getAttribute('class')!.split(' ').find(c => /^stat-(hp|atk|def|mov)$/.test(c));
+      if (!kind || kinds.has(kind)) continue;
+      kinds.add(kind);
+      const contrast = 1.05 / (luminance(getComputedStyle(t).fill) + 0.05);
+      expect(contrast).withContext(kind).toBeGreaterThanOrEqual(4.5);
+    }
+    expect([...kinds].sort()).toEqual(['stat-atk', 'stat-def', 'stat-hp', 'stat-mov']);
   });
 
   it("draws each unit's face a tenth smaller, clear of its neighbours'", () => {

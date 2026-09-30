@@ -498,13 +498,24 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       <!-- Pinch to zoom and drag to pan are listened for outside Angular
            (ngAfterViewInit): they arrive sixty times a second, and each one
            through change detection would re-check every hex on the board. -->
+      <!-- A stop on the keyboard's way round the room, played from the keys
+           once it has the focus (onBoardKey): arrows move over it, Enter
+           chooses, Escape lets go. -->
       <svg
         #boardSvg
         [attr.viewBox]="shownViewBox"
         class="hex-board"
         [class.board-flipped]="rotateBoard"
         preserveAspectRatio="xMidYMid meet"
+        tabindex="0"
+        role="application"
+        aria-roledescription="game board"
+        aria-label="Game board"
+        aria-describedby="board-keys"
         (mouseleave)="onHexHover(null)"
+        (keydown)="onBoardKey($event)"
+        (focus)="onBoardFocus()"
+        (blur)="onBoardBlur()"
       >
         <defs>
           <marker id="movement-arrowhead" markerWidth="8" markerHeight="8"
@@ -934,7 +945,14 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
           >{{ mark }}</text>
         </g>
 
+        <!-- The keyboard's hex, over everything, while the keys have the board. -->
+        <polygon *ngIf="keyFocused && keyCursorCell as k" [attr.points]="k.points" class="key-cursor" />
       </svg>
+
+      <!-- For a screen reader: how the keys play the board, and each hex the
+           keyboard lands on as it lands. -->
+      <p id="board-keys" class="sr-only">Arrow keys move over the board, Enter or Space chooses a hex, Escape lets go of the unit.</p>
+      <p class="sr-only" aria-live="polite">{{ keyWords }}</p>
 
       <!-- Touch only: an enemy in reach tapped once is armed - the trade's
            forecast on both units, as a hover shows it, and the hex pulsing -
@@ -942,11 +960,20 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
            the board rather than drawn on it: the board's own text is sized
            to the board, a few pixels tall on a phone, and next to the target
            it sat on the forecast of whoever stood beside it. -->
-      <div *ngIf="armedAttack" class="armed-hint" [class.high]="armedHintHigh">Tap again to strike</div>
+      <div *ngIf="armedAttack && !hintOutside" class="armed-hint" [class.high]="armedHintHigh">Tap again to strike</div>
 
-      <!-- Zoomed in by a pinch: the way back to the whole board. -->
+      <!-- Zoomed in by a pinch: the way back to the whole board. A finger's
+           width square with a zoom-out glyph, named for what it does: the
+           words made it a 115px bar over the corner of a zoomed board, and
+           the units under it could not be tapped without panning them out.
+           Gone, and let through, while a drag or a pinch is under way
+           (.gesturing, holdPointers). -->
       <button *ngIf="boardZoom > 1" type="button" class="board-fit-btn"
-              (click)="fitBoard()">Whole board</button>
+              aria-label="Whole board" title="Whole board" (click)="fitBoard()"><svg
+          viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false"><circle
+          cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path
+          d="M6.8 10h6.4M15 15l5.5 5.5" fill="none" stroke="currentColor" stroke-width="2.4"
+          stroke-linecap="round"/></svg></button>
 
     </div>
   `,
@@ -992,15 +1019,43 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       top: 8px;
       right: 8px;
       z-index: 4;
-      min-width: 44px;
-      min-height: 44px;
-      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      height: 44px;
+      padding: 0;
       border: none;
       border-radius: 6px;
-      background: rgba(12, 12, 22, 0.82);
+      background: rgba(12, 12, 22, 0.72);
       color: #fff;
-      font: 700 14px Arial, sans-serif;
       cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .board-container.gesturing .board-fit-btn {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Played from the keys: the board's edge while it has them, and the hex
+       they are on, drawn over everything and taking no clicks. A click's
+       focus draws neither (onBoardFocus). */
+    .hex-board:focus { outline: none; }
+    .hex-board:focus-visible { outline: 3px solid #2563eb; outline-offset: -3px; }
+    .key-cursor {
+      fill: none;
+      stroke: #2563eb;
+      stroke-width: 4;
+      pointer-events: none;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
     }
 
     /* An enemy a first tap armed: a deeper red than any other target,
@@ -1765,7 +1820,8 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
 
     .effect-arrow.up, .effect-arrow.up.on-dark { fill: #22c55e; }
     .effect-arrow.down, .effect-arrow.down.on-dark { fill: #ef4444; }
-    .stat-mov { font-size: 15px; fill: #e0a800; }
+    /* The room's dark gold: #e0a800 was 2:1 on a white face, this 5:1. */
+    .stat-mov { font-size: 15px; fill: #8b6800; }
 
     .stat-hp.on-dark { fill: #4ade80; }
     .stat-atk.on-dark { fill: #f87171; }
@@ -2109,6 +2165,18 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   @Output() wrapCrossed = new EventEmitter<number>();
   /** Same payload for the hex under the cursor - a preview, not a selection. */
   @Output() hexHovered = new EventEmitter<SelectedUnit | null>();
+  /**
+   * Touch: an enemy armed for a second tap (armedAttack), or no longer. For a
+   * room that says "Tap again to strike" somewhere of its own (hintOutside).
+   */
+  @Output() armedChange = new EventEmitter<boolean>();
+  /**
+   * The room says "Tap again to strike" off the board - a phone's Unit strip,
+   * right under it - so the board draws no hint of its own. On a phone the
+   * hint covered a strip of units wherever it stood: the hexes fill the board
+   * edge to edge, and at 15px a hex it lay over a dozen of them.
+   */
+  @Input() hintOutside = false;
 
   /**
    * A stat that is not what the unit was built with pulses: lifted in light
@@ -2631,10 +2699,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   }
 
   ngOnChanges(changes: SimpleChanges): void {
-    // A target armed on one position is not armed on the next.
+    // A target armed on one position is not armed on the next - and the room
+    // told so once its own check is over, not in the middle of it.
     if (changes['boardState'] || changes['currentTurn'] || changes['turnNumber']) {
+      if (this.armedAttack) queueMicrotask(() => this.armedChange.emit(false));
       this.armedAttack = null;
     }
+    // The board's own zoom to a unit's reach is the turn's: the next one is
+    // seen whole, recap and all (zoomToReach).
+    if (changes['currentTurn'] || changes['turnNumber']) this.unzoomFromReach();
     // Recalculate cells whenever board, radius, or config (orientation) changes
     // myColor with them: it decides which set of home rows is drawn as ours.
     if (changes['boardState'] || changes['radius'] || changes['config']
@@ -2753,9 +2826,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       this.swallowClick = false;
       return;
     }
+    const wasArmed = !!this.armedAttack;
     this.handleClick(hex);
     // Any branch above may have moved the selection, and the preview follows it.
     this.invalidatePreview();
+    if (wasArmed !== !!this.armedAttack) this.armedChange.emit(!!this.armedAttack);
   }
 
   private handleClick(hex: HexCell): void {
@@ -2841,6 +2916,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       this.selectedHex = hex.key;
       this.emitSelected(hex);
       this.refreshTargets(canDrive);
+      if (canDrive) this.zoomToReach(hex);
       return;
     }
 
@@ -2855,12 +2931,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         this.selectedHex = null;
         this.clearTargets();
         this.hexSelected.emit(null);
+        this.unzoomFromReach();
         return;
       }
       // Clicking same hex deselects
       this.selectedHex = null;
       this.clearTargets();
       this.hexSelected.emit(null);
+      this.unzoomFromReach();
     }
   }
 
@@ -4431,6 +4509,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
 
   /** How far a pinch goes: four times the whole board. */
   static readonly ZOOM_MAX = 4;
+  /** Hexes smaller than this on screen are zoomed to on a tap (zoomToReach): WCAG's least target. */
+  static readonly TAP_ZOOM_BELOW = 24;
+  /** How big a tap's zoom makes a hex, at most: a finger's width. */
+  static readonly FINGER = 44;
+  /** A tap's zoom that would not come to this is not worth the jump. */
+  static readonly ZOOM_WORTH = 1.2;
+  /** The view is the board's own, from a tap on a unit - not a pinch the player made. */
+  private autoZoomed = false;
 
   /** 1 is the whole board. */
   boardZoom = 1;
@@ -4463,17 +4549,185 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       const down = (e: PointerEvent) => this.onBoardPointerDown(e);
       const move = (e: PointerEvent) => this.onBoardPointerMove(e);
       const up = (e: PointerEvent) => this.onBoardPointerUp(e);
+      const wheel = (e: WheelEvent) => this.onBoardWheel(e);
       svg.addEventListener('pointerdown', down);
       svg.addEventListener('pointermove', move);
       svg.addEventListener('pointerup', up);
       svg.addEventListener('pointercancel', up);
+      // Not passive: the wheel's own scroll (or a trackpad's pinch, which
+      // zooms the page) is the board's to replace.
+      svg.addEventListener('wheel', wheel, { passive: false });
       this.unlistenGestures = () => {
         svg.removeEventListener('pointerdown', down);
         svg.removeEventListener('pointermove', move);
         svg.removeEventListener('pointerup', up);
         svg.removeEventListener('pointercancel', up);
+        svg.removeEventListener('wheel', wheel);
       };
     });
+  }
+
+  /**
+   * The wheel over the board zooms it, about the point under the pointer -
+   * what a pinch does on a phone, for a computer. A unit's numbers are drawn
+   * the board's size, 7px on a laptop's window, and the Unit panel reads one
+   * unit at a time; this reads a crowd of them. A drag pans a zoomed board
+   * and "Whole board" puts it back, as with a pinch. The wheel had nothing to
+   * do here: the room does not scroll. A trackpad's pinch comes as the wheel
+   * with Ctrl held, and zooms the board rather than the page.
+   */
+  onBoardWheel(e: WheelEvent): void {
+    const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+    if (!dy) return;
+    e.preventDefault();
+    const zoom = Math.min(GameBoardComponent.ZOOM_MAX, Math.max(1, this.boardZoom * Math.exp(-dy * 0.002)));
+    if (zoom === this.boardZoom) return;
+    const at = { x: e.clientX, y: e.clientY };
+    const held = this.toBoard(at, this.boardZoom, this.zoomCenter);
+    const [perPx, sign, mid] = [this.unitsPerPx(zoom), this.rotateBoard ? -1 : 1, this.svgMiddle()];
+    this.boardZoom = zoom;
+    this.zoomCenter = { x: held.x - (at.x - mid.x) * perPx * sign, y: held.y - (at.y - mid.y) * perPx * sign };
+    this.autoZoomed = false;
+    this.showZoom();
+  }
+
+  // -- Keyboard play ----------------------------------------------------
+  //
+  // Every panel of the room could be worked from the keys and the board could
+  // not: a move or a blow needed a pointer. Now the board is a stop on the
+  // keyboard's way round (tabindex), and once it has the focus the arrows
+  // move a cursor over it the way the screen shows it - flipped included -
+  // landing on a hex the way a hover does (the Unit panel, a trade's
+  // forecast); Enter or Space chooses it the way a click does; Escape lets
+  // go of the unit. A screen reader is told each hex as it lands. The owner,
+  // 30 Sep 2026: "do them all".
+
+  /** The hex the keyboard is on; none until the keys have had the board. */
+  keyCursor: string | null = null;
+  /** The keys have the board: its hex is drawn (.key-cursor). */
+  keyFocused = false;
+  /** What a screen reader is told of the keyboard's hex (aria-live). */
+  keyWords = '';
+  /** A walk up or down keeps to the column it set off from, not a zigzag. */
+  private keyColumn: number | null = null;
+
+  get keyCursorCell(): HexCell | undefined {
+    return this.keyCursor ? this.cellsByKey.get(this.keyCursor) : undefined;
+  }
+
+  onBoardFocus(): void {
+    // A click's focus draws nothing: the pointer is where the player is.
+    if (!this.boardSvg?.nativeElement.matches(':focus-visible')) return;
+    this.takeKeys();
+  }
+
+  onBoardBlur(): void {
+    this.keyFocused = false;
+    this.cdr.markForCheck();
+  }
+
+  onBoardKey(e: KeyboardEvent): void {
+    const dirs: Record<string, [number, number]> = {
+      ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
+    };
+    if (e.key in dirs) {
+      e.preventDefault();
+      if (this.keyFocused && this.keyCursorCell) this.stepCursor(dirs[e.key]);
+      this.takeKeys();
+    } else if ((e.key === 'Enter' || e.key === ' ') && this.keyCursorCell) {
+      e.preventDefault();
+      // Chosen, not tapped: a blow lands on the first press, as a click's
+      // does - the forecast was read on landing.
+      this.lastPointer = 'keyboard';
+      this.onHexClick(this.keyCursorCell);
+      this.keyLanded();
+    } else if (e.key === 'Escape' && this.selectedHex) {
+      e.preventDefault();
+      this.selectedHex = null;
+      this.clearTargets();
+      this.hexSelected.emit(null);
+      this.unzoomFromReach();
+      this.invalidatePreview();
+      this.keyLanded();
+    }
+  }
+
+  /** The keys have the board: its cursor where it was, on the selection, or on a unit that can act. */
+  private takeKeys(): void {
+    this.keyFocused = true;
+    if (!this.keyCursorCell) this.keyCursor = this.selectedHex ?? this.firstKeyHex();
+    this.keyLanded();
+  }
+
+  /** Where the keys start: the side to play's first unit on the board, else its middle. */
+  private firstKeyHex(): string | null {
+    const side = this.activeColor;
+    const own = this.cells.find(c => c.piece && !c.panel && c.piece.color === side);
+    if (own) return own.key;
+    const b = this.baseBox;
+    let best: HexCell | null = null;
+    for (const c of this.cells) {
+      if (!best || Math.hypot(c.cx - b.x - b.w / 2, c.cy - b.y - b.h / 2)
+        < Math.hypot(best.cx - b.x - b.w / 2, best.cy - b.y - b.h / 2)) best = c;
+    }
+    return best?.key ?? null;
+  }
+
+  /**
+   * One hex over, the way the arrow points on the screen: the neighbour
+   * straightest ahead, and going up or down the one nearest the column the
+   * walk set off from - two neighbours lean either way of straight up. The
+   * board flipped, the screen's up is the board's down.
+   */
+  private stepCursor([dx, dy]: [number, number]): void {
+    const from = this.keyCursorCell;
+    if (!from) return;
+    const sign = this.rotateBoard ? -1 : 1;
+    const [vx, vy] = [dx * sign, dy * sign];
+    const apart = Math.sqrt(3) * HEX_SIZE;
+    if (dx) this.keyColumn = null;
+    const column = dy ? (this.keyColumn ??= from.cx) : null;
+    let best: HexCell | null = null;
+    let bestScore = -Infinity;
+    for (const c of this.cells) {
+      const [ox, oy] = [c.cx - from.cx, c.cy - from.cy];
+      const d = Math.hypot(ox, oy);
+      if (d < 1 || d > apart * 1.25) continue;
+      const cos = (ox * vx + oy * vy) / d;
+      if (cos < 0.5) continue;
+      const score = cos * 10 - (column !== null ? Math.abs(c.cx - column) / apart : 0);
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    if (best) this.keyCursor = best.key;
+  }
+
+  /** Landed on a hex: read as a hover, kept in the view, and said. */
+  private keyLanded(): void {
+    const cell = this.keyCursorCell;
+    if (!cell) return;
+    this.onHexHover(cell);
+    if (this.boardZoom > 1) {
+      const [x, y, w, h] = this.shownViewBox.split(' ').map(Number);
+      if (cell.cx < x || cell.cx > x + w || cell.cy < y || cell.cy > y + h) {
+        this.zoomCenter = { x: cell.cx, y: cell.cy };
+        this.applyZoom();
+      }
+    }
+    this.keyWords = this.keyWordsFor(cell);
+    this.cdr.markForCheck();
+  }
+
+  /** "Hex 200: white pawn, HP 20 of 20, can move here" - what the hex is, and what it offers. */
+  keyWordsFor(cell: HexCell): string {
+    const where = `Hex ${cell.num}` + (cell.panel ? `, ${BASE_PANELS.has(cell.panel) ? 'base' : 'reserve'}` : '');
+    const pc = cell.piece;
+    const def = pc ? this.config?.units?.[pc.unit_id] : null;
+    const max = pc ? (pc.max_hp ?? def?.hp) : null;
+    const unit = pc ? `${pc.color} ${def?.name ?? pc.unit_id}, HP ${pc.hp}${max != null ? ` of ${max}` : ''}` : 'empty';
+    const offer = cell.key === this.selectedHex ? 'selected'
+      : this.attackTargets.has(cell.key) ? 'can attack'
+      : this.legalTargets.has(cell.key) ? 'can move here' : '';
+    return `${where}: ${unit}${offer ? `, ${offer}` : ''}`;
   }
 
   onBoardPointerDown(e: PointerEvent): void {
@@ -4549,6 +4803,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     if (this.moved) return;          // held already, from the first frame of it
     this.moved = true;
     for (const id of this.pointers.keys()) this.hold(id);
+    this.markGesture(true);
+    // A pinch or a pan of the player's own: the view is theirs from here.
+    this.autoZoomed = false;
+  }
+
+  /** "Whole board" out of the way for the length of a drag (.gesturing) -
+   *  on the element itself: the drag runs outside Angular. */
+  private markGesture(on: boolean): void {
+    this.boardSvg?.nativeElement.parentElement?.classList.toggle('gesturing', on);
   }
 
   private hold(id: number): void {
@@ -4564,14 +4827,59 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     } else {
       this.gestureStart = null;
       this.moved = false;
+      this.markGesture(false);
     }
   }
 
   /** Back to the whole board. */
   fitBoard(): void {
     this.boardZoom = 1;
+    this.autoZoomed = false;
     this.applyZoom();
     this.cdr.markForCheck();
+  }
+
+  /** A hex's width on screen at the whole board. */
+  hexOnScreen(): number {
+    return (Math.sqrt(3) * HEX_SIZE) / this.unitsPerPx(1);
+  }
+
+  /**
+   * A tap on a unit that can act, where the board's hexes are too small for a
+   * finger: the board zooms to fit where it can go and what it can hit, no
+   * further than a finger's width a hex. At 15px a hex a finger lands on the
+   * one beside it, and the pinch before every move took two hands. Back to
+   * the whole board with the turn (ngOnChanges) or a tap on nothing. Not over
+   * a zoom the player made themselves, and not for a mouse, which does not
+   * miss. The owner, 30 Sep 2026, of a list of the phone's roughest edges
+   * this headed: "do them all".
+   */
+  private zoomToReach(from: HexCell): void {
+    if (this.lastPointer !== 'touch' || (this.boardZoom > 1 && !this.autoZoomed)) return;
+    const hexPx = this.hexOnScreen();
+    if (!(hexPx > 0) || hexPx >= GameBoardComponent.TAP_ZOOM_BELOW) return;
+    const reach = [from.key, ...this.legalTargets, ...this.attackTargets]
+      .map(key => this.cellsByKey.get(key))
+      .filter((cell): cell is HexCell => !!cell);
+    if (reach.length < 2) return;
+    const xs = reach.map(c => c.cx);
+    const ys = reach.map(c => c.cy);
+    // A hex's breadth round the edges, so the outermost are whole.
+    const pad = 2 * HEX_SIZE;
+    const w = Math.max(...xs) - Math.min(...xs) + pad;
+    const h = Math.max(...ys) - Math.min(...ys) + pad;
+    const zoom = Math.min(GameBoardComponent.ZOOM_MAX, this.baseBox.w / w, this.baseBox.h / h,
+      GameBoardComponent.FINGER / hexPx);
+    if (zoom < GameBoardComponent.ZOOM_WORTH) return;
+    this.boardZoom = zoom;
+    this.zoomCenter = { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 };
+    this.autoZoomed = true;
+    this.applyZoom();
+  }
+
+  /** The board's own zoom undone: the turn is over, or the tap chose nothing. */
+  private unzoomFromReach(): void {
+    if (this.autoZoomed) this.fitBoard();
   }
 
   private beginGesture(): void {

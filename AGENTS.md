@@ -1401,7 +1401,10 @@ Decided so far:
     choices had run off both edges of a phone's board, 15s, 30s and Unlimited out of reach.
     The panels under the board are in `game-room.layout.scss`, with the tabs': the room's
     styles had outgrown their 40kB budget, and the layouts are a subject of their own (as are
-    the "?"s, in `game-room.tips.scss`, below). The unit's functions (`u()`, `t()`) are in
+    the "?"s, in `game-room.tips.scss`, below, and the game-mode picker and the reveal dialogs
+    before a match, in `game-room.pregame.scss` - moved out 30 Sep 2026, when the room's own
+    had come within a few hundred bytes of its budget; no computed style changed, checked
+    element by element at four sizes). The unit's functions (`u()`, `t()`) are in
     `_room-units.scss`, which the first two use.
   - **The header's last steps.** Upright phones are too narrow for even the stacked banner, so
     one more: the turn on a line of its own and the two scores side by side under it
@@ -1432,10 +1435,26 @@ Decided so far:
     (`wash-attack-armed`), as every overlay there is. The hint goes over the top of the board,
     at the left, while the armed target is in the board's lower half as it shows
     (`armedHintHigh` - zoomed, panned or turned round): along the foot it sat on a player's
-    own rows, where a target in reach often is.
+    own rows, where a target in reach often is. Where there is a Unit strip under the board (a
+    phone, a short window), the hint is at the end of the strip's first line instead
+    (`hintOutside`, the board's `armedChange`, the room's `boardArmed`): on the board it lay
+    across a dozen 15px hexes wherever it went. The strip keeps its one line - the unit's name
+    gives way - so the tabs under it never move. 30 Sep 2026.
   - **Pinch and drag.** A phone shows the whole board at 13-17px a hex whatever the layout, so
     the board zooms: two fingers zoom it (1x to 4x, the point under them held under them), one
-    finger pans a zoomed board, and "Whole board" puts it back. What changes is the viewBox
+    finger pans a zoomed board, and "Whole board" puts it back - a 44px zoom-out button in the
+    corner, named for what it does, where its words had made a 115px bar over the corner's
+    units, and out of the way for the length of a drag (`.gesturing`, set on the element: the
+    drag runs outside Angular). **A tap zooms too** (`zoomToReach`): a tap on a unit that can
+    act, where the hexes are under 24px on screen, zooms the board to fit everything it can
+    reach or hit, no further than 44px a hex (a finger); the next turn is seen whole again, and
+    so is a tap on nothing. Not for a mouse, not over a zoom the player made, and not for a
+    reach of most of the board (under 1.2x). **The wheel zooms on a computer**
+    (`onBoardWheel`), about the point under the pointer as a pinch does: a unit's numbers are
+    7px on a laptop's window, and this reads a crowd of them where the Unit panel reads one. A
+    trackpad's pinch - the wheel with Ctrl - zooms the board, not the page. It stands in for a
+    "bigger faces" button, which the view controls' row has no room for and whose faces would
+    overlap. The owner, 30 Sep 2026, of these and more: "do them all". What changes is the viewBox
     (`shownViewBox`), so everything drawn on the board zooms with it. The tap that ends a drag
     chooses nothing (`swallowClick`) - in Chrome the capture below already sends its click to
     the board, not a hex; the flag stays for a browser that aims a tap's click by where the
@@ -1484,6 +1503,19 @@ Decided so far:
     room's chat boxes keep the room they had (`game-room.layout.scss`): free to shrink, or a
     box's width at 16px crowded "Send" out of its button, and their padding giving back what
     the taller line takes, or the chat lost the 2px its one entry needed at 960x540.
+  - **The board is played from the keys** (`onBoardKey`). It is a stop on Tab's way round the
+    room (a Tab on nothing is still End Turn, the owner's shortcut; a Tab on the board moves
+    on). Once it has the focus the arrows move a cursor over it the way the screen shows it,
+    flipped included, up and down keeping to a column rather than zigzagging (`stepCursor`);
+    landing on a hex is a hover (the Unit panel, a trade's forecast), Enter or Space is a
+    click (a blow lands on the first press, its forecast read on landing), and Escape lets go
+    of the unit. The cursor is drawn for the keys alone (`:focus-visible`: a click's focus
+    draws nothing), and a screen reader is told each hex as it lands (`keyWordsFor`, "Hex 200:
+    white pawn, HP 20 of 20, can move here"). Every panel could be worked from the keys and
+    the board could not. The owner, 30 Sep 2026.
+  - **MOV is a dark gold** (`#8b6800`), 4.5:1 on every ground it is drawn on - a unit's face,
+    the Unit panel's cells, the strip - as HP, ATK and DEF are. It was `#e0a800`, 2:1; a spec
+    holds every number on a white face to 4.5:1. The black units' pale gold is untouched.
   - **Every button whose only word is a symbol has a name** for a screen reader: each ⋮ is
     "Options for <name>", each ⤢ "Expand <panel>" or "Shrink <panel>"; the ⚠️ and ⚙️ beside a
     player are images named for what they mean.
@@ -2326,8 +2358,9 @@ the first unit of an overtime turn left no arrow and no line, and a turn that wr
 and then ended was logged as a pass (it now says "ended the turn"). Panel walks get a line and
 no arrow, as before.
 
-**A blow's line says who hit whom** (`describeMove`): "black pawn 200 hit white pawn 199 for 4
-(16 HP left), took 4 back" - the walk first when it moved to strike ("180 -> 200 hit ..."),
+**A blow's line says who hit whom** (`describeMove`): "black pawn 200 hit pawn 199 for 4
+(16 HP left), took 4 back" - the defender without its colour, which is always the other side's
+and took the line to a third row in the owner's 218px History (30 Sep 2026) - the walk first when it moved to strike ("180 -> 200 hit ..."),
 "(eliminated)" for a kill, "took 9 back and was eliminated" when the answer killed it, and the
 panel named for a blow into one ("in its base", "in its reserve"), whose hexes have no number
 drawn. It read "black pawn: 200 -> 200 - dealt 4 dmg (pawn survives, 16 HP)": a move to where it

@@ -519,7 +519,9 @@ const TIP_GUTTER = 16;
   imports: [CommonModule, FormsModule, ConnectionStatusComponent, GameBoardComponent,
     VolumeControlComponent],
   templateUrl: './game-room.component.html',
-  styleUrls: ['./game-room.component.scss', './game-room.layout.scss', './game-room.tips.scss'],
+  styleUrls: [
+    './game-room.component.scss', './game-room.pregame.scss', './game-room.layout.scss', './game-room.tips.scss',
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, DoCheck {
@@ -2681,6 +2683,22 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     return this.hoveredUnit ?? this.selectedUnit;
   }
 
+  /** The Unit panel in two lines under the board: a phone, a short window. */
+  get stripShown(): boolean {
+    return this.roomLayout !== 'columns' && !this.unitPinned;
+  }
+
+  /**
+   * An enemy armed by a first tap, the board says (armedChange): the strip
+   * says "Tap again to strike" while it is, in place of the board's own hint.
+   */
+  boardArmed = false;
+
+  onArmedChange(armed: boolean): void {
+    this.boardArmed = armed;
+    this.cdr.markForCheck();
+  }
+
   /** Steps already spent this turn by the displayed unit (0 unless staged). */
   get moveUsed(): number {
     const u = this.displayUnit;
@@ -4344,6 +4362,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       // swallowing it everywhere put Undo, End Turn and Resign out of reach
       // of the keyboard, and ended a turn on every attempt to reach them.
       if (target && /^(BUTTON|A)$/.test(target.tagName)) return;
+      // Nor on the board, which is played from the keys once it has them
+      // (the board's onBoardKey): Tab there moves on, as off any control.
+      if (target?.closest?.('app-game-board')) return;
       event.preventDefault();
       this.endTurn();
     } else if (event.key === 'r' || event.key === 'R') {
@@ -4703,8 +4724,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * where, and what came back. It read "black pawn: 200 -> 200 - dealt 4 dmg
    * (pawn survives, 16 HP)": a move to where it already stood, the unit it hit
    * named by type alone, and the blow it took back left out. Now "black pawn
-   * 200 hit white pawn 199 for 4 (16 HP left), took 4 back" - the wording the
-   * owner agreed to, 29 Sep 2026.
+   * 200 hit pawn 199 for 4 (16 HP left), took 4 back" - the wording the owner
+   * agreed to, 29 Sep 2026, less the defender's colour (below).
    */
   private describeMove(move: any): string {
     let where = '';
@@ -4721,7 +4742,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const struck = move.attackedHex ?? move.to;
     const stood = move.attackedHex ? move.to : move.from;
     const walked = !!move.attackedHex && move.from !== move.to;
-    const other = String(move.color).toLowerCase() === 'white' ? 'black' : 'white';
+    // The defender by its unit and hex, not its colour: it is always the
+    // other side's, and on the owner's window (a 218px History) the colour
+    // took the line to a third row - two entries in sight became one and a
+    // half. 30 Sep 2026.
     // A panel defender is on no board: its record carries it, and its hex has
     // no number drawn - the panel is named instead.
     const defender = move.captured
@@ -4731,7 +4755,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       ? `in its ${move.panel ? (BASE_PANELS.has(move.panel) ? 'base' : 'reserve') : 'panel'}`
       : this.hexLabel(struck);
     let text = `${move.color} ${move.unit_id} ${walked ? path : this.hexLabel(stood)}`
-      + ` hit ${other} ${defender} ${target} for ${move.damage_dealt}`;
+      + ` hit ${defender} ${target} for ${move.damage_dealt}`;
     // A blow into a panel writes `defenderHp`; one on the board writes
     // `defender_hp`. Without both keys the line read "survives, undefined HP".
     const left = move.defenderHp ?? move.defender_hp;

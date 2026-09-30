@@ -1591,7 +1591,7 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.opponentAttackMarkers).toEqual([{ from: '0,-4', to: '-1,-11' }]);
     const lines = logged(c).filter((line: string) => line.startsWith('black '));
     expect(lines.length).toBe(2);
-    expect(lines[0]).toContain('hit white rook in its base for 4 (36 HP left)');
+    expect(lines[0]).toContain('hit rook in its base for 4 (36 HP left)');
     expect(lines[1]).toContain('black knight');
   });
 
@@ -1612,7 +1612,7 @@ describe('GameRoomComponent ability panel', () => {
         color: 'black', unit_id: 'pawn', from: '1,-3', to: '1,-3', attackedHex: '0,-3',
         damage_dealt: 4, defender_hp: 16, counter_damage: 4, attacker_eliminated: false,
       }, { '0,-3': pawn });
-      expect(text).toBe(`black pawn ${n('1,-3')} hit white pawn ${n('0,-3')} for 4 (16 HP left), took 4 back`);
+      expect(text).toBe(`black pawn ${n('1,-3')} hit pawn ${n('0,-3')} for 4 (16 HP left), took 4 back`);
     });
 
     it('gives the walk first when the unit moved to strike', () => {
@@ -1621,19 +1621,19 @@ describe('GameRoomComponent ability panel', () => {
         damage_dealt: 6, defender_hp: 10, counter_damage: 0,
       }, { '1,-2': { ...pawn, color: 'black' } });
       // Out of the pawn's reach: nothing came back, and the line says nothing of it.
-      expect(text).toBe(`white archer ${n('-3,3')} -> ${n('-1,0')} hit black pawn ${n('1,-2')} for 6 (10 HP left)`);
+      expect(text).toBe(`white archer ${n('-3,3')} -> ${n('-1,0')} hit pawn ${n('1,-2')} for 6 (10 HP left)`);
     });
 
     it('says a kill, and an attacker the answer killed', () => {
       expect(line({
         color: 'black', unit_id: 'pawn', from: '1,-3', to: '1,-3', attackedHex: '0,-3',
         damage_dealt: 4, defender_eliminated: true, captured: 'pawn', counter_damage: 0,
-      }).text).toMatch(/hit white pawn \d+ for 4 \(eliminated\)$/);
+      }).text).toMatch(/hit pawn \d+ for 4 \(eliminated\)$/);
       expect(line({
         color: 'black', unit_id: 'pawn', from: '1,-3', to: '1,-3', attackedHex: '0,-3',
         damage_dealt: 2, defender_hp: 30, counter_damage: 9, attacker_eliminated: true,
       }, { '0,-3': { ...pawn, unit_id: 'rook', hp: 30 } }).text)
-        .toMatch(/hit white rook \d+ for 2 \(30 HP left\), took 9 back and was eliminated$/);
+        .toMatch(/hit rook \d+ for 2 \(30 HP left\), took 9 back and was eliminated$/);
     });
 
     it('names the panel a blow landed in, a reserve as well as a base', () => {
@@ -1641,7 +1641,7 @@ describe('GameRoomComponent ability panel', () => {
         color: 'white', unit_id: 'knight', from: '4,-8', to: '4,-8', attackedHex: '12,-9',
         damage_dealt: 5, intoPanel: true, panelAttack: true, panel: 'br',
         unit: { unit_id: 'archer', color: 'black' }, defenderHp: 11, counter_damage: 3,
-      }).text).toMatch(/^white knight \d+ hit black archer in its reserve for 5 \(11 HP left\), took 3 back$/);
+      }).text).toMatch(/^white knight \d+ hit archer in its reserve for 5 \(11 HP left\), took 3 back$/);
     });
 
     it('reads the server\'s older record, with no attackedHex, as a blow from where it stood', () => {
@@ -1649,7 +1649,7 @@ describe('GameRoomComponent ability panel', () => {
         color: 'black', unit_id: 'pawn', from: '1,-3', to: '0,-3',
         damage_dealt: 4, defender_hp: 16,
       }, { '0,-3': pawn });
-      expect(text).toBe(`black pawn ${n('1,-3')} hit white pawn ${n('0,-3')} for 4 (16 HP left)`);
+      expect(text).toBe(`black pawn ${n('1,-3')} hit pawn ${n('0,-3')} for 4 (16 HP left)`);
     });
 
     it('leaves a move without a blow as it was', () => {
@@ -1671,6 +1671,39 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.statHp).toBe('16/20');
     c.selectedUnit = { ...unit, hpMax: null };
     expect(c.statHp).toBe('20');
+  });
+
+  it('says "Tap again to strike" in the Unit strip, wherever there is one', () => {
+    // The board's own hint lay over a dozen of a phone's 15px hexes; the
+    // strip, right under the board, has the forecast the hint is about.
+    const c = room();
+    c.roomLayout = 'stacked';
+    c.unitPinned = false;
+    expect(c.stripShown).toBeTrue();
+    c.onArmedChange(true);
+    expect(c.boardArmed).toBeTrue();
+    c.onArmedChange(false);
+    expect(c.boardArmed).toBeFalse();
+    // Where there is no strip, the board keeps its hint.
+    c.roomLayout = 'columns';
+    expect(c.stripShown).toBeFalse();
+  });
+
+  it('leaves Tab to the keyboard on the board, and ends the turn with it elsewhere', () => {
+    // The board is played from the keys once it has them; Tab there ending
+    // the turn would end it for anyone moving past the board.
+    const c = room();
+    c.windowFocused = true;
+    c.chatFocused = false;
+    const ended = spyOn(c, 'endTurn');
+    const board = document.createElement('app-game-board');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    board.appendChild(svg);
+    const tab = (target: Element) => c.onShortcut({ key: 'Tab', target, preventDefault: () => {} } as any);
+    tab(svg);
+    expect(ended).not.toHaveBeenCalled();
+    tab(document.createElement('div'));
+    expect(ended).toHaveBeenCalledTimes(1);
   });
 
   it('fits the header again when the pointer changes, layout or no layout', () => {

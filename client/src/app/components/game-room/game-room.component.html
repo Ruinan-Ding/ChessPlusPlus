@@ -83,9 +83,12 @@
          in sight whatever tab is showing - behind its tab it filled in where
          nobody could see it, and the numbers drawn on a phone's board are a
          few pixels tall. Pressed, it opens the whole panel. -->
-    <button class="unit-strip" type="button" *ngIf="roomLayout !== 'columns' && !unitPinned"
+    <button class="unit-strip" type="button" *ngIf="stripShown"
             [class.theirs]="unitPanelDim" (click)="selectRoomTab('unit')">
-      <span class="strip-name">{{ displayUnit ? displayUnit.name + ' - ' + unitSideLabel : 'Unit' }}</span>
+      <!-- "Tap again to strike" at the end of its first line, where the board
+           no longer draws it over its units (the board's hintOutside). -->
+      <span class="strip-head"><span class="strip-name">{{ displayUnit ? displayUnit.name + ' - ' + unitSideLabel : 'Unit' }}</span><span
+        class="strip-hint" *ngIf="boardArmed">Tap again to strike</span></span>
       <span class="strip-stats" *ngIf="displayUnit; else noStripUnit">
         <span class="hp">HP <strong [class.forecast]="displayUnit.hpAfter != null">{{ statHp }}</strong></span>
         <span class="atk">ATK <strong>{{ statAtk }}</strong></span>
@@ -528,6 +531,8 @@
           [panelPositions]="panelPositions"
           [panelHp]="panelHp"
           (wrapCrossed)="onWrapCrossed($event)"
+          [hintOutside]="stripShown"
+          (armedChange)="onArmedChange($event)"
           [config]="state.config"
           [showNumbers]="showHexNumbers"
           [movesLeft]="movesLeft"

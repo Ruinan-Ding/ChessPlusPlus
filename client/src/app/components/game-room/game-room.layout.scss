@@ -89,7 +89,34 @@
       cursor: pointer;
 
       &.theirs { background: #f1f1f4; }
-      .strip-name { font-weight: 700; }
+      // Its first line: the unit, and "Tap again to strike" at the end while
+      // an enemy is armed - the board's own hint lay over a dozen of a
+      // phone's 15px hexes. One line whatever it holds: the name gives way
+      // (an ellipsis), and the hint has no padding up or down, so the strip
+      // keeps its height and the tabs under it never move.
+      .strip-head {
+        display: flex;
+        align-items: baseline;
+        gap: u(0.5);
+        min-width: 0;
+      }
+      .strip-name {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 700;
+      }
+      .strip-hint {
+        flex: 0 0 auto;
+        padding: 0 u(0.375);
+        border-radius: 4px;
+        background: #7f1d1d;
+        color: #fff;
+        font-weight: 700;
+        white-space: nowrap;
+      }
       .strip-stats {
         display: flex;
         flex-wrap: wrap;
@@ -98,7 +125,7 @@
       .hp strong { color: #15803d; }
       .atk strong { color: #b91c1c; }
       .def strong { color: #1d4ed8; }
-      .mov strong { color: #b58900; }
+      .mov strong { color: #8b6800; }   // the panel's dark gold (4.5:1)
 
       // The HP a hovered trade would leave, waving as the panel's does - or
       // it reads as the HP the unit has. Its own keyframes: a name is scoped
