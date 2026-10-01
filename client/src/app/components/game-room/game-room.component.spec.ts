@@ -145,6 +145,37 @@ describe('GameRoomComponent ability panel', () => {
       gameState.applyGameOver({ revision: 2, endReason: 'regicide' });
       expect(c.acceptStateRevision({ type: 'game_over', revision: 2 })).toBeFalse();
     });
+
+    it('announces a finished game once, however many resyncs repeat it', () => {
+      const gameState = new GameStateService();
+      const c: any = new GameRoomComponent(
+        { sendMessage: () => {} } as any,
+        {} as any, {} as any, {} as any, {} as any,
+        { markForCheck: () => {}, detectChanges: () => {} } as any,
+        gameState, {} as any, { playTone: () => {} } as any, zone,
+      );
+      c.username = 'me';
+      c.reconcilePoints = () => {};
+      const said: string[] = [];
+      c.addSystemMessage = (text: string) => said.push(text);
+      const finished = {
+        type: 'game_state_update', revision: 9, turnNumber: 30, currentTurn: 'them',
+        boardState: {}, moveHistory: [], config: DEFAULT_GAME_CONFIG,
+        winner: 'me', endReason: 'regicide',
+      };
+
+      // A reload into a game already over: said once, popup up.
+      c.handleWebSocketMessage(finished);
+      expect(said.length).toBe(1);
+      expect(c.showEndModal).toBeTrue();
+
+      // The player closes it, and a later resync of the same result.
+      c.showEndModal = false;
+      c.handleWebSocketMessage({ ...finished });
+      expect(said.length).toBe(1);
+      expect(c.showEndModal).toBeFalse();
+      expect(gameState.snapshot.currentTurn).toBe('');
+    });
   });
 
   it('keeps a unit that crossed and later walked home at home, not departed', () => {

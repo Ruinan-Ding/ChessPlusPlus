@@ -993,7 +993,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     return true;
   }
 
-  private applyGameOverMessage(message: any): void {
+  /** `announce` false applies the result without saying it again - the chat
+   * line and the popup belong to the moment the game ended, not to every
+   * resync of a game already over. */
+  private applyGameOverMessage(message: any, announce = true): void {
     if (Number.isSafeInteger(message.revision)) this.gameOverRevision = message.revision;
     this.clearTurnClock();
     // A winning move replays before the board is handed the completed turn.
@@ -1003,6 +1006,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       this.glowReveal = [];
     }
     this.gameState.applyGameOver(message);
+    if (!announce) {
+      this.cdr.markForCheck();
+      return;
+    }
     if (message.winner) {
       this.addSystemMessage(`Game over - ${message.winner} wins by ${message.endReason}!`);
     } else {
@@ -1169,12 +1176,15 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         this.applyGameOverMessage(actualMessage);
         break;
       }
-      case 'game_state_update':
-        // Full state refresh (e.g., on reconnect)
+      case 'game_state_update': {
+        // Full state refresh (e.g., on reconnect). Whether the game was
+        // already over is read before the refresh overwrites it: a resync of
+        // a finished game re-posted the result and reopened the popup.
+        const alreadyOver = !!this.gameState.snapshot.endReason;
         this.gameState.applyFullState(actualMessage);
         if (actualMessage.endReason) {
           this.reconcilePoints();
-          this.applyGameOverMessage(actualMessage);
+          this.applyGameOverMessage(actualMessage, !alreadyOver);
           break;
         }
         // A reload in a networked room used to start both purses at nothing:
@@ -1194,11 +1204,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         // this the countdown, the warning beeps and the auto-pass all stay
         // asleep until the next move.
         this.startTurnClock();
-        if (actualMessage.winner) {
-          this.addSystemMessage(`Game ended - winner: ${actualMessage.winner}`);
-        }
         this.cdr.markForCheck();
         break;
+      }
       case 'draw_offered':
         this.gameState.applyDrawOffered(actualMessage.offeredBy, actualMessage.revision);
         this.addSystemMessage(`${actualMessage.offeredBy} offered a draw.`);

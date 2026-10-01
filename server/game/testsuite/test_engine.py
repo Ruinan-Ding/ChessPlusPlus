@@ -722,14 +722,13 @@ class GameLogicTestCase(TestCase):
         board = HexBoard(5)
         board.set(0, 0, 'queen', 'white', hp=queen_hp, max_hp=queen_hp)
         board.set(1, 0, 'pawn', 'black', hp=1, max_hp=pawn_hp)
-        expected = strike_damage(config['units']['queen'], config['units']['pawn'], 1, config)
 
         result = resolve_combat(board, (0, 0), (1, 0), config)
 
         self.assertTrue(result['attacked'])
         self.assertTrue(result['defender_eliminated'])
         self.assertFalse(result['moved'])
-        self.assertEqual(result['damage_dealt'], expected)
+        self.assertEqual(result['damage_dealt'], 10)  # 10 attack into no defence
         self.assertEqual(result['counter_damage'], 0)  # the dead do not swing back
         self.assertIsNone(board.get(1, 0))
         attacker = board.get(0, 0)
@@ -741,21 +740,19 @@ class GameLogicTestCase(TestCase):
         config = copy.deepcopy(self._cfg())
         config['units']['pawn'].update(attack=5, defense=1)
         config['units']['rook'].update(attack=7, defense=1)
+        config['rules']['minStrikeDamage'] = 1  # under both blows, so it never bites
         board = HexBoard(5)
         board.set(0, 0, 'pawn', 'white', hp=100, max_hp=100)
         board.set(1, 0, 'rook', 'black', hp=100, max_hp=100)
-        units = config['units']
-        dealt = strike_damage(units['pawn'], units['rook'], 1, config)
-        countered = strike_damage(units['rook'], units['pawn'], 1, config)
 
         result = resolve_combat(board, (0, 0), (1, 0), config)
 
         self.assertFalse(result['defender_eliminated'])
         self.assertFalse(result['moved'])
-        self.assertEqual(result['damage_dealt'], dealt)
-        self.assertEqual(result['defender_hp'], 100 - dealt)
-        self.assertEqual(result['counter_damage'], countered)
-        self.assertEqual(result['attacker_hp'], 100 - countered)
+        self.assertEqual(result['damage_dealt'], 4)     # 5 attack into 1 defence
+        self.assertEqual(result['defender_hp'], 96)
+        self.assertEqual(result['counter_damage'], 6)   # 7 attack into 1 defence
+        self.assertEqual(result['attacker_hp'], 94)
         self.assertFalse(result['attacker_eliminated'])
 
     def test_counter_attack_can_kill_the_attacker(self):
@@ -1717,18 +1714,19 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         })
         return board
 
-    def test_a_reserve_answers_the_blow(self):
+    def _duel_cfg(self, defender):
+        """Every number the blow reads, set here rather than read off the
+        shipped config - so the expected damage is written down, not worked
+        out by the same strike_damage the engine calls."""
         config = copy.deepcopy(self._cfg())
-        config['units']['pawn']['hp'] = 1000
-        config['units']['queen']['hp'] = 1000
+        config['units']['pawn'].update(hp=1000, attack=9, defense=2)
+        config['units'][defender].update(hp=1000, attack=12, defense=4)
+        config['rules']['minStrikeDamage'] = 1
+        return config
+
+    def test_a_reserve_answers_the_blow(self):
+        config = self._duel_cfg('queen')
         board = self._board_with_pawn(config, self.BESIDE_RESERVE)
-        distance = hex_distance(
-            panels.parse_key(self.BESIDE_RESERVE), panels.parse_key(self.RESERVE_QUEEN),
-        )
-        pawn = config['units']['pawn']
-        queen = config['units']['queen']
-        dealt = strike_damage(pawn, queen, distance, config)
-        counter = strike_damage(queen, pawn, distance, config)
         out = resolve_panel_attack(
             board, config, [], self.BESIDE_RESERVE, self.BESIDE_RESERVE,
             self.RESERVE_QUEEN, 'white', 21)
@@ -1736,11 +1734,11 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         record = out['record']
         self.assertTrue(out['counters'])
         self.assertEqual(record['panel'], 'tl')
-        self.assertEqual(record['damage_dealt'], dealt)
-        self.assertEqual(record['defenderHp'], queen['hp'] - dealt)
-        self.assertEqual(record['counter_damage'], counter)
+        self.assertEqual(record['damage_dealt'], 5)      # 9 attack into 4 defence
+        self.assertEqual(record['defenderHp'], 995)
+        self.assertEqual(record['counter_damage'], 10)   # 12 attack into 2 defence
         q, r = panels.parse_key(self.BESIDE_RESERVE)
-        self.assertEqual(board.get(q, r)['hp'], pawn['hp'] - counter)
+        self.assertEqual(board.get(q, r)['hp'], 990)
 
     def test_a_base_never_answers(self):
         """
@@ -1748,16 +1746,8 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         `counters` flag the client sets, so a client could switch the counter
         off against its own blows. Here nothing on the wire can reach it.
         """
-        config = copy.deepcopy(self._cfg())
-        config['units']['pawn']['hp'] = 1000
-        config['units']['rook']['hp'] = 1000
+        config = self._duel_cfg('rook')
         board = self._board_with_pawn(config, self.BESIDE_BASE)
-        distance = hex_distance(
-            panels.parse_key(self.BESIDE_BASE), panels.parse_key(self.BASE_ROOK),
-        )
-        pawn = config['units']['pawn']
-        rook = config['units']['rook']
-        dealt = strike_damage(pawn, rook, distance, config)
         out = resolve_panel_attack(
             board, config, [], self.BESIDE_BASE, self.BESIDE_BASE,
             self.BASE_ROOK, 'white', 21)
@@ -1765,11 +1755,11 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         record = out['record']
         self.assertFalse(out['counters'])
         self.assertEqual(record['panel'], 'tr')
-        self.assertEqual(record['damage_dealt'], dealt)
-        self.assertEqual(record['defenderHp'], rook['hp'] - dealt)
+        self.assertEqual(record['damage_dealt'], 5)      # 9 attack into 4 defence
+        self.assertEqual(record['defenderHp'], 995)
         self.assertEqual(record['counter_damage'], 0)
         q, r = panels.parse_key(self.BESIDE_BASE)
-        self.assertEqual(board.get(q, r)['hp'], pawn['hp'])  # untouched
+        self.assertEqual(board.get(q, r)['hp'], 1000)    # untouched
 
     def test_the_record_carries_what_the_client_derives_panels_from(self):
         """
@@ -2358,9 +2348,8 @@ class PanelMoveTestCase(DealtPanels, TestCase):
         rich = panels.panel_move_targets(
             config, radius, [], board, at['rbl3'], 15, points=price,
         )
-        self.assertEqual(rich[tip]['price'], price)
-        self.assertGreater(rich[tip]['cost'], 0)
-        self.assertLessEqual(rich[tip]['cost'], unit_def['move'])
+        # Five steps to the base tip and one to cross: all six of its MOV.
+        self.assertEqual(rich[tip], {'cost': 6, 'price': price})
         # Every hex reached by making it carries the same price.
         self.assertTrue(all(v['price'] == price for k, v in rich.items()
                             if panels.panel_of(*panels.axial_to_pixel(*panels.parse_key(k))) == 'br'))
