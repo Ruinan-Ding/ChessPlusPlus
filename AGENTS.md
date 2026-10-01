@@ -54,7 +54,10 @@ ng test
 LAYOUT_URL=http://localhost:4201 node scripts/layout-sweep.mjs
 
 # CI (.github/workflows/tests.yml) runs both suites, the migrations check and the production
-# build on every push and pull request.
+# build on every push and pull request. Its Chrome is Linux's: no Arial (Liberation Sans stands
+# in) and perhaps no emoji font, so a spec that lays text out must find its widths, never fix
+# them. banner-fit.spec.ts fixed one (1300px) and CI was red from 29 Sep to 1 Oct 2026 while
+# every spec passed on Windows.
 ```
 
 `DJANGO_DEBUG=true` is required for **every** local `manage.py` invocation. Without it
