@@ -32,7 +32,7 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (320 tests, 1 Oct 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (322 tests, 1 Oct 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
@@ -2265,9 +2265,14 @@ name: a second `join_lobby` under another is refused, as `join_game_room` refuse
 **A name in flight does not change.** `change_username` is refused (`NAME_LOCKED`) in a room and
 for anyone not plainly `online` - with an invite out or in. Renamed with an invite out, the old
 name went free, whoever took it next was sent the room's host token when the invite was
-accepted, and the rename had put the player back to `online` mid-invite. The status is part of the
-delete, so an invite landing between the read and the write is caught. The lobby greys Change out
-while an invite is pending (`renameLocked`).
+accepted, and the rename had put the player back to `online` mid-invite. **The pending invite is
+what is asked, not only the status**: a status is overwritten by more than invites (a repeat
+`join_lobby` on the same socket sets it back to `online`), so a lock on the status alone could be
+walked round. The rename clears expired invites first (`_expire_stale_challenges`, as an invite
+does), then refuses while any pending one names the player. The status is part of the delete too,
+so an invite landing between the read and the write is caught. And `set_status` will not set
+`online` over `invited` or `in-game` - no client sends it; it only ever dodged a lock. The lobby
+greys Change out while an invite is pending (`renameLocked`).
 
 **An invited pair is claimed in one statement too.** `_claim_invite_pair` marks both players
 `invited` in a single conditional update that skips anyone already `in-game` or `invited`, and

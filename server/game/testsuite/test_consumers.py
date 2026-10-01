@@ -1884,6 +1884,54 @@ class UsernameHandlingTests(TransactionTestCase):
                 if comm:
                     await comm.disconnect()
 
+    async def test_no_way_round_the_rename_lock_with_an_invite_out(self):
+        alice, _ = await self._lobby('alice', 'a')
+        bob, _ = await self._lobby('bob', 'b')
+        try:
+            await alice.send_json_to({'type': 'game_challenge', 'challenger': 'alice', 'opponent': 'bob'})
+            await _receive_until(bob, 'game_challenge')
+
+            # Setting yourself online over the invite is refused...
+            await alice.send_json_to({'type': 'set_status', 'username': 'alice', 'status': 'online'})
+            err = await _receive_until(alice, 'error')
+            self.assertEqual(err['code'], 'INVALID_STATUS')
+            row = await PlayerConnection.objects.aget(username='alice')
+            self.assertEqual(row.status, 'invited')
+
+            # ...and a repeat join, which does put the status back to online,
+            # still leaves the invite holding the name.
+            await alice.send_json_to({'type': 'join_lobby', 'username': 'alice', 'secret': 'a'})
+            await _receive_until(alice, 'user_list')
+            await alice.send_json_to({
+                'type': 'change_username', 'oldUsername': 'alice', 'newUsername': 'alice2', 'secret': 'a'})
+            err = await _receive_until(alice, 'error')
+            self.assertEqual(err['code'], 'NAME_LOCKED')
+            self.assertTrue(await PlayerConnection.objects.filter(username='alice').aexists())
+            self.assertFalse(await PlayerConnection.objects.filter(username='alice2').aexists())
+        finally:
+            await alice.disconnect()
+            await bob.disconnect()
+
+    async def test_an_invite_nobody_answered_lets_go_of_the_name(self):
+        alice, _ = await self._lobby('alice', 'a')
+        bob, _ = await self._lobby('bob', 'b')
+        try:
+            await alice.send_json_to({'type': 'game_challenge', 'challenger': 'alice', 'opponent': 'bob'})
+            await _receive_until(bob, 'game_challenge')
+            await GameChallenge.objects.filter(challenger='alice').aupdate(
+                expires_at=timezone.now() - timedelta(seconds=1))
+
+            await alice.send_json_to({
+                'type': 'change_username', 'oldUsername': 'alice', 'newUsername': 'alice2', 'secret': 'a'})
+            changed = await _receive_until(alice, ('username_changed', 'error'))
+            self.assertEqual(changed['type'], 'username_changed', changed)
+            # And the invite it was is gone, so nothing can be accepted under
+            # the name it freed.
+            self.assertFalse(await GameChallenge.objects.filter(challenger='alice').aexists())
+        finally:
+            await alice.disconnect()
+            await bob.disconnect()
+
     async def test_no_rename_in_a_game_room(self):
         game, host, opp, white, black = await _start_seated_game()
         try:

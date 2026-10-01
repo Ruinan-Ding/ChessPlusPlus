@@ -17,7 +17,7 @@ from datetime import timedelta
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.db import IntegrityError, transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
 
 from typing import Optional, Any, Dict, NamedTuple, cast, Union
@@ -728,6 +728,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             # to the name already held touches neither, and the client is still
             # waiting to be told the change went through.
             if new_username != old_username:
+                # An invite nobody answered is cleared first, as
+                # _handle_game_challenge clears it, or it would hold the name
+                # until somebody else happened to send an invite.
+                await self._expire_stale_challenges()
                 outcome = await self._rename_player_connection(
                     old_username, new_username, self.channel_name, client_secret)
                 if outcome == 'taken':
@@ -767,7 +771,20 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return
             
             validate_status(status)
-            
+
+            # An invite or a game sets a player to busy, and only they release
+            # it - the invite answered or expired, the room left. Setting
+            # yourself 'online' over the top of one let you be invited twice,
+            # and walked straight past the rename lock with an invite out. No
+            # client sends it: 'configuring' and 'in-game' are the screen
+            # changes, and those are left alone.
+            if status == 'online':
+                row = await self._get_player_connection(username)
+                if row and row.status in ('invited', 'in-game'):
+                    await send_error(self, 'INVALID_STATUS',
+                                     'Your invite or your game decides your status')
+                    return
+
             await self._update_player_status(username, status)
             
             await self._send_user_list()
@@ -3067,13 +3084,21 @@ class GameConsumer(AsyncWebsocketConsumer):
         invite is addressed to and what a room is seated by. Renamed with an
         invite out, the old name went free, whoever took it next was sent the
         room's host token when the invite was accepted, and the rename had put
-        the player back to `online` with the invite still pending. The status
-        is part of the delete, so an invite landing between the read and the
-        write is caught too. Releasing first lets a player re-case their own
-        name; losing the claim rolls the release back.
+        the player back to `online` with the invite still pending.
+
+        **The invite itself is what is asked about**, not only the status:
+        a status is overwritten by more than invites - a repeat join_lobby on
+        the same socket sets it back to 'online' - and the lock asked the
+        status alone, so that walked past it. The status is part of the
+        delete as well, so an invite landing between the read and the write is
+        caught. Releasing first lets a player re-case their own name; losing
+        the claim rolls the release back.
         """
         try:
             with transaction.atomic():
+                if GameChallenge.objects.filter(  # type: ignore
+                        Q(challenger=old) | Q(responder=old), status='pending').exists():
+                    return 'busy'
                 row = PlayerConnection.objects.filter(username=old).first()  # type: ignore
                 if row is not None:
                     if row.channel_name != channel_name:
