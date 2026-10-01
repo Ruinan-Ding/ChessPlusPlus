@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
@@ -12,6 +12,11 @@ import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { AuthService } from '../../services/auth.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
+import { closeUserMenu, openUserMenu as showUserMenu } from '../../services/user-menu';
+import { afterDraw, atNewest } from '../../services/scrolling';
+
+/** What the server answers a refused rename with (validators.py, consumers.py). */
+const RENAME_ERRORS = ['USERNAME_TAKEN', 'INVALID_USERNAME', 'USERNAME_TOO_LONG'];
 
 @Component({
   selector: 'app-lobby',
@@ -42,6 +47,15 @@ export class LobbyComponent implements OnInit, OnDestroy {
   showChangeUsername: boolean = false;
   /** The server had to rename us; the panel is open to offer a better one. */
   nameWasTaken: boolean = false;
+  /**
+   * Why the name asked for was refused, in the rename panel where it was
+   * asked. It went to the chat - under the fold on a phone - and the panel
+   * sat open saying nothing.
+   */
+  renameError = '';
+
+  /** The chat's log, to follow its newest line (onLobbyMessages). */
+  @ViewChild('lobbyChat') private chatLog?: ElementRef<HTMLElement>;
   activeInvite: {
     inviter: string;
     inviteId: string;
@@ -125,10 +139,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
     });
 
     this.messages = this.sharedDataService.getLobbyMessages();
-    this.sharedDataService.lobbyMessages$.pipe(takeUntil(this.destroy$)).subscribe(msgs => {
-      this.messages = msgs;
-      this.scrollChatToBottom();
-    });
+    this.sharedDataService.lobbyMessages$.pipe(takeUntil(this.destroy$))
+      .subscribe(msgs => this.onLobbyMessages(msgs));
     
     // Subscribe to WebSocket messages before connecting
     this.wsService.messages$.pipe(
@@ -187,32 +199,15 @@ export class LobbyComponent implements OnInit, OnDestroy {
             this.username = message.newUsername;
             this.newUsername = message.newUsername;
             this.authService.setUsername(this.username);
+            // Done: the panel that asked shuts. It stayed open, holding the
+            // new name, until Cancel was pressed on a rename that had worked.
+            this.showChangeUsername = false;
+            this.nameWasTaken = false;
+            this.renameError = '';
           }
           this.cdr.markForCheck();
           break;
-          
-        case 'username_error':
-          if (!message.error) {
-            console.error('Invalid username_error message: missing error field', message);
-            break;
-          }
-          alert(message.error);
-          
-          if (message.oldUsername && message.oldUsername === this.username) {
-            const newRandomName = this.generateRandomUsername();
-            this.username = newRandomName;
-            this.authService.setUsername(newRandomName);
 
-            this.wsService.sendMessage({
-              type: 'join_lobby',
-              username: newRandomName,
-              secret: this.authService.getIdentitySecret()
-            });
-            
-            this.addSystemMessage(`System assigned you a new username: ${newRandomName}`);
-          }
-          break;
-          
         case 'game_challenge':
           this.handleGameChallenge(message);
           break;
@@ -318,6 +313,15 @@ export class LobbyComponent implements OnInit, OnDestroy {
         
         case 'error':
           console.error('[Lobby] Backend error:', message);
+          // A rename refused, with the panel that asked for it open: said
+          // there, not in the chat. (There is no `username_error`: the server
+          // refuses a name with an error like any other, and the case that
+          // alerted on one was never reached.)
+          if (this.showChangeUsername && RENAME_ERRORS.includes(message.code)) {
+            this.renameError = message.message || 'That name cannot be used.';
+            this.cdr.markForCheck();
+            break;
+          }
           if (message.message) {
             this.addSystemMessage(`Error: ${message.message}`);
           }
@@ -381,6 +385,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
   
   ngOnDestroy(): void {
     window.removeEventListener('beforeunload', this.handleBeforeUnload);
+    // Built on the body, it would outlive the lobby.
+    closeUserMenu();
 
     this.clearCountdownTimer();
     if (this.inviteCooldownTimerId) {
@@ -447,6 +453,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
   keepAssignedName(): void {
     this.showChangeUsername = false;
     this.nameWasTaken = false;
+    this.renameError = '';
     this.newUsername = this.username;
     this.cdr.markForCheck();
   }
@@ -459,17 +466,19 @@ export class LobbyComponent implements OnInit, OnDestroy {
       return;
     }
     if (!this.username || typeof this.username !== 'string' || this.username.trim() === '') {
-      this.addSystemMessage('You must be logged in to change your username.');
+      this.renameError = 'You must be logged in to change your username.';
       return;
     }
     if (!trimmedUsername || trimmedUsername === this.username) {
       this.showChangeUsername = false;
+      this.renameError = '';
       return;
     }
     if (trimmedUsername.length < 1 || trimmedUsername.length > 24) {
-      this.addSystemMessage('Username must be between 1 and 24 characters.');
+      this.renameError = 'Username must be between 1 and 24 characters.';
       return;
     }
+    this.renameError = '';
     try {
       this.wsService.sendMessage({
         type: 'change_username',
@@ -479,68 +488,24 @@ export class LobbyComponent implements OnInit, OnDestroy {
       });
     } catch (error) {
       console.error('Failed to change username:', error);
-      this.addSystemMessage('Failed to change username. Please try again.');
+      this.renameError = 'Failed to change username. Please try again.';
     }
     // Keep the UI open until the server confirms or rejects the change
   }
-  
+
   toggleChangeUsername(): void {
     this.showChangeUsername = !this.showChangeUsername;
     this.nameWasTaken = false;
+    this.renameError = '';
     this.newUsername = this.username;
   }
-  
+
   openUserMenu(event: MouseEvent, user: User): void {
     event.preventDefault();
-    
     if (user.username === this.username) return;
-    
     const validation = this.canInviteUser(user.username);
-    
-    const existingMenus = document.querySelectorAll('.user-context-menu');
-    existingMenus.forEach(menu => document.body.removeChild(menu));
-    
-    const menu = document.createElement('div');
-    menu.className = 'user-context-menu';
-    
-    menu.innerHTML = validation.canInvite ? 
-      `<button>Invite</button>` : 
-      `<button disabled>${validation.reason}</button>`;
-    menu.style.position = 'absolute';
-    
-    if (event.target instanceof HTMLButtonElement && event.target.classList.contains('action-button')) {
-      const rect = (event.target as HTMLElement).getBoundingClientRect();
-      menu.style.left = `${rect.left}px`;
-      menu.style.top = `${rect.bottom + 5}px`;
-    } else {
-      menu.style.left = `${event.pageX}px`;
-      menu.style.top = `${event.pageY}px`;
-    }
-    
-    menu.querySelector('button')?.addEventListener('click', () => {
-      if (validation.canInvite) {
-        this.inviteUser(user.username);
-      }
-      if (document.body.contains(menu)) {
-        document.body.removeChild(menu);
-      }
-    });
-    
-    document.body.appendChild(menu);
-    
-    // Close menu when clicking elsewhere
-    const closeMenu = (e: MouseEvent) => {
-      if (!menu.contains(e.target as Node)) {
-        if (document.body.contains(menu)) {
-          document.body.removeChild(menu);
-        }
-        document.removeEventListener('click', closeMenu);
-      }
-    };
-    
-    setTimeout(() => {
-      document.addEventListener('click', closeMenu);
-    }, 100);
+    showUserMenu(event, validation.canInvite ? 'Invite' : validation.reason, validation.canInvite,
+      () => this.inviteUser(user.username));
   }
   
   /**
@@ -827,22 +792,41 @@ export class LobbyComponent implements OnInit, OnDestroy {
       timestamp: new Date().toISOString(),
       type: 'system'
     });
-    // scrollChatToBottom will be triggered by the subscription
+    // The chat follows it if its reader is at the newest line (onLobbyMessages).
   }
   
+  /**
+   * The chat keeps to its newest line - unless its reader has scrolled back:
+   * a line coming in moves it only if it was at its newest, or the line is
+   * the reader's own. It used to go to the bottom on every line, pulling a
+   * reader off what they were reading (the room's chats had the same, and
+   * follow the same rule now).
+   */
+  private onLobbyMessages(msgs: ChatMessage[]): void {
+    const follow = this.chatAtNewest() || msgs[msgs.length - 1]?.username === this.username;
+    this.messages = msgs;
+    this.cdr.markForCheck();
+    if (follow) this.scrollChatToBottom();
+  }
+
+  /** At its newest line, give or take a few pixels - or not drawn yet: the room's rule too. */
+  private chatAtNewest(): boolean {
+    return atNewest(this.chatLog?.nativeElement);
+  }
+
   private scrollChatToBottom(): void {
-    setTimeout(() => {
-      const chatContainer = document.querySelector('.chat-messages');
-      if (chatContainer) {
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-      }
-    }, 100);
+    // Once the new line is drawn (afterDraw). A 100ms guess pulled a reader
+    // scrolling up back down.
+    afterDraw(() => {
+      const log = this.chatLog?.nativeElement;
+      if (log) log.scrollTop = log.scrollHeight;
+    });
   }
-  
+
   private generateRandomUsername(): string {
     return `Player${Math.floor(Math.random() * 10000)}`;
   }
-  
+
   /** Solo room: you plus a placeholder opponent seat you configure yourself. */
   startSinglePlayer(): void {
     // A solo game has no second player, so it runs entirely in the browser -

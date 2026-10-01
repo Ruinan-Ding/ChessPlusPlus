@@ -1,4 +1,7 @@
-import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, HostListener, ViewChild } from '@angular/core';
+import {
+  AfterViewChecked, Component, DoCheck, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef,
+  HostListener, NgZone, ViewChild,
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
@@ -22,6 +25,7 @@ import {
   scheduledPoints, unitValue,
 } from '../../services/match-score';
 import { buildPlayback } from '../../services/playback';
+import { fitHeader } from './banner-fit';
 import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
 import { homecomingsAt, openingMovedHexes } from '../../services/history-rules';
 import {
@@ -31,6 +35,8 @@ import {
 } from '../../services/phases';
 import { AudioService } from '../../services/audio.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
+import { closeUserMenu, openUserMenu as showUserMenu } from '../../services/user-menu';
+import { afterDraw, atNewest, scrollerMoving } from '../../services/scrolling';
 
 interface GameOptions {
   reveal?: boolean;
@@ -392,14 +398,121 @@ function fallen(
 
 /**
  * The least the room is laid out at; a smaller window scales it down to fit
- * (`fitRoom`). Measured, not chosen: 1480 is the header's width with the turn
- * banner at full size and its buttons on one line, and 1120 is the left
- * column at its full 260px - both ability panels, the Unit panel's stats,
- * abilities and effects, and the rows of buttons between them, 1011px - under
- * the header, with room for a hint line or two.
+ * (`fitRoom`). Above it nothing is scaled: the room's unit (`--u` in the
+ * stylesheet) sizes the header and both columns, and the board takes the
+ * rest. Measured, not chosen - the smallest window at which the layout sweep
+ * (client/scripts/layout-sweep.mjs) finds every column whole, nothing cut
+ * short and nothing past the window's edge with the unit at its floor.
+ *
+ * It was 1480 x 1120, when the whole room was one scaled picture: 1120 was
+ * the left column holding both ability panels and the Unit panel. Their panel
+ * went to the right one (28 Sep 2026, 705 tall), and came back over yours at
+ * the owner's word (29 Sep: "put it back", "we need to make it try to fit")
+ * - with the Unit panel crossing to the right in its place, 730: both ability
+ * panels over the Unit panel, as they had been, wanted 910.
+ *
+ * A little below it the three columns are scaled, no further than
+ * ROOM_MILD_ZOOM; below that the room changes layout instead (`roomLayout`) -
+ * the board and a column of tabs, or the board over the tabs - laid out to
+ * the window and never scaled.
  */
-const ROOM_MIN_WIDTH = 1480;
-const ROOM_MIN_HEIGHT = 1120;
+const ROOM_MIN_WIDTH = 1180;
+const ROOM_MIN_HEIGHT = 730;
+
+/**
+ * How far the three columns may be scaled on a touch screen - a tablet, a
+ * phone - before the room goes to the tabs instead (`roomLayout`). A little
+ * scaling keeps every panel in sight at once, which is worth a pixel of type;
+ * past it, on a screen held in the hand, the tabs. The owner, 27 Sep 2026:
+ * "tabs are fine". A computer's window goes much further (ROOM_DESKTOP_ZOOM).
+ */
+const ROOM_MILD_ZOOM = 0.9;
+
+/**
+ * How far the three columns may be scaled on a computer - a mouse and a
+ * window - before the tabs: much further than on a touch screen. The owner,
+ * 28 Sep 2026, asked whether their own 1284x649 window should go to the
+ * tabs for bigger type: *"its weird you considered that since the game is
+ * unplayable with anything tucked away"*. So a computer's window keeps every
+ * panel in sight, smaller, down to where its type would fall under about 9px
+ * - a 960x540 window is 74% - and only a window smaller than that gets the
+ * tabs. It was 75% until ROOM_MIN_HEIGHT went from 705 to 730: 72% keeps the
+ * columns on every window that had them (529px tall and up), at 8.6px at the
+ * very least. A touch screen keeps ROOM_MILD_ZOOM: there the choice was a
+ * tablet at 69% or a phone at 33%, and the owner took the tabs ("tabs are
+ * fine").
+ */
+const ROOM_DESKTOP_ZOOM = 0.72;
+
+/**
+ * The least window height at which the tabbed layout keeps the Unit panel
+ * pinned above the tabs rather than behind a tab of its own: the two-row
+ * header, the column's controls, the Unit panel, the tab strip and the
+ * tallest tab (Yours and Theirs, 685px) whole at the 12px unit, with 5px to
+ * spare. Measured in headless Chrome, 28 Sep 2026. Pinned is worth the
+ * smaller type it costs just above this: the Unit panel is what a hover or a
+ * tap on the board fills in, and behind a tab it fills in out of sight.
+ */
+const UNIT_PIN_MIN_HEIGHT = 690;
+
+/**
+ * Below this width the tabbed layout's header is two rows from the start:
+ * the title and the buttons, then the turn banner the whole width
+ * (fitHeader's `alwaysStacked`). Under ~1000px even the opening's banner will
+ * not share a row with them, and a header that went from one row to two as
+ * the turn's words changed length would move every panel under it, every
+ * turn - so the choice is the window's width, never the words. Above it the
+ * banner shares the row, as in the three columns, and the board keeps the
+ * row's height. The tabbed unit is measured with the header stacked, so a
+ * one-row header only ever leaves the column room to spare.
+ */
+const TABBED_STACK_WIDTH = 1100;
+
+/**
+ * Below this width, as well, the scores go under the turn from the start, in
+ * a taller banner (fitHeader's `scoresBelow`): a phone
+ * upright. The banner's height is held - the window's, not the words' - and
+ * the shorter box that holds the scores beside the turn holds every stage of
+ * a match from 700px up, the clock and "PHASE 3 POSTMATCH" included; at 600
+ * and 640 the longest of them had to go under the turn in it and ran 3px
+ * over. Measured in headless Chrome, 29 Sep 2026.
+ */
+const TABBED_SCORES_BELOW_WIDTH = 700;
+
+/**
+ * The least width at which a portrait window's panels stand in two columns
+ * under the board - the Unit panel pinned beside the tabs - rather than the
+ * Unit panel being a tab of its own: two 248px columns and the gap, with
+ * room to spare. A portrait tablet is well over it and a phone well under.
+ */
+const STACKED_TWO_COLUMN_WIDTH = 600;
+
+/**
+ * Below this height the tabbed layout's column gives up two rows - a phone
+ * on its side, whose whole column is a few hundred pixels: the turn's four
+ * controls go on one row, and Resign and Offer Draw to the Room tab
+ * (`.short`). Every tab of the full column fits from about 505px.
+ */
+const TABBED_SHORT_HEIGHT = 520;
+
+/** What the tab layouts (tabbed and stacked) show under their tab strip. */
+export type RoomTab = 'yours' | 'unit' | 'theirs' | 'history' | 'room';
+
+/** The tab strip, in the order the panels read in the columns - one array
+ *  each way, so the strip is not built afresh on every check. */
+const TABS_UNIT_PINNED: readonly { id: RoomTab; label: string }[] = [
+  { id: 'yours', label: 'Yours' }, { id: 'theirs', label: 'Theirs' },
+  { id: 'history', label: 'History' }, { id: 'room', label: 'Room' },
+];
+const TABS_UNIT_TAB: readonly { id: RoomTab; label: string }[] = [
+  TABS_UNIT_PINNED[0], { id: 'unit', label: 'Unit' }, ...TABS_UNIT_PINNED.slice(1),
+];
+
+/** What a "?" explains on a touch screen, where a tooltip never shows (toggleTip). */
+export type TipId = 'score' | 'purse-mine' | 'purse-opponent' | 'tally' | 'start';
+/** A "?"'s bubble at most this wide, and no nearer the window's edge than the gutter. */
+const TIP_WIDTH = 320;
+const TIP_GUTTER = 16;
 
 @Component({
   selector: 'app-game-room',
@@ -407,10 +520,12 @@ const ROOM_MIN_HEIGHT = 1120;
   imports: [CommonModule, FormsModule, ConnectionStatusComponent, GameBoardComponent,
     VolumeControlComponent],
   templateUrl: './game-room.component.html',
-  styleUrls: ['./game-room.component.scss'],
+  styleUrls: [
+    './game-room.component.scss', './game-room.pregame.scss', './game-room.layout.scss', './game-room.tips.scss',
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class GameRoomComponent implements OnInit, OnDestroy {
+export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, DoCheck {
   gameId: string = '';
   username: string = '';
   accessToken: string = '';  // Token for secure game room access
@@ -473,11 +588,15 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     private cdr: ChangeDetectorRef,
     public gameState: GameStateService,
     private authService: AuthService,
-    private audioService: AudioService
+    private audioService: AudioService,
+    private zone: NgZone,
   ) {}
   
   ngOnInit(): void {
     this.fitRoom();
+    // A tablet given a trackpad is a computer from then on, and the other
+    // way about: the layout is chosen again, as on a resize (touchOnly).
+    this.pointerQuery?.addEventListener?.('change', this.onPointerChange);
     // Only clear messages if not returning from setup
     const isReturningFromSetup = this.navigationState.getNavigationContext() === 'game-room' && 
                                   this.navigationState.isIntentionalNavigation();
@@ -519,7 +638,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     this.lobbyUsers = this.sharedDataService.getLobbyUsers();
     this.sharedDataService.lobbyMessages$.pipe(takeUntil(this.destroy$)).subscribe(msgs => {
       this.lobbyMessages = msgs;
-      this.scrollChatToBottom('lobby');
+      this.scrollChatToBottom('lobby', true, msgs[msgs.length - 1]?.username === this.username);
     });
     this.sharedDataService.lobbyUsers$.pipe(takeUntil(this.destroy$)).subscribe(users => this.lobbyUsers = users);
 
@@ -635,6 +754,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.destroy$.next();
     this.destroy$.complete();
+    this.pointerQuery?.removeEventListener?.('change', this.onPointerChange);
+    this.headerEl = this.bannerEl = null;
+    this.watchHeader();
+    this.closeTip();
+    closeUserMenu();
 
     this.clearRevealCountdown();
     this.clearTurnClock();
@@ -842,6 +966,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // match owns is zeroed by `game_started` when the next one is dealt.
         this.gameStarted = false;
         this.isReady = false;
+        // Through selectRoomTab, as a press would: the chats spent the match
+        // under another tab on a phone, where they cannot be scrolled, and
+        // came back at wherever they were then.
+        this.selectRoomTab('room');
         this.gameState.reset();
         this.stagedActions = [];
         this.submittedTurn = -1;
@@ -855,12 +983,14 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       case 'game_started':
         this.gameStarted = true;
         this.isReady = false;  // Reset ready state - button reverts to "Ready" and will be disabled
+        this.leaveRoomTab();
         this.gameState.reset();
         this.gameState.applyGameStarted(actualMessage);
         
         // Cleared first: these two lines are the only word the player gets on
         // which colour they were dealt, and a reset below them ate both.
         this.gameRoomMessages = [];
+        this.chatUnread = 0;
         const myColor = actualMessage.playerWhite === this.username ? 'White' : 'Black';
         this.addSystemMessage(`Game started! You are playing as ${myColor}.`);
         this.addSystemMessage(`${actualMessage.playerWhite} (White) moves first.`);
@@ -1091,6 +1221,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // Sent after joining the game room - if the game was already started,
         // request a full state resync (reconnection).
         if (actualMessage.gameStatus === 'started') {
+          // Off the Room tab only on coming into a match already under way.
+          // The room joins again on every reconnect, and a blip mid-match
+          // had thrown a player off the chat or an offer they were answering.
+          if (!this.gameStarted) this.leaveRoomTab();
           this.gameStarted = true;
           this.wsService.sendMessage({ type: 'request_game_state' });
           if (this.gameId !== 'local') {
@@ -1132,6 +1266,10 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         this.gameRoomMessages = this.gameRoomMessages.filter(
           msg => msg.username === 'System' || playerNames.has(msg.username)
         );
+        // Whoever left took their lines with them; the count cannot be more
+        // than what is left to read.
+        this.chatUnread = Math.min(this.chatUnread,
+          this.gameRoomChatMessages.filter(m => m.username !== this.username).length);
         // Derive from the player list rather than a dedicated status message -
         // the server never emits one, and this list already carries live status.
         const otherPlayer = this.players.find(p => p.username !== this.username);
@@ -1161,15 +1299,20 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         }
 
         // Create a new array reference instead of mutating to ensure OnPush change detection works
-        this.gameRoomMessages = [...this.gameRoomMessages, {
-          username: actualMessage.username,
-          content: actualMessage.content,
-          timestamp: actualMessage.timestamp,
-          room: 'gameRoom',
-          type: (actualMessage.messageType === 'system' || actualMessage.username === 'System') ? 'system' : undefined
-        }];
+        {
+          const system = actualMessage.messageType === 'system' || actualMessage.username === 'System';
+          this.gameRoomMessages = [...this.gameRoomMessages, {
+            username: actualMessage.username,
+            content: actualMessage.content,
+            timestamp: actualMessage.timestamp,
+            room: 'gameRoom',
+            type: system ? 'system' : undefined
+          }];
+          if (!system) this.onChatLine(actualMessage.username);
+          this.scrollChatToBottom(system ? 'history' : 'gameRoom', true,
+            !system && actualMessage.username === this.username);
+        }
         this.persistLocalUiState();
-        this.scrollChatToBottom('gameRoom');
         this.cdr.markForCheck();
         break;
       
@@ -1177,13 +1320,13 @@ export class GameRoomComponent implements OnInit, OnDestroy {
         // Handle lobby chat messages received while in game room
         console.log('[GameRoom] Received lobby chat_message:', actualMessage);
         // Only add via sharedDataService - the subscription to lobbyMessages$ will update our local array
+        // Followed there too (the lobbyMessages$ subscription), own lines and all.
         this.sharedDataService.addLobbyMessage({
           username: actualMessage.username,
           content: actualMessage.content,
           timestamp: actualMessage.timestamp || new Date().toISOString(),
           room: 'lobby'
         });
-        this.scrollChatToBottom('lobby');
         this.cdr.markForCheck();
         break;
         
@@ -1525,15 +1668,69 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return opponent?.username || 'opponent';
   }
   
-  private scrollChatToBottom(chatType: 'gameRoom' | 'lobby'): void {
-    setTimeout(() => {
-      const selector = chatType === 'gameRoom' ? '.game-room-messages' : '.lobby-messages';
-      const chatContainer = document.querySelector(selector);
-      if (chatContainer) {
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-      }
-    }, 100);
+  /**
+   * A log - either chat, or History - to its newest line, once what just
+   * changed has been drawn: the list as it is by then (the refs below), and
+   * outside Angular - a scroll is nothing change detection has to answer.
+   * A line arriving (`follow`) moves it only if it was at its newest already,
+   * so a player reading back is not pulled off what they are reading - unless
+   * the line is the reader's own (`own`), which always shows: sent from a log
+   * scrolled back, it landed below the fold and nothing seemed to happen. The
+   * lobby has kept that rule (onLobbyMessages); the room's chats had not. A
+   * log coming into sight goes to its newest whatever.
+   *
+   * Once the line is drawn (afterDraw): it was a 100ms guess, and then a
+   * single frame, which the change detection that draws the line can come
+   * after. "At its newest" is the lobby's rule too (atNewest).
+   */
+  private scrollChatToBottom(log: 'gameRoom' | 'lobby' | 'history', follow = false, own = false): void {
+    const find = () => (log === 'gameRoom' ? this.gameChatEl : log === 'lobby' ? this.lobbyChatEl : this.historyEl);
+    if (follow && !own && !atNewest(find())) return;
+    this.zone.runOutsideAngular(() => afterDraw(() => {
+      const el = find();
+      if (el) el.scrollTop = el.scrollHeight;
+    }));
   }
+
+  private scrollChatsToBottom(): void {
+    this.scrollChatToBottom('gameRoom');
+    this.scrollChatToBottom('lobby');
+  }
+
+  /** Every log to its newest - the layout changed, and any may have been
+   *  out of sight under a tab. */
+  private scrollLogsToBottom(): void {
+    this.scrollChatsToBottom();
+    this.scrollChatToBottom('history');
+  }
+
+  /**
+   * A log drawn afresh - its rail tab chosen, a roster expanded and back,
+   * History given the column back - starts at its oldest line; each is
+   * brought to its newest as it comes. (One kept but out of sight under
+   * another of the tab layouts' tabs is brought there by selectRoomTab.)
+   * History above all: it is oldest first, and at the columns' least height
+   * it has room for about one line - with nothing to scroll it, it showed
+   * "Game started!" all match and the move just made out of sight below.
+   */
+  @ViewChild('gameChat') private set gameChatRef(ref: ElementRef<HTMLElement> | undefined) {
+    const el = ref?.nativeElement ?? null;
+    if (el && el !== this.gameChatEl) this.scrollChatToBottom('gameRoom');
+    this.gameChatEl = el;
+  }
+  @ViewChild('lobbyChat') private set lobbyChatRef(ref: ElementRef<HTMLElement> | undefined) {
+    const el = ref?.nativeElement ?? null;
+    if (el && el !== this.lobbyChatEl) this.scrollChatToBottom('lobby');
+    this.lobbyChatEl = el;
+  }
+  @ViewChild('historyLog') private set historyRef(ref: ElementRef<HTMLElement> | undefined) {
+    const el = ref?.nativeElement ?? null;
+    if (el && el !== this.historyEl) this.scrollChatToBottom('history');
+    this.historyEl = el;
+  }
+  private gameChatEl: HTMLElement | null = null;
+  private lobbyChatEl: HTMLElement | null = null;
+  private historyEl: HTMLElement | null = null;
   
   private addSystemMessage(content: string): void {
     const message: ChatMessage = {
@@ -1545,7 +1742,7 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     
     this.gameRoomMessages = [...this.gameRoomMessages, message];
     this.persistLocalUiState();
-    this.scrollChatToBottom('gameRoom');
+    this.scrollChatToBottom('history', true);
   }
 
   /** System log (moves, ready/mode changes, ...) - shown in the History panel. */
@@ -2486,6 +2683,22 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return this.hoveredUnit ?? this.selectedUnit;
   }
 
+  /** The Unit panel in two lines under the board: a phone, a short window. */
+  get stripShown(): boolean {
+    return this.roomLayout !== 'columns' && !this.unitPinned;
+  }
+
+  /**
+   * An enemy armed by a first tap, the board says (armedChange): the strip
+   * says "Tap again to strike" while it is, in place of the board's own hint.
+   */
+  boardArmed = false;
+
+  onArmedChange(armed: boolean): void {
+    this.boardArmed = armed;
+    this.cdr.markForCheck();
+  }
+
   /** Steps already spent this turn by the displayed unit (0 unless staged). */
   get moveUsed(): number {
     const u = this.displayUnit;
@@ -2891,7 +3104,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   abilityFontSize(index: number, cooldown: number): string {
     const length = this.abilityLabel(index, cooldown).length;
-    return `${Math.max(9, 14 - Math.max(0, length - 16) * 0.35)}px`;
+    // In the room's unit, as the button around it is: 14px at the 16px unit,
+    // stepping down for a long label, and never under the 12px type floor -
+    // where a label that long wraps inside its button instead.
+    const units = Math.max(9, 14 - Math.max(0, length - 16) * 0.35) / 16;
+    return `max(12px, calc(${+units.toFixed(4)} * var(--u)))`;
   }
 
   /**
@@ -3553,7 +3770,8 @@ export class GameRoomComponent implements OnInit, OnDestroy {
    * half a narrow panel, and "26,19/26,19" is a lot of characters.
    */
   statFontSize(text: string): string {
-    return `${Math.max(0.6, 1 - Math.max(0, text.length - 7) * 0.055)}rem`;
+    const units = Math.max(0.6, 1 - Math.max(0, text.length - 7) * 0.055);
+    return `max(12px, calc(${+units.toFixed(4)} * var(--u)))`;
   }
 
   /** Boosted over base, so a +4 on a base 26 reads "30/26". */
@@ -3565,6 +3783,17 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   get statAtk(): string { return this.statText('atk'); }
   get statDef(): string { return this.statText('def'); }
   get statMov(): string { return this.statText('mov'); }
+  /**
+   * "12/20" - the HP the panel shows, a forecast's included; "12" when the
+   * config gives the unit no maximum. A null went into the string as it was:
+   * the Unit strip read "HP 20/null".
+   */
+  get statHp(): string {
+    const u = this.displayUnit;
+    if (!u) return '—';
+    const now = u.hpAfter ?? u.hp;
+    return `${now ?? '—'}${u.hpMax != null ? `/${u.hpMax}` : ''}`;
+  }
 
   private statText(stat: 'atk' | 'def' | 'mov'): string {
     const parts = this.statParts(stat);
@@ -3949,34 +4178,175 @@ export class GameRoomComponent implements OnInit, OnDestroy {
   onWindowFocus(): void { this.windowFocused = true; this.cdr.markForCheck(); }
 
   /**
-   * How far the room is scaled down to fit the window, and the size it is
-   * laid out at while it is.
+   * How far the three columns are scaled down to fit the window, and the
+   * size they are laid out at while they are.
    *
    * **Nothing on this screen is ever hidden to make room** - the owner, 25 Sep
    * 2026: *"DO NOT HIDE ANYTHING AS IT MAKES THIS GAME UNPLAYABLE"*. A window
    * smaller than the room needs used to cost a panel: the Unit panel was
    * crushed to its border by the two ability panels above it, the header
    * pushed its right-hand buttons off the edge, and under 900px wide the
-   * columns stacked with the board below the fold. Now the room is laid out
-   * at no less than `ROOM_MIN_WIDTH` x `ROOM_MIN_HEIGHT` and the whole of it
-   * scaled down to the window (CSS `zoom`), so a smaller window gets a
-   * smaller room, never a shorter one.
+   * columns stacked with the board below the fold. Now the columns are laid
+   * out at no less than `ROOM_MIN_WIDTH` x `ROOM_MIN_HEIGHT` and scaled down
+   * to a window a little smaller (CSS `zoom`, no further than
+   * ROOM_MILD_ZOOM); a window smaller than that gets a layout of its own
+   * (`roomLayout`), never scaled, every panel a tab away.
    *
-   * `null` sizes leave the stylesheet's 100% x 100vh in charge; they are only
-   * set while the room is scaled, when it has to be laid out bigger than the
-   * window by exactly the factor it is drawn smaller.
+   * `null` sizes leave the stylesheet's 100% x 100dvh in charge; they are
+   * only set while the room is scaled, when it has to be laid out bigger than
+   * the window by exactly the factor it is drawn smaller.
    */
   roomZoom = 1;
   roomWidth: number | null = null;
   roomHeight: number | null = null;
 
+  /**
+   * Three columns, the board and one column of tabs, or the board over the
+   * tabs. The columns hold down to ROOM_MIN_WIDTH x ROOM_MIN_HEIGHT unscaled,
+   * and below it scaled - a little on a touch screen (ROOM_MILD_ZOOM), a good
+   * deal on a computer (ROOM_DESKTOP_ZOOM). A landscape window short of
+   * that - a tablet or a phone on its side, a tiny browser window - gets the
+   * tabs beside the board: the board as big as the window allows, and beside
+   * it the turn's controls, the Unit panel while there is height for it, and
+   * one of the rest at a time. A portrait one - a phone, a tablet upright -
+   * gets the board the whole width on top and the tabs under it, with the
+   * turn's four controls in a bar along the bottom (the owner, 28 Sep 2026).
+   */
+  roomLayout: 'columns' | 'tabbed' | 'stacked' = 'columns';
+  /**
+   * Whether the Unit panel stays in sight rather than behind a tab of its
+   * own: above the tabs when tabbed, beside them when stacked; always in the
+   * columns.
+   */
+  unitPinned = true;
+  /** Tabbed only: a phone on its side - the column's controls on one row. */
+  roomShort = false;
+  /**
+   * The tab layouts' panel under the strip. Room before a match - Ready and
+   * Start are there, and nothing else is yet - and Yours once it is dealt
+   * (leaveRoomTab), whichever the player last chose in between.
+   */
+  roomTab: RoomTab = 'room';
+
+  /** The tab that is showing - Unit's own tab is gone while it is pinned. */
+  get shownTab(): RoomTab {
+    return this.roomTab === 'unit' && this.unitPinned ? 'yours' : this.roomTab;
+  }
+
+  /** The tab strip, in the order the panels read in the columns. */
+  get roomTabs(): readonly { id: RoomTab; label: string }[] {
+    return this.unitPinned ? TABS_UNIT_PINNED : TABS_UNIT_TAB;
+  }
+
+  /** A tab chosen. The logs kept their place while out of sight - one that
+   *  is not drawn cannot be scrolled - so Room brings the chats to their
+   *  newest, and History its own. */
+  selectRoomTab(tab: RoomTab): void {
+    this.roomTab = tab;
+    if (tab === 'room') this.scrollChatsToBottom();
+    if (tab === 'history') this.scrollChatToBottom('history');
+  }
+
+  /** The match dealt: off the Room tab, to the panels it is played from. */
+  private leaveRoomTab(): void {
+    if (this.roomTab === 'room') this.roomTab = 'yours';
+  }
+
+  /**
+   * Something on the Room tab - the Game tab of the right-hand rail - that
+   * is waiting on you: before a match, Ready, or Start once it can be
+   * pressed; after one, Restart. In the tab layouts the Room tab says so
+   * while another is showing, as the rail's Game tab does while Lobby is,
+   * rather than the button sitting out of sight until the player happens to
+   * look. An offer of a draw is not the Room tab's: it is over the board
+   * (drawOfferToYou).
+   */
+  get roomNeedsYou(): boolean {
+    if (this.gameStarted && !this.gameOver) return false;
+    // Your own Ready first, the host's included: Start waits on it as much
+    // as on anyone's, and a host short only of their own Ready was told
+    // nothing at all.
+    if (!this.gameStarted && !this.isSinglePlayer && !this.isReady) return true;
+    return this.isInviter && !this.startButtonDisabled;
+  }
+
+  /** An offer of a draw from the other side, waiting on an answer - shown
+   *  over the board, in every layout, until it has one. */
+  get drawOfferToYou(): boolean {
+    const offer = this.gameState.snapshot.drawOfferedBy;
+    return this.gameStarted && !this.gameOver && !!offer && offer !== this.username;
+  }
+
+  /** What a tab onto the room's business wears: '!' while roomNeedsYou,
+   *  else the chat come in unseen (to 9+), else nothing. */
+  get roomCue(): string {
+    if (this.roomNeedsYou) return '!';
+    return this.chatUnread > 9 ? '9+' : this.chatUnread ? String(this.chatUnread) : '';
+  }
+
+  /**
+   * Chat lines from anyone else come in while the chat was out of sight:
+   * counted as each arrives (onChatLine), not by going through the log - a
+   * count of the log went wrong whenever the log was cleared under it, the
+   * first lines of every match counting for nothing - and cleared once the
+   * chat is on screen through a check.
+   */
+  chatUnread = 0;
+
+  /** Whether the game's chat is on screen: its rail showing, on its Game
+   *  tab, and not given up to an expanded roster. */
+  private get chatInView(): boolean {
+    const railShown = this.roomLayout === 'columns' ? !this.historyExpanded : this.shownTab === 'room';
+    return railShown && this.activeSideTab === 'game' && !this.playersExpanded;
+  }
+
+  /** A line of chat arrived, from `username`. */
+  private onChatLine(username: string): void {
+    if (username !== this.username && !this.chatInView) this.chatUnread++;
+  }
+
+  ngAfterViewChecked(): void {
+    // Nothing on screen reads the count while the chat is in view - both
+    // cues are drawn only while it is not - so this changes nothing drawn.
+    if (this.chatUnread && this.chatInView) this.chatUnread = 0;
+  }
+
+  /** A touch screen with no mouse (touchOnly), asked once and listened to (ngOnInit). */
+  private pointerQuery?: MediaQueryList = typeof matchMedia === 'function'
+    ? matchMedia('(hover: none) and (pointer: coarse)') : undefined;
+  // The header too, whether or not the layout changes: the same query draws
+  // the "?" beside the turn (game-room.tips.scss), and the banner fitted
+  // without it ran 16px over once it was there.
+  private onPointerChange = () => { this.fitRoom(); this.refitHeader(); };
+
+  /** A touch screen with no mouse - a phone, a tablet - rather than a
+   *  computer's window, which keeps the columns further down (ROOM_DESKTOP_ZOOM).
+   *  The list it reads answers for now, whatever has changed since it was made. */
+  get touchOnly(): boolean {
+    return !!this.pointerQuery?.matches;
+  }
+
   @HostListener('window:resize')
   fitRoom(): void {
-    const zoom = Math.min(
-      1, window.innerWidth / ROOM_MIN_WIDTH, window.innerHeight / ROOM_MIN_HEIGHT);
-    this.roomZoom = zoom;
-    this.roomWidth = zoom < 1 ? window.innerWidth / zoom : null;
-    this.roomHeight = zoom < 1 ? window.innerHeight / zoom : null;
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const zoom = Math.min(1, width / ROOM_MIN_WIDTH, height / ROOM_MIN_HEIGHT);
+    const least = this.touchOnly ? ROOM_MILD_ZOOM : ROOM_DESKTOP_ZOOM;
+    const layout = zoom >= least ? 'columns' : width >= height ? 'tabbed' : 'stacked';
+    if (layout !== this.roomLayout) {
+      this.refitHeader();
+      // Any log may have been out of sight under another tab.
+      this.scrollLogsToBottom();
+    }
+    this.roomLayout = layout;
+    this.unitPinned = layout === 'columns'
+      || (layout === 'tabbed' ? height >= UNIT_PIN_MIN_HEIGHT : width >= STACKED_TWO_COLUMN_WIDTH);
+    this.roomShort = layout === 'tabbed' && height < TABBED_SHORT_HEIGHT;
+    // Only the columns are ever scaled; the other two are laid out to the window.
+    const scale = layout === 'columns' ? zoom : 1;
+    this.roomZoom = scale;
+    this.roomWidth = scale < 1 ? width / scale : null;
+    this.roomHeight = scale < 1 ? height / scale : null;
     this.cdr.markForCheck();
   }
 
@@ -3992,6 +4362,11 @@ export class GameRoomComponent implements OnInit, OnDestroy {
       // swallowing it everywhere put Undo, End Turn and Resign out of reach
       // of the keyboard, and ended a turn on every attempt to reach them.
       if (target && /^(BUTTON|A)$/.test(target.tagName)) return;
+      // Nor on a board being played from the keys (the board's keyFocused):
+      // Tab there moves on, as off any control. Only then - a click on the
+      // board focuses it too, and a mouse player who has clicked a unit and
+      // where it goes still ends the turn with TAB, as ever.
+      if (target?.closest?.('app-game-board') && this.boardRef?.keyFocused) return;
       event.preventDefault();
       this.endTurn();
     } else if (event.key === 'r' || event.key === 'R') {
@@ -4345,27 +4720,52 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     for (const move of records) this.addSystemMessage(this.describeMove(move));
   }
 
-  /** One line of the log for one record, quoting the hex numbers the board draws. */
+  /**
+   * One line of the log for one record, quoting the hex numbers the board
+   * draws. A move is where it went; a blow is a sentence - who struck whom,
+   * where, and what came back. It read "black pawn: 200 -> 200 - dealt 4 dmg
+   * (pawn survives, 16 HP)": a move to where it already stood, the unit it hit
+   * named by type alone, and the blow it took back left out. Now "black pawn
+   * 200 hit pawn 199 for 4 (16 HP left), took 4 back" - the wording the owner
+   * agreed to, 29 Sep 2026, less the defender's colour (below).
+   */
   private describeMove(move: any): string {
-    let text = `${move.color} ${move.unit_id}: ${this.hexLabel(move.from)} -> ${this.hexLabel(move.to)}`;
-    if (move.entered) text += ' (out of the reserve)';
-    else if (move.panelMove) text += move.price ? ` (wrapped, ${move.price} pts)` : ' (in its panel)';
-    else if (move.withdrawn) text += ' (walked home)';
-    if (move.attacked) {
-      text += ` - dealt ${move.damage_dealt} dmg`;
-      if (move.defender_eliminated) {
-        text += ` (eliminated ${move.captured ?? 'enemy unit'})`;
-      } else {
-        // The defender stands on the hex that was struck; move.to is where
-        // the attacker ended up, which is a different unit for every ranged
-        // trade. A panel defender is on no board: its record carries it.
-        const struck = move.attackedHex ?? move.to;
-        const defenderUnit = (move.intoPanel ? move.unit?.unit_id : undefined)
-          ?? this.gameState.snapshot.boardState[struck]?.unit_id ?? 'unit';
-        // A blow into a panel writes `defenderHp`; one on the board writes
-        // `defender_hp`. Without both keys the line read "survives, undefined HP".
-        text += ` (${defenderUnit} survives, ${move.defenderHp ?? move.defender_hp} HP)`;
-      }
+    let where = '';
+    if (move.entered) where = ' (out of the reserve)';
+    else if (move.panelMove) where = move.price ? ` (wrapped, ${move.price} pts)` : ' (in its panel)';
+    else if (move.withdrawn) where = ' (walked home)';
+    const path = `${this.hexLabel(move.from)} -> ${this.hexLabel(move.to)}${where}`;
+    if (!move.attacked) return `${move.color} ${move.unit_id}: ${path}`;
+
+    // Struck from `to`, where the attacker ended up - a different hex from the
+    // struck one for every ranged trade. A record without `attackedHex` is the
+    // server's older shape: the attacker never left `from`, and `to` is the
+    // defender's hex.
+    const struck = move.attackedHex ?? move.to;
+    const stood = move.attackedHex ? move.to : move.from;
+    const walked = !!move.attackedHex && move.from !== move.to;
+    // The defender by its unit and hex, not its colour: it is always the
+    // other side's, and on the owner's window (a 218px History) the colour
+    // took the line to a third row - two entries in sight became one and a
+    // half. 30 Sep 2026.
+    // A panel defender is on no board: its record carries it, and its hex has
+    // no number drawn - the panel is named instead.
+    const defender = move.captured
+      ?? (move.intoPanel ? move.unit?.unit_id : undefined)
+      ?? this.gameState.snapshot.boardState[struck]?.unit_id ?? 'unit';
+    const target = move.intoPanel
+      ? `in its ${move.panel ? (BASE_PANELS.has(move.panel) ? 'base' : 'reserve') : 'panel'}`
+      : this.hexLabel(struck);
+    let text = `${move.color} ${move.unit_id} ${walked ? path : this.hexLabel(stood)}`
+      + ` hit ${defender} ${target} for ${move.damage_dealt}`;
+    // A blow into a panel writes `defenderHp`; one on the board writes
+    // `defender_hp`. Without both keys the line read "survives, undefined HP".
+    const left = move.defenderHp ?? move.defender_hp;
+    if (move.defender_eliminated) text += ' (eliminated)';
+    else if (left != null) text += ` (${left} HP left)`;
+    if (move.counter_damage > 0) {
+      text += `, took ${move.counter_damage} back`;
+      if (move.attacker_eliminated) text += ' and was eliminated';
     }
     return text;
   }
@@ -4848,6 +5248,74 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   /** The board, for the walks it keeps its own stack of. */
   @ViewChild(GameBoardComponent) private boardRef?: GameBoardComponent;
+
+  /**
+   * The header, kept to one row (fitHeader): the turn banner at the biggest
+   * size its row can hold, and the words around it shortened first. Re-fitted
+   * whenever the room's box changes - the window - and whenever the header's
+   * text changes length: the stage and the scores change what the banner
+   * needs, and the connection status what the buttons take. The clock
+   * ticking over does not count - the banner's digits are all one width - so
+   * the fit is not worked through afresh every second. Straight to the
+   * elements, outside Angular: it is a measurement, and neither the watching
+   * nor the fitting is anything change detection has to answer.
+   */
+  @ViewChild('roomHeader') private set headerRef(ref: ElementRef<HTMLElement> | undefined) {
+    const el = ref?.nativeElement ?? null;
+    if (el !== this.headerEl) { this.headerEl = el; this.watchHeader(); }
+  }
+  @ViewChild('banner') private set bannerRef(ref: ElementRef<HTMLElement> | undefined) {
+    const el = ref?.nativeElement ?? null;
+    if (el !== this.bannerEl) { this.bannerEl = el; this.watchHeader(); }
+  }
+  private headerEl: HTMLElement | null = null;
+  private bannerEl: HTMLElement | null = null;
+  private headerWatchers: { disconnect(): void }[] = [];
+  private headerFrame = 0;
+
+  /** Fits the header again - the layout changed under it. */
+  private refitHeader = () => {};
+
+  private watchHeader(): void {
+    this.headerWatchers.forEach(w => w.disconnect());
+    this.headerWatchers = [];
+    cancelAnimationFrame(this.headerFrame);
+    this.refitHeader = () => {};
+    const header = this.headerEl;
+    const room = header?.parentElement;
+    if (!header || !room || typeof ResizeObserver === 'undefined') return;
+    // The header's words, every digit alike: a fit holds while this does.
+    const shape = () =>
+      `${header.getElementsByTagName('*').length}|${(header.textContent ?? '').replace(/\d/g, '0')}`;
+    let fitted = '';
+    const fit = () => {
+      cancelAnimationFrame(this.headerFrame);
+      fitted = shape();
+      const tabs = this.roomLayout !== 'columns';
+      fitHeader(header, this.bannerEl, tabs && window.innerWidth < TABBED_STACK_WIDTH, 0.5,
+        tabs && window.innerWidth < TABBED_SCORES_BELOW_WIDTH);
+    };
+    const soon = () => {
+      cancelAnimationFrame(this.headerFrame);
+      this.headerFrame = requestAnimationFrame(fit);
+    };
+    this.zone.runOutsideAngular(() => {
+      // The room's box, not the header's - the fit changes the header's own
+      // height - and fitted there and then: a resize is reported after the
+      // layout it follows, and a fit left to the next frame drew one frame
+      // of the old one, the banner over the buttons.
+      const resized = new ResizeObserver(fit);
+      resized.observe(room);
+      const retexted = new MutationObserver(() => { if (shape() !== fitted) soon(); });
+      retexted.observe(header, { subtree: true, childList: true, characterData: true });
+      this.headerWatchers = [resized, retexted];
+    });
+    // The room's state changed, not yet its classes: they are drawn by the
+    // change detection that frame brings (eventCoalescing), so one frame on
+    // the fit could measure the layout that was - a tablet that gained or
+    // lost a mouse kept the old one's banner. A frame more, as afterDraw.
+    this.refitHeader = () => this.zone.runOutsideAngular(() => requestAnimationFrame(soon));
+  }
 
   /** True while the board is playing; the clock waits for it. */
   playbackRunning = false;
@@ -5624,6 +6092,135 @@ export class GameRoomComponent implements OnInit, OnDestroy {
     return !this.canStartGame();
   }
 
+  /** How the header's scores are counted: their tooltip, and their "?". */
+  readonly scoreTitle = "Victory points: what the capture hexes held are worth - 3 a hex in the zone in each side's"
+    + ' half, 2 in the middle, 1 at the sides - less what this phase\'s losses cost, never below 0, doubled in'
+    + ' Phase 2 and tripled in Phase 3. The opening shows what is held but banks none of it.';
+  /** What the Points tally counts: its tooltip, and with CP the panel's "?". */
+  readonly pointsTitle = 'Points - what a pool ability costs, and what the wrap charges.';
+  /** The Unit panel's two tallies, with nobody selected. */
+  readonly tallyTitles = {
+    mine: 'Your units still on the battlefield.',
+    theirs: 'Their units still on the battlefield.',
+  };
+
+  /**
+   * The "?" open, and where its bubble stands on the screen. A touch screen
+   * has no hover, so a tooltip never shows there - and the rules the header
+   * and the panels explain in theirs, how a score is counted, what Points
+   * and CP buy, why Start is greyed, were nowhere a phone could read them.
+   * Touch screens are shown the "?"s (the stylesheet); a computer's hover
+   * still has the tooltips. Under the "?" in the top half of the window,
+   * over it in the bottom, and inside the window's gutter either way. The
+   * text is read when drawn (tipText), so an open one follows the room.
+   */
+  tip: {
+    id: TipId; left: number; width: number; top: number | null; bottom: number | null; maxHeight: number;
+  } | null = null;
+  /** The "?" the open bubble belongs to: what a scroll has to move to close it. */
+  private tipAnchor: HTMLElement | null = null;
+
+  /**
+   * Whether the open bubble's "?" still has anything to say. Start's says
+   * nothing while a match runs and the tally's is idle while a unit fills
+   * the panel (both .idle), and the score's goes when the scores do; a bubble
+   * open on one of them stayed - Start's an empty dark box, once the match
+   * began. Closed before the room is drawn (ngDoCheck).
+   */
+  private tipLive(id: TipId): boolean {
+    switch (id) {
+      case 'start': return !!this.startTip;
+      case 'tally': return !this.displayUnit;
+      // The score's "?" is in the turn banner, which goes when the match ends:
+      // its bubble floated over the end of the match.
+      case 'score': return this.showScore && this.gameStarted && !this.gameState.snapshot.endReason;
+      default: return true;
+    }
+  }
+
+  ngDoCheck(): void {
+    if (this.tip && !this.tipLive(this.tip.id)) this.closeTip();
+  }
+
+  tipText(id: TipId): string {
+    switch (id) {
+      case 'score': return this.scoreTitle;
+      case 'purse-mine':
+      case 'purse-opponent': return `${this.pointsTitle} ${this.cpTitle}`;
+      case 'tally': return `Total - ${this.tallyTitles.mine} Opponent - ${this.tallyTitles.theirs}`;
+      case 'start': return this.startTip;
+    }
+  }
+
+  /**
+   * What Start's "?" says: why Start is greyed before a match, or what
+   * Restart will do after one. Nothing while a match runs - "The match is
+   * running." is what a greyed Start says for itself.
+   */
+  get startTip(): string {
+    return this.gameStarted && !this.gameOver ? '' : this.startButtonHint;
+  }
+
+  /** A "?" pressed: its bubble opened - or closed, if it was the one open. */
+  toggleTip(id: TipId, event: Event): void {
+    const again = this.tip?.id === id;
+    this.closeTip();
+    if (again) return;
+    this.tipAnchor = event.currentTarget as HTMLElement;
+    const r = this.tipAnchor.getBoundingClientRect();
+    const width = Math.min(TIP_WIDTH, window.innerWidth - 2 * TIP_GUTTER);
+    const left = Math.min(Math.max(TIP_GUTTER, r.left + r.width / 2 - width / 2),
+      window.innerWidth - TIP_GUTTER - width);
+    const below = r.top + r.height / 2 < window.innerHeight / 2;
+    this.tip = {
+      id, width, left,
+      top: below ? r.bottom + 6 : null,
+      bottom: below ? null : window.innerHeight - r.top + 6,
+      // No further than the window's gutter, and what is past that scrolls in
+      // the bubble: it is fixed, and on a phone on its side the Points/CP one
+      // ran off the foot of the screen, where nothing could scroll to it.
+      maxHeight: below ? window.innerHeight - r.bottom - 6 - TIP_GUTTER : r.top - 6 - TIP_GUTTER,
+    };
+    // Listened for only while one is open, and outside Angular: a room
+    // checked on every press anywhere, for the sake of a bubble that is
+    // mostly shut, is the cost the header's watch was rewritten to be rid of.
+    this.zone.runOutsideAngular(() => {
+      document.addEventListener('pointerdown', this.onTipPress, true);
+      document.addEventListener('keydown', this.onTipKey, true);
+      window.addEventListener('resize', this.onTipAway);
+      window.addEventListener('scroll', this.onTipScroll, true);
+    });
+  }
+
+  closeTip(): void {
+    if (!this.tip) return;
+    this.tip = null;
+    this.tipAnchor = null;
+    document.removeEventListener('pointerdown', this.onTipPress, true);
+    document.removeEventListener('keydown', this.onTipKey, true);
+    window.removeEventListener('resize', this.onTipAway);
+    window.removeEventListener('scroll', this.onTipScroll, true);
+    this.cdr.markForCheck();
+  }
+
+  // A press anywhere but a "?" (which answers on its click) or the bubble
+  // (its words can be pressed to select them) closes it; so does Escape,
+  // and the room moving under it.
+  private onTipPress = (event: Event) => {
+    if ((event.target as Element | null)?.closest?.('.tip-btn, .tip-bubble')) return;
+    this.zone.run(() => this.closeTip());
+  };
+  private onTipKey = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') this.zone.run(() => this.closeTip());
+  };
+  private onTipAway = () => this.zone.run(() => this.closeTip());
+  // Only a scroll that moves its "?": History and the chats keeping to their
+  // newest line are scrolls too, and any scroll closed it - a move coming in
+  // shut the bubble being read.
+  private onTipScroll = (event: Event) => {
+    if (scrollerMoving(event, this.tipAnchor)) this.onTipAway();
+  };
+
   get startButtonHint(): string {
     if (this.gameOver) {
       return this.isSinglePlayer
@@ -5666,55 +6263,9 @@ export class GameRoomComponent implements OnInit, OnDestroy {
 
   openUserMenu(event: MouseEvent, user: User): void {
     event.preventDefault();
-
     if (user.username === this.username) return;
-
-    // When in a game room, you cannot invite anyone
-    const canInvite = false;
-    const disabledReason = "Can't invite while in a game room";
-
-    const existingMenus = document.querySelectorAll('.user-context-menu');
-    existingMenus.forEach(menu => document.body.removeChild(menu));
-
-    const menu = document.createElement('div');
-    menu.className = 'user-context-menu';
-    menu.innerHTML = canInvite ?
-      `<button>Invite</button>` :
-      `<button disabled>${disabledReason}</button>`;
-    menu.style.position = 'absolute';
-
-    if (event.target instanceof HTMLButtonElement && event.target.classList.contains('action-button')) {
-      const rect = (event.target as HTMLElement).getBoundingClientRect();
-      menu.style.left = `${rect.left}px`;
-      menu.style.top = `${rect.bottom + 5}px`;
-    } else {
-      menu.style.left = `${event.pageX}px`;
-      menu.style.top = `${event.pageY}px`;
-    }
-
-    menu.querySelector('button')?.addEventListener('click', () => {
-      if (canInvite) {
-        this.inviteLobbyUser(user.username);
-      }
-      if (document.body.contains(menu)) {
-        document.body.removeChild(menu);
-      }
-    });
-
-    document.body.appendChild(menu);
-
-    // Close menu when clicking elsewhere
-    const closeMenu = (e: MouseEvent) => {
-      if (!menu.contains(e.target as Node)) {
-        if (document.body.contains(menu)) {
-          document.body.removeChild(menu);
-        }
-        document.removeEventListener('click', closeMenu);
-      }
-    };
-    setTimeout(() => {
-      document.addEventListener('click', closeMenu);
-    }, 100);
+    // Nobody is invited from inside a game room; the menu says so.
+    showUserMenu(event, "Can't invite while in a game room", false, () => {});
   }
 
   inviteLobbyUser(opponent: string): void {

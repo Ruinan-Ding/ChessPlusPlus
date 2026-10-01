@@ -5,6 +5,9 @@ import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
 import { turnHeading } from '../../services/phases';
 import { NavigationStateService } from '../../services/navigation-state.service';
 
+/** Angular's zone, for a room built by hand: everything runs where it is. */
+const zone = { run: (f: () => unknown) => f(), runOutsideAngular: (f: () => unknown) => f() } as any;
+
 /**
  * The ability panel decides everything below on its own fields, so it is built
  * by hand rather than stood up in a room: TestBed here would exercise the DI
@@ -50,7 +53,7 @@ describe('GameRoomComponent ability panel', () => {
     const ws = { sendMessage: () => {} } as any;
     const c: any = new GameRoomComponent(
       ws, {} as any, {} as any, {} as any, {} as any,
-      cdr, gameState, {} as any, audio,
+      cdr, gameState, {} as any, audio, zone,
     );
     c.username = 'me';
     c.gameStarted = true;
@@ -1588,8 +1591,165 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.opponentAttackMarkers).toEqual([{ from: '0,-4', to: '-1,-11' }]);
     const lines = logged(c).filter((line: string) => line.startsWith('black '));
     expect(lines.length).toBe(2);
-    expect(lines[0]).toContain('rook survives, 36 HP');
+    expect(lines[0]).toContain('hit rook in its base for 4 (36 HP left)');
     expect(lines[1]).toContain('black knight');
+  });
+
+  describe('the log line for a blow', () => {
+    // Found playing a solo game, 29 Sep 2026: a blow from where the unit
+    // stood read "black pawn: 200 -> 200 - dealt 4 dmg (pawn survives, 16
+    // HP)" - a move to nowhere, the unit it hit unnamed, the blow back left out.
+    const line = (move: any, board: any = {}) => {
+      const c = watching(20);
+      c.gameState.snapshot.boardState = board;
+      return { text: (c as any).describeMove({ turn: 20, attacked: true, ...move }) as string,
+        n: (key: string) => (c as any).hexLabel(key) as string };
+    };
+    const pawn = { unit_id: 'pawn', color: 'white', hp: 16, max_hp: 20 };
+
+    it('says who it hit, where, what it left, and what came back', () => {
+      const { text, n } = line({
+        color: 'black', unit_id: 'pawn', from: '1,-3', to: '1,-3', attackedHex: '0,-3',
+        damage_dealt: 4, defender_hp: 16, counter_damage: 4, attacker_eliminated: false,
+      }, { '0,-3': pawn });
+      expect(text).toBe(`black pawn ${n('1,-3')} hit pawn ${n('0,-3')} for 4 (16 HP left), took 4 back`);
+    });
+
+    it('gives the walk first when the unit moved to strike', () => {
+      const { text, n } = line({
+        color: 'white', unit_id: 'archer', from: '-3,3', to: '-1,0', attackedHex: '1,-2',
+        damage_dealt: 6, defender_hp: 10, counter_damage: 0,
+      }, { '1,-2': { ...pawn, color: 'black' } });
+      // Out of the pawn's reach: nothing came back, and the line says nothing of it.
+      expect(text).toBe(`white archer ${n('-3,3')} -> ${n('-1,0')} hit pawn ${n('1,-2')} for 6 (10 HP left)`);
+    });
+
+    it('says a kill, and an attacker the answer killed', () => {
+      expect(line({
+        color: 'black', unit_id: 'pawn', from: '1,-3', to: '1,-3', attackedHex: '0,-3',
+        damage_dealt: 4, defender_eliminated: true, captured: 'pawn', counter_damage: 0,
+      }).text).toMatch(/hit pawn \d+ for 4 \(eliminated\)$/);
+      expect(line({
+        color: 'black', unit_id: 'pawn', from: '1,-3', to: '1,-3', attackedHex: '0,-3',
+        damage_dealt: 2, defender_hp: 30, counter_damage: 9, attacker_eliminated: true,
+      }, { '0,-3': { ...pawn, unit_id: 'rook', hp: 30 } }).text)
+        .toMatch(/hit rook \d+ for 2 \(30 HP left\), took 9 back and was eliminated$/);
+    });
+
+    it('names the panel a blow landed in, a reserve as well as a base', () => {
+      expect(line({
+        color: 'white', unit_id: 'knight', from: '4,-8', to: '4,-8', attackedHex: '12,-9',
+        damage_dealt: 5, intoPanel: true, panelAttack: true, panel: 'br',
+        unit: { unit_id: 'archer', color: 'black' }, defenderHp: 11, counter_damage: 3,
+      }).text).toMatch(/^white knight \d+ hit archer in its reserve for 5 \(11 HP left\), took 3 back$/);
+    });
+
+    it('reads the server\'s older record, with no attackedHex, as a blow from where it stood', () => {
+      const { text, n } = line({
+        color: 'black', unit_id: 'pawn', from: '1,-3', to: '0,-3',
+        damage_dealt: 4, defender_hp: 16,
+      }, { '0,-3': pawn });
+      expect(text).toBe(`black pawn ${n('1,-3')} hit pawn ${n('0,-3')} for 4 (16 HP left)`);
+    });
+
+    it('leaves a move without a blow as it was', () => {
+      const c = watching(20);
+      expect((c as any).describeMove({ color: 'black', unit_id: 'pawn', from: '5,-9', to: '1,-3' }))
+        .toBe(`black pawn: ${(c as any).hexLabel('5,-9')} -> ${(c as any).hexLabel('1,-3')}`);
+    });
+  });
+
+  it('reads a unit\'s HP as "16/20", a forecast first - and never "/null"', () => {
+    // A unit its config gives no maximum read "HP 20/null" on the Unit strip.
+    const c = room();
+    expect(c.statHp).toBe('—');
+    const unit = { key: '0,0', uid: 'u', unitId: 'pawn', name: 'Pawn', color: 'white', hp: 20, hpMax: 20,
+      hpAfter: null, atk: '14', def: 10, mv: 6, points: 5, vet: 0, drivable: true };
+    c.selectedUnit = unit;
+    expect(c.statHp).toBe('20/20');
+    c.selectedUnit = { ...unit, hpAfter: 16 };
+    expect(c.statHp).toBe('16/20');
+    c.selectedUnit = { ...unit, hpMax: null };
+    expect(c.statHp).toBe('20');
+  });
+
+  it('says "Tap again to strike" in the Unit strip, wherever there is one', () => {
+    // The board's own hint lay over a dozen of a phone's 15px hexes; the
+    // strip, right under the board, has the forecast the hint is about.
+    const c = room();
+    c.roomLayout = 'stacked';
+    c.unitPinned = false;
+    expect(c.stripShown).toBeTrue();
+    c.onArmedChange(true);
+    expect(c.boardArmed).toBeTrue();
+    c.onArmedChange(false);
+    expect(c.boardArmed).toBeFalse();
+    // Where there is no strip, the board keeps its hint.
+    c.roomLayout = 'columns';
+    expect(c.stripShown).toBeFalse();
+  });
+
+  it('leaves Tab to a board played from the keys, and ends the turn with it otherwise', () => {
+    // A click on the board focuses it too: a mouse player's TAB there is End
+    // Turn, as ever. Only a board the keys are playing moves on with it.
+    const c = room();
+    c.windowFocused = true;
+    c.chatFocused = false;
+    const ended = spyOn(c, 'endTurn');
+    const board = document.createElement('app-game-board');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    board.appendChild(svg);
+    const tab = (target: Element) => c.onShortcut({ key: 'Tab', target, preventDefault: () => {} } as any);
+    c.boardRef = { keyFocused: false };
+    tab(svg);
+    expect(ended).toHaveBeenCalledTimes(1);
+    c.boardRef.keyFocused = true;
+    tab(svg);
+    expect(ended).toHaveBeenCalledTimes(1);
+    tab(document.createElement('div'));
+    expect(ended).toHaveBeenCalledTimes(2);
+  });
+
+  it('fits the header two frames on when the room changes under it', () => {
+    // Its classes are drawn by the change detection the next frame brings; a
+    // fit one frame on measured the layout that was.
+    const c = room();
+    const roomEl = document.createElement('div');
+    const header = document.createElement('header');
+    const banner = document.createElement('div');
+    header.appendChild(banner);
+    roomEl.appendChild(header);
+    document.body.appendChild(roomEl);
+    const frames: FrameRequestCallback[] = [];
+    try {
+      c.headerEl = header;
+      c.bannerEl = banner;
+      c.watchHeader();
+      spyOn(window, 'requestAnimationFrame').and.callFake((cb: FrameRequestCallback) => frames.push(cb));
+      banner.style.removeProperty('--banner-fit');
+      c.refitHeader();
+      frames.shift()!(0);
+      expect(banner.style.getPropertyValue('--banner-fit')).toBe('');
+      frames.shift()!(0);
+      expect(banner.style.getPropertyValue('--banner-fit')).not.toBe('');
+    } finally {
+      c.headerEl = c.bannerEl = null;
+      c.watchHeader();
+      roomEl.remove();
+    }
+  });
+
+  it('fits the header again when the pointer changes, layout or no layout', () => {
+    // The "?" beside the turn comes and goes with the same media query, and
+    // a banner fitted without it ran 16px over once it was there.
+    const c = room();
+    let refits = 0;
+    c.refitHeader = () => refits++;
+    c.roomLayout = 'columns';
+    spyOn(c, 'fitRoom');
+    c.onPointerChange();
+    expect(c.fitRoom).toHaveBeenCalled();
+    expect(refits).toBe(1);
   });
 
   it('logs a turn that wrapped and then ended as what it did, not as a pass', () => {
@@ -2674,6 +2834,26 @@ describe('GameRoomComponent ability panel', () => {
       c.selectedUnit = unit('3,0', 'wk', 'king', 'white');
       expect(c.displayUnitAbility).toBeNull();
     });
+
+    it("opens a unit's own ability it has not the stars for, and says what it needs", () => {
+      // Its button is not disabled for want of stars - disabled, a touch
+      // screen could not read what it does at all - so a tap lands here.
+      const c = tuned(config => { config.units.pawn.ability = 'focus'; });
+      const focus = c.slotOfAbility('focus');
+      c.selectedUnit = { ...WP, vet: 1 };
+      expect(c.vetUnlocked(focus)).toBeFalse();
+      c.selectUnitAbility(focus);
+      expect(c.unitAbilityFocus).toEqual({ index: focus });
+      expect(c.unitAbilityNote).toBe('Unavailable: needs ★★.');
+      expect(c.unitAbilityCanActivate()).toBeFalse();
+      c.activateUnitAbility();
+      expect(c.myPoints).toBe(100);
+      // A unit in a panel still opens nothing.
+      c.unitAbilityFocus = null;
+      c.selectedUnit = { ...WP, panel: 'base' };
+      c.selectUnitAbility(focus);
+      expect(c.unitAbilityFocus).toBeNull();
+    });
   });
 });
 
@@ -2711,7 +2891,7 @@ describe('GameRoomComponent leaving', () => {
     };
     const c: any = new GameRoomComponent(
       ws, route, router, shared, new NavigationStateService(), cdr, gameState, auth,
-      { playTone: () => {} } as any,
+      { playTone: () => {} } as any, zone,
     );
     return { c, sent, ws, gameState, disconnects };
   };
@@ -2920,9 +3100,13 @@ describe('GameRoomComponent leaving', () => {
 });
 
 /**
- * The owner: "DO NOT HIDE ANYTHING AS IT MAKES THIS GAME UNPLAYABLE". A
- * window smaller than the room gets the whole room scaled down, never a panel
- * crushed or a column stacked below the board.
+ * The owner: "DO NOT HIDE ANYTHING AS IT MAKES THIS GAME UNPLAYABLE". Above
+ * its least size the room is laid out to the window by its stylesheet (the
+ * room's unit, --u), and nothing is scaled; a little below it the three
+ * columns are scaled, and below that the room has a layout of its own - the
+ * board and a column of tabs, or the board over the tabs - rather than a
+ * panel crushed. What the stylesheet does at each size is measured in a real
+ * browser by client/scripts/layout-sweep.mjs, not here.
  */
 describe('GameRoomComponent fitting the window', () => {
   let innerWidth: jasmine.Spy;
@@ -2932,24 +3116,33 @@ describe('GameRoomComponent fitting the window', () => {
     innerHeight = spyOnProperty(window, 'innerHeight');
   });
 
-  const fit = (width: number, height: number) => {
+  /** A window of width x height - a touch screen's, a phone's or a tablet's,
+   *  when `touch`; a computer's otherwise. */
+  const fit = (width: number, height: number, touch = false) => {
     innerWidth.and.returnValue(width);
     innerHeight.and.returnValue(height);
-    const c: any = { cdr: { markForCheck: () => {} } };
+    const c: any = {
+      cdr: { markForCheck: () => {} }, refitHeader: () => {}, scrollLogsToBottom: () => {}, touchOnly: touch,
+    };
     GameRoomComponent.prototype.fitRoom.call(c);
     return c;
   };
 
   it('scales the room down by whichever side is shorter, laid out at its least', () => {
-    // Half the least width, and more than half the least height: width decides.
-    const c = fit(740, 700);
-    expect(c.roomZoom).toBe(0.5);
-    expect(c.roomWidth).toBe(1480);
-    expect(c.roomHeight).toBe(1400);
-    // Height decides here.
-    const d = fit(1904, 560);
-    expect(d.roomZoom).toBe(0.5);
-    expect(d.roomHeight).toBe(1120);
+    // A little short of the least width, and taller than the least height:
+    // width decides. (Much narrower is the tabs, or upright the board over
+    // them - neither is scaled.)
+    const c = fit(1100, 1000);
+    expect(c.roomLayout).toBe('columns');
+    expect(c.roomZoom).toBeCloseTo(1100 / 1180, 6);
+    expect(c.roomWidth).toBeCloseTo(1180, 6);
+    expect(c.roomHeight).toBeCloseTo(1000 * 1180 / 1100, 6);
+    // Height decides here - a laptop a little short of the columns' least
+    // height, which keeps them, scaled. (Much shorter is the tabs.)
+    const d = fit(1904, 670);
+    expect(d.roomLayout).toBe('columns');
+    expect(d.roomZoom).toBeCloseTo(670 / 730, 6);
+    expect(d.roomHeight).toBeCloseTo(730, 6);
   });
 
   it('leaves a window big enough for the whole room alone', () => {
@@ -2957,5 +3150,497 @@ describe('GameRoomComponent fitting the window', () => {
     expect(c.roomZoom).toBe(1);
     expect(c.roomWidth).toBeNull();
     expect(c.roomHeight).toBeNull();
+  });
+
+  it('scales none of the windows people play in', () => {
+    // Every one of these was drawn smaller while the room was one picture at
+    // 1480x1120 - a 1080p screen at 96%, the owner's 1904x946 at 85%, a
+    // 1366x768 laptop at 69%. Their layouts are the stylesheet's now. (1280x720
+    // was one of them until their ability panel went back in the left column,
+    // 29 Sep 2026, and the columns' least height went from 705 to 730.)
+    for (const [w, h] of [[1920, 1080], [1904, 946], [1536, 864], [1366, 768], [1280, 800], [1180, 730]]) {
+      expect(fit(w, h).roomZoom).withContext(`${w}x${h}`).toBe(1);
+    }
+    expect(fit(1180, 729).roomZoom).toBeLessThan(1);
+    expect(fit(1179, 730).roomZoom).toBeLessThan(1);
+  });
+
+  it('keeps the three columns, scaled a little, just short of their least size', () => {
+    // A 1366x768 laptop's browser window: every panel in sight is worth a
+    // pixel of type, so this is not the tabs.
+    for (const [w, h] of [[1366, 650], [1100, 700], [1180, 640], [1280, 720]]) {
+      const c = fit(w, h);
+      expect(c.roomLayout).withContext(`${w}x${h}`).toBe('columns');
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBeGreaterThanOrEqual(0.87);
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBeLessThan(1);
+    }
+    // A touch screen as far as ROOM_MILD_ZOOM, and no further.
+    for (const [w, h] of [[1366, 670], [1100, 700], [1180, 660]]) {
+      const c = fit(w, h, true);
+      expect(c.roomLayout).withContext(`${w}x${h} held`).toBe('columns');
+      expect(c.roomZoom).withContext(`${w}x${h} held`).toBeGreaterThanOrEqual(0.9);
+      expect(c.roomZoom).withContext(`${w}x${h} held`).toBeLessThan(1);
+    }
+    expect(fit(1366, 650, true).roomLayout).toBe('tabbed');
+  });
+
+  it("keeps a computer's window in the columns much further down than a touch screen", () => {
+    // The owner, 28 Sep 2026: "the game is unplayable with anything tucked
+    // away". A window with a mouse keeps every panel in sight, scaled, down
+    // to 72%; the same size held in the hand is a tablet, and has the tabs.
+    // (75% until the columns' least height went from 705 to 730: 72% keeps
+    // every window that had them - 960x540 is 74% now.)
+    for (const [w, h] of [[1366, 620], [1280, 600], [1024, 768], [1024, 600], [960, 540]]) {
+      const c = fit(w, h);
+      expect(c.roomLayout).withContext(`${w}x${h}`).toBe('columns');
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBeGreaterThanOrEqual(0.72);
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBeLessThan(0.9);
+      expect(c.unitPinned).withContext(`${w}x${h}`).toBeTrue();
+      expect(fit(w, h, true).roomLayout).withContext(`${w}x${h} held`).toBe('tabbed');
+    }
+    // Smaller than that, the type would be under 9px: the tabs after all.
+    expect(fit(900, 520).roomLayout).toBe('tabbed');
+    expect(fit(800, 505).roomLayout).toBe('tabbed');
+    expect(fit(800, 1000).roomLayout).toBe('stacked');
+  });
+
+  it('gives a landscape touch screen short of that the board and one column of tabs, unscaled', () => {
+    for (const [w, h] of [[1024, 768], [1024, 600], [960, 540], [844, 390], [1366, 620]]) {
+      const c = fit(w, h, true);
+      expect(c.roomLayout).withContext(`${w}x${h}`).toBe('tabbed');
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBe(1);
+      expect(c.roomWidth).withContext(`${w}x${h}`).toBeNull();
+    }
+  });
+
+  it('pins the Unit panel above the tabs only where the window is tall enough for it', () => {
+    expect(fit(1024, 768, true).unitPinned).toBeTrue();
+    expect(fit(1024, 690, true).unitPinned).toBeTrue();
+    expect(fit(1024, 689, true).unitPinned).toBeFalse();
+    expect(fit(844, 390, true).unitPinned).toBeFalse();
+    // In the columns it is always in sight.
+    expect(fit(1920, 1080).unitPinned).toBeTrue();
+  });
+
+  it('gives a portrait window the board over the tabs, unscaled', () => {
+    // The owner, 28 Sep 2026: the board the whole width on top, the tabs
+    // under it. A tablet upright pins the Unit panel beside them; a phone
+    // makes it a tab.
+    for (const [w, h, pinned] of [[820, 1180, true], [768, 1024, true], [600, 900, true],
+                                  [390, 844, false], [360, 740, false]] as const) {
+      const c = fit(w, h, true);
+      expect(c.roomLayout).withContext(`${w}x${h}`).toBe('stacked');
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBe(1);
+      expect(c.unitPinned).withContext(`${w}x${h}`).toBe(pinned);
+      expect(c.roomShort).withContext(`${w}x${h}`).toBeFalse();
+    }
+    // A portrait window big enough for the columns keeps them.
+    expect(fit(1180, 1400).roomLayout).toBe('columns');
+  });
+
+  it('tightens the column for a phone on its side', () => {
+    expect(fit(844, 390, true).roomShort).toBeTrue();
+    expect(fit(932, 430, true).roomShort).toBeTrue();
+    expect(fit(1024, 600, true).roomShort).toBeFalse();
+    expect(fit(960, 520, true).roomShort).toBeFalse();
+    expect(fit(960, 519, true).roomShort).toBeTrue();
+  });
+});
+
+/** The tabbed layout's strip: what it offers, and which panel shows. */
+describe('GameRoomComponent tabs', () => {
+  const read = (c: any, name: 'shownTab' | 'roomTabs') =>
+    Object.getOwnPropertyDescriptor(GameRoomComponent.prototype, name)!.get!.call(c);
+
+  it('offers Unit a tab of its own only while it is not pinned', () => {
+    expect(read({ unitPinned: true }, 'roomTabs').map((t: any) => t.id))
+      .toEqual(['yours', 'theirs', 'history', 'room']);
+    expect(read({ unitPinned: false }, 'roomTabs').map((t: any) => t.id))
+      .toEqual(['yours', 'unit', 'theirs', 'history', 'room']);
+  });
+
+  it('shows Yours in place of a Unit tab that pinning took away', () => {
+    // Chosen on a short window, then the window grew: the Unit panel is in
+    // sight above the tabs, and the panel under them must not go blank.
+    expect(read({ unitPinned: true, roomTab: 'unit' }, 'shownTab')).toBe('yours');
+    expect(read({ unitPinned: false, roomTab: 'unit' }, 'shownTab')).toBe('unit');
+    expect(read({ unitPinned: true, roomTab: 'history' }, 'shownTab')).toBe('history');
+  });
+
+  it('hands the strip the same tabs every check, so its buttons are never rebuilt', () => {
+    // Built afresh on every call, the strip's buttons were torn down and
+    // made again four times a second in a timed game - a click whose press
+    // and release fell either side of one never happened.
+    for (const unitPinned of [true, false]) {
+      expect(read({ unitPinned }, 'roomTabs')).toBe(read({ unitPinned }, 'roomTabs'));
+    }
+  });
+
+  /** A room with just enough behind it for the tabs and the room's business. */
+  const make = (): any => {
+    const gameState: any = {
+      snapshot: {}, reset: () => {}, applyGameStarted: () => {},
+      myColor: (who: string) => (who === 'me' ? 'white' : 'black'),
+    };
+    const c: any = new GameRoomComponent(
+      { sendMessage: () => {} } as any, {} as any, {} as any, {} as any, {} as any,
+      { markForCheck: () => {}, detectChanges: () => {} } as any, gameState, {} as any,
+      { playTone: () => {} } as any, zone,
+    );
+    c.username = 'me';
+    c.persistLocalUiState = () => {};
+    c.roomLayout = 'tabbed';
+    c.unitPinned = true;
+    return c;
+  };
+
+  it('opens on the Room tab before a match, and leaves it for Yours once one is dealt', () => {
+    // Ready and Start are on the Room tab; before a match there is nothing
+    // else to do, and a guest used to land on Yours with no Ready in sight.
+    const c = make();
+    expect(c.shownTab).toBe('room');
+    c.gameId = 'room-1';
+    c.handleWebSocketMessage({ type: 'join_game_room_success', gameStatus: 'started' });
+    expect(c.shownTab).toBe('yours');
+    // Joined again on a reconnect mid-match: wherever the player was, they
+    // stay - on the chat, or an offer they were answering.
+    c.selectRoomTab('room');
+    c.handleWebSocketMessage({ type: 'join_game_room_success', gameStatus: 'started' });
+    expect(c.shownTab).toBe('room');
+
+    // A match dealt in the room: the same. A tab chosen other than Room is
+    // left alone.
+    const d = make();
+    for (const name of ['beginTurnFor', 'reconcilePoints', 'playTurnSoundIfNeeded', 'startTurnClock']) {
+      d[name] = () => {};
+    }
+    d.handleWebSocketMessage({ type: 'game_started', playerWhite: 'me', playerBlack: 'them' });
+    expect(d.gameStarted).toBeTrue();
+    expect(d.shownTab).toBe('yours');
+    d.selectRoomTab('history');
+    d.handleWebSocketMessage({ type: 'game_started', playerWhite: 'me', playerBlack: 'them' });
+    expect(d.shownTab).toBe('history');
+
+    // Back to waiting: back to Room - and its chats to their newest, which
+    // spent the match under another tab where nothing could scroll them.
+    const scrolled: string[] = [];
+    const scroll = d.scrollChatToBottom.bind(d);
+    d.scrollChatToBottom = (which: string, ...rest: any[]) => { scrolled.push(which); scroll(which, ...rest); };
+    d.handleWebSocketMessage({ type: 'game_reset' });
+    expect(d.shownTab).toBe('room');
+    expect(scrolled).toContain('gameRoom');
+    expect(scrolled).toContain('lobby');
+  });
+
+  it('marks the Room tab while something on it is waiting on you', () => {
+    const c = make();
+    // A guest before a match: Ready.
+    c.gameStarted = false;
+    c.isInviter = false;
+    expect(c.roomNeedsYou).toBeTrue();
+    c.isReady = true;
+    expect(c.roomNeedsYou).toBeFalse();
+    // The host: their own Ready first - Start waits on it as on anyone's -
+    // then Start, once it can be pressed.
+    c.isInviter = true;
+    spyOn(c, 'canStartGame').and.returnValue(false);
+    c.isReady = false;
+    expect(c.roomNeedsYou).toBeTrue();
+    c.isReady = true;
+    expect(c.roomNeedsYou).toBeFalse();
+    (c.canStartGame as jasmine.Spy).and.returnValue(true);
+    expect(c.roomNeedsYou).toBeTrue();
+
+    // A match under way: nothing on the Room tab waits on you. An offer of a
+    // draw is over the board instead (drawOfferToYou) - theirs, not yours.
+    c.gameStarted = true;
+    expect(c.roomNeedsYou).toBeFalse();
+    expect(c.drawOfferToYou).toBeFalse();
+    c.gameState.snapshot.drawOfferedBy = 'them';
+    expect(c.roomNeedsYou).toBeFalse();
+    expect(c.drawOfferToYou).toBeTrue();
+    c.gameState.snapshot.drawOfferedBy = 'me';
+    expect(c.drawOfferToYou).toBeFalse();
+    c.gameState.snapshot.drawOfferedBy = '';
+
+    // Over, in a solo room: Restart.
+    c.isSinglePlayer = true;
+    c.gameState.snapshot.endReason = 'regicide';
+    expect(c.roomNeedsYou).toBeTrue();
+  });
+
+  it('counts the chat come in while it was out of sight, and no more once seen', () => {
+    const c = make();
+    c.gameStarted = true;
+    c.isInviter = false;
+    c.selectRoomTab('yours');
+    const say = (username: string) =>
+      c.handleWebSocketMessage({ type: 'game_room_message', username, content: 'hi', timestamp: '' });
+    say('them');
+    say('me');                     // your own is not news
+    say('System');                 // nor the log's
+    say('them');
+    c.ngAfterViewChecked();
+    expect(c.roomCue).toBe('2');
+
+    // Seen: the Room tab opened, its chat on screen through a check.
+    c.selectRoomTab('room');
+    c.ngAfterViewChecked();
+    c.selectRoomTab('yours');
+    expect(c.roomCue).toBe('');
+    say('them');
+    expect(c.roomCue).toBe('1');
+
+    // Out of sight in the columns too: behind the rail's Lobby tab.
+    c.roomLayout = 'columns';
+    c.ngAfterViewChecked();
+    expect(c.chatUnread).toBe(0);
+    c.activeSideTab = 'lobby';
+    say('them');
+    expect(c.chatUnread).toBe(1);
+
+    // Past nine it says so rather than growing.
+    for (let i = 0; i < 12; i++) say('them');
+    expect(c.roomCue).toBe('9+');
+  });
+
+  it('counts the first lines of a match, whatever the chat held before it', () => {
+    // Counted off the log, the cue went quiet for as many lines as the chat
+    // had held before the deal cleared it - three seen before the match, and
+    // the match's first three said nothing.
+    const c = make();
+    for (const name of ['beginTurnFor', 'reconcilePoints', 'playTurnSoundIfNeeded', 'startTurnClock']) {
+      c[name] = () => {};
+    }
+    const say = (username: string) =>
+      c.handleWebSocketMessage({ type: 'game_room_message', username, content: 'hi', timestamp: '' });
+    // Before the match, on the Room tab: seen as they come.
+    say('them'); say('them'); say('them');
+    c.ngAfterViewChecked();
+    expect(c.chatUnread).toBe(0);
+    c.handleWebSocketMessage({ type: 'game_started', playerWhite: 'me', playerBlack: 'them' });
+    expect(c.shownTab).toBe('yours');
+    say('them'); say('them');
+    c.ngAfterViewChecked();
+    expect(c.roomCue).toBe('2');
+
+    // Unseen when the next match is dealt: those lines went with the log.
+    c.handleWebSocketMessage({ type: 'game_started', playerWhite: 'me', playerBlack: 'them' });
+    expect(c.roomCue).toBe('');
+
+    // And whoever leaves takes their unseen lines with them.
+    say('them');
+    expect(c.chatUnread).toBe(1);
+    c.handleWebSocketMessage({ type: 'player_list', players: [{ username: 'me' }] });
+    expect(c.chatUnread).toBe(0);
+  });
+
+  it('keeps History at its newest line, as the chats are', () => {
+    // Oldest first, and at the columns' least height room for about one
+    // line: with nothing to scroll it, it showed "Game started!" all match.
+    const c = make();
+    const scrolled: string[] = [];
+    c.scrollChatToBottom = (which: string) => scrolled.push(which);
+    c.handleWebSocketMessage({ type: 'game_room_message', username: 'System', content: 'White moved.', timestamp: '' });
+    c.handleWebSocketMessage({ type: 'game_room_message', username: 'them', content: 'hi', timestamp: '' });
+    c.addSystemMessage('Black moved.');
+    expect(scrolled).toEqual(['history', 'gameRoom', 'history']);
+    scrolled.length = 0;
+    c.selectRoomTab('history');
+    expect(scrolled).toEqual(['history']);
+  });
+
+  it('leaves a log where it is while its reader is reading back', () => {
+    // A line coming in follows the log only if it was at its newest; a log
+    // coming into sight goes there whatever.
+    const c = make();
+    const later = jasmine.createSpy('runOutsideAngular');
+    c.zone = { runOutsideAngular: later };
+    c.historyEl = { clientHeight: 100, scrollHeight: 500, scrollTop: 0 };   // reading back
+    c.scrollChatToBottom('history', true);
+    expect(later).not.toHaveBeenCalled();
+    c.scrollChatToBottom('history');
+    expect(later).toHaveBeenCalledTimes(1);
+    c.historyEl.scrollTop = 400;                                            // at its newest
+    c.scrollChatToBottom('history', true);
+    expect(later).toHaveBeenCalledTimes(2);
+  });
+
+  it('follows the reader\'s own line in either chat, even while they read back', () => {
+    // Sent from a chat scrolled back, it landed below the fold and nothing
+    // seemed to happen. The lobby kept this rule; the room's chats had not.
+    const c = make();
+    const later = jasmine.createSpy('runOutsideAngular');
+    c.zone = { runOutsideAngular: later };
+    c.gameChatEl = { clientHeight: 100, scrollHeight: 500, scrollTop: 0 };  // reading back
+    c.handleWebSocketMessage({ type: 'game_room_message', username: 'them', content: 'hi', timestamp: '' });
+    expect(later).not.toHaveBeenCalled();
+    c.handleWebSocketMessage({ type: 'game_room_message', username: 'me', content: 'gg', timestamp: '' });
+    expect(later).toHaveBeenCalledTimes(1);
+    c.lobbyChatEl = { clientHeight: 100, scrollHeight: 500, scrollTop: 0 };
+    c.scrollChatToBottom('lobby', true);
+    expect(later).toHaveBeenCalledTimes(1);
+    c.scrollChatToBottom('lobby', true, true);
+    expect(later).toHaveBeenCalledTimes(2);
+  });
+
+  it('brings the chats to their newest when the Room tab is chosen', () => {
+    // One that is not drawn cannot be scrolled, so while it sat under
+    // another tab it kept its place, above everything that came in.
+    const c = make();
+    const scrolled: string[] = [];
+    c.scrollChatToBottom = (which: string) => scrolled.push(which);
+    c.selectRoomTab('theirs');
+    expect(scrolled).toEqual([]);
+    c.selectRoomTab('room');
+    expect(scrolled).toEqual(['gameRoom', 'lobby']);
+  });
+
+  describe('a "?" on a touch screen', () => {
+    // A "?" at (left, top), 24px square, as its click hands it over.
+    const press = (left: number, top: number) => ({
+      currentTarget: { getBoundingClientRect: () => ({ left, top, width: 24, height: 24, right: left + 24, bottom: top + 24 }) },
+    });
+    let width: jasmine.Spy;
+    let height: jasmine.Spy;
+    beforeEach(() => {
+      width = spyOnProperty(window, 'innerWidth').and.returnValue(390);
+      height = spyOnProperty(window, 'innerHeight').and.returnValue(664);
+    });
+
+    it('opens under it in the top half of the window and over it in the bottom, inside the gutter', () => {
+      const c = make();
+      // By the right-hand edge, near the top: under it, drawn in to the gutter.
+      c.toggleTip('score', press(360, 40));
+      expect(c.tip).toEqual({
+        id: 'score', width: 320, left: 390 - 16 - 320, top: 70, bottom: null, maxHeight: 664 - 64 - 6 - 16,
+      });
+      // Pressed again: shut.
+      c.toggleTip('score', press(360, 40));
+      expect(c.tip).toBeNull();
+      // Near the bottom: over it - and another "?" pressed while one is open
+      // takes its place.
+      c.toggleTip('purse-mine', press(180, 100));
+      c.toggleTip('start', press(4, 600));
+      expect(c.tip).toEqual({
+        id: 'start', width: 320, left: 16, top: null, bottom: 664 - 600 + 6, maxHeight: 600 - 6 - 16,
+      });
+      // A window narrower than the bubble: the window less its gutters.
+      c.closeTip();
+      width.and.returnValue(300);
+      c.toggleTip('tally', press(100, 100));
+      expect(c.tip.width).toBe(268);
+      expect(c.tip.left).toBe(16);
+      c.closeTip();
+    });
+
+    it('shuts on a press anywhere but a "?" or itself, on Escape, and when the room moves under it', () => {
+      const c = make();
+      const other = document.createElement('button');
+      other.className = 'tip-btn';
+      document.body.appendChild(other);
+      try {
+        c.toggleTip('score', press(10, 10));
+        // Another "?" answers on its own click; the bubble's words can be pressed.
+        other.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        expect(c.tip).not.toBeNull();
+        document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        expect(c.tip).toBeNull();
+
+        c.toggleTip('score', press(10, 10));
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+        expect(c.tip).not.toBeNull();
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        expect(c.tip).toBeNull();
+
+        c.toggleTip('score', press(10, 10));
+        window.dispatchEvent(new Event('resize'));
+        expect(c.tip).toBeNull();
+
+        // A scroll that moves its "?" shuts it; one elsewhere - History or a
+        // chat keeping to its newest line - does not. Any scroll shut it, and
+        // a move coming in closed the bubble being read.
+        const panel = document.createElement('div');
+        const log = document.createElement('div');
+        const q = document.createElement('button');
+        panel.appendChild(q);
+        document.body.append(panel, log);
+        try {
+          c.toggleTip('score', { currentTarget: q });
+          log.dispatchEvent(new Event('scroll'));
+          expect(c.tip).not.toBeNull();
+          panel.dispatchEvent(new Event('scroll'));
+          expect(c.tip).toBeNull();
+        } finally {
+          panel.remove();
+          log.remove();
+        }
+
+        // And once shut it is listening to nothing: a press then is nobody's.
+        const shut = spyOn(c, 'closeTip').and.callThrough();
+        document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        expect(shut).not.toHaveBeenCalled();
+      } finally {
+        other.remove();
+        c.closeTip();
+      }
+    });
+
+    it('shuts once its "?" has nothing left to say', () => {
+      // Start's bubble stayed an empty dark box once the match began, and the
+      // tally's stayed over a panel a unit had filled.
+      const c = make();
+      c.toggleTip('start', press(4, 600));
+      c.ngDoCheck();
+      expect(c.tip).not.toBeNull();
+      c.gameStarted = true;
+      c.ngDoCheck();
+      expect(c.tip).toBeNull();
+
+      c.toggleTip('tally', press(100, 100));
+      c.ngDoCheck();
+      expect(c.tip).not.toBeNull();
+      c.selectedUnit = { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20 };
+      c.ngDoCheck();
+      expect(c.tip).toBeNull();
+
+      // The score's "?" is in the turn banner, which goes with the match: its
+      // bubble floated over the end of it.
+      c.selectedUnit = null;
+      c.gameState.snapshot.turnNumber = 10;          // Phase 1: the scores up
+      expect(c.showScore).toBeTrue();
+      c.toggleTip('score', press(10, 10));
+      c.ngDoCheck();
+      expect(c.tip).not.toBeNull();
+      c.gameState.snapshot.endReason = 'resignation';
+      c.ngDoCheck();
+      expect(c.tip).toBeNull();
+    });
+
+    it('stays inside the window top to bottom, what is past it scrolling in the bubble', () => {
+      // A phone on its side: the Points/CP bubble ran off the foot of the
+      // screen, fixed where nothing could scroll to it.
+      height.and.returnValue(330);
+      const c = make();
+      c.toggleTip('purse-mine', press(100, 150));
+      expect(c.tip.top).toBe(180);
+      expect(c.tip.maxHeight).toBe(330 - 174 - 6 - 16);
+      c.closeTip();
+    });
+
+    it('says what the tooltip it stands for says, as the room stands now', () => {
+      const c = make();
+      expect(c.tipText('score')).toBe(c.scoreTitle);
+      expect(c.tipText('purse-mine')).toContain(c.pointsTitle);
+      expect(c.tipText('purse-opponent')).toContain(c.cpTitle);
+      expect(c.tipText('tally')).toContain(c.tallyTitles.mine);
+      expect(c.tipText('tally')).toContain(c.tallyTitles.theirs);
+      // Start's: why it is greyed before a match - and nothing during one,
+      // where a greyed Start says so for itself.
+      expect(c.tipText('start')).toBe('Waiting for both players to be ready.');
+      c.gameStarted = true;
+      expect(c.startButtonHint).toBe('The match is running.');
+      expect(c.tipText('start')).toBe('');
+    });
   });
 });

@@ -1,15 +1,18 @@
 <div class="setup-container">
   <div class="header">
-    <button class="back-button" (click)="onBack()">Back to Lobby</button>
+    <button class="back-button" type="button" [disabled]="saving" (click)="onBack()">{{ backLabel }}</button>
     <div class="save-section">
-      <button class="save-button" [disabled]="!hasUnsavedChanges" (click)="saveConfig()">Save Configuration</button>
-      <span class="save-success" *ngIf="savedSuccessfully">Saved!</span>
-      <span class="save-error" *ngIf="saveError">{{ saveError }}</span>
+      <!-- Sent to the room's server, waiting on its word (saving). -->
+      <span class="save-pending" *ngIf="saving" role="status">Saving…</span>
+      <span class="save-success" *ngIf="savedSuccessfully" role="status">Saved!</span>
+      <button class="save-button" type="button" [disabled]="!hasUnsavedChanges || saving" (click)="saveConfig()">Save Configuration</button>
     </div>
   </div>
 
   <div class="config-section">
-    <!-- Placeholder for unit/ability configuration UI -->
+    <!-- Placeholder for unit/ability configuration UI. As small as its words:
+         it had most of the screen, and the editor - the part that works - a
+         strip at the foot of a phone. -->
     <div class="config-ui">
       <h3>Units & Abilities Configuration</h3>
       <p>Coming Soon...</p>
@@ -18,16 +21,34 @@
     <!-- JSON configuration textarea -->
     <div class="json-section">
       <div class="json-header-row">
-        <h3>JSON Configuration</h3>
-        <button class="format-json-btn" (click)="formatJson()">Format JSON</button>
+        <h3 id="json-config-label">JSON Configuration</h3>
+        <button class="format-json-btn" type="button" (click)="formatJson()">Format JSON</button>
       </div>
+      <!-- What is wrong with it, over it while it is fixed (errors). -->
+      <ul class="config-errors" *ngIf="errors.length" role="alert">
+        <li *ngFor="let error of errors">{{ error }}</li>
+      </ul>
       <textarea
         [(ngModel)]="jsonConfig"
         (ngModelChange)="onConfigChange()"
+        aria-labelledby="json-config-label"
+        [attr.aria-invalid]="errors.length ? true : null"
         placeholder="Paste your JSON configuration here..."
         rows="10"
         spellcheck="false"
       ></textarea>
+    </div>
+  </div>
+
+  <!-- Back with changes unsaved (leaveChoice). -->
+  <div class="leave-overlay" *ngIf="leaving">
+    <div class="leave-dialog" role="dialog" aria-modal="true" aria-labelledby="leave-title">
+      <p id="leave-title">You have unsaved changes.</p>
+      <div class="leave-actions">
+        <button type="button" class="save-button" (click)="leaveChoice('save')">Save and go back</button>
+        <button type="button" class="discard-button" (click)="leaveChoice('discard')">Discard and go back</button>
+        <button type="button" class="stay-button" #stayButton (click)="leaveChoice('stay')">Stay</button>
+      </div>
     </div>
   </div>
 </div>

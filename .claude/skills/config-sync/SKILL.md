@@ -38,6 +38,12 @@ Changing the config's **shape** - adding, renaming or removing a field - touches
      every room holding one.
    - The rule between them: **whatever the client accepts, the server must accept.** A client
      default the server rejects breaks the setup screen with an error the user cannot act on.
+   - **A refusal both must make goes in `client/src/app/services/config-parity.json`**, which
+     `config.service.spec.ts` and `test_config_parity.py` both run (AGENTS.md invariant 7). So
+     does a key both must accept when absent.
+   - **Absent and `null` are different.** Both sides fill in only a *missing* key, so never read
+     a config value through `??` on the client - that turns an explicit `null` into the
+     default, and the server then refuses the `null` the client let through.
 
 4. **Verify.** Both must pass:
    ```bash

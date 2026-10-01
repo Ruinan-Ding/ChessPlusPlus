@@ -1,0 +1,67 @@
+// The "?"s and the bubble they open - what a touch screen is shown where a
+// computer has a tooltip (toggleTip in game-room.component.ts). A stylesheet
+// of its own for the same reason the layouts have one: the room's styles
+// are held to a 40kB budget, and this is a subject of its own. Loaded last
+// (styleUrls); its rules name what they have to outrank, so the order is
+// belt and braces.
+
+// A "?" beside what a tooltip explains - the scores, Points and CP, the Unit
+// panel's tallies, Start (toggleTip). A touch screen's alone: it has no hover,
+// so it never sees a tooltip; a computer's hover does, and its layout is left
+// as it was. 24px, the least target, drawn over the line it sits in rather
+// than making it taller: the negative margins leave 8px of it in the line,
+// under any line's own height. At -4px it took 16px, and the Unit panel's
+// heading grew 2px for it and 2px more when a unit's side was named beside
+// it - its numbers jumped at every unit the pointer crossed. Named in
+// .game-actions' own terms there as well: Angular scopes each part of a
+// selector, so its row's `.game-actions > button` outranked a plain
+// `button.tip-btn` and drew Start's "?" as wide as Start, with no ring.
+.game-room-container button.tip-btn {
+  display: none;
+}
+@media (hover: none) and (pointer: coarse) {
+  .game-room-container button.tip-btn,
+  .game-room-container .game-actions > button.tip-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    align-self: center;
+    box-sizing: border-box;
+    width: 24px;
+    height: 24px;
+    margin: -8px 0 -8px 6px;
+    padding: 0;
+    border: 1.5px solid #6b7280;
+    border-radius: 50%;
+    background: #fff;
+    color: #374151;
+    font: 700 14px/1 Arial, sans-serif;
+    vertical-align: middle;
+    cursor: pointer;
+
+    &[aria-expanded='true'] {
+      border-color: #2c3e50;
+      background: #2c3e50;
+      color: #fff;
+    }
+    // Nothing to say just now; its place kept, so nothing beside it moves.
+    &.idle { visibility: hidden; }
+  }
+}
+
+// What a "?" explains, under it or over it (toggleTip), in the screen's own
+// pixels - it is drawn outside the room's box, which a scaled room zooms.
+.tip-bubble {
+  position: fixed;
+  z-index: 1000;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #2c3e50;
+  color: #fff;
+  font: 14px/1.4 Arial, sans-serif;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  // Held inside the window (toggleTip's maxHeight); what is past it scrolls.
+  overflow-y: auto;
+}

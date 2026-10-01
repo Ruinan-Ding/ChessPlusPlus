@@ -1,11 +1,16 @@
 .setup-container {
   padding: 20px;
   height: 100vh;
+  height: 100dvh;  // the height a phone shows, its toolbar in sight (see the game room)
   display: flex;
   flex-direction: column;
   gap: 20px;
   box-sizing: border-box;
   overflow: hidden;
+  // The lobby's and the room's. Nothing set one here, and the screen drew in
+  // the browser's serif.
+  font-family: Arial, sans-serif;
+  color: #2c3e50;
 
   .header {
     .save-section {
@@ -18,83 +23,84 @@
         font-weight: 500;
         animation: fadeOut 2s forwards;
       }
-
-      .save-error {
-        color: #dc3545;
+      // Waiting on the room's server; steady, not fading - it has not happened.
+      .save-pending {
+        color: #5a6570;
         font-weight: 500;
       }
     }
   }
 
+  // The editor has the height; the placeholder above it is as tall as its
+  // words. It had flex 2 to the editor's 1 - most of the screen for "Coming
+  // Soon...", and about 120px of editor at the foot of a phone.
   .config-section {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 16px;
     flex: 1;
     min-height: 0;
 
     .config-ui {
-      flex: 2;
+      flex: 0 0 auto;
       border: 1px solid #dee2e6;
       border-radius: 4px;
-      padding: 20px;
+      padding: 12px 16px;
       min-width: 0;
       box-sizing: border-box;
-      margin-bottom: 0;
+
+      h3 { margin: 0 0 4px; }
+      p { margin: 0; color: #6b7280; }
     }
     .json-section {
-      flex: 1;
+      flex: 1 1 auto;
       display: flex;
       flex-direction: column;
       min-width: 0;
-      height: 180px;
+      min-height: 0;
       box-sizing: border-box;
-      margin-top: 20px;
 
       h3 {
         margin-top: 0;
       }
       textarea {
+        flex: 1 1 auto;
         width: 100%;
-        min-height: 100px;
-        height: 100%;
+        min-height: 160px;
         padding: 10px;
         border: 1px solid #dee2e6;
         border-radius: 4px;
-        resize: vertical;
+        resize: none;
         font-family: monospace;
         box-sizing: border-box;
       }
     }
-    .json-actions {
-      display: flex;
-      align-items: center;
-      margin-bottom: 8px;
+  }
 
-      .format-json-btn {
-        background-color: #28a745;
-        color: white;
-        border: none;
-        border-radius: 4px;
-        padding: 8px 16px;
-        font-size: 1rem;
-        font-weight: 500;
-        cursor: pointer;
-        transition: background-color 0.2s;
-        box-shadow: 0 2px 4px rgba(40, 167, 69, 0.08);
-        margin-left: 0;
-        margin-top: 0;
-        margin-bottom: 0;
+  // What is wrong with the configuration, over the editor (errors).
+  .config-errors {
+    flex: 0 0 auto;
+    max-height: 30%;
+    overflow-y: auto;
+    margin: 0 0 8px;
+    padding: 8px 12px 8px 28px;
+    border: 1px solid #f5c2c7;
+    border-radius: 4px;
+    background: #fdf2f3;
+    color: #b02a37;
+    font-size: 14px;
 
-        &:hover {
-          background-color: #218838;
-        }
-        &:disabled {
-          background-color: #6c757d;
-          cursor: not-allowed;
-        }
-      }
-    }
+    li + li { margin-top: 2px; }
+  }
+
+  // Every button on the screen one size - Format JSON was 16px to the
+  // others' 13px - and at least 32px tall.
+  button {
+    min-height: 32px;
+    padding: 6px 14px;
+    border-radius: 4px;
+    font: 600 14px/1.2 Arial, sans-serif;
+    cursor: pointer;
   }
 }
 
@@ -102,23 +108,24 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-bottom: 8px;
 
   h3 {
     margin: 0;
   }
-}
 
-@media (max-width: 900px) {
-  .setup-container {
-    .config-section {
-      .config-ui {
-        margin-bottom: 0;
-      }
-      .json-section {
-        margin-top: 20px;
-        height: 140px;
-      }
+  // Its style had sat under a .json-actions nothing is called any more,
+  // so the button drew as the browser's own, 21px tall.
+  .format-json-btn {
+    background-color: #28a745;
+    color: white;
+    border: none;
+    transition: background-color 0.2s;
+    box-shadow: 0 2px 4px rgba(40, 167, 69, 0.08);
+
+    &:hover {
+      background-color: #218838;
     }
   }
 }
@@ -139,27 +146,83 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
 
-  button {
-    padding: 8px 16px;
-    border-radius: 4px;
-    cursor: pointer;
+  // Back is the way out, not an action on the configuration: outlined, so a
+  // greyed Save beside it no longer looks the same as it.
+  .back-button {
+    background-color: #fff;
+    color: #2c3e50;
+    border: 1px solid #adb5bd;
 
-    &.back-button {
-      background-color: #6c757d;
-      color: white;
-      border: none;
+    &:hover:not(:disabled) { background-color: #f1f3f5; }
+    // Held while a save waits on the server.
+    &:disabled {
+      color: #6b7280;
+      cursor: not-allowed;
     }
+  }
+}
 
-    &.save-button {
-      background-color: #28a745;
-      color: white;
-      border: none;
+.save-button {
+  background-color: #28a745;
+  color: white;
+  border: none;
 
-      &:disabled {
-        background-color: #6c757d;
-        cursor: not-allowed;
-      }
-    }
+  &:hover:not(:disabled) { background-color: #218838; }
+  &:disabled {
+    background-color: #adb5bd;
+    cursor: not-allowed;
+  }
+}
+
+// Back with changes unsaved: save and go, discard and go, or stay.
+.leave-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.leave-dialog {
+  width: min(420px, 100%);
+  box-sizing: border-box;
+  padding: 20px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+
+  p {
+    margin: 0 0 16px;
+    font-size: 16px;
+    font-weight: 600;
+  }
+}
+
+.leave-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+
+  button { flex: 1 1 auto; }
+
+  .discard-button {
+    background: #fff;
+    color: #b02a37;
+    border: 1px solid #b02a37;
+
+    &:hover { background: #fdf2f3; }
+  }
+
+  .stay-button {
+    background: #fff;
+    color: #2c3e50;
+    border: 1px solid #adb5bd;
+
+    &:hover { background: #f1f3f5; }
   }
 }

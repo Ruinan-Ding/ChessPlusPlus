@@ -1,0 +1,357 @@
+@use 'room-units' as *;
+
+// How the room is laid out when the three columns do not fit unscaled -
+// the board and one column of tabs on a landscape window (.tabbed), the
+// board over the tabs on an upright one (.stacked), and what the two share
+// (.with-tabs). A stylesheet of its own since there were three layouts:
+// the room's styles had outgrown their 40kB budget, and the layouts are a
+// subject of their own - how the panels are placed, not how they look.
+// Loaded after game-room.component.scss (styleUrls), and every rule here
+// outranks what it overrides there by the layout's class as well, so the
+// order is belt and braces.
+.game-room-container {
+  // ============ THE BOARD AND ONE COLUMN (roomLayout 'tabbed') ============
+  //
+  // A landscape window too small for the three columns - a tablet or a phone
+  // on its side, a small browser window. The board takes the left, as big as
+  // the window allows, and one column the right: the turn's controls, the
+  // Unit panel while there is height for it (.unit-pinned), a strip of tabs,
+  // the panel the tab picks, and Resign and Offer Draw. The owner, 27 Sep
+  // 2026: "tabs are fine" - every panel one tap away, and saying so, where
+  // the alternative was every panel on screen at 8px.
+  //
+  // The panels stay in the markup where the columns put them. The columns
+  // stop being boxes (display: contents) and main's grid places what was in
+  // them, so there is one copy of every panel and nothing to keep in step -
+  // the same for the board over the tabs (.stacked), below; what the two
+  // share is written once, under .with-tabs.
+  &.with-tabs {
+    .match-panels,
+    .side-rail { display: contents; }
+
+    .game-area { grid-area: board; min-width: 0; }
+    .turn-controls { grid-area: turn; }
+    .view-controls { grid-area: view; }
+    .room-tabs { grid-area: tabs; }
+    .match-actions { grid-area: actions; }
+
+    // One at a time, in the one place.
+    .abilities-panel,
+    .opponent-panel,
+    .history-panel,
+    .rail-box {
+      grid-area: panel;
+      display: none;
+      min-height: 0;
+    }
+    &[data-tab='yours'] .abilities-panel,
+    &[data-tab='theirs'] .opponent-panel,
+    &[data-tab='history'] .history-panel,
+    &[data-tab='room'] .rail-box { display: flex; }
+
+    // The Unit panel pinned in a place of its own, or a tab like the rest.
+    .stats-panel { grid-area: unit; }
+    &:not(.unit-pinned) .stats-panel { grid-area: panel; display: none; min-height: 0; }
+    &:not(.unit-pinned)[data-tab='unit'] .stats-panel { display: flex; }
+
+    // History already has the whole panel; there is nothing to expand it into.
+    .history-panel .expand-btn { display: none; }
+
+    // A window too short for a panel scrolls it rather than cutting it off:
+    // the Unit panel's body and the Room box were `overflow: hidden` for the
+    // columns, where their share of the height is always enough, and on a
+    // phone that hid the box you type a message in.
+    .stats-panel .panel-body,
+    .rail-box { overflow-y: auto; }
+
+    // What the Room tab's cue sends a player there for - Ready, Start - at
+    // its top, over the roster: a phone's browser leaves the tab a few
+    // hundred pixels, and under the roster they were below its fold.
+    .players-section .ready-section {
+      order: -1;
+      margin: 0;
+    }
+
+    // The Unit panel in two lines - the unit, then its four numbers - where
+    // the panel is a tab (.unit-pinned off). Pressed, it opens the panel.
+    .unit-strip {
+      grid-area: strip;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      padding: u(0.25) u(0.5);
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: #f8f9fa;
+      color: #2c3e50;
+      font-size: t(0.85);
+      text-align: left;
+      cursor: pointer;
+
+      &.theirs { background: #f1f1f4; }
+      // Its first line: the unit, and "Tap again to strike" at the end while
+      // an enemy is armed - the board's own hint lay over a dozen of a
+      // phone's 15px hexes. One line whatever it holds: the name gives way
+      // (an ellipsis), and the hint has no padding up or down, so the strip
+      // keeps its height and the tabs under it never move.
+      .strip-head {
+        display: flex;
+        align-items: baseline;
+        gap: u(0.5);
+        min-width: 0;
+      }
+      .strip-name {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 700;
+      }
+      .strip-hint {
+        flex: 0 0 auto;
+        padding: 0 u(0.375);
+        border-radius: 4px;
+        background: #7f1d1d;
+        color: #fff;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .strip-stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0 u(0.75);
+      }
+      .hp strong { color: #15803d; }
+      .atk strong { color: #b91c1c; }
+      .def strong { color: #1d4ed8; }
+      .mov strong { color: #8b6800; }   // the panel's dark gold (4.5:1)
+
+      // The HP a hovered trade would leave, waving as the panel's does - or
+      // it reads as the HP the unit has. Its own keyframes: a name is scoped
+      // to the stylesheet that defines it, and the panel's is the other file.
+      // Asked for less motion, italics and an underline, as the panel.
+      .hp strong.forecast { animation: strip-forecast 1s ease-in-out infinite; }
+      @media (prefers-reduced-motion: reduce) {
+        .hp strong.forecast {
+          animation: none;
+          font-style: italic;
+          text-decoration: underline dotted;
+          text-underline-offset: 0.2em;
+        }
+      }
+    }
+    @keyframes strip-forecast { 50% { opacity: 0.35; } }
+  }
+
+  &.tabbed {
+    // One column of panels, so a measure of its own: the height the column
+    // needs, and the board first across the width - the columns' rule with
+    // one column of 20 units in place of two, u <= (W - 1.194 H) / 16.1.
+    // Capped at 16px: these are the smaller screens.
+    //
+    // The height is the tallest tab under everything that is always there -
+    // the two-row header included (fitHeader stacks it here from the start) -
+    // measured unit by unit, 28 Sep 2026, at 800 and 1000px wide alike: with
+    // the Unit panel pinned 685px at 12px, 752 at 14, 836 at 16; without it
+    // 497, 542, 602. Two straight lines each, as with the columns, with 4px
+    // to spare. Without it the Unit panel's strip stands in its place - two
+    // lines and a gap, three units and 2px more.
+    --u: clamp(12px, min(calc((100dvh - 266px) / 35.3), calc((100dvh - 120px) / 45),
+      calc((100vw - 119.4dvh) / 16.1)), 16px);
+
+    &:not(.unit-pinned) {
+      --u: clamp(12px, min(calc((100dvh - 212px) / 27.3), calc((100dvh - 96px) / 35),
+        calc((100vw - 119.4dvh) / 16.1)), 16px);
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max(248px, #{u(20)});
+      grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+      grid-template-areas:
+        "board turn"
+        "board view"
+        "board unit"
+        "board tabs"
+        "board panel"
+        "board actions";
+      gap: u(0.5) u(1);
+    }
+
+    // Short of height for it, the Unit panel is a tab like the rest, and its
+    // two-line strip (.unit-strip) stands where the panel stood.
+    &:not(.unit-pinned) main {
+      grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+      grid-template-areas:
+        "board turn"
+        "board view"
+        "board strip"
+        "board tabs"
+        "board panel"
+        "board actions";
+    }
+
+    // A phone on its side (.short, under TABBED_SHORT_HEIGHT): the column is
+    // a few hundred pixels tall, so it gives up two rows. The turn's four
+    // controls share one, and Resign and Offer Draw go to the Room tab, as
+    // they do on a phone upright.
+    &.short {
+      main {
+        grid-template-columns: minmax(0, 1fr) repeat(2, max(124px, #{u(10)}));
+        grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+        grid-template-areas:
+          "board turn view"
+          "board strip strip"
+          "board tabs tabs"
+          "board panel panel"
+          "board actions actions";
+      }
+      .match-actions { display: none; }
+      &[data-tab='room'] .match-actions { display: grid; }
+
+      // Each of the four has half of a 124px column: a sliver of side
+      // padding, or "Show Hex" held to its one line ran out of its button.
+      .turn-controls button,
+      .view-controls button { padding-inline: u(0.125); }
+    }
+  }
+
+  // ================ THE BOARD OVER THE TABS (roomLayout 'stacked') ================
+  //
+  // A portrait window too small for the three columns - a phone, a tablet
+  // upright. The owner, 28 Sep 2026: the board the whole width on top, the
+  // tabs under it, and Undo, End Turn, Show Hex and Flip in a bar along the
+  // bottom, where a thumb is. Resign and Offer Draw go with the room's other
+  // business, on the Room tab. Wide enough for two columns (a tablet,
+  // .unit-pinned), the Unit panel stands beside the tabs; on a phone it is a
+  // tab of its own. The panels are placed the way the tabs place them.
+  &.stacked {
+    // The board's height: the whole width's worth (the drawing is 1.194
+    // times as wide as it is tall), unless the panels under it would be left
+    // less than they need at the 12px unit (--lower: the tallest tab, Room,
+    // with the header, the strip, the bar and the gaps - measured, 28 Sep
+    // 2026, 507px with the Unit panel pinned beside the tabs and 538px with
+    // it a tab, plus 4 to spare, and 42px more for the Unit panel's strip
+    // when it is a tab) - and never under 45% of the window. A tablet
+    // upright gives the board up to the panels; a phone keeps the board the
+    // width of the screen, and its tallest tab scrolls.
+    --lower: 584px;
+    --board-h: min(calc((100vw - 18px) / 1.194), max(calc(100dvh - var(--lower)), 45dvh));
+    // The unit: 12px on a phone, up to 16px on a tablet (across the width),
+    // and only as far as the height left under the board allows - two
+    // straight lines from the same measurements, 18 units + 326px up to 15px
+    // and 25 units + 221px above.
+    --u: clamp(12px, min(calc(100vw / 40), calc((100dvh - var(--board-h) - 326px) / 18),
+      calc((100dvh - var(--board-h) - 221px) / 25)), 16px);
+    &.unit-pinned { --lower: 512px; }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+      grid-template-areas:
+        "board board"
+        "strip strip"
+        "tabs tabs"
+        "panel panel"
+        "actions actions"
+        "turn view";
+      gap: u(0.5);
+    }
+
+    .game-area { height: var(--board-h); }
+
+    .match-actions { display: none; }
+    &[data-tab='room'] .match-actions { display: grid; }
+
+    // A tablet upright: the Unit panel in a column of its own beside the tabs.
+    &.unit-pinned main {
+      grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+      grid-template-areas:
+        "board board"
+        "unit tabs"
+        "unit panel"
+        "actions actions"
+        "turn view";
+    }
+
+    // The bar and the tabs are what a thumb works all match: a finger's
+    // width, not the 24px floor a mouse is held to.
+    .turn-controls button,
+    .view-controls button,
+    .room-tabs button { min-height: 44px; }
+  }
+
+  // ================ THE HEADER'S BANNER, HELD (fitHeader, alwaysStacked) ================
+  //
+  // Under 1100px wide the banner has a row of its own, and a box of fixed
+  // height in it: the words shrink to fit the box, and the box never moves
+  // what is under it. It grew and shrank with the words - a phone's board
+  // between 106px and 142px down over a match - where the owner's rule is
+  // that the panels do not move with the turn. The height is fitHeader's,
+  // measured off the turn's line at full size, the font's own; what is here
+  // is where the rows sit in it when they take less.
+  header.header-held .turn-indicator { align-content: center; }
+
+  // fitHeader's last steps, when no size and no arrangement lets the turn's
+  // line fit: "THEIR" for "OPPONENT'S", then (in the held box) the turn on
+  // two lines, then the turn under 12px.
+  .turn-indicator {
+    .turn-short { display: none; }
+    &.banner-short .turn-long { display: none; }
+    &.banner-short .turn-short { display: inline; }
+    &.banner-turn-wraps .turn-text {
+      white-space: normal;
+      flex-shrink: 1;
+      min-width: 0;
+    }
+  }
+
+  // No keyboard, no keys to name: a phone or a tablet without one is told
+  // "End Turn", not "End Turn (TAB)".
+  @media (hover: none) and (pointer: coarse) {
+    .key-hint { display: none; }
+
+    // The chat boxes at a touch screen's 16px (styles.scss - iOS zooms into
+    // anything smaller) and in the room they had at the room's own size. A
+    // box is never narrower than its words' width to begin with, and at 16px
+    // that crowded "Send" out of its button (15px, a tablet's tabs); its line
+    // is taller, and the chat lost the 2px its one entry needed (960x540).
+    // So it may shrink, and its padding gives back what the line took: half
+    // of 1.15 times the difference between 16px and the size it was.
+    .chat-input input {
+      min-width: 0;
+      line-height: 1.15;
+      padding-block: calc(#{u(0.5)} + 0.575 * (#{t(0.875)} - 16px));
+    }
+  }
+
+  // The strip itself, the look of the Game/Lobby tabs it sits above.
+  .room-tabs {
+    display: flex;
+    border-bottom: 1px solid #ddd;
+
+    button {
+      // Each as wide as its name, and the rest shared: equal fifths left
+      // "Room" and its cue (roomCue) wider than their share on a tablet.
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: u(0.375) u(0.25);
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      font-weight: 600;
+      font-size: t(0.88);
+      color: #6b7683;
+      white-space: nowrap;
+      cursor: pointer;
+
+      &:hover { background-color: #f5f5f5; }
+      &.active {
+        border-bottom-color: #3498db;
+        color: #2980b9;
+      }
+    }
+  }
+}

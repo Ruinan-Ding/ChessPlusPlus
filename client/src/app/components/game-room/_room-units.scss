@@ -1,0 +1,38 @@
+@use 'sass:map';
+
+// The room's unit, for both of its stylesheets: game-room.component.scss
+// (how the panels look) and game-room.layout.scss (how the room is laid
+// out on a smaller screen). The unit itself, --u, is set on the room in the
+// first; these write sizes in it.
+//
+// The room's one unit. Everything on this screen but the board is sized in
+// it - type, padding, gaps, the two columns' widths - so the rails keep their
+// proportions at any size and the board takes whatever they leave.
+//
+// It replaced a single `zoom` on the whole room, which kept everything on
+// screen by shrinking everything together: at 1366x768 the median text came
+// out at 9.6px and the board shrank exactly as much as the chat did. Now the
+// unit follows the window down to a floor and up to a ceiling, and the board
+// is not in it: the rails give way first, which is the priority the board
+// needs. Measured in headless Chrome over the sizes people play at; see
+// client/scripts/layout-sweep.mjs.
+//
+// The six multiples the stylesheet uses most - a hundred-odd of its paddings
+// and gaps - are named once on the room (--u4 is 4px at the 16px unit) and
+// referred to by name. Written out, each was "calc(.375 * var(--u))" where it
+// had been "6px", and the room's compiled styles ran 2kB over their budget.
+$u-named: (0.25: u4, 0.3125: u5, 0.375: u6, 0.5: u8, 0.625: u10, 0.75: u12);
+
+@function u($n) {
+  @if map.has-key($u-named, $n) {
+    @return var(--#{map.get($u-named, $n)});
+  }
+  @return calc(#{$n} * var(--u));
+}
+
+// Type: n units, and never under 12px. A floor on each size rather than on
+// the unit, so a heading still stands above the body text at the bottom of
+// the range instead of everything landing on the same 12px.
+@function t($n) {
+  @return max(12px, #{u($n)});
+}

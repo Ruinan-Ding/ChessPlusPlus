@@ -3,6 +3,7 @@
   display: flex;
   flex-direction: column;
   height: 100vh; /* Use full viewport height */
+  height: 100dvh; /* the height a phone shows, its toolbar in sight (see the game room) */
   width: 100%;
   max-width: 1200px;
   margin: 0 auto;
@@ -63,8 +64,10 @@
     flex: 0 0 auto;
     white-space: nowrap;
     // Everything in here scales off this one size, so the whole right-hand
-    // side shrinks as a unit instead of one part wrapping ahead of the rest.
-    font-size: clamp(0.62rem, 1.3vw, 1rem);
+    // side shrinks as a unit instead of one part wrapping ahead of the rest -
+    // down to 12px and no further, the floor the game room holds its type to.
+    // It went to 9.9px, and under ~950px wide every word here was under 12.
+    font-size: clamp(12px, 1.3vw, 1rem);
     gap: clamp(4px, 0.9vw, 15px);
 
     button {
@@ -103,20 +106,48 @@
       }
     }
     
+    // Save and Keep (or Cancel) side by side, Save the one that goes ahead.
+    // They stood a row each across the whole panel, the browser's grey, and
+    // read as two of the same thing.
+    .rename-actions {
+      display: flex;
+      gap: 8px;
+    }
+
     button {
+      flex: 1 1 0;
+      min-height: 32px;
       padding: 5px 10px;
       border: 1px solid #ddd;
       border-radius: 4px;
       background-color: #f8f9fa;
+      color: #2c3e50;
+      font: inherit;
       cursor: pointer;
-      
+
       &:hover {
         background-color: #e9ecef;
       }
+
+      &.rename-save {
+        border-color: #3498db;
+        background-color: #3498db;
+        color: #fff;
+        &:hover { background-color: #2980b9; }
+      }
+    }
+
+    .rename-error {
+      margin: 0;
+      color: #c0392b;
+      font-size: 0.85rem;
     }
   }
   
+  // 24px each way at the least, the room's floor for a control (WCAG 2.2,
+  // 2.5.8): the padding's clamp let them fall to 22px on a phone.
   .single-player-btn {
+    min-height: 24px;
     padding: clamp(4px, 0.6vw, 8px) clamp(6px, 0.9vw, 12px);
     background-color: #27ae60;
     color: white;
@@ -130,6 +161,7 @@
   }
 
   .setup-btn {
+    min-height: 24px;
     padding: clamp(4px, 0.6vw, 8px) clamp(6px, 0.9vw, 12px);
     background-color: #3498db;
     color: white;
@@ -395,6 +427,7 @@
 }
 
 .btn-small {
+  min-height: 24px;   // Change, beside your name: the room's floor for a control
   padding: 3px 8px;
   background-color: #f8f9fa;
   border: 1px solid #ddd;
@@ -525,29 +558,6 @@
   }
 }
 
-.user-context-menu {
-  position: absolute;
-  background-color: white;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  padding: 5px 0;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-  z-index: 100;
-  
-  button {
-    display: block;
-    width: 100%;
-    padding: 8px 15px;
-    background: none;
-    border: none;
-    text-align: left;
-    cursor: pointer;
-    
-    &:hover {
-      background-color: #f1f1f1;
-    }
-  }
-}
 // Roster heading when there is no server behind it.
 .offline-head {
   color: #c0392b;
@@ -558,4 +568,60 @@
   margin: 0 0 6px;
   font-size: 0.85rem;
   color: #b7791f;
+}
+
+// A phone. The header's one row cannot hold the title, the name, three
+// buttons and the connection line at any size worth reading - held to one
+// row, it ran the connection line and the chat off the right of the screen,
+// out of reach. So under 720px the header wraps (the title and the sound on
+// one line, the rest under it), and the roster stands over the chat rather
+// than beside it, its list scrolling in up to two fifths of the height.
+@media (max-width: 720px) {
+  .lobby-container {
+    padding: 12px;
+  }
+
+  .header {
+    flex-wrap: wrap;
+    row-gap: 8px;
+    margin-bottom: 12px;
+
+    h1 {
+      font-size: 1.25rem;
+    }
+
+    .user-info {
+      flex: 1 1 100%;
+      flex-wrap: wrap;
+      white-space: normal;
+      row-gap: 6px;
+    }
+  }
+
+  .lobby-content {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .users-panel {
+    width: auto;
+    display: flex;
+    flex-direction: column;
+    flex: 0 1 auto;
+    max-height: 40%;
+
+    h2 {
+      margin-bottom: 6px;
+    }
+
+    .users-list {
+      height: auto;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+  }
+
+  .chat-panel {
+    min-height: 200px;
+  }
 }

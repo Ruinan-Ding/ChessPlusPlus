@@ -357,6 +357,124 @@ describe('GameBoardComponent reach preview', () => {
     expect(fixture.nativeElement.querySelectorAll('[data-pop] ').length).toBeGreaterThan(0);
   });
 
+  describe('asked for less motion', () => {
+    beforeEach(() => spyOnProperty(board, 'reducedMotion').and.returnValue(true));
+    const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+    it('jumps a moved unit from where it stood to where it went, never between', async () => {
+      const from = cell('0,0');
+      const to = cell('3,0');
+      const steps = [{ kind: 'move' as const, from: '0,0', to: '3,0' }];
+      board.playback = steps;
+      board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
+
+      // The first half of the beat on the hex it left, the second on the one
+      // it went to - the copy is drawn at the landing hex and pushed back.
+      await pause(120);
+      expect(board.mover!.x).toBeCloseTo(from.cx - to.cx, 6);
+      expect(board.mover!.y).toBeCloseTo(from.cy - to.cy, 6);
+      await pause(300);
+      expect(board.mover!.x).toBeCloseTo(0, 6);
+      expect(board.mover!.y).toBeCloseTo(0, 6);
+      await pause(600);
+      expect(board.mover).toBeNull();
+    });
+
+    it('lights the hex a blow lands on for the whole beat, with no lunge', async () => {
+      const steps = [{ kind: 'attack' as const, from: '0,0', to: '3,0' }];
+      board.playback = steps;
+      board.ngOnChanges({ playback: new SimpleChange([], steps, false) });
+
+      await pause(60);
+      expect(board.mover).toBeNull();
+      expect(board.hitHex).toBe('3,0');
+      // Past where the lunge ended and the flash began: nobody moved.
+      await pause(440);
+      expect(board.mover).toBeNull();
+      expect(board.hitHex).toBe('3,0');
+      // And out when the beat is, the lunge's time and the flash's.
+      await pause(500);
+      expect(board.hitHex).toBe('');
+    });
+
+    it('glows a unit an ability lands on without swelling or shrinking it', () => {
+      (board as any).popUnit('0,0', false, 400);
+      (board as any).popUnit('0,0', true, 400);
+      const group = fixture.nativeElement.querySelector('[data-pop="0,0"]') as SVGGElement;
+      const peaks = group.getAnimations().map(a => (a as any).effect.getKeyframes()[1]);
+      expect(peaks.length).toBe(2);
+      for (const peak of peaks) {
+        expect(peak.transform).toBe('scale(1)');
+        expect(peak.filter).toContain('drop-shadow');
+      }
+    });
+
+    it('holds every pulse on the board still, in a state that says what it said', () => {
+      // The stylesheet's rules for prefers-reduced-motion: reduce, lifted out
+      // of the query and laid over the page - so they are what is tested,
+      // whatever the machine running the specs asks for.
+      const style = document.createElement('style');
+      for (const sheet of Array.from(document.styleSheets)) {
+        for (const rule of Array.from(sheet.cssRules)) {
+          if (rule instanceof CSSMediaRule && rule.media.mediaText.includes('prefers-reduced-motion')) {
+            style.textContent += Array.from(rule.cssRules, inner => inner.cssText).join('\n');
+          }
+        }
+      }
+      expect(style.textContent).not.toBe('');
+
+      // Each state on a copy of an element the board drew, so the copy carries
+      // the component's style scope. [copy of, its classes, a still style.]
+      const host = fixture.nativeElement as HTMLElement;
+      const cases: [string, string, [string, string]?][] = [
+        ['polygon.hex-cell', 'hex-cell hex-attack-armed', ['stroke-width', '3px']],
+        ['polygon.hex-cell', 'panel-wash wash-attack-armed'],
+        ['polygon.hex-cell', 'hex-cell ability-friendly-target'],
+        ['polygon.hex-cell', 'hex-cell ability-enemy-target'],
+        ['polygon.hex-cell', 'hex-cell reach-up', ['filter', 'brightness(1.2)']],
+        ['polygon.hex-cell', 'hex-cell reach-down', ['filter', 'brightness(0.75)']],
+        ['polygon.unit-plate', 'unit-plate unit-buffed', ['filter', 'rgb(46, 204, 113)']],
+        ['polygon.unit-plate', 'unit-plate unit-debuffed', ['filter', 'rgb(231, 76, 60)']],
+        ['polygon.unit-plate', 'unit-plate unit-buffed unit-debuffed unit-both-effects', ['filter', 'rgb(46, 204, 113)']],
+        ['polygon.unit-plate', 'unit-plate unit-buffed unit-debuffed unit-both-effects', ['filter', 'rgb(231, 76, 60)']],
+        ['polygon.unit-plate', 'acting-ring', ['filter', 'rgb(255, 204, 0)']],
+        ['text.stat-atk', 'stat stat-atk wave-up', ['stroke', 'rgb(134, 239, 172)']],
+        ['text.stat-def', 'stat stat-def wave-down', ['stroke', 'rgb(252, 165, 165)']],
+        ['text.stat-hp', 'stat stat-hp wave-hurt on-dark', ['stroke', 'rgb(185, 28, 28)']],
+        ['text.piece-symbol', 'piece-symbol piece-white wave-acted-light', ['fill', 'rgb(138, 138, 138)']],
+        ['text.piece-symbol', 'piece-symbol piece-black wave-acted-dark', ['fill', 'rgb(138, 138, 138)']],
+        ['text.stat-hp', 'doom-skull', ['opacity', '0.6']],
+        ['text.stat-hp', 'doom-skull imminent', ['opacity', '1']],
+        ['text.stat-hp', 'damage-forecast'],
+        ['text.stat-hp', 'timer-low'],
+      ];
+      const copies = cases.map(([of, classes]) => {
+        const original = host.querySelector(of)!;
+        const copy = original.cloneNode(true) as SVGElement;
+        copy.setAttribute('class', classes);
+        return original.parentNode!.appendChild(copy);
+      });
+      // Every one of them pulses as things stand - unless this machine asks
+      // for less motion already.
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        copies.forEach((copy, i) => expect(copy.getAnimations().length).withContext(cases[i][1]).toBeGreaterThan(0));
+      }
+
+      document.head.appendChild(style);
+      try {
+        copies.forEach((copy, i) => {
+          const [, classes, still] = cases[i];
+          expect(copy.getAnimations().length).withContext(classes).toBe(0);
+          if (still) {
+            expect(getComputedStyle(copy).getPropertyValue(still[0])).withContext(classes).toContain(still[1]);
+          }
+        });
+      } finally {
+        style.remove();
+      }
+    });
+  });
+
   it('drops the rest of an attack when a new turn interrupts it', async () => {
     // Cancelling resolves the promise the chain is waiting on; it does not
     // unwind the chain. Without a token check between beats the abandoned
@@ -2624,5 +2742,585 @@ describe('GameBoardComponent setup deal', () => {
     expect(reserves['2,10']).toEqual(jasmine.objectContaining({ color: 'white', uid: 'w2,10' }));
     expect(reserves['-2,-10']).toBeUndefined();
     expect(reserves[freeBase]).toBeUndefined();
+  });
+});
+
+/**
+ * A touch screen has no hover and a small screen a small board: the first tap
+ * on an enemy in reach reads the trade and a second makes it, and the board
+ * pinches to zoom and drags to pan. The owner, 28 Sep 2026.
+ */
+describe('GameBoardComponent on a touch screen', () => {
+  let fixture: ComponentFixture<GameBoardComponent>;
+  let board: GameBoardComponent;
+  const anyBoard = () => board as any;
+
+  const config = {
+    board: { radius: 4, orientation: 'edge-up' },
+    units: {
+      archer: { id: 'archer', name: 'Archer', symbol: 'A', move: 1, hp: 5, attack: 4, defense: 1, attackRange: 2 },
+      guard: { id: 'guard', name: 'Guard', symbol: 'G', move: 1, hp: 9, attack: 3, defense: 2, attackRange: 1 },
+    },
+  };
+  const boardState: Record<string, any> = {
+    '0,0': { unit_id: 'archer', color: 'white', hp: 5, max_hp: 5 },
+    '2,0': { unit_id: 'guard', color: 'black', hp: 9, max_hp: 9 },
+    '-2,0': { unit_id: 'guard', color: 'white', hp: 9, max_hp: 9 },
+  };
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({ imports: [GameBoardComponent] }).compileComponents();
+    fixture = TestBed.createComponent(GameBoardComponent);
+    // A real box to lay out in, as the room gives it one.
+    fixture.nativeElement.style.cssText = 'display:block;position:relative;width:600px;height:500px';
+    document.body.appendChild(fixture.nativeElement);
+    board = fixture.componentInstance;
+    board.boardState = boardState;
+    board.config = config;
+    board.radius = 4;
+    board.turnNumber = 20;
+    board.interactive = true;
+    board.controlAllSides = true;
+    board.turnColor = 'white';
+    board.ngOnChanges({
+      boardState: new SimpleChange(null, boardState, true),
+      config: new SimpleChange(null, config, true),
+      radius: new SimpleChange(null, 4, true),
+    });
+    fixture.detectChanges();
+  });
+  afterEach(() => fixture.nativeElement.remove());
+
+  const cell = (key: string) => board.cells.find(c => c.key === key)!;
+  const svg = () => fixture.nativeElement.querySelector('svg.hex-board') as SVGSVGElement;
+  const pointer = (type: string, id: number, x: number, y: number, kind = 'touch') =>
+    svg().dispatchEvent(new PointerEvent(type, {
+      pointerId: id, pointerType: kind, clientX: x, clientY: y, bubbles: true,
+    }));
+  // The archer at 0,0 selected, the guard at 2,0 in its reach.
+  const aim = () => {
+    board.onHexClick(cell('0,0'));
+    expect(board.attackTargets.has('2,0')).toBeTrue();
+  };
+
+  it('reads the trade on the first tap and makes it on the second', () => {
+    const swings: any[] = [];
+    board.attackMade.subscribe((e: any) => swings.push(e));
+    aim();
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    expect(swings).toEqual([]);
+    expect(board.armedAttack).toBe('2,0');
+    // The forecast a hover would have shown, on the target.
+    expect(board.forecastDamage('2,0')).toMatch(/^-\d+$/);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.armed-hint')?.textContent).toContain('Tap again');
+
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    expect(swings.length).toBe(1);
+    expect(swings[0].attack).toBe('2,0');
+    expect(board.armedAttack).toBeNull();
+  });
+
+  it('strikes on the first click with a mouse, which read it by hovering', () => {
+    const swings: any[] = [];
+    board.attackMade.subscribe((e: any) => swings.push(e));
+    aim();
+    pointer('pointerdown', 1, 300, 250, 'mouse');
+    board.onHexClick(cell('2,0'));
+    expect(swings.length).toBe(1);
+  });
+
+  it('disarms on any other tap, so a stray second tap never strikes', () => {
+    const swings: any[] = [];
+    board.attackMade.subscribe((e: any) => swings.push(e));
+    aim();
+    pointer('pointerdown', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    board.onHexClick(cell('-2,0'));      // another unit - not the target
+    expect(board.armedAttack).toBeNull();
+    aim();                               // the archer back, the guard in reach
+    board.onHexClick(cell('2,0'));       // arms afresh rather than striking
+    expect(swings).toEqual([]);
+    expect(board.armedAttack).toBe('2,0');
+    // And a new position disarms it too.
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 21, false) });
+    expect(board.armedAttack).toBeNull();
+  });
+
+  it('tells the room a target is armed, and leaves the hint to it when told to', async () => {
+    // On a phone the room says "Tap again to strike" in its Unit strip: the
+    // board's own hint lay over a dozen 15px hexes wherever it stood.
+    const said: boolean[] = [];
+    board.armedChange.subscribe((armed: boolean) => said.push(armed));
+    aim();
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    expect(said).toEqual([true]);
+    board.hintOutside = true;
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.armed-hint')).toBeNull();
+    // Another tap disarms it, and says so.
+    board.onHexClick(cell('-2,0'));
+    expect(said).toEqual([true, false]);
+    // A new position too - once the check that brought it is over.
+    aim();
+    board.onHexClick(cell('2,0'));
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 21, false) });
+    expect(said).toEqual([true, false, true]);
+    await Promise.resolve();
+    expect(said).toEqual([true, false, true, false]);
+  });
+
+  it('is played from the keys: arrows move over it, Enter chooses, Escape lets go', () => {
+    // A move or a blow needed a pointer; every panel could be worked from the
+    // keys but the board.
+    const key = (k: string) => svg().dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+    const blows: any[] = [];
+    board.attackMade.subscribe((e: any) => blows.push(e));
+    expect(svg().getAttribute('tabindex')).toBe('0');
+    anyBoard().keyCursor = '0,0';
+    anyBoard().keyFocused = true;
+    key('ArrowRight');
+    expect(board.keyCursor).toBe('1,0');
+    key('ArrowLeft');
+    expect(board.keyCursor).toBe('0,0');
+    // Up twice and it is back in its own column, not two zigzags off it.
+    key('ArrowUp');
+    key('ArrowUp');
+    expect(cell(board.keyCursor!).cx).toBeCloseTo(cell('0,0').cx, 1);
+    key('ArrowDown');
+    key('ArrowDown');
+    expect(board.keyCursor).toBe('0,0');
+    // Enter chooses, as a click does - and lands a blow on the first press,
+    // its forecast read on landing.
+    key('Enter');
+    expect(anyBoard().selectedHex).toBe('0,0');
+    key('ArrowRight');
+    key('ArrowRight');
+    expect(board.keyCursor).toBe('2,0');
+    expect(board.keyWords).toMatch(/^Hex \d+: .+, can attack$/);
+    key('Enter');
+    expect(blows.length).toBe(1);
+    expect(blows[0].attack).toBe('2,0');
+    // Escape lets go of the unit.
+    anyBoard().keyCursor = '0,0';
+    key('Enter');
+    expect(anyBoard().selectedHex).toBe('0,0');
+    key('Escape');
+    expect(anyBoard().selectedHex).toBeNull();
+    // Flipped, the screen's right is the board's left.
+    board.rotateBoard = true;
+    key('ArrowRight');
+    expect(board.keyCursor).toBe('-1,0');
+  });
+
+  it('chooses only a hex it can see, and only for the keys alone', () => {
+    const key = (k: string, mods: KeyboardEventInit = {}) => {
+      const e = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...mods });
+      svg().dispatchEvent(e);
+      return e;
+    };
+    const blows: any[] = [];
+    board.attackMade.subscribe((e: any) => blows.push(e));
+    aim();
+    // The keys left their cursor on the target and went; then a click focused
+    // the board, which draws no cursor. Enter there chose the hidden hex.
+    anyBoard().keyCursor = '2,0';
+    anyBoard().keyFocused = false;
+    key('Enter');
+    expect(blows).toEqual([]);
+    expect(board.keyFocused).toBeTrue();          // the cursor shown instead
+    // A mouse's drag left its closing click to swallow: it swallowed the
+    // next Enter.
+    anyBoard().swallowClick = true;
+    key('Enter');
+    expect(blows.length).toBe(1);
+    // Alt+Left is the browser's Back; Ctrl and Shift with the arrows the system's.
+    const at = board.keyCursor;
+    for (const mods of [{ altKey: true }, { ctrlKey: true }, { shiftKey: true }, { metaKey: true }]) {
+      const e = key('ArrowLeft', mods);
+      expect(e.defaultPrevented).withContext(JSON.stringify(mods)).toBeFalse();
+      expect(board.keyCursor).toBe(at);
+    }
+  });
+
+  it('takes the focus as the keys\' where there is no :focus-visible to ask', () => {
+    // Safari before 15.4 throws on it, and keyboard play never started.
+    spyOn(svg(), 'matches').and.throwError(new SyntaxError("':focus-visible' is not a valid selector"));
+    expect(() => board.onBoardFocus()).not.toThrow();
+    expect(board.keyFocused).toBeTrue();
+  });
+
+  it('disarms on Escape, and when an ability is armed, and says so', async () => {
+    // The armed hex pulsed on, and "Tap again to strike" stayed up, with
+    // nothing to strike with.
+    const said: boolean[] = [];
+    board.armedChange.subscribe((armed: boolean) => said.push(armed));
+    const arm = () => {
+      aim();
+      pointer('pointerdown', 1, 300, 250);
+      pointer('pointerup', 1, 300, 250);
+      board.onHexClick(cell('2,0'));
+      expect(board.armedAttack).toBe('2,0');
+    };
+    arm();
+    svg().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(board.armedAttack).toBeNull();
+    expect(said).toEqual([true, false]);
+    arm();
+    board.abilityMode = 'enemy';
+    board.ngOnChanges({ abilityMode: new SimpleChange(null, 'enemy', false) });
+    expect(board.armedAttack).toBeNull();
+    await Promise.resolve();
+    expect(said).toEqual([true, false, true, false]);
+  });
+
+  it("lets go of a tap's zoom for a unit not worth zooming to", () => {
+    // Framed on the last unit's reach, most of the new one's was off screen.
+    const size = spyOn(board, 'hexOnScreen').and.returnValue(15);
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    aim();
+    expect(board.boardZoom).toBeGreaterThan(1);
+    size.and.returnValue(30);
+    board.onHexClick(cell('0,0'));
+    expect(board.boardZoom).toBe(1);
+  });
+
+  it("zooms a phone's board to a unit's reach on a tap, and back with the turn", () => {
+    // At 15px a hex a finger lands on the one beside it, and a pinch before
+    // every move took two hands.
+    spyOn(board, 'hexOnScreen').and.returnValue(15);
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    aim();
+    expect(board.boardZoom).toBeGreaterThan(1);
+    expect(board.boardZoom).toBeLessThanOrEqual(GameBoardComponent.FINGER / 15 + 1e-9);
+    // Everything it can reach or hit, in the view.
+    const [x, y, w, h] = board.shownViewBox.split(' ').map(Number);
+    for (const key of ['0,0', ...board.legalTargets, ...board.attackTargets]) {
+      const c = cell(key);
+      expect(c.cx >= x && c.cx <= x + w && c.cy >= y && c.cy <= y + h).withContext(key).toBeTrue();
+    }
+    // The next turn is seen whole.
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 21, false) });
+    expect(board.boardZoom).toBe(1);
+    // And a tap on nothing puts it back too.
+    aim();
+    expect(board.boardZoom).toBeGreaterThan(1);
+    board.onHexClick(board.cells.find(c => !c.piece && !c.panel && !board.legalTargets.has(c.key))!);
+    expect(board.boardZoom).toBe(1);
+  });
+
+  it('leaves the view be for a mouse, for hexes big enough, and over a zoom the player made', () => {
+    const size = spyOn(board, 'hexOnScreen').and.returnValue(15);
+    pointer('pointerdown', 1, 300, 250, 'mouse');
+    aim();
+    expect(board.boardZoom).toBe(1);
+    board.onHexClick(cell('0,0'));                 // deselected
+    size.and.returnValue(30);                       // a tablet's hexes
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    aim();
+    expect(board.boardZoom).toBe(1);
+    board.onHexClick(cell('0,0'));
+    // The player's own zoom stands, and a turn does not take it away.
+    size.and.returnValue(15);
+    anyBoard().boardZoom = 3;
+    anyBoard().applyZoom();
+    const theirs = board.shownViewBox;
+    aim();
+    expect(board.shownViewBox).toBe(theirs);
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 21, false) });
+    expect(board.shownViewBox).toBe(theirs);
+  });
+
+  it('pinches to zoom, keeping the board under the fingers, and fits back', () => {
+    const whole = board.shownViewBox;
+    pointer('pointerdown', 1, 250, 250);
+    pointer('pointerdown', 2, 350, 250);
+    pointer('pointermove', 2, 450, 250);   // spread doubled
+    pointer('pointerup', 2, 450, 250);
+    pointer('pointerup', 1, 250, 250);
+    expect(board.boardZoom).toBeCloseTo(2, 5);
+    const [, , w] = board.shownViewBox.split(' ').map(Number);
+    const [, , w0] = whole.split(' ').map(Number);
+    expect(w).toBeCloseTo(w0 / 2, 0);
+
+    // Never past four times, never out past the whole board.
+    pointer('pointerdown', 1, 290, 250);
+    pointer('pointerdown', 2, 310, 250);
+    pointer('pointermove', 2, 590, 250);
+    pointer('pointerup', 2, 590, 250);
+    pointer('pointerup', 1, 290, 250);
+    expect(board.boardZoom).toBe(GameBoardComponent.ZOOM_MAX);
+    pointer('pointerdown', 1, 100, 250);
+    pointer('pointerdown', 2, 500, 250);
+    pointer('pointermove', 2, 101, 250);
+    pointer('pointerup', 2, 101, 250);
+    pointer('pointerup', 1, 100, 250);
+    expect(board.boardZoom).toBe(1);
+    expect(board.shownViewBox).toBe(whole);
+
+    anyBoard().boardZoom = 3;
+    anyBoard().applyZoom();
+    fixture.detectChanges();
+    const fit = fixture.nativeElement.querySelector('.board-fit-btn') as HTMLButtonElement;
+    expect(fit).toBeTruthy();
+    // A finger's width square, named for what it does: its words made it a
+    // 115px bar over the corner of a zoomed board.
+    expect(fit.getAttribute('aria-label')).toBe('Whole board');
+    const r = fit.getBoundingClientRect();
+    expect([Math.round(r.width), Math.round(r.height)]).toEqual([44, 44]);
+    fit.click();
+    fixture.detectChanges();
+    expect(board.boardZoom).toBe(1);
+    expect(board.shownViewBox).toBe(whole);
+    expect(fixture.nativeElement.querySelector('.board-fit-btn')).toBeNull();
+  });
+
+  it('zooms with the wheel about the point under the pointer, as a pinch does', () => {
+    // A unit's numbers are 7px on a laptop's window; the wheel reads a crowd
+    // of them, where the Unit panel reads one.
+    const whole = board.shownViewBox;
+    // A board on the screen at a size, as in the room: the fixture lays it out at none.
+    svg().style.width = '600px';
+    svg().style.height = '500px';
+    const r = svg().getBoundingClientRect();
+    const at = { x: r.left + r.width * 0.3, y: r.top + r.height * 0.6 };
+    const under = anyBoard().toBoard(at, board.boardZoom, anyBoard().zoomCenter);
+    const wheel = (deltaY: number) => {
+      const e = new WheelEvent('wheel', { deltaY, clientX: at.x, clientY: at.y, bubbles: true, cancelable: true });
+      svg().dispatchEvent(e);
+      return e;
+    };
+    const e = wheel(-300);
+    expect(e.defaultPrevented).toBeTrue();         // the page does not scroll or zoom
+    expect(board.boardZoom).toBeGreaterThan(1);
+    const still = anyBoard().toBoard(at, board.boardZoom, anyBoard().zoomCenter);
+    expect(still.x).toBeCloseTo(under.x, 0);
+    expect(still.y).toBeCloseTo(under.y, 0);
+    wheel(3000);
+    expect(board.boardZoom).toBe(1);
+    expect(board.shownViewBox).toBe(whole);
+  });
+
+  it('pans a zoomed board with one finger, and the tap that ends the drag chooses nothing', () => {
+    anyBoard().boardZoom = 2;
+    anyBoard().applyZoom();
+    const before = board.shownViewBox;
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointermove', 1, 360, 250);
+    // "Whole board" out of the way while the drag lasts, back once it ends.
+    expect(svg().parentElement!.classList.contains('gesturing')).toBeTrue();
+    pointer('pointerup', 1, 360, 250);
+    expect(svg().parentElement!.classList.contains('gesturing')).toBeFalse();
+    expect(board.shownViewBox).not.toBe(before);
+    // Dragged right, so the view moved left over the board.
+    expect(Number(board.shownViewBox.split(' ')[0])).toBeLessThan(Number(before.split(' ')[0]));
+    board.onHexClick(cell('0,0'));
+    expect(anyBoard().selectedHex).toBeNull();
+    // The next tap is a tap.
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    board.onHexClick(cell('0,0'));
+    expect(anyBoard().selectedHex).toBe('0,0');
+  });
+
+  it('turns a drag round with the board when it is flipped', () => {
+    board.rotateBoard = true;
+    anyBoard().boardZoom = 2;
+    anyBoard().applyZoom();
+    const before = Number(board.shownViewBox.split(' ')[0]);
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointermove', 1, 360, 250);
+    pointer('pointerup', 1, 360, 250);
+    expect(Number(board.shownViewBox.split(' ')[0])).toBeGreaterThan(before);
+  });
+
+  it('does not pan the whole board, and a small wobble is still a tap', () => {
+    const whole = board.shownViewBox;
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointermove', 1, 340, 250);
+    pointer('pointerup', 1, 340, 250);
+    expect(board.shownViewBox).toBe(whole);
+    board.onHexClick(cell('0,0'));
+    expect(anyBoard().selectedHex).toBe('0,0');
+  });
+
+  it('pulses the armed target, in a red deeper than any other target', () => {
+    aim();
+    pointer('pointerdown', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    fixture.detectChanges();
+    const hex = fixture.nativeElement.querySelector('polygon.hex-attack-armed') as SVGPolygonElement;
+    expect(hex).toBeTruthy();
+    expect(getComputedStyle(hex).fill).toBe('rgb(185, 28, 28)');
+    // A target as well - the target's own red comes later in the
+    // stylesheet, and the armed one has to win all the same. (The hex's
+    // fill transition off, or the colour read is the one it sets out from.)
+    hex.style.transition = 'none';
+    hex.classList.add('hex-attack-target');
+    expect(getComputedStyle(hex).fill).toBe('rgb(185, 28, 28)');
+    // And the pulse moves. A fill with !important outranks an animation of
+    // the fill, so one that animated the fill held still.
+    const pulse = hex.getAnimations().find(a => /armed-pulse/.test((a as CSSAnimation).animationName))!;
+    expect(pulse).withContext('the pulse').toBeTruthy();
+    pulse.pause();
+    pulse.currentTime = 0;
+    const look = () => `${getComputedStyle(hex).fill} ${getComputedStyle(hex).filter}`;
+    const rest = look();
+    pulse.currentTime = 790;
+    expect(look()).not.toBe(rest);
+  });
+
+  it('says to tap again over the board, at a size a phone can read', () => {
+    // Drawn on the board it was sized to the board: about 4px tall on a
+    // phone, and sat on the forecast of the unit beside the target.
+    aim();
+    pointer('pointerdown', 1, 300, 250);
+    board.onHexClick(cell('2,0'));
+    fixture.detectChanges();
+    const hint = fixture.nativeElement.querySelector('.armed-hint') as HTMLElement;
+    expect(hint.closest('svg')).toBeNull();
+    expect(parseFloat(getComputedStyle(hint).fontSize)).toBeGreaterThanOrEqual(12);
+  });
+
+  it('draws every number on a white unit face at 4.5:1 or better', () => {
+    // MOV was #e0a800 - 2:1 on white, where HP, ATK and DEF were 4.5:1 and more.
+    const lin = (c: number) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    const luminance = (rgb: string) => {
+      const [r, g, b] = (rgb.match(/\d+/g) ?? []).map(Number);
+      return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    };
+    const faces = Array.from(fixture.nativeElement.querySelectorAll('text.stat:not(.on-dark)')) as SVGTextElement[];
+    const kinds = new Set<string>();
+    for (const t of faces) {
+      const kind = t.getAttribute('class')!.split(' ').find(c => /^stat-(hp|atk|def|mov)$/.test(c));
+      if (!kind || kinds.has(kind)) continue;
+      kinds.add(kind);
+      const contrast = 1.05 / (luminance(getComputedStyle(t).fill) + 0.05);
+      expect(contrast).withContext(kind).toBeGreaterThanOrEqual(4.5);
+    }
+    expect([...kinds].sort()).toEqual(['stat-atk', 'stat-def', 'stat-hp', 'stat-mov']);
+  });
+
+  it("draws each unit's face a tenth smaller, clear of its neighbours'", () => {
+    // At full size a unit's DEF and ATK sat in the next row's HP and its pips
+    // in the next row's MOV and reach. The layout stays; the face is drawn at
+    // FACE_SCALE around its hex's centre.
+    const archer = cell('0,0');
+    expect(archer.faceTransform).toContain('scale(0.9)');
+    const hp = fixture.nativeElement.querySelector('text.stat-hp') as SVGTextElement;
+    expect(hp.closest('g[transform]')?.getAttribute('transform')).toContain('scale(0.9)');
+    // And the two that reached furthest, drawn in from where they were.
+    const pips = board.vetPips({ ...archer, vet: 3 });
+    expect(Math.max(...pips.map(p => p.y - archer.cy))).toBeLessThanOrEqual(21);
+    spyOn<any>(board, 'hasLift').and.returnValue(true);
+    spyOn<any>(board, 'hasDrag').and.returnValue(true);
+    const arrows = board.effectArrows(archer);
+    expect(arrows.length).toBe(2);
+    expect(Math.min(...arrows.map(a => a.x - archer.cx))).toBeGreaterThanOrEqual(-21);
+  });
+
+  it('puts the hint over the half of the board the target is not in', () => {
+    // Along the foot it sat on a player's own rows - where a target in reach
+    // often is, and its forecast with it.
+    const byY = [...board.cells].sort((a, b) => a.cy - b.cy);
+    const [top, bottom] = [byY[0], byY[byY.length - 1]];
+    board.armedAttack = bottom.key;
+    expect(board.armedHintHigh).toBeTrue();
+    board.armedAttack = top.key;
+    expect(board.armedHintHigh).toBeFalse();
+    // Turned round, the bottom row is at the top.
+    board.rotateBoard = true;
+    expect(board.armedHintHigh).toBeTrue();
+    // And zoomed onto the top of the board, the top row is low in the view.
+    board.rotateBoard = false;
+    anyBoard().boardZoom = 4;
+    anyBoard().zoomCenter = { x: top.cx, y: top.cy - 1000 };
+    anyBoard().applyZoom();
+    board.armedAttack = byY.find(c => c.cy > top.cy + 40)!.key;
+    expect(board.armedHintHigh).toBeTrue();
+  });
+
+  it('washes an armed panel hex rather than filling it', () => {
+    // Reach on a reserve or a base is a wash over the panel's own colour, so
+    // the panel still reads as one; a solid red fill wiped it out.
+    const panel = board.cells.find(c => !!c.panel)!;
+    expect(panel).withContext('a panel hex').toBeTruthy();
+    board.armedAttack = panel.key;
+    anyBoard().cdr.markForCheck();
+    fixture.detectChanges();
+    expect(board.panelWash(panel)).toBe('wash-attack-armed');
+    expect(fixture.nativeElement.querySelectorAll('polygon.hex-attack-armed').length).toBe(0);
+    expect(fixture.nativeElement.querySelector('polygon.panel-wash.wash-attack-armed')).toBeTruthy();
+  });
+
+  it('holds on to a drag until it lets go, wherever it goes', () => {
+    anyBoard().boardZoom = 2;
+    anyBoard().applyZoom();
+    const held = spyOn(svg(), 'setPointerCapture');
+    // A tap is not held: its click belongs to the hex under it.
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointerup', 1, 300, 250);
+    expect(held).not.toHaveBeenCalled();
+    // A drag is: let go of off the board, it still ends. Once, not on every
+    // frame of it.
+    pointer('pointerdown', 1, 300, 250);
+    pointer('pointermove', 1, 360, 250);
+    pointer('pointermove', 1, 380, 250);
+    pointer('pointermove', 1, 400, 250);
+    expect(held).toHaveBeenCalledOnceWith(1);
+    // A finger that joins it is held too.
+    pointer('pointerdown', 2, 200, 250);
+    expect(held).toHaveBeenCalledWith(2);
+  });
+
+  it('ends a mouse drag let go of off the board, and the next click is a click', () => {
+    anyBoard().boardZoom = 2;
+    anyBoard().applyZoom();
+    const mouse = (type: string, x: number, buttons: number) =>
+      svg().dispatchEvent(new PointerEvent(type, {
+        pointerId: 7, pointerType: 'mouse', clientX: x, clientY: 250, buttons, bubbles: true,
+      }));
+    mouse('pointerdown', 300, 1);
+    mouse('pointermove', 360, 1);           // a drag; the button comes up off the board
+    const after = board.shownViewBox;
+    mouse('pointermove', 420, 0);           // back over it, no button down
+    expect(board.shownViewBox).withContext('a hover does not pan').toBe(after);
+    mouse('pointerdown', 300, 1);
+    mouse('pointerup', 300, 0);
+    board.onHexClick(cell('0,0'));
+    expect(anyBoard().selectedHex).toBe('0,0');
+  });
+
+  it('pans by the board under the finger when the room is scaled', () => {
+    // The columns are CSS-zoomed a little on a laptop just short of them.
+    // Measured by its laid-out size the board moved 10% less than the finger.
+    // Laid out as the room lays it out, a column the board fills - the
+    // fixture's block box leaves it no height, and the width alone is not
+    // what decides how far a pixel goes.
+    fixture.nativeElement.style.display = 'flex';
+    const drag = () => {
+      board.fitBoard();
+      anyBoard().boardZoom = 2;
+      anyBoard().applyZoom();
+      const x0 = anyBoard().zoomCenter.x;
+      pointer('pointerdown', 1, 300, 250);
+      pointer('pointermove', 1, 280, 250);
+      pointer('pointerup', 1, 280, 250);
+      return anyBoard().zoomCenter.x - x0;
+    };
+    const unscaled = drag();
+    fixture.nativeElement.style.zoom = '0.5';
+    const scaled = drag();
+    expect(unscaled).toBeGreaterThan(0);
+    expect(scaled / unscaled).toBeCloseTo(2, 3);
   });
 });
