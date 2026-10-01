@@ -1733,6 +1733,257 @@ class RenameSafetyTests(TransactionTestCase):
             await frank.disconnect()
 
 
+class CleanUsernameTests(SimpleTestCase):
+    """The name as it will be held: one visible name is one name, and nothing
+    in it is invisible, a control, or the client's own "System"."""
+
+    def test_one_visible_name_is_one_name(self):
+        from game.validators import clean_username
+        self.assertEqual(clean_username('Ａlice'), 'Alice')        # full-width A
+        self.assertEqual(clean_username('Á'), 'Á')          # accent typed apart
+        self.assertEqual(clean_username('  ann \n\t lee  '), 'ann lee')
+
+    def test_invisible_control_and_reserved_names_are_refused(self):
+        from game.validators import ValidationError, clean_username
+        for name in ['Alice​', '‮ecila', 'a\x00b', 'System', 'SYSTEM',
+                     'ｓystem', '', '   ', None, 7, 'x' * 25, 'ﷺ' * 2]:
+            with self.subTest(name=name):
+                with self.assertRaises(ValidationError):
+                    clean_username(name)
+
+
+class UsernameHandlingTests(TransactionTestCase):
+    """What holds a name, what a name can be, and when it may change."""
+
+    async def _lobby(self, username, secret, **extra):
+        """Join the lobby; the socket, and the username_assigned if one came."""
+        comm = WebsocketCommunicator(URLRouter(websocket_urlpatterns), "/ws/game/lobby/")
+        await comm.connect()
+        await _receive_until(comm, 'connection_established')
+        await comm.send_json_to({'type': 'join_lobby', 'username': username, 'secret': secret, **extra})
+        assigned = None
+        while True:
+            msg = await comm.receive_json_from(timeout=5)
+            if msg['type'] == 'username_assigned':
+                assigned = msg
+            if msg['type'] == 'user_list':
+                return comm, assigned
+
+    def tearDown(self):
+        from game import consumers as _consumers
+        for task in list(_consumers._pending_disconnect_timers.values()):
+            task.cancel()
+        _consumers._pending_disconnect_timers.clear()
+        _cancel_pending_turn_timers()
+        super().tearDown()
+
+    async def test_a_name_that_cannot_be_held_gets_a_guest_not_an_error(self):
+        comm, assigned = await self._lobby('System', 's')
+        try:
+            self.assertEqual(assigned['reason'], 'invalid')
+            self.assertTrue(assigned['username'].startswith('Guest'))
+            self.assertFalse(await PlayerConnection.objects.filter(username='System').aexists())
+        finally:
+            await comm.disconnect()
+
+    async def test_a_normalized_name_is_told_back(self):
+        # The client sends its own copy of its name with what it asks for, so
+        # the held spelling has to reach it.
+        comm, assigned = await self._lobby('Ａlice', 's')
+        try:
+            self.assertEqual(assigned['reason'], 'normalized')
+            self.assertEqual(assigned['username'], 'Alice')
+        finally:
+            await comm.disconnect()
+
+    async def test_names_differing_only_in_case_are_one_name(self):
+        alice, _ = await self._lobby('Alice', 'a')
+        other, assigned = await self._lobby('alice', 'not-a')
+        try:
+            self.assertEqual(assigned['reason'], 'taken')
+            self.assertTrue(assigned['username'].startswith('Guest'))
+            # A rename into it in another case is refused the same way.
+            await other.send_json_to({
+                'type': 'change_username', 'oldUsername': assigned['username'],
+                'newUsername': 'ALICE', 'secret': 'not-a'})
+            err = await _receive_until(other, 'error')
+            self.assertEqual(err['code'], 'USERNAME_TAKEN')
+        finally:
+            await alice.disconnect()
+            await other.disconnect()
+
+    async def test_its_owner_asking_in_another_case_gets_the_name_as_held(self):
+        alice, _ = await self._lobby('Alice', 'a')
+        back, assigned = await self._lobby('alice', 'a', rejoining=True)
+        try:
+            self.assertEqual(assigned['reason'], 'normalized')
+            self.assertEqual(assigned['username'], 'Alice')
+        finally:
+            await alice.disconnect()
+            await back.disconnect()
+
+    async def test_a_player_may_recase_their_own_name(self):
+        dave, _ = await self._lobby('dave', 'd')
+        try:
+            await dave.send_json_to({
+                'type': 'change_username', 'oldUsername': 'dave', 'newUsername': 'Dave', 'secret': 'd'})
+            changed = await _receive_until(dave, 'username_changed')
+            self.assertEqual(changed['newUsername'], 'Dave')
+        finally:
+            await dave.disconnect()
+
+    async def test_one_socket_holds_one_name(self):
+        comm, _ = await self._lobby('first', 's')
+        try:
+            await comm.send_json_to({'type': 'join_lobby', 'username': 'second', 'secret': 's'})
+            err = await _receive_until(comm, 'error')
+            self.assertEqual(err['code'], 'INVALID_REQUEST')
+            self.assertFalse(await PlayerConnection.objects.filter(username='second').aexists())
+        finally:
+            await comm.disconnect()
+
+    async def test_a_guest_name_already_held_is_not_handed_out(self):
+        await PlayerConnection.objects.acreate(
+            username='Guest000001', channel_name='someone', secret='x')
+        await PlayerConnection.objects.acreate(username='taken', channel_name='other', secret='x')
+        with patch('game.consumers._guest_name', side_effect=['Guest000001', 'Guest000002']):
+            comm, assigned = await self._lobby('taken', 's')
+        try:
+            self.assertEqual(assigned['username'], 'Guest000002')
+            row = await PlayerConnection.objects.aget(username='Guest000001')
+            self.assertEqual(row.channel_name, 'someone')
+        finally:
+            await comm.disconnect()
+
+    async def test_no_rename_with_an_invite_out_and_the_invite_still_finds_its_player(self):
+        alice, _ = await self._lobby('alice', 'a')
+        bob, _ = await self._lobby('bob', 'b')
+        mallory = None
+        try:
+            await alice.send_json_to({'type': 'game_challenge', 'challenger': 'alice', 'opponent': 'bob'})
+            await _receive_until(bob, 'game_challenge')
+            for comm, name in ((alice, 'alice'), (bob, 'bob')):
+                await comm.send_json_to({
+                    'type': 'change_username', 'oldUsername': name,
+                    'newUsername': name + '2', 'secret': name[0]})
+                err = await _receive_until(comm, 'error')
+                self.assertEqual(err['code'], 'NAME_LOCKED', name)
+            row = await PlayerConnection.objects.aget(username='alice')
+            self.assertEqual(row.status, 'invited')
+
+            # The old name never went free, so nobody else holds it when Bob
+            # accepts - the host token reaches Alice.
+            mallory, assigned = await self._lobby('alice', 'm')
+            self.assertEqual(assigned['reason'], 'taken')
+            await bob.send_json_to({'type': 'challenge_accept', 'challenger': 'alice', 'opponent': 'bob'})
+            accepted = await _receive_until(alice, 'challenge_accepted')
+            self.assertTrue(accepted['token'])
+            self.assertNotIn('challenge_accepted', await _drain(mallory, 0.5))
+        finally:
+            for comm in (alice, bob, mallory):
+                if comm:
+                    await comm.disconnect()
+
+    async def test_no_rename_in_a_game_room(self):
+        game, host, opp, white, black = await _start_seated_game()
+        try:
+            await host.send_json_to({
+                'type': 'change_username', 'oldUsername': 'alice', 'newUsername': 'alice2'})
+            err = await _receive_until(host, 'error')
+            self.assertEqual(err['code'], 'NAME_LOCKED')
+            self.assertTrue(await PlayerConnection.objects.filter(username='alice').aexists())
+        finally:
+            await host.disconnect()
+            await opp.disconnect()
+
+    async def test_a_socket_that_lost_its_name_no_longer_speaks_for_it(self):
+        old_tab, _ = await self._lobby('carol', 's')
+        watcher, _ = await self._lobby('watcher', 'w')
+        new_tab, _ = await self._lobby('carol', 's', rejoining=True)
+        try:
+            await old_tab.send_json_to({'type': 'chat_message', 'content': 'still me?'})
+            err = await _receive_until(old_tab, 'error')
+            self.assertEqual(err['code'], 'NAME_RECLAIMED')
+            await old_tab.send_json_to({
+                'type': 'change_username', 'oldUsername': 'carol', 'newUsername': 'zed', 'secret': 's'})
+            err = await _receive_until(old_tab, 'error')
+            self.assertEqual(err['code'], 'NAME_RECLAIMED')
+
+            seen = await _drain(new_tab, 0.5)
+            self.assertNotIn('username_changed', seen)
+            self.assertNotIn('chat_message', await _drain(watcher, 0.1))
+            self.assertFalse(await PlayerConnection.objects.filter(username='zed').aexists())
+        finally:
+            for comm in (old_tab, watcher, new_tab):
+                await comm.disconnect()
+
+    async def test_a_dropped_players_name_is_held_through_the_grace_period(self):
+        with patch('game.consumers.DISCONNECT_GRACE_SECONDS', 1):
+            game = await GameRoom.objects.acreate(
+                host='alice', opponent='bob', status='waiting',
+                host_token='host-tok', opponent_token='opp-tok',
+            )
+            application = URLRouter(websocket_urlpatterns)
+            host = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+            opp = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+            # Joined as the client joins: with the browser's secret.
+            for comm, name, token in ((host, 'alice', 'host-tok'), (opp, 'bob', 'opp-tok')):
+                await comm.connect()
+                await comm.send_json_to({
+                    'type': 'join_game_room', 'username': name, 'gameId': game.game_id,
+                    'token': token, 'secret': f'{name}-secret'})
+                await _receive_until(comm, 'join_game_room_success')
+            await _both_ready_then_start(host, opp, game.game_id)
+            await _receive_until(host, 'game_started')
+            await _receive_until(opp, 'game_started')
+
+            await host.disconnect()   # alice drops out of her match
+            stranger = owner = None
+            try:
+                stranger, assigned = await self._lobby('alice', 'not-alices-secret')
+                self.assertEqual(assigned['reason'], 'taken')
+                # Nobody is shown sitting behind the held name.
+                await stranger.send_json_to({'type': 'request_user_list'})
+                listed = await _receive_until(stranger, 'user_list')
+                self.assertNotIn('alice', [u['username'] for u in listed['users']])
+
+                # Her own browser may take it back from the lobby...
+                owner, assigned = await self._lobby('alice', 'alice-secret')
+                self.assertIsNone(assigned)
+                row = await PlayerConnection.objects.aget(username='alice')
+                self.assertNotEqual(row.channel_name, '')
+
+                # ...which is not being back at the board: the forfeit stands.
+                over = await _receive_until(opp, 'game_over', timeout=5)
+                self.assertEqual(over['endReason'], 'disconnect')
+            finally:
+                for comm in (stranger, owner, opp):
+                    if comm:
+                        await comm.disconnect()
+
+    async def test_her_room_takes_her_name_back_from_another_case(self):
+        # Her row went - swept - and a stranger took the name in capitals.
+        game, host, opp, white, black = await _start_seated_game()
+        await PlayerConnection.objects.filter(username='alice').adelete()
+        squatter, assigned = await self._lobby('ALICE', 'x')
+        self.assertIsNone(assigned)
+        rejoined = WebsocketCommunicator(
+            URLRouter(websocket_urlpatterns), f"/ws/game/{game.game_id}/")
+        await rejoined.connect()
+        try:
+            await rejoined.send_json_to({
+                'type': 'join_game_room', 'username': 'alice', 'gameId': game.game_id,
+                'token': 'host-tok'})
+            await _receive_until(rejoined, 'join_game_room_success')
+            self.assertFalse(await PlayerConnection.objects.filter(username='ALICE').aexists())
+            await squatter.send_json_to({'type': 'chat_message', 'content': 'hi'})
+            err = await _receive_until(squatter, 'error')
+            self.assertEqual(err['code'], 'NAME_RECLAIMED')
+        finally:
+            for comm in (squatter, rejoined, host, opp):
+                await comm.disconnect()
+
+
 class StaleSocketTests(TransactionTestCase):
     """
     A socket the player has already replaced closing late must not be read as

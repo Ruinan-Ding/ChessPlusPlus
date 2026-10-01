@@ -16,7 +16,7 @@ import { closeUserMenu, openUserMenu as showUserMenu } from '../../services/user
 import { afterDraw, atNewest } from '../../services/scrolling';
 
 /** What the server answers a refused rename with (validators.py, consumers.py). */
-const RENAME_ERRORS = ['USERNAME_TAKEN', 'INVALID_USERNAME', 'USERNAME_TOO_LONG'];
+const RENAME_ERRORS = ['USERNAME_TAKEN', 'INVALID_USERNAME', 'USERNAME_TOO_LONG', 'NAME_LOCKED'];
 
 @Component({
   selector: 'app-lobby',
@@ -62,7 +62,25 @@ export class LobbyComponent implements OnInit, OnDestroy {
     timeLeft: number;
   } | null = null;
   invitePending: boolean = false;
-  
+
+  /**
+   * No rename with an invite out or in: an invite is addressed to a name, and
+   * the server refuses it (NAME_LOCKED) - a rename then freed the old name for
+   * whoever took it next, and that player was sent the room when the invite
+   * was accepted.
+   */
+  get renameLocked(): boolean {
+    return this.invitePending || !!this.activeInvite;
+  }
+
+  /** The rename box's length as the server counts it: characters, trimmed. */
+  get newUsernameLength(): number {
+    return [...this.newUsername.trim()].length;
+  }
+
+  /** A rejoin sent because another connection holds our name - see 'error'. */
+  private nameRejoinSent = false;
+
   private countdownTimerId: ReturnType<typeof setInterval> | null = null;
   private destroy$ = new Subject<void>();
 
@@ -128,8 +146,12 @@ export class LobbyComponent implements OnInit, OnDestroy {
       console.log('[Lobby] Rejoining from navigation, will send rejoining: true');
     }
     
-    this.username = this.authService.getUsername() || this.generateRandomUsername();
-    this.authService.setUsername(this.username);
+    // Written back only when it was made up here: the tab's name may be a
+    // guest name the server handed out, which is this tab's and nobody's
+    // starting name (AuthService).
+    const current = this.authService.getUsername();
+    this.username = current || this.generateRandomUsername();
+    if (!current) this.authService.setUsername(this.username);
     this.newUsername = this.username;
     console.log('[Lobby] Username:', this.username);
     
@@ -157,6 +179,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
 
       switch (message.type) {
         case 'user_list':
+          // Every join is answered with one, so a rejoin has landed.
+          this.nameRejoinSent = false;
           this.applyUserList(message);
           break;
 
@@ -303,11 +327,19 @@ export class LobbyComponent implements OnInit, OnDestroy {
           // player would rather not bother.
           console.log('[Lobby] Username was taken, assigned new username:', message.username);
           this.username = message.username;
-          this.authService.setUsername(message.username);
           this.addSystemMessage(message.message);
-          this.nameWasTaken = true;
-          this.showChangeUsername = true;
-          this.newUsername = '';
+          // 'normalized': the name asked for, as the server holds it - still
+          // the player's choice, so remembered, and nothing to offer. A guest
+          // name (taken, or one that cannot be held) stays with this tab.
+          if (message.reason === 'normalized') {
+            this.authService.setUsername(message.username);
+            this.newUsername = message.username;
+          } else {
+            this.authService.setUsername(message.username, false);
+            this.nameWasTaken = true;
+            this.showChangeUsername = true;
+            this.newUsername = '';
+          }
           this.cdr.markForCheck();
           break;
         
@@ -319,6 +351,21 @@ export class LobbyComponent implements OnInit, OnDestroy {
           // alerted on one was never reached.)
           if (this.showChangeUsername && RENAME_ERRORS.includes(message.code)) {
             this.renameError = message.message || 'That name cannot be used.';
+            this.cdr.markForCheck();
+            break;
+          }
+          // Another connection - another tab of this browser, or the player
+          // whose name this was - holds our name now, and the server refuses
+          // whatever this one does in it. Join again, once however many were
+          // refused: the server answers with the name, or a guest's. Never as
+          // `rejoining`, which would take the name straight back from the
+          // other connection and have the two trade it on every action.
+          if (message.code === 'NAME_RECLAIMED') {
+            if (!this.nameRejoinSent) {
+              this.nameRejoinSent = true;
+              this.addSystemMessage('Your name is in use somewhere else - rejoining...');
+              this.joinLobby(false);
+            }
             this.cdr.markForCheck();
             break;
           }
@@ -353,28 +400,19 @@ export class LobbyComponent implements OnInit, OnDestroy {
       }
     );
     
-    const joinLobby = () => {
-      this.wsService.sendMessage({
-        type: 'join_lobby',
-        username: this.username,
-        rejoining: this.isRejoiningFromNavigation,
-        secret: this.authService.getIdentitySecret()
-      });
-    };
-
     // connect() is a no-op when the socket is already up on this room.
     if (!this.wsService.isOffline()) {
       this.wsService.connect('lobby');
     }
     if (this.wsService.isOffline()) {
-      joinLobby();  // answered locally; there is no socket to wait for
+      this.joinLobby();  // answered locally; there is no socket to wait for
     }
     // Join on every connection: now if one is already up, and again after a
     // reconnect (the Reconnect button, or the retry loop coming good).
     this.wsService.connectionStatus$.pipe(
       filter(connected => connected === true),
       takeUntil(this.destroy$)
-    ).subscribe(() => joinLobby());
+    ).subscribe(() => this.joinLobby());
 
     // Sent here by the game room's Single Player button: there is no server to
     // come back to, so deal a local game rather than land in a dead lobby.
@@ -383,6 +421,15 @@ export class LobbyComponent implements OnInit, OnDestroy {
     }
   }
   
+  private joinLobby(rejoining = this.isRejoiningFromNavigation): void {
+    this.wsService.sendMessage({
+      type: 'join_lobby',
+      username: this.username,
+      rejoining,
+      secret: this.authService.getIdentitySecret()
+    });
+  }
+
   ngOnDestroy(): void {
     window.removeEventListener('beforeunload', this.handleBeforeUnload);
     // Built on the body, it would outlive the lobby.
@@ -474,7 +521,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
       this.renameError = '';
       return;
     }
-    if (trimmedUsername.length < 1 || trimmedUsername.length > 24) {
+    if (this.newUsernameLength > 24) {
       this.renameError = 'Username must be between 1 and 24 characters.';
       return;
     }
@@ -494,6 +541,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
 
   toggleChangeUsername(): void {
+    if (this.renameLocked && !this.showChangeUsername) return;
     this.showChangeUsername = !this.showChangeUsername;
     this.nameWasTaken = false;
     this.renameError = '';

@@ -9,15 +9,29 @@ export class AuthService {
   private usernameSubject = new BehaviorSubject<string>('');
   public username$ = this.usernameSubject.asObservable();
   
-  constructor() { 
-    const storedUsername = readStore('local', 'username');
+  /**
+   * **A tab's name is its own.** Session storage holds the name this tab is
+   * playing under and carries it past a reload; local storage, shared by every
+   * tab, only remembers the last name the player chose, as where a new tab
+   * starts. One shared name was overwritten by any second tab - which is
+   * handed a guest name, the first tab holding the real one - so the first
+   * tab's next reload rejoined its room as the guest, was refused the seat,
+   * and forfeited. Pinned to the tab on the first read for the same reason.
+   */
+  constructor() {
+    const storedUsername = readStore('session', 'username') || readStore('local', 'username');
     if (storedUsername) {
+      writeStore('session', 'username', storedUsername);
       this.usernameSubject.next(storedUsername);
     }
   }
-  
-  setUsername(username: string): void {
-    writeStore('local', 'username', username);
+
+  /** `remember` false keeps the name to this tab: a guest name the server
+   * handed out because the one asked for was taken is not the player's
+   * choice, and must not become every new tab's starting name. */
+  setUsername(username: string, remember = true): void {
+    writeStore('session', 'username', username);
+    if (remember) writeStore('local', 'username', username);
     this.usernameSubject.next(username);
   }
   
@@ -57,6 +71,7 @@ export class AuthService {
   }
   
   logout(): void {
+    removeStore('session', 'username');
     removeStore('local', 'username');
     this.usernameSubject.next('');
   }

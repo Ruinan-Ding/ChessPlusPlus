@@ -33,7 +33,9 @@ describe('SetupConfigComponent', () => {
     const ws = { messages$: socket, sendMessage: (m: any) => sent.push(m), isConnected: () => connected } as any;
     const navigation = { setIntentionalNavigation: (to: string) => intents.push(to) } as any;
     marked = jasmine.createSpy('markForCheck');
-    const c = new SetupConfigComponent(router, configService, ws, navigation, { markForCheck: marked } as any);
+    const auth = { getUsername: () => 'me' } as any;
+    const c = new SetupConfigComponent(
+      router, configService, ws, navigation, { markForCheck: marked } as any, auth);
     c.ngOnInit();
     return c;
   };

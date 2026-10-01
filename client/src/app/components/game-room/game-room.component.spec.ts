@@ -146,6 +146,27 @@ describe('GameRoomComponent ability panel', () => {
       expect(c.acceptStateRevision({ type: 'game_over', revision: 2 })).toBeFalse();
     });
 
+    it('draws a player called "System" as a player, not as a notice', () => {
+      const c: any = new GameRoomComponent(
+        { sendMessage: () => {} } as any,
+        {} as any, {} as any, {} as any, {} as any,
+        { markForCheck: () => {}, detectChanges: () => {} } as any,
+        new GameStateService(), {} as any, { playTone: () => {} } as any, zone,
+      );
+      c.persistLocalUiState = () => {};
+      c.scrollChatToBottom = () => {};
+      c.addSystemMessage('Game mode changed to Default');
+
+      c.handleWebSocketMessage({
+        type: 'game_room_message', username: 'System',
+        content: 'Game mode changed - you have resigned', timestamp: '',
+      });
+
+      expect(c.historyMessages.map((m: any) => m.content)).toEqual(['Game mode changed to Default']);
+      expect(c.gameRoomChatMessages.map((m: any) => m.content))
+        .toEqual(['Game mode changed - you have resigned']);
+    });
+
     it('announces a finished game once, however many resyncs repeat it', () => {
       const gameState = new GameStateService();
       const c: any = new GameRoomComponent(
@@ -3502,7 +3523,7 @@ describe('GameRoomComponent tabs', () => {
       c.handleWebSocketMessage({ type: 'game_room_message', username, content: 'hi', timestamp: '' });
     say('them');
     say('me');                     // your own is not news
-    say('System');                 // nor the log's
+    c.addSystemMessage('White moved.');   // nor the log's
     say('them');
     c.ngAfterViewChecked();
     expect(c.roomCue).toBe('2');
@@ -3565,7 +3586,7 @@ describe('GameRoomComponent tabs', () => {
     const c = make();
     const scrolled: string[] = [];
     c.scrollChatToBottom = (which: string) => scrolled.push(which);
-    c.handleWebSocketMessage({ type: 'game_room_message', username: 'System', content: 'White moved.', timestamp: '' });
+    c.addSystemMessage('White moved.');
     c.handleWebSocketMessage({ type: 'game_room_message', username: 'them', content: 'hi', timestamp: '' });
     c.addSystemMessage('Black moved.');
     expect(scrolled).toEqual(['history', 'gameRoom', 'history']);

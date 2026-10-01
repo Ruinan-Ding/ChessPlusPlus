@@ -143,16 +143,7 @@ def rejoin():
     nb.send({'type': 'make_move', 'from': frm, 'to': to})
     m = ctx['white'].type('move_made')
     check('the rejoined player can still move', m['turnNumber'] == 5, m)
-    # Back in the lobby on a fresh socket, as the client does. Rejoining the
-    # room used to recreate this player's record without their secret, and the
-    # lobby then handed them a guest's name.
-    back = WS('/ws/game/lobby/'); back.type('connection_established')
-    back.send({'type': 'join_lobby', 'username': name, 'secret': SECRET[name], 'rejoining': True})
-    seen = []
-    while not seen or seen[-1] != 'user_list':
-        seen.append(back.recv().get('type'))
-    check('a player who rejoined keeps their name in the lobby', 'username_assigned' not in seen, seen)
-    ctx.update(black=nb, back=back)
+    ctx.update(black=nb)
 step('rejoin', rejoin)
 
 print('\n[end]')
@@ -166,6 +157,25 @@ def end():
     e = black.type('error')
     check('nothing moves after the game is over', e.get('code') == 'GAME_OVER', e)
 step('end', end)
+
+print('\n[back to the lobby]')
+def back_to_lobby():
+    # On a fresh socket, as the client does - and after the match, which is
+    # when it does: it used to run before [end], with black's room socket still
+    # in use, and the lobby taking the name back left that socket refused as
+    # replaced (STALE_GAME_SOCKET) where [end] wanted GAME_OVER. Rejoining the
+    # room used to recreate this player's record without their secret, and the
+    # lobby then handed them a guest's name.
+    name = ctx['start']['playerBlack']
+    ctx['black'].close()
+    back = WS('/ws/game/lobby/'); back.type('connection_established')
+    back.send({'type': 'join_lobby', 'username': name, 'secret': SECRET[name], 'rejoining': True})
+    seen = []
+    while not seen or seen[-1] != 'user_list':
+        seen.append(back.recv().get('type'))
+    check('a player who rejoined keeps their name in the lobby', 'username_assigned' not in seen, seen)
+    ctx.update(back=back)
+step('back to the lobby', back_to_lobby)
 
 for w in [ctx.get('la'), ctx.get('lb'), ctx.get('back'), ctx.get('white'), ctx.get('black')]:
     if w:

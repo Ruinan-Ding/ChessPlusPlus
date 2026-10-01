@@ -30,7 +30,7 @@ from .models import (
     GameDisconnect,
 )
 from .validators import (
-    ValidationError, GAME_OPTION_KEYS, validate_required_fields, validate_username,
+    ValidationError, GAME_OPTION_KEYS, validate_required_fields, clean_username, name_key,
     validate_status, validate_game_mode, validate_game_options,
     validate_chat_message
 )
@@ -91,6 +91,15 @@ GAME_ROOM_MESSAGES = {
     'reveal_response', 'start_game', 'make_move', 'enter_board', 'panel_move',
     'panel_attack', 'pass_turn', 'resign', 'offer_draw', 'respond_draw',
     'request_game_state',
+}
+
+# Everything the lobby does in a player's name. A socket whose name another
+# socket has since claimed is refused these (NAME_RECLAIMED): it used to chat,
+# invite and rename as the name it had lost, and its rename told every lobby -
+# the one really holding the name included - that the name had changed.
+LOBBY_NAME_MESSAGES = {
+    'leave_lobby', 'chat_message', 'change_username', 'set_status',
+    'game_challenge', 'challenge_accept', 'challenge_decline',
 }
 
 
@@ -378,7 +387,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'graceSeconds': DISCONNECT_GRACE_SECONDS,
             })
 
-            await self._delete_player_connection(self.username, channel_name=self.channel_name)
+            # Detached, not deleted: the row and its secret keep the name this
+            # player's while they have the grace period to come back. Deleted,
+            # the name was anybody's for the asking - a stranger took it, sat in
+            # the lobby as them and was invited as them. Nothing lists, invites
+            # or counts a detached row; the room's rejoin re-attaches it, their
+            # own browser may take it from the lobby, and the sweep clears it.
+            await self._detach_player_connection(self.username, self.channel_name)
         except Exception as e:
             logger.error(f"Error cleaning up game room connection for {self.username}: {e}")
     
@@ -453,10 +468,16 @@ class GameConsumer(AsyncWebsocketConsumer):
             handler = handlers.get(message_type)
             if handler:
                 if (self.game_id and message_type in GAME_ROOM_MESSAGES
-                        and not await self._is_current_game_socket()):
+                        and not await self._holds_its_name()):
                     await send_error(
                         self, 'STALE_GAME_SOCKET',
                         'This connection was replaced. Rejoin the game before acting.')
+                    return
+                if (self.username and message_type in LOBBY_NAME_MESSAGES
+                        and not await self._holds_its_name()):
+                    await send_error(
+                        self, 'NAME_RECLAIMED',
+                        'Your name is in use on another connection. Rejoin the lobby before acting.')
                     return
                 # touch last_activity for presence (throttled to every 10 seconds)
                 if self.username:
@@ -511,7 +532,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             # is no reason to throw the player out.
             await send_error(self, 'NOT_IN_GAME_ROOM', 'Join the game room first')
             return None
-        if not await self._is_current_game_socket():
+        if not await self._holds_its_name():
             await send_error(
                 self, 'STALE_GAME_SOCKET',
                 'This connection was replaced. Rejoin the game before acting.')
@@ -523,15 +544,34 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def _handle_join_lobby(self, data):
         """Handle user joining the lobby"""
         try:
-            username = data.get('username', '').strip()
-            original_username = username
-            username_was_taken = False
+            raw_username = data.get('username')
+            original_username = raw_username.strip() if isinstance(raw_username, str) else ''
             client_secret = _extract_secret(data)
+            # Why the name asked for is not the one held, if it is not: None,
+            # 'invalid' or 'taken'. A name that only came back normalized is
+            # still theirs, and is said separately below.
+            refused = None
+            refusal = ''
 
-            validate_username(username)
+            # A name that cannot be held is answered with a guest's, as a
+            # taken one is. It used to be an error, which left the lobby with
+            # no name at all - and a name saved before the rules tightened
+            # would have done that on every visit.
+            try:
+                username = clean_username(original_username)
+            except ValidationError as e:
+                username, refused, refusal = '', 'invalid', e.message
 
-            existing_connection = await self._get_player_connection(username)
+            # One socket, one name, as in _handle_join_game_room. A second join
+            # under another name claimed that one too and left the first held
+            # by this socket until the sweep - and it would be a rename that
+            # skipped every check _handle_change_username makes.
+            if self.username and username != self.username:
+                await send_error(self, 'INVALID_REQUEST', 'Can only join as yourself')
+                return
+
             takeover = False
+            existing_connection = await self._get_name_holder(username) if username else None
             if existing_connection and existing_connection.channel_name != self.channel_name:
                 # ponytail: single seam for identity verification - replace this
                 # comparison with real credential checking if accounts are added later.
@@ -551,37 +591,55 @@ class GameConsumer(AsyncWebsocketConsumer):
                 # owner may take their row back; it never widens WHO. A row
                 # carrying no secret has nothing to check and nothing to
                 # protect, so age alone is enough for that one.
+                #
+                # A detached row - its owner dropped out of a room and has the
+                # grace period to come back - has no socket behind it, so their
+                # own browser may take it back from any page; anyone else is
+                # refused by the secret, which is the reason the row was kept.
                 stale = existing_connection.last_activity < timezone.now() - STALE_AFTER
-                if (secret_ok and (data.get('rejoining', False) or stale)) \
-                        or (stale and not existing_connection.secret):
-                    logger.info(f"User {username} taking back their lobby row (stale: {stale})")
+                detached = not existing_connection.channel_name
+                if (secret_ok and (data.get('rejoining', False) or stale or detached)) \
+                        or ((stale or detached) and not existing_connection.secret):
+                    logger.info(
+                        f"User {username} taking back their lobby row (stale: {stale}, detached: {detached})")
                     takeover = True
+                    # Held as it was first spelled: "alice" asking for the row
+                    # "Alice" holds is the same name.
+                    username = existing_connection.username
                 else:
                     if data.get('rejoining', False):
                         logger.warning(f"Rejected rejoin claim for '{username}': secret mismatch")
-                    # Generate a random username instead of rejecting
-                    username = _guest_name()
-                    username_was_taken = True
-                    logger.info(f"Username '{original_username}' was taken, assigned '{username}' instead")
+                    refused = 'taken'
 
             # The claim decides it, not the read above. Between the two, a
             # second client that also saw the name free could write it - and
             # update_or_create on the primary key handed it the first client's
             # row, channel name and identity secret with it.
-            if not await self._claim_player_connection(username, self.channel_name, client_secret, takeover=takeover):
-                username = _guest_name()
-                username_was_taken = True
-                logger.info(f"Username '{original_username}' was claimed mid-join, assigned '{username}' instead")
-                await self._claim_player_connection(username, self.channel_name, client_secret)
+            if not refused and not await self._claim_player_connection(
+                    username, self.channel_name, client_secret, takeover=takeover):
+                refused = 'taken'
+            if refused:
+                username = await self._claim_guest_name(client_secret)
+                logger.info(f"Username {original_username!r} {refused}, assigned '{username}' instead")
 
             self.username = username
-            
-            if username_was_taken:
+
+            if refused == 'taken':
+                message = f'Username "{original_username}" was taken. You have been assigned "{username}".'
+            elif refused:
+                message = f'Username "{original_username}" cannot be used ({refusal}). You have been assigned "{username}".'
+            else:
+                message = f'Your name is saved as "{username}".'
+            # Every client keeps its own copy of its name and sends it back
+            # in what it asks for, so any difference - a guest name, or the
+            # same name normalized - has to be told.
+            if username != original_username:
                 await send_json_response(self, {
                     'type': 'username_assigned',
                     'username': username,
                     'originalUsername': original_username,
-                    'message': f'Username "{original_username}" was taken. You have been assigned "{username}".'
+                    'reason': refused or 'normalized',
+                    'message': message,
                 })
             
             # Notify others (only if not rejoining, to avoid duplicate notifications)
@@ -649,28 +707,40 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def _handle_change_username(self, data):
         """Handle username change request"""
         try:
-            old_username = data.get('oldUsername', '').strip()
-            new_username = data.get('newUsername', '').strip()
+            old_username = data.get('oldUsername')
             client_secret = _extract_secret(data)
 
-            validate_username(new_username)
+            new_username = clean_username(data.get('newUsername'))
 
-            if self.username != old_username:
+            if not self.username or self.username != old_username:
                 await send_error(self, 'INVALID_REQUEST', 'Cannot change username for another user')
                 return
 
-            # Claim first, release second. The read-then-write this replaces
-            # could be raced into a takeover, and deleting the old row up front
-            # meant a rename that lost that race left the player with no row at
-            # all. A claim that fails now costs them nothing. A rename to the
-            # name already held touches neither: releasing it would drop the
-            # row that was just claimed, and the client is still waiting to be
-            # told the change went through.
+            # A room is seated by name, so a name in a room stays put - see
+            # _rename_player_connection for what a pending invite costs.
+            if self.game_id:
+                await send_error(self, 'NAME_LOCKED',
+                                 'Your name cannot change while you are in a game room')
+                return
+
+            # One transaction: the old row is released and the new one claimed
+            # together, so a rename that loses keeps the name you had. A rename
+            # to the name already held touches neither, and the client is still
+            # waiting to be told the change went through.
             if new_username != old_username:
-                if not await self._claim_player_connection(new_username, self.channel_name, client_secret):
+                outcome = await self._rename_player_connection(
+                    old_username, new_username, self.channel_name, client_secret)
+                if outcome == 'taken':
                     await send_error(self, 'USERNAME_TAKEN', f'Username "{new_username}" is already taken')
                     return
-                await self._delete_player_connection(old_username, channel_name=self.channel_name)
+                if outcome == 'busy':
+                    await send_error(self, 'NAME_LOCKED',
+                                     'Answer or withdraw your invite before changing your name')
+                    return
+                if outcome == 'reclaimed':
+                    await send_error(self, 'NAME_RECLAIMED',
+                                     'Your name is in use on another connection. Rejoin the lobby before acting.')
+                    return
 
             self.username = new_username
             
@@ -915,7 +985,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self._send_user_list()
             
             challenger_conn = await self._get_player_connection(challenger)
-            if challenger_conn:
+            if challenger_conn and challenger_conn.channel_name:
                 await self.channel_layer.send(challenger_conn.channel_name, {
                     'type': 'send_challenge_declined',
                     'username': opponent
@@ -2899,9 +2969,20 @@ class GameConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
+    def _get_name_holder(self, username):
+        """Whoever holds *username* in any case - "Alice" is held by "alice"."""
+        return PlayerConnection.objects.filter(  # type: ignore
+            name_key=name_key(username)).first()
+
+    @database_sync_to_async
     def _get_player_connections_batch(self, usernames):
-        """Get multiple player connections in a single query (batch optimization)"""
-        connections = PlayerConnection.objects.filter(username__in=usernames)  # type: ignore
+        """Get multiple player connections in a single query (batch optimization).
+
+        Only rows with a socket behind them: everything that asks this sends
+        to the channel, invites, or shows who is there, and a detached row is
+        a name held for someone who is not."""
+        connections = PlayerConnection.objects.filter(  # type: ignore
+            username__in=usernames).exclude(channel_name='')
         return {conn.username: conn for conn in connections}
 
     @database_sync_to_async
@@ -2919,10 +3000,17 @@ class GameConsumer(AsyncWebsocketConsumer):
         }
         if secret is not None:
             defaults['secret'] = secret
-        connection, _ = PlayerConnection.objects.update_or_create(  # type: ignore
-            username=username,
-            defaults=defaults
-        )
+        with transaction.atomic():
+            # The room's token has just proved this name. Somebody holding it
+            # in another case - taken while this player's row was gone - gives
+            # it up, or the write below breaks name_key; their socket is then
+            # refused as NAME_RECLAIMED.
+            PlayerConnection.objects.filter(  # type: ignore
+                name_key=name_key(username)).exclude(username=username).delete()
+            connection, _ = PlayerConnection.objects.update_or_create(  # type: ignore
+                username=username,
+                defaults=defaults
+            )
         return connection
     
     @database_sync_to_async
@@ -2947,13 +3035,71 @@ class GameConsumer(AsyncWebsocketConsumer):
             PlayerConnection.objects.update_or_create(  # type: ignore
                 username=username, defaults=fields)
             return True
-        connection, created = PlayerConnection.objects.get_or_create(  # type: ignore
-            username=username, defaults=fields)
+        try:
+            connection, created = PlayerConnection.objects.get_or_create(  # type: ignore
+                username=username, defaults=fields)
+        except IntegrityError:
+            # name_key: the name is held, in another case.
+            return False
         if not created and connection.channel_name == channel_name:
             # The same socket saying hello twice. Already ours; refresh it.
             PlayerConnection.objects.filter(username=username).update(**fields)  # type: ignore
             return True
         return created
+
+    async def _claim_guest_name(self, secret):
+        """A guest name this socket now holds. Every try is a claim, not a
+        guess: the second random name used to go unchecked, and two collisions
+        in a row left the player acting under another guest's row."""
+        for _ in range(20):
+            guest = _guest_name()
+            if await self._claim_player_connection(guest, self.channel_name, secret):
+                return guest
+        raise RuntimeError('No free guest name')
+
+    @database_sync_to_async
+    def _rename_player_connection(self, old, new, channel_name, secret):
+        """
+        Move this socket's row from *old* to *new*, in one transaction:
+        'renamed', 'taken', 'busy' (not plain online), or 'reclaimed'.
+
+        **Only a player with nothing in flight may rename.** A name is what an
+        invite is addressed to and what a room is seated by. Renamed with an
+        invite out, the old name went free, whoever took it next was sent the
+        room's host token when the invite was accepted, and the rename had put
+        the player back to `online` with the invite still pending. The status
+        is part of the delete, so an invite landing between the read and the
+        write is caught too. Releasing first lets a player re-case their own
+        name; losing the claim rolls the release back.
+        """
+        try:
+            with transaction.atomic():
+                row = PlayerConnection.objects.filter(username=old).first()  # type: ignore
+                if row is not None:
+                    if row.channel_name != channel_name:
+                        return 'reclaimed'
+                    released, _ = PlayerConnection.objects.filter(  # type: ignore
+                        username=old, channel_name=channel_name, status='online').delete()
+                    if not released:
+                        return 'busy'
+                    secret = secret or row.secret
+                # No row at all - swept while this socket stayed open - has
+                # nothing to release, and nothing in flight.
+                PlayerConnection.objects.create(  # type: ignore
+                    username=new, channel_name=channel_name, status='online',
+                    secret=secret, last_activity=timezone.now())
+                return 'renamed'
+        except IntegrityError:
+            return 'taken'
+
+    @database_sync_to_async
+    def _detach_player_connection(self, username, channel_name):
+        """Keep *username* held with no socket behind it - see
+        _cleanup_game_room_connection. last_activity is refreshed so the sweep
+        leaves it for STALE_AFTER, which outlasts the grace period."""
+        PlayerConnection.objects.filter(  # type: ignore
+            username=username, channel_name=channel_name,
+        ).update(channel_name='', last_activity=timezone.now())
 
     @database_sync_to_async
     def _update_player_status(self, username, status):
@@ -2976,8 +3122,9 @@ class GameConsumer(AsyncWebsocketConsumer):
             qs = qs.filter(channel_name=channel_name)
         qs.delete()
     
-    async def _is_current_game_socket(self):
-        """False only once another socket has claimed this player's row.
+    async def _holds_its_name(self):
+        """False only once another socket has claimed this player's row - in
+        a room (STALE_GAME_SOCKET) or the lobby (NAME_RECLAIMED).
 
         No row at all is not a replacement: the roster sweep deletes a row
         nobody has heartbeated for STALE_AFTER while its socket can still be
@@ -3000,9 +3147,14 @@ class GameConsumer(AsyncWebsocketConsumer):
         `status` narrows which kind of replacement counts. 'in-game' asks
         specifically whether they are back at a board, because turning up in
         the lobby instead is not a reason to spare their opponent a forfeit.
+
+        Compared by name_key, so "ALICE" holding the row is a replacement of
+        "alice"; and a detached row (no channel - see
+        _cleanup_game_room_connection) is nobody, so it replaces nothing.
         """
         rows = PlayerConnection.objects.filter(  # type: ignore
-            username=username).exclude(channel_name=channel_name)
+            name_key=name_key(username),
+        ).exclude(channel_name=channel_name).exclude(channel_name='')
         if status is not None:
             rows = rows.filter(status=status)
         return rows.exists()
@@ -3014,13 +3166,13 @@ class GameConsumer(AsyncWebsocketConsumer):
         A row outlives an unclean drop - it is only swept when some other
         request happens to call _get_all_online_users - so a row on its own
         proves nothing. The heartbeat behind it is what does, on the same
-        threshold that sweep uses.
+        threshold that sweep uses. A detached row has no socket behind it.
         """
         fresh = timezone.now() - STALE_AFTER
         return PlayerConnection.objects.filter(  # type: ignore
             username__in=[u for u in usernames if u],
             last_activity__gte=fresh,
-        ).exists()
+        ).exclude(channel_name='').exists()
 
     @database_sync_to_async
     def _get_all_online_users(self):
@@ -3030,9 +3182,10 @@ class GameConsumer(AsyncWebsocketConsumer):
         if stale_count > 0:
             logger.info(f"[_get_all_online_users] Cleaned up {stale_count} stale connections")
 
+        # A detached row holds a name for somebody who is not there.
         return list(PlayerConnection.objects.filter(  # type: ignore
             status__in=['online', 'invited', 'configuring', 'in-game']
-        ).values('username', 'status'))
+        ).exclude(channel_name='').values('username', 'status'))
     
     @database_sync_to_async
     def _get_challenge(self, challenger, responder):

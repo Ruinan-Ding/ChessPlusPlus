@@ -1315,7 +1315,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         console.log('[GameRoom] isInviter:', this.isInviter);
         const playerNames = new Set(this.players.map(p => p.username));
         this.gameRoomMessages = this.gameRoomMessages.filter(
-          msg => msg.username === 'System' || playerNames.has(msg.username)
+          msg => msg.type === 'system' || playerNames.has(msg.username)
         );
         // Whoever left took their lines with them; the count cannot be more
         // than what is left to read.
@@ -1337,32 +1337,20 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         break;
 
       case 'game_room_message':
-        // If system message about mode/options, remove prior ones to avoid stale gray messages
-        if (actualMessage.username === 'System' && typeof actualMessage.content === 'string') {
-          const c = actualMessage.content;
-          if (c.includes('Game mode changed') || c.includes('Game options updated')) {
-            this.gameRoomMessages = this.gameRoomMessages.filter(msg => {
-              if (msg.username !== 'System') return true;
-              const mc = msg.content || '';
-              return !mc.includes('Game mode changed') && !mc.includes('Game options updated');
-            });
-          }
-        }
-
-        // Create a new array reference instead of mutating to ensure OnPush change detection works
-        {
-          const system = actualMessage.messageType === 'system' || actualMessage.username === 'System';
-          this.gameRoomMessages = [...this.gameRoomMessages, {
-            username: actualMessage.username,
-            content: actualMessage.content,
-            timestamp: actualMessage.timestamp,
-            room: 'gameRoom',
-            type: system ? 'system' : undefined
-          }];
-          if (!system) this.onChatLine(actualMessage.username);
-          this.scrollChatToBottom(system ? 'history' : 'gameRoom', true,
-            !system && actualMessage.username === this.username);
-        }
+        // Always a player's line. The server sends no notices this way - the
+        // room makes its own (addSystemMessage) - so a sender called "System"
+        // was a player, and drawing them as a notice let them post fake ones
+        // (or, saying "Game mode changed", delete the real ones). The server
+        // now refuses the name too.
+        // A new array reference rather than a mutation, for OnPush.
+        this.gameRoomMessages = [...this.gameRoomMessages, {
+          username: actualMessage.username,
+          content: actualMessage.content,
+          timestamp: actualMessage.timestamp,
+          room: 'gameRoom',
+        }];
+        this.onChatLine(actualMessage.username);
+        this.scrollChatToBottom('gameRoom', true, actualMessage.username === this.username);
         this.persistLocalUiState();
         this.cdr.markForCheck();
         break;
@@ -1547,7 +1535,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         // one did, so the server refuses this socket. Take the seat back -
         // once, however many messages the turn sent - and the join's own
         // resync puts the server's board back on screen.
-        if (actualMessage.code === 'STALE_GAME_SOCKET' && !this.staleRejoinSent) {
+        // NAME_RECLAIMED is the same thing said of a lobby action - a line of
+        // lobby chat from here.
+        if ((actualMessage.code === 'STALE_GAME_SOCKET' || actualMessage.code === 'NAME_RECLAIMED')
+            && !this.staleRejoinSent) {
           this.staleRejoinSent = true;
           this.addSystemMessage('This game was opened somewhere else - rejoining here...');
           this.joinRoom();

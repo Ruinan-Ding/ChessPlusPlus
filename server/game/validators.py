@@ -1,6 +1,7 @@
 """
 Message and data validators for WebSocket communication
 """
+import unicodedata
 
 
 class ValidationError(Exception):
@@ -27,24 +28,41 @@ def validate_required_fields(data: dict, required_fields: list) -> None:
             raise ValidationError('MISSING_FIELD', f'Missing required field: {field}')
 
 
-def validate_username(username: str) -> None:
+#: Names nobody may hold, compared as name_key() does. The client draws its
+#: own notices under "System", and a player by that name was drawn as one.
+RESERVED_USERNAMES = {'system'}
+
+
+def name_key(username: str) -> str:
+    """The form two names are compared in: names that differ only in case are
+    one name. PlayerConnection.name_key holds it, unique."""
+    return username.casefold()
+
+
+def clean_username(username) -> str:
     """
-    Validate username format and length
-    
-    Args:
-        username: Username to validate
-        
-    Raises:
-        ValidationError: If username is invalid
+    The name as it will be held, or ValidationError.
+
+    NFKC folds compatibility forms - full-width letters, ligatures, an accent
+    typed as a separate mark - into the plain ones, so one visible name is one
+    name; runs of whitespace, line breaks included, become one space. What is
+    left may not carry control, format, private-use or unassigned characters:
+    zero-width spaces and direction overrides made names that looked like
+    someone else's, and a line break forged lines in the server log.
     """
-    if not username or not isinstance(username, str):
+    if not isinstance(username, str):
         raise ValidationError('INVALID_USERNAME', 'Username must be a non-empty string')
-    
+    username = ' '.join(unicodedata.normalize('NFKC', username).split())
+    if not username:
+        raise ValidationError('INVALID_USERNAME', 'Username cannot be empty or only whitespace')
     if len(username) > 24:
         raise ValidationError('USERNAME_TOO_LONG', 'Username cannot exceed 24 characters')
-    
-    if len(username.strip()) == 0:
-        raise ValidationError('INVALID_USERNAME', 'Username cannot be only whitespace')
+    if any(unicodedata.category(ch).startswith('C') for ch in username):
+        raise ValidationError(
+            'INVALID_USERNAME', 'Username cannot contain invisible or control characters')
+    if name_key(username) in RESERVED_USERNAMES:
+        raise ValidationError('INVALID_USERNAME', f'"{username}" is reserved')
+    return username
 
 
 def validate_status(status: str) -> None:

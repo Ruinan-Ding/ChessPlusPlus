@@ -6,7 +6,9 @@
     <div class="user-info">
       <div class="username-display">
         <span>Playing as: <strong>{{ username }}</strong></span>
-        <button class="btn-small" (click)="toggleChangeUsername()">Change</button>
+        <!-- Not with an invite out or in: an invite is addressed to the name (renameLocked). -->
+        <button class="btn-small" (click)="toggleChangeUsername()" [disabled]="renameLocked && !showChangeUsername"
+          [attr.title]="renameLocked ? 'Answer or withdraw your invite first' : null">Change</button>
       </div>
       <div class="change-username" *ngIf="showChangeUsername">
         <p class="name-taken" *ngIf="nameWasTaken">
@@ -20,11 +22,13 @@
           placeholder="New username"
           aria-label="New username"
           [attr.aria-invalid]="renameError ? true : null"
-          maxlength="24"
+          maxlength="48"
           (keyup.enter)="changeUsername()"
         >
-        <div class="char-counter" [ngClass]="{'near-limit': newUsername.length > 20}">
-          {{ newUsername.length }}/24
+        <!-- Characters, not UTF-16 units: 48 lets 24 of any kind be typed, and
+             changeUsername() holds it to 24 (newUsernameLength). -->
+        <div class="char-counter" [ngClass]="{'near-limit': newUsernameLength > 20}">
+          {{ newUsernameLength }}/24
         </div>
         <!-- Why the name was refused, here where it was asked for (renameError). -->
         <p class="rename-error" *ngIf="renameError" role="alert">{{ renameError }}</p>

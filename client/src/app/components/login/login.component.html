@@ -9,11 +9,13 @@
         [(ngModel)]="username" 
         placeholder="Username" 
         class="form-control"
-        maxlength="24"
+        maxlength="48"
         (keyup.enter)="login()"
       >
-      <div class="char-counter" [ngClass]="{'near-limit': username.length > 20}">
-        {{ username.length }}/24
+      <!-- Characters, not UTF-16 units: 48 lets 24 of any kind be typed, and
+           login() holds it to 24 (usernameLength). -->
+      <div class="char-counter" [ngClass]="{'near-limit': usernameLength > 20}">
+        {{ usernameLength }}/24
       </div>
     </div>
     <button (click)="login()" class="login-button">
