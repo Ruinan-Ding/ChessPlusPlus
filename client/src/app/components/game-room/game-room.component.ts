@@ -216,7 +216,7 @@ interface UnitCooldown {
  */
 const MOVE_ERROR_CODES = new Set([
   'INVALID_MOVE', 'NOT_YOUR_TURN', 'GAME_OVER', 'GAME_NOT_STARTED',
-  'NOT_IN_GAME', 'INTERNAL_ERROR', 'STATE_CHANGED',
+  'NOT_IN_GAME', 'INTERNAL_ERROR', 'STATE_CHANGED', 'STALE_GAME_SOCKET',
 ]);
 
 /** What a room starts with when nobody has picked a clock. */
@@ -578,6 +578,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
 
   /** Whether this page ever asked to join its room - see ngOnDestroy. */
   private roomJoinSent = false;
+  /** A rejoin sent because another tab had taken the seat - see 'error'. */
+  private staleRejoinSent = false;
   private stateResyncPending = false;
   private gameOverRevision: number | null = null;
 
@@ -708,20 +710,6 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
           this.navigationState.clearIntentionalNavigation();
         }
         
-        const join = () => {
-          this.roomJoinSent = true;
-          this.wsService.sendMessage({
-            type: 'join_game_room',
-            username: this.username,
-            gameId: this.gameId,
-            token: this.accessToken,
-            // The rejoin recreates the server's record of this player, and a
-            // record without the secret cannot vouch for the name back in the
-            // lobby - a reload mid-game used to cost the player their name.
-            secret: this.authService.getIdentitySecret(),
-          });
-          this.lobbyMessages = this.sharedDataService.getLobbyMessages();
-        };
         // A solo game left behind by a closed tab stays latched in session
         // storage: entering a real room, every message would still be
         // answered by the offline engine while the opponent sat alone.
@@ -733,7 +721,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         }
         // Offline games have no socket to wait on, so join right away.
         if (this.wsService.isLocal()) {
-          join();
+          this.joinRoom();
         }
         // Every time the socket comes up - now if it already is, and again
         // after any reconnect. A dropped socket loses the server-side group
@@ -743,16 +731,31 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
           // coming and going says nothing about it.
           filter(connected => connected === true && !this.wsService.isLocal()),
           takeUntil(this.destroy$),
-        ).subscribe(() => join());
+        ).subscribe(() => this.joinRoom());
       });
-      
+
       this.wsService.messages$.pipe(takeUntil(this.destroy$)).subscribe(message => {
         if (!message) return;
         this.handleWebSocketMessage(message);
       });
     });
   }
-  
+
+  private joinRoom(): void {
+    this.roomJoinSent = true;
+    this.wsService.sendMessage({
+      type: 'join_game_room',
+      username: this.username,
+      gameId: this.gameId,
+      token: this.accessToken,
+      // The rejoin recreates the server's record of this player, and a
+      // record without the secret cannot vouch for the name back in the
+      // lobby - a reload mid-game used to cost the player their name.
+      secret: this.authService.getIdentitySecret(),
+    });
+    this.lobbyMessages = this.sharedDataService.getLobbyMessages();
+  }
+
   ngOnDestroy(): void {
     this.destroy$.next();
     this.destroy$.complete();
@@ -1257,6 +1260,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         this.isInviter = actualMessage.isInviter;
         break;
       case 'join_game_room_success':
+        this.staleRejoinSent = false;
         // Sent after joining the game room - if the game was already started,
         // request a full state resync (reconnection).
         if (actualMessage.gameStatus === 'started') {
@@ -1530,6 +1534,15 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         // has. Ask for the one it does.
         if (actualMessage.code === 'STATE_CHANGED') {
           this.wsService.sendMessage({ type: 'request_game_state' });
+        }
+        // Another tab or window joined this room as this player since this
+        // one did, so the server refuses this socket. Take the seat back -
+        // once, however many messages the turn sent - and the join's own
+        // resync puts the server's board back on screen.
+        if (actualMessage.code === 'STALE_GAME_SOCKET' && !this.staleRejoinSent) {
+          this.staleRejoinSent = true;
+          this.addSystemMessage('This game was opened somewhere else - rejoining here...');
+          this.joinRoom();
         }
         // Handle case when game room no longer exists (e.g., host disconnected)
         if (message.message === 'Game room not found') {

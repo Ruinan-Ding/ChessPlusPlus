@@ -2976,12 +2976,17 @@ class GameConsumer(AsyncWebsocketConsumer):
             qs = qs.filter(channel_name=channel_name)
         qs.delete()
     
-    @database_sync_to_async
-    def _is_current_game_socket(self):
-        return bool(self.username and PlayerConnection.objects.filter(  # type: ignore
-            username=self.username,
-            channel_name=self.channel_name,
-        ).exists())
+    async def _is_current_game_socket(self):
+        """False only once another socket has claimed this player's row.
+
+        No row at all is not a replacement: the roster sweep deletes a row
+        nobody has heartbeated for STALE_AFTER while its socket can still be
+        open - a laptop asleep for a minute, a tab the browser throttled.
+        Asking for the row to name this channel refused every room action
+        from then on, and only a reload let the player back into their game.
+        """
+        return bool(self.username) and not await self._reclaimed_by_newer_socket(
+            self.username, self.channel_name)
 
     @database_sync_to_async
     def _reclaimed_by_newer_socket(self, username, channel_name, status=None):

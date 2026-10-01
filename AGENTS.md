@@ -2263,6 +2263,16 @@ and its game to whoever asked next, with no secret at all. A row carrying no sec
 check and nothing to protect, and age alone frees that one. The sweep, the turn clock's liveness
 check and this all read the one constant.
 
+**A socket another one has replaced is refused every room action - `STALE_GAME_SOCKET` - and a
+socket whose row is merely gone is not.** `_is_current_game_socket` asks `_reclaimed_by_newer_socket`:
+refused only when the player's row names *another* channel, so a second tab that joined the room
+holds the seat and the first can no longer resign it or race its moves. It first asked for a row
+naming *this* channel, and the sweep above deletes a row while its socket is still open - so a
+laptop that slept for a minute came back refused everything, resyncing included, until a reload.
+The room answers the code by joining again, once however many messages were refused
+(`staleRejoinSent`), and drops the refused turn like any other move error: the last tab used holds
+the seat.
+
 **A room page leaves only a room it joined - but always takes its socket down.** Opened without a
 token it goes straight back to the lobby, and its `ngOnDestroy` used to send `leave_game_room`
 anyway: the message sat in the socket's queue, went out on the lobby's new connection before anyone

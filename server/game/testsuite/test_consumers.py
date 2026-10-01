@@ -1786,6 +1786,29 @@ class StaleSocketTests(TransactionTestCase):
                 await new.disconnect()
                 await opp.disconnect()
 
+    async def test_a_swept_row_is_not_a_replacement(self):
+        """
+        The roster sweep deletes a row nobody has heartbeated for STALE_AFTER,
+        and the socket behind it can still be open. Nobody replaced that
+        socket, so it still plays - it used to be refused everything,
+        resyncing included, until a reload.
+        """
+        game, host, opp, white, black = await _start_seated_game()
+        try:
+            mover = 'alice' if white is host else 'bob'
+            await PlayerConnection.objects.filter(username=mover).adelete()
+
+            await white.send_json_to({'type': 'pass_turn'})
+            answer = await _receive_until(white, ('turn_passed', 'error'))
+            self.assertEqual(answer['type'], 'turn_passed', answer)
+            await white.send_json_to({'type': 'request_game_state'})
+            answer = await _receive_until(white, ('game_state_update', 'error'))
+            self.assertEqual(answer['type'], 'game_state_update', answer)
+            self.assertEqual(answer['turnNumber'], 2)
+        finally:
+            await host.disconnect()
+            await opp.disconnect()
+
 
 class SeatOwnershipTests(TestCase):
     """_reclaimed_by_newer_socket, the question both stale-socket guards ask."""

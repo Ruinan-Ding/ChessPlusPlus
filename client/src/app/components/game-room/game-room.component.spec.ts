@@ -2988,6 +2988,30 @@ describe('GameRoomComponent leaving', () => {
     expect(disconnects.length).toBe(1);
   });
 
+  it('takes the seat back once when another tab has it, and drops the refused turn', () => {
+    const { c, sent } = room('tok');
+    c.ngOnInit();
+    const joins = () => sent.filter(m => m.type === 'join_game_room').length;
+    expect(joins()).toBe(1);
+    c.stagedActions = [{ from: '0,0', to: '1,0' }];
+    c.submittedTurn = 3;
+
+    // End Turn sends several messages, and every one of them is refused.
+    const stale = { type: 'error', code: 'STALE_GAME_SOCKET', message: 'replaced' };
+    c.handleWebSocketMessage(stale);
+    c.handleWebSocketMessage(stale);
+
+    expect(joins()).toBe(2);
+    expect(c.stagedActions).toEqual([]);
+    expect(c.submittedTurn).toBe(-1);
+
+    // Joined again, a later refusal can take it back again.
+    c.handleWebSocketMessage({ type: 'join_game_room_success', gameStatus: 'waiting' });
+    c.handleWebSocketMessage(stale);
+    expect(joins()).toBe(3);
+    c.ngOnDestroy();
+  });
+
   it('still takes the socket down for a room it never joined', () => {
     // The leave and the teardown are two different questions. Gating both on
     // the join left a room socket open behind a page that had already gone.
