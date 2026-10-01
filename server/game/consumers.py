@@ -16,7 +16,7 @@ from datetime import timedelta
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 
@@ -84,6 +84,14 @@ STALE_AFTER = timedelta(seconds=45)
 # and with no turn limit set an abandoned room would otherwise write a state
 # row every time_limit seconds for the life of the process.
 IDLE_PASS_LIMIT = 6
+
+GAME_ROOM_MESSAGES = {
+    'leave_game_room', 'game_room_message', 'player_ready', 'player_unready',
+    'change_game_mode', 'set_custom_config', 'request_reveal_mode',
+    'reveal_response', 'start_game', 'make_move', 'enter_board', 'panel_move',
+    'panel_attack', 'pass_turn', 'resign', 'offer_draw', 'respond_draw',
+    'request_game_state',
+}
 
 
 def _ending_name(config: Dict[str, Any]) -> str:
@@ -444,6 +452,12 @@ class GameConsumer(AsyncWebsocketConsumer):
             
             handler = handlers.get(message_type)
             if handler:
+                if (self.game_id and message_type in GAME_ROOM_MESSAGES
+                        and not await self._is_current_game_socket()):
+                    await send_error(
+                        self, 'STALE_GAME_SOCKET',
+                        'This connection was replaced. Rejoin the game before acting.')
+                    return
                 # touch last_activity for presence (throttled to every 10 seconds)
                 if self.username:
                     now = timezone.now()
@@ -496,6 +510,11 @@ class GameConsumer(AsyncWebsocketConsumer):
             # lobby, and a message that simply beat its socket's join there
             # is no reason to throw the player out.
             await send_error(self, 'NOT_IN_GAME_ROOM', 'Join the game room first')
+            return None
+        if not await self._is_current_game_socket():
+            await send_error(
+                self, 'STALE_GAME_SOCKET',
+                'This connection was replaced. Rejoin the game before acting.')
             return None
         return game
 
@@ -1045,7 +1064,9 @@ class GameConsumer(AsyncWebsocketConsumer):
             if state and not state.is_finished:
                 winner = game.opponent if username == game.host else game.host
                 if await self._end_game(game_id, state, winner, 'resign'):
-                    await self._broadcast_game_over(game_id, winner, 'resign', resignedBy=username)
+                    await self._broadcast_game_over(
+                        game_id, winner, 'resign', revision=state.revision + 1,
+                        resignedBy=username)
                     forfeited = True
                     logger.info(f"Game {game_id} forfeited to {winner} - {username} left mid-game")
 
@@ -1433,11 +1454,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return
             board = build_initial_board(config)
 
-            await self._update_player_status(game.host, 'in-game')
-            await self._update_player_status(game.opponent, 'in-game')
-            await self._send_user_list()
-            await self._send_game_player_list(game_id, is_inviter=(self.username == game.host))
-
             # The host picks a side, or leaves it to the coin. Only the host
             # reaches here at all - the guard above rejects anyone else - so
             # this is the one seat anybody gets to choose. Anything but the
@@ -1454,7 +1470,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 p_white, p_black = game.opponent, game.host
 
             turn_started_dt = timezone.now()
-            await self._create_game_state(
+            started_state = await self._create_game_state(
                 game_id=game_id,
                 board_state=board.to_dict(),
                 current_turn=p_white,       # white always moves first
@@ -1462,8 +1478,17 @@ class GameConsumer(AsyncWebsocketConsumer):
                 player_black=p_black,
                 config_snapshot=config,
                 turn_started_at=turn_started_dt,
+                expected_revision=existing_state.revision if existing_state else None,
+                expected_end_reason=existing_state.end_reason if existing_state else '',
             )
+            if not started_state:
+                await send_error(self, 'GAME_IN_PROGRESS', 'The game has already started')
+                return
 
+            await self._update_player_status(game.host, 'in-game')
+            await self._update_player_status(game.opponent, 'in-game')
+            await self._send_user_list()
+            await self._send_game_player_list(game_id, is_inviter=(self.username == game.host))
             await self._update_game_status(game_id, 'started')
 
             await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
@@ -1477,6 +1502,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'config': config,
                 'turnStartedAt': turn_started_dt.isoformat(),
                 'phaseBank': {},
+                'revision': started_state.revision,
             })
 
             time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
@@ -1578,9 +1604,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'turnStartedAt': turn_started_dt.isoformat(),
                     'timedOut': True,
                     'phaseBank': settled.phase_bank,
+                    'revision': state.revision + 1,
                 })
                 if settled.end_reason:
-                    await self._broadcast_game_over(game_id, settled.winner, settled.end_reason)
+                    await self._broadcast_game_over(
+                        game_id, settled.winner, settled.end_reason,
+                        revision=state.revision + 1)
                     return
                 # Only keep the clock running while somebody is still there to
                 # watch it: an abandoned room would otherwise re-arm itself
@@ -1685,7 +1714,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                             continue
                         if outcome != 'ended':
                             return
-                        await self._broadcast_game_over(game_id, winner, 'disconnect', disconnectedPlayer=username)
+                        await self._broadcast_game_over(
+                            game_id, winner, 'disconnect', revision=state.revision + 1,
+                            disconnectedPlayer=username)
                         await self._close_game_room(game_id, f"{username} did not reconnect within the grace period")
                         await self._send_user_list()
                         logger.info(f"Game {game_id} forfeited to {winner} - {username} did not reconnect in time")
@@ -1798,7 +1829,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             return 'ended'
 
     async def _end_game_with_retry(self, game_id: str, winner: str, end_reason: str,
-                                    precondition=None) -> bool:
+                                    precondition=None) -> Optional[int]:
         """End a game, retrying once if a concurrent move advanced the turn
         between the caller's state read and the conditional write.
 
@@ -1807,19 +1838,19 @@ class GameConsumer(AsyncWebsocketConsumer):
         already ended" while the game is in fact still running.
 
         precondition, if given, is re-checked against each fresh state read
-        (e.g. "the draw offer is still pending"). Returns True if this call's
-        ending applied; False if the game is finished or the precondition no
-        longer holds.
+        (e.g. "the draw offer is still pending"). Returns the new revision if
+        this call's ending applied, or None if the game is finished or the
+        precondition no longer holds.
         """
         for _ in range(2):
             state = await self._get_game_state(game_id)
             if not state or state.is_finished:
-                return False
+                return None
             if precondition is not None and not precondition(state):
-                return False
+                return None
             if await self._end_game(game_id, state, winner, end_reason):
-                return True
-        return False
+                return state.revision + 1
+        return None
 
     async def _refuse_lost_write(self, what: str):
         """Tell the sender their conditional write lost, and to what.
@@ -1837,13 +1868,15 @@ class GameConsumer(AsyncWebsocketConsumer):
             await send_error(
                 self, 'STATE_CHANGED', f'The game changed before your {what} was processed - build it again')
 
-    async def _broadcast_game_over(self, game_id: str, winner: str, end_reason: str, **extra):
+    async def _broadcast_game_over(self, game_id: str, winner: str, end_reason: str,
+                                   revision: int, **extra):
         """Cancel the turn timer and notify both players that the game ended."""
         self._cancel_turn_timer(game_id)
         await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
             'type': 'game_over',
             'winner': winner,
             'endReason': end_reason,
+            'revision': revision,
             **extra,
         })
 
@@ -2217,10 +2250,12 @@ class GameConsumer(AsyncWebsocketConsumer):
             'turnNumber': next_turn_number,
             'turnStartedAt': turn_started_dt.isoformat(),
             'phaseBank': bank,
+            'revision': state.revision + 1,
         })
 
         if end_reason:
-            await self._broadcast_game_over(self.game_id, winner, end_reason)
+            await self._broadcast_game_over(
+                self.game_id, winner, end_reason, revision=state.revision + 1)
         else:
             time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
             if time_limit > 0:
@@ -2495,6 +2530,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'turnStartedAt': (state.turn_started_at or timezone.now()).isoformat(),
             'drawOfferedBy': '',
             'phaseBank': state.phase_bank or {},
+            'revision': state.revision + 1,
         })
         return True
 
@@ -2661,10 +2697,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'turnNumber': next_turn_number,
                 'turnStartedAt': turn_started_dt.isoformat(),
                 'phaseBank': bank,
+                'revision': state.revision + 1,
             })
 
             if end_reason:
-                await self._broadcast_game_over(self.game_id, winner, end_reason)
+                await self._broadcast_game_over(
+                    self.game_id, winner, end_reason, revision=state.revision + 1)
             else:
                 time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
                 if time_limit > 0:
@@ -2692,8 +2730,12 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             winner = state.player_black if self.username == state.player_white else state.player_white
 
-            if await self._end_game_with_retry(self.game_id, winner, 'resign'):
-                await self._broadcast_game_over(self.game_id, winner, 'resign', resignedBy=self.username)
+            ending_revision = await self._end_game_with_retry(
+                self.game_id, winner, 'resign')
+            if ending_revision is not None:
+                await self._broadcast_game_over(
+                    self.game_id, winner, 'resign', revision=ending_revision,
+                    resignedBy=self.username)
                 logger.info(f"Player {self.username} resigned in game {self.game_id}")
             else:
                 await send_error(self, 'GAME_OVER', 'This game has already ended')
@@ -2725,6 +2767,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'draw_offered',
                 'offeredBy': self.username,
+                'revision': state.revision + 1,
             })
 
             logger.info(f"Player {self.username} offered a draw in game {self.game_id}")
@@ -2754,16 +2797,22 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_REQUEST', 'You cannot respond to your own draw offer')
                 return
 
-            accepted = bool(data['accept'])
+            if not isinstance(data['accept'], bool):
+                await send_error(self, 'INVALID_REQUEST', 'The accept field must be a boolean')
+                return
+            accepted = data['accept']
 
             if accepted:
                 # Retry guards against racing an opponent's move; the
                 # precondition ensures the offer wasn't invalidated by that
                 # same move (every state write clears draw_offered_by).
                 offer_still_pending = lambda s: s.draw_offered_by and s.draw_offered_by != self.username
-                if await self._end_game_with_retry(self.game_id, '', 'draw_agreed',
-                                                    precondition=offer_still_pending):
-                    await self._broadcast_game_over(self.game_id, '', 'draw_agreed')
+                ending_revision = await self._end_game_with_retry(
+                    self.game_id, '', 'draw_agreed',
+                    precondition=offer_still_pending)
+                if ending_revision is not None:
+                    await self._broadcast_game_over(
+                        self.game_id, '', 'draw_agreed', revision=ending_revision)
                     logger.info(f"Draw agreed in game {self.game_id}")
                 else:
                     await send_error(self, 'NO_DRAW_OFFER', 'The draw offer is no longer valid')
@@ -2776,6 +2825,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'type': 'draw_response',
                     'accepted': False,
                     'declinedBy': self.username,
+                    'revision': state.revision + 1,
                 })
                 logger.info(f"Draw declined by {self.username} in game {self.game_id}")
         except ValidationError as e:
@@ -2811,6 +2861,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'turnStartedAt': (state.turn_started_at or timezone.now()).isoformat(),
                 'drawOfferedBy': state.draw_offered_by or '',
                 'phaseBank': state.phase_bank or {},
+                'revision': state.revision,
             })
         except Exception as e:
             logger.error(f"Error in _handle_request_game_state: {e}", exc_info=True)
@@ -2925,6 +2976,13 @@ class GameConsumer(AsyncWebsocketConsumer):
             qs = qs.filter(channel_name=channel_name)
         qs.delete()
     
+    @database_sync_to_async
+    def _is_current_game_socket(self):
+        return bool(self.username and PlayerConnection.objects.filter(  # type: ignore
+            username=self.username,
+            channel_name=self.channel_name,
+        ).exists())
+
     @database_sync_to_async
     def _reclaimed_by_newer_socket(self, username, channel_name, status=None):
         """True when this username's row belongs to some *other* channel now.
@@ -3174,12 +3232,11 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _create_game_state(self, game_id, board_state, current_turn, player_white, player_black,
-                            config_snapshot, turn_started_at=None):
-        """Create (or reset, on rematch) the GameState for a game that just started."""
+                            config_snapshot, turn_started_at=None, expected_revision=None,
+                            expected_end_reason=''):
+        """Atomically claim a new game or rematch before publishing its state."""
         game = GameRoom.objects.get(game_id=game_id)
-        state, _created = GameState.objects.update_or_create(
-            game=game,
-            defaults={
+        values = {
                 'board_state': board_state,
                 'current_turn': current_turn,
                 'turn_number': 1,
@@ -3194,14 +3251,26 @@ class GameConsumer(AsyncWebsocketConsumer):
                 # A rematch reuses the row, and must not inherit the last
                 # match's phases.
                 'phase_bank': {},
-            },
-        )
-        if not _created:
-            # A rematch reuses the row too: a write still holding the last
-            # match's revision must not land on this one.
-            GameState.objects.filter(pk=state.pk).update(revision=F('revision') + 1)  # type: ignore
-            state.refresh_from_db(fields=['revision'])
-        return state
+                'updated_at': timezone.now(),
+            }
+        if expected_revision is None:
+            try:
+                with transaction.atomic():
+                    return GameState.objects.create(
+                        game=game, revision=1, **values)
+            except IntegrityError:
+                return None
+
+        if not expected_end_reason:
+            return None
+        rows = GameState.objects.filter(  # type: ignore
+            game_id=game_id,
+            revision=expected_revision,
+            end_reason=expected_end_reason,
+        ).update(revision=F('revision') + 1, **values)
+        if not rows:
+            return None
+        return GameState.objects.get(game_id=game_id)  # type: ignore
 
     @database_sync_to_async
     def _get_game_state(self, game_id):

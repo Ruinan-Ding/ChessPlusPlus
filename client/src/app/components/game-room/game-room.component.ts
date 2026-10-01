@@ -578,6 +578,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
 
   /** Whether this page ever asked to join its room - see ngOnDestroy. */
   private roomJoinSent = false;
+  private stateResyncPending = false;
+  private gameOverRevision: number | null = null;
 
   constructor(
     private wsService: WebsocketService,
@@ -953,12 +955,75 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     }
   }
   
+  private acceptStateRevision(message: any): boolean {
+    if (typeof message?.revision === 'undefined') return true;
+    if (!Number.isSafeInteger(message.revision) || message.revision < 0) {
+      console.warn('[GameRoom] Ignoring message with invalid state revision');
+      return false;
+    }
+
+    const current = this.gameState.snapshot.revision;
+    const fullSnapshot = message.type === 'game_started'
+      || message.type === 'game_state_update';
+    if (message.revision < current) return false;
+    if (message.revision === current) {
+      if (fullSnapshot) {
+        this.stateResyncPending = false;
+        return true;
+      }
+      if (message.type === 'game_over' && this.gameOverRevision !== message.revision) {
+        this.gameOverRevision = message.revision;
+        return true;
+      }
+      return false;
+    }
+
+    if (!fullSnapshot && current > 0 && message.revision !== current + 1) {
+      if (!this.stateResyncPending) {
+        this.stateResyncPending = true;
+        this.wsService.sendMessage({ type: 'request_game_state' });
+      }
+      return false;
+    }
+
+    if (fullSnapshot) this.stateResyncPending = false;
+    return true;
+  }
+
+  private applyGameOverMessage(message: any): void {
+    if (Number.isSafeInteger(message.revision)) this.gameOverRevision = message.revision;
+    this.clearTurnClock();
+    // A winning move replays before the board is handed the completed turn.
+    // Keep its curtain until playbackDone unless the recap is not running.
+    if (!this.playbackRunning) {
+      this.recapRunning = false;
+      this.glowReveal = [];
+    }
+    this.gameState.applyGameOver(message);
+    if (message.winner) {
+      this.addSystemMessage(`Game over - ${message.winner} wins by ${message.endReason}!`);
+    } else {
+      this.addSystemMessage(`Game over - Draw (${message.endReason}).`);
+    }
+    if (!this.isSinglePlayer) {
+      const iWon = message.winner === this.username;
+      const title = message.winner ? (iWon ? 'You won!' : 'You lost') : 'Draw';
+      this.openEndModal(
+        title,
+        this.endReasonDetail(message),
+        message.endReason === 'disconnect',
+      );
+    }
+    this.cdr.markForCheck();
+  }
+
   handleWebSocketMessage(message: any): void {
     // Handle broadcast_message wrapper (unwrap to actual message type)
     let actualMessage = message;
     if (message.type === 'broadcast_message' && message.data) {
       actualMessage = message.data;
     }
+    if (!this.acceptStateRevision(actualMessage)) return;
     switch (actualMessage.type) {
       case 'game_reset':
         // Back to the pre-game screen with the room intact. Only enough is
@@ -971,6 +1036,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         // came back at wherever they were then.
         this.selectRoomTab('room');
         this.gameState.reset();
+        this.stateResyncPending = false;
+        this.gameOverRevision = null;
         this.stagedActions = [];
         this.submittedTurn = -1;
         this.recapRunning = false;
@@ -985,6 +1052,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         this.isReady = false;  // Reset ready state - button reverts to "Ready" and will be disabled
         this.leaveRoomTab();
         this.gameState.reset();
+        this.stateResyncPending = false;
+        this.gameOverRevision = null;
         this.gameState.applyGameStarted(actualMessage);
         
         // Cleared first: these two lines are the only word the player gets on
@@ -1094,47 +1163,17 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         break;
       }
       case 'game_over': {
-        this.clearTurnClock();
-        // `gameStarted` deliberately stays true: the finished position stays
-        // on screen with its result over it, and the setup controls come back
-        // only when the host resets the room. `gameOver` is what the rest of
-        // the component asks now that started no longer means playable.
-        // Whatever the board was replaying is over, and nothing else will
-        // announce that it finished, so the curtain comes down here - unless
-        // the recap has not played yet. A blow or a cast that WINS resolves
-        // synchronously inside endTurn, before the board has even been handed
-        // the turn to replay, so dropping the curtain here played the one turn
-        // most worth watching without it. The board answers playbackDone at
-        // the end of that run and it comes down there instead.
-        if (!this.playbackRunning) {
-          this.recapRunning = false;
-          this.glowReveal = [];
-        }
-        this.gameState.applyGameOver(actualMessage);
-        if (actualMessage.winner) {
-          this.addSystemMessage(`Game over - ${actualMessage.winner} wins by ${actualMessage.endReason}!`);
-        } else {
-          this.addSystemMessage(`Game over - Draw (${actualMessage.endReason}).`);
-        }
-        // Solo: the result banner on the mode screen already says it, and the
-        // popup's only button dumps you back in the lobby. Skip it.
-        if (!this.isSinglePlayer) {
-          const iWon = actualMessage.winner === this.username;
-          const title = actualMessage.winner ? (iWon ? 'You won!' : 'You lost') : 'Draw';
-          // An opponent who never came back can't rematch, so that ending
-          // returns to the lobby on its own; the others wait for the button.
-          this.openEndModal(
-            title,
-            this.endReasonDetail(actualMessage),
-            actualMessage.endReason === 'disconnect',
-          );
-        }
-        this.cdr.markForCheck();
+        this.applyGameOverMessage(actualMessage);
         break;
       }
       case 'game_state_update':
         // Full state refresh (e.g., on reconnect)
         this.gameState.applyFullState(actualMessage);
+        if (actualMessage.endReason) {
+          this.reconcilePoints();
+          this.applyGameOverMessage(actualMessage);
+          break;
+        }
         // A reload in a networked room used to start both purses at nothing:
         // points were kept in this browser's memory and restored from disk only
         // for a solo room. And a crossing or a walk by the other player arrives
@@ -1158,12 +1197,12 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         this.cdr.markForCheck();
         break;
       case 'draw_offered':
-        this.gameState.applyDrawOffered(actualMessage.offeredBy);
+        this.gameState.applyDrawOffered(actualMessage.offeredBy, actualMessage.revision);
         this.addSystemMessage(`${actualMessage.offeredBy} offered a draw.`);
         this.cdr.markForCheck();
         break;
       case 'draw_response':
-        this.gameState.clearDrawOffer();
+        this.gameState.clearDrawOffer(actualMessage.revision);
         if (!actualMessage.accepted) {
           this.addSystemMessage(`${actualMessage.declinedBy} declined the draw offer.`);
         }

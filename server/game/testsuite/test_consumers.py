@@ -945,6 +945,38 @@ class GameLifecycleGuardTests(TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
+    async def test_only_one_concurrent_rematch_claim_can_reset_state(self):
+        from game.consumers import GameConsumer
+
+        game, host_comm, opp_comm, started = await self._start_game()
+        try:
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                end_reason='resign', winner='alice', revision=F('revision') + 1,
+            )
+            finished = await GameState.objects.aget(game_id=game.game_id)
+
+            def start_args():
+                return (
+                    game.game_id, finished.board_state, 'alice', 'alice', 'bob',
+                    finished.config_snapshot,
+                )
+
+            first, second = await asyncio.gather(
+                GameConsumer()._create_game_state(
+                    *start_args(), expected_revision=finished.revision,
+                    expected_end_reason='resign'),
+                GameConsumer()._create_game_state(
+                    *start_args(), expected_revision=finished.revision,
+                    expected_end_reason='resign'),
+            )
+            self.assertEqual(sum(result is not None for result in (first, second)), 1)
+            refreshed = await GameState.objects.aget(game_id=game.game_id)
+            self.assertFalse(refreshed.is_finished)
+            self.assertEqual(refreshed.revision, finished.revision + 1)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
     async def test_explicit_leave_mid_game_forfeits_to_the_other_player(self):
         game, host_comm, opp_comm, started = await self._start_game()
         try:
@@ -1040,6 +1072,14 @@ class GameLifecycleGuardTests(TransactionTestCase):
             # Black offers a draw, then white moves instead of responding.
             await black_comm.send_json_to({'type': 'offer_draw'})
             await _receive_until(white_comm, 'draw_offered')
+
+            await white_comm.send_json_to({'type': 'respond_draw', 'accept': 'false'})
+            invalid_accept = await _receive_until(white_comm, 'error', timeout=5)
+            self.assertEqual(invalid_accept['code'], 'INVALID_REQUEST')
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertFalse(state.is_finished)
+            self.assertEqual(
+                state.draw_offered_by, 'alice' if black_comm is host_comm else 'bob')
 
             await white_comm.send_json_to({'type': 'make_move', 'from': '-5,9', 'to': '-5,8'})
             await _receive_until(white_comm, 'move_made')
@@ -1654,6 +1694,12 @@ class StaleSocketTests(TransactionTestCase):
             # and opened another. The seat is the new one's.
             new = await self._joined(game.game_id, 'alice', 'host-tok')
             try:
+                await old.send_json_to({'type': 'resign'})
+                stale_action = await _receive_until(old, 'error', timeout=5)
+                self.assertEqual(stale_action['code'], 'STALE_GAME_SOCKET')
+                state = await GameState.objects.aget(game_id=game.game_id)
+                self.assertFalse(state.is_finished)
+
                 # Only now does the old one's close finally land.
                 await old.disconnect()
 
@@ -2998,9 +3044,15 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
         game, host_comm, opp_comm, white, black = await _start_seated_game()
         try:
             state = await self._wind(game, 40, bank={'1': {'white': 3, 'black': 1}})
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                end_reason='resign', winner=state.player_black,
+                revision=F('revision') + 1,
+            )
+            finished = await GameState.objects.aget(game_id=game.game_id)
             await GameConsumer()._create_game_state(
                 game.game_id, state.board_state, state.player_white,
-                state.player_white, state.player_black, state.config_snapshot)
+                state.player_white, state.player_black, state.config_snapshot,
+                expected_revision=finished.revision, expected_end_reason='resign')
             stored = await GameState.objects.aget(game_id=game.game_id)
             self.assertEqual(stored.phase_bank, {})
             self.assertEqual(stored.turn_number, 1)

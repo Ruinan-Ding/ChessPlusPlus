@@ -78,6 +78,75 @@ describe('GameRoomComponent ability panel', () => {
       jasmine.objectContaining({ side: 'mine', index: TARGETED }));
   });
 
+  describe('GameRoomComponent network state revisions', () => {
+    it('requests a full snapshot for a revision gap and ignores stale events', () => {
+      const sent: any[] = [];
+      const gameState = new GameStateService();
+      const c: any = new GameRoomComponent(
+        { sendMessage: (message: any) => sent.push(message) } as any,
+        {} as any, {} as any, {} as any, {} as any,
+        { markForCheck: () => {}, detectChanges: () => {} } as any,
+        gameState, {} as any, { playTone: () => {} } as any, zone,
+      );
+      gameState.applyGameStarted({ revision: 1 });
+
+      expect(c.acceptStateRevision({ type: 'move_made', revision: 3 })).toBeFalse();
+      expect(sent).toEqual([{ type: 'request_game_state' }]);
+      expect(c.acceptStateRevision({ type: 'move_made', revision: 3 })).toBeFalse();
+      expect(sent.length).toBe(1);
+
+      expect(c.acceptStateRevision({ type: 'game_state_update', revision: 3 })).toBeTrue();
+      gameState.applyFullState({ revision: 3, turnNumber: 2 });
+      expect(c.acceptStateRevision({ type: 'move_made', revision: 2 })).toBeFalse();
+      expect(c.acceptStateRevision({ type: 'move_made', revision: 3 })).toBeFalse();
+    });
+
+    it('applies an authoritative full snapshot at the current revision', () => {
+      const gameState = new GameStateService();
+      const c: any = new GameRoomComponent(
+        { sendMessage: () => {} } as any,
+        {} as any, {} as any, {} as any, {} as any,
+        { markForCheck: () => {}, detectChanges: () => {} } as any,
+        gameState, {} as any, { playTone: () => {} } as any, zone,
+      );
+      gameState.applyGameStarted({ revision: 4, turnNumber: 1 });
+      c.stateResyncPending = true;
+      c.reconcilePoints = () => {};
+      c.startTurnClock = () => {};
+
+      c.handleWebSocketMessage({
+        type: 'game_state_update',
+        revision: 4,
+        turnNumber: 7,
+        currentTurn: 'opponent',
+        boardState: { '0,0': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20 } },
+        moveHistory: [],
+        config: DEFAULT_GAME_CONFIG,
+      });
+
+      expect(gameState.snapshot.turnNumber).toBe(7);
+      expect(gameState.snapshot.boardState['0,0'].unit_id).toBe('pawn');
+      expect(c.stateResyncPending).toBeFalse();
+    });
+
+    it('accepts a same-revision game_over only once after its turn event', () => {
+      const gameState = new GameStateService();
+      const c: any = new GameRoomComponent(
+        { sendMessage: () => {} } as any,
+        {} as any, {} as any, {} as any, {} as any,
+        { markForCheck: () => {}, detectChanges: () => {} } as any,
+        gameState, {} as any, { playTone: () => {} } as any, zone,
+      );
+      gameState.applyGameStarted({ revision: 1 });
+
+      expect(c.acceptStateRevision({ type: 'move_made', revision: 2 })).toBeTrue();
+      gameState.applyMoveMade({ revision: 2, move: {} });
+      expect(c.acceptStateRevision({ type: 'game_over', revision: 2 })).toBeTrue();
+      gameState.applyGameOver({ revision: 2, endReason: 'regicide' });
+      expect(c.acceptStateRevision({ type: 'game_over', revision: 2 })).toBeFalse();
+    });
+  });
+
   it('keeps a unit that crossed and later walked home at home, not departed', () => {
     // `departedUids` was every unit that had EVER crossed, and the board hides
     // any panel unit named in it - so a reserve unit that crossed and walked
