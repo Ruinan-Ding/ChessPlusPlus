@@ -136,6 +136,29 @@ describe('WebsocketService reconnect escalation', () => {
     expect(engine.length).toBe(solo.length);
   });
 
+  it('delivers the server game snapshot and configured unit stats unchanged', () => {
+    const received: any[] = [];
+    service.messages$.subscribe(message => received.push(message));
+    service.connect('game-1');
+    const socket = StalledSocket.instances[0];
+
+    const snapshot = {
+      type: 'game_started',
+      config: {
+        units: {
+          pawn: { id: 'pawn', hp: 137, move: 4, attack: 23, defense: 8, attackRange: 3, value: 17 },
+        },
+      },
+      boardState: {
+        '0,0': { unit_id: 'pawn', color: 'white', hp: 137, max_hp: 137, uid: 'w0,0' },
+      },
+    };
+    socket.onmessage({ data: JSON.stringify(snapshot) });
+
+    expect(received).toEqual([snapshot]);
+    service.disconnect();
+  });
+
   it('leaves a handshake already in flight alone', () => {
     // login, the lobby and the game room all ask for a connection. Tearing
     // down the socket each time is how a connection stays forever pending.

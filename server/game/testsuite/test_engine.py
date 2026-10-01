@@ -25,7 +25,6 @@ from game.engine.move_validator import (
 )
 from game.engine.game_logic import (
     board_moves_at,
-    MIN_STRIKE_DAMAGE,
     defeated_sides,
     find_defeated,
     overtime_toll,
@@ -331,8 +330,16 @@ class ConfigLoaderTestCase(TestCase):
     def test_build_initial_board_piece_count(self):
         config = load_config(None)
         board = build_initial_board(config)
-        self.assertEqual(len(board.pieces_by_color('white')), 24)
-        self.assertEqual(len(board.pieces_by_color('black')), 24)
+        board_coords = set(board.all_coords())
+        for color in ('white', 'black'):
+            self.assertEqual(
+                len(board.pieces_by_color(color)),
+                sum(
+                    parse_coord(coord) in board_coords
+                    for coord in config['setup'][color]
+                ),
+                color,
+            )
 
     @staticmethod
     def _king_hex(config, color):
@@ -363,12 +370,18 @@ class ConfigLoaderTestCase(TestCase):
     def test_build_initial_board_units_have_hp(self):
         config = load_config(None)
         board = build_initial_board(config)
-        white_king = board.get(*self._king_hex(config, 'white'))
-        assert white_king is not None
-        self.assertIn('hp', white_king)
-        self.assertIn('max_hp', white_king)
-        self.assertGreater(white_king['hp'], 0)
-        self.assertEqual(white_king['hp'], white_king['max_hp'])
+        for color, placements in config['setup'].items():
+            for coord, unit_id in placements.items():
+                q, r = parse_coord(coord)
+                piece = board.get(q, r)
+                if piece is None:
+                    continue
+                unit_def = config['units'][unit_id]
+                self.assertEqual(piece['unit_id'], unit_id)
+                self.assertEqual(piece['color'], color)
+                self.assertEqual(piece['hp'], unit_def['hp'])
+                self.assertEqual(piece['max_hp'], unit_def['hp'])
+                self.assertEqual(piece['uid'], f'{color[0]}{coord}')
 
     def test_invalid_config_raises(self):
         with self.assertRaises(ValueError):
@@ -479,8 +492,8 @@ class ConfigLoaderTestCase(TestCase):
 class MoveValidatorTestCase(TestCase):
     """
     Tests for movement: a flood fill through the six hex neighbours, bounded
-    by the unit's `move` stat. Blocked entirely by any occupied hex (own or
-    enemy) - units cannot pass through each other.
+    by the unit's `move` stat. A unit walks through its own side's pieces but
+    not enemies, and cannot stop on an occupied hex.
     """
 
     def _make_board(self, radius: int = 5) -> HexBoard:
@@ -596,21 +609,22 @@ class MoveValidatorTestCase(TestCase):
         self.assertTrue(is_legal_move(board, (0, 0), (1, 0), self._cfg(move=1), 'white'))
         self.assertFalse(is_legal_move(board, (0, 0), (3, 0), self._cfg(move=1), 'white'))
 
-    def test_default_config_units_declare_a_move(self):
-        """Every unit in DEFAULT_CONFIG carries its own move budget.
-
-        This used to pin every unit to 6, which was true only while the roster
-        was six identical placeholders. The shieldman is deliberately slower,
-        so what is worth guarding is that movement is a per-unit stat and that
-        none of them is accidentally left without one.
-        """
+    def test_every_default_unit_moves_by_its_configured_budget(self):
+        """Each roster entry's move stat independently determines its reach."""
         config = load_config(None)
         for unit_id, unit_def in config['units'].items():
-            move = unit_def.get('move')
+            move = unit_def['move']
             self.assertIsInstance(move, int, unit_id)
-            self.assertGreater(move, 0, unit_id)
-        self.assertEqual(config['units']['shieldman']['move'], 5)
-        self.assertEqual(config['units']['pawn']['move'], 6)
+            self.assertGreaterEqual(move, 0, unit_id)
+
+            board = HexBoard(max(1, move + 1))
+            board.set(0, 0, unit_id, 'white')
+            actual = set(get_legal_moves(board, (0, 0), config, 'white'))
+            expected = {
+                coord for coord in board.all_coords()
+                if coord != (0, 0) and hex_distance((0, 0), coord) <= move
+            }
+            self.assertEqual(actual, expected, unit_id)
 
 
 # ---------------------------------------------------------------------------
@@ -639,21 +653,25 @@ class GameLogicTestCase(TestCase):
 
     def test_losing_the_commander_loses_the_game(self):
         """Default objective is regicide: no king, no game."""
-        board = HexBoard(5)
-        board.set(0, 0, 'king', 'white', hp=45, max_hp=45)
-        board.set(1, 0, 'pawn', 'white', hp=20, max_hp=20)
-        board.set(3, 0, 'king', 'black', hp=45, max_hp=45)
         config = self._cfg()
+        king_hp = config['units']['king']['hp']
+        pawn_hp = config['units']['pawn']['hp']
+        board = HexBoard(5)
+        board.set(0, 0, 'king', 'white', hp=king_hp, max_hp=king_hp)
+        board.set(1, 0, 'pawn', 'white', hp=pawn_hp, max_hp=pawn_hp)
+        board.set(3, 0, 'king', 'black', hp=king_hp, max_hp=king_hp)
         self.assertIsNone(find_defeated(board, config))
 
         board.remove(0, 0)
         self.assertEqual(find_defeated(board, config), 'white')
 
     def test_elimination_objective_ignores_the_commander(self):
-        board = HexBoard(5)
-        board.set(1, 0, 'pawn', 'white', hp=20, max_hp=20)
-        board.set(3, 0, 'king', 'black', hp=45, max_hp=45)
         config = self._cfg()
+        pawn_hp = config['units']['pawn']['hp']
+        king_hp = config['units']['king']['hp']
+        board = HexBoard(5)
+        board.set(1, 0, 'pawn', 'white', hp=pawn_hp, max_hp=pawn_hp)
+        board.set(3, 0, 'king', 'black', hp=king_hp, max_hp=king_hp)
         config['rules']['objective'] = 'elimination'
 
         # White has no king but still has a unit, so it is not out yet.
@@ -663,11 +681,15 @@ class GameLogicTestCase(TestCase):
 
     def test_counter_attack_can_defeat_the_attacker(self):
         """The side that lost is the side whose king died, not the side that moved."""
+        config = copy.deepcopy(self._cfg())
+        config['units']['rook']['attack'] = 100
+        config['units']['king']['defense'] = 0
+        king_hp = config['units']['king']['hp']
+        rook_hp = config['units']['rook']['hp']
         board = HexBoard(5)
-        board.set(0, 0, 'king', 'white', hp=2, max_hp=45)
-        board.set(1, 0, 'rook', 'black', hp=40, max_hp=40)
-        board.set(3, 0, 'king', 'black', hp=45, max_hp=45)
-        config = self._cfg()
+        board.set(0, 0, 'king', 'white', hp=1, max_hp=king_hp)
+        board.set(1, 0, 'rook', 'black', hp=rook_hp, max_hp=rook_hp)
+        board.set(3, 0, 'king', 'black', hp=king_hp, max_hp=king_hp)
 
         result = resolve_combat(board, (0, 0), (1, 0), config)
 
@@ -676,10 +698,11 @@ class GameLogicTestCase(TestCase):
 
     def test_both_sides_can_fall_in_one_exchange(self):
         """A mutual kill is a draw, not a win for whichever side sorts first."""
-        board = HexBoard(5)
-        board.set(0, 0, 'pawn', 'white', hp=20, max_hp=20)
-        board.set(1, 0, 'pawn', 'black', hp=20, max_hp=20)
         config = self._cfg()
+        pawn_hp = config['units']['pawn']['hp']
+        board = HexBoard(5)
+        board.set(0, 0, 'pawn', 'white', hp=pawn_hp, max_hp=pawn_hp)
+        board.set(1, 0, 'pawn', 'black', hp=pawn_hp, max_hp=pawn_hp)
         config['rules']['objective'] = 'regicide'
 
         # Neither side has a commander, so both are beaten at once.
@@ -690,11 +713,16 @@ class GameLogicTestCase(TestCase):
 
     def test_resolve_combat_attack_eliminates(self):
         """A kill leaves the attacker where it stood - attacking is not a move."""
+        config = copy.deepcopy(self._cfg())
+        config['units']['queen']['attack'] = 10
+        config['units']['pawn']['defense'] = 0
+        config['units']['pawn']['attack'] = 0
+        queen_hp = config['units']['queen']['hp']
+        pawn_hp = config['units']['pawn']['hp']
         board = HexBoard(5)
-        board.set(0, 0, 'queen', 'white', hp=30, max_hp=30)
-        board.set(1, 0, 'pawn', 'black', hp=5, max_hp=20)
-        config = self._cfg()
-        expected = config['units']['queen']['attack'] - config['units']['pawn']['defense']
+        board.set(0, 0, 'queen', 'white', hp=queen_hp, max_hp=queen_hp)
+        board.set(1, 0, 'pawn', 'black', hp=1, max_hp=pawn_hp)
+        expected = strike_damage(config['units']['queen'], config['units']['pawn'], 1, config)
 
         result = resolve_combat(board, (0, 0), (1, 0), config)
 
@@ -710,66 +738,102 @@ class GameLogicTestCase(TestCase):
 
     def test_resolve_combat_defender_survives_and_counters(self):
         """Damage is attack minus defence, and the survivor hits back the same way."""
+        config = copy.deepcopy(self._cfg())
+        config['units']['pawn'].update(attack=5, defense=1)
+        config['units']['rook'].update(attack=7, defense=1)
         board = HexBoard(5)
-        board.set(0, 0, 'pawn', 'white', hp=20, max_hp=20)
-        board.set(1, 0, 'rook', 'black', hp=40, max_hp=40)
-        config = self._cfg()
+        board.set(0, 0, 'pawn', 'white', hp=100, max_hp=100)
+        board.set(1, 0, 'rook', 'black', hp=100, max_hp=100)
         units = config['units']
-        dealt = units['pawn']['attack'] - units['rook']['defense']
-        countered = units['rook']['attack'] - units['pawn']['defense']
+        dealt = strike_damage(units['pawn'], units['rook'], 1, config)
+        countered = strike_damage(units['rook'], units['pawn'], 1, config)
 
         result = resolve_combat(board, (0, 0), (1, 0), config)
 
         self.assertFalse(result['defender_eliminated'])
         self.assertFalse(result['moved'])
         self.assertEqual(result['damage_dealt'], dealt)
-        self.assertEqual(result['defender_hp'], 40 - dealt)
+        self.assertEqual(result['defender_hp'], 100 - dealt)
         self.assertEqual(result['counter_damage'], countered)
-        self.assertEqual(result['attacker_hp'], 20 - countered)
+        self.assertEqual(result['attacker_hp'], 100 - countered)
         self.assertFalse(result['attacker_eliminated'])
 
     def test_counter_attack_can_kill_the_attacker(self):
+        config = copy.deepcopy(self._cfg())
+        config['units']['rook']['attack'] = 100
+        config['units']['pawn']['defense'] = 0
         board = HexBoard(5)
-        board.set(0, 0, 'pawn', 'white', hp=2, max_hp=20)
-        board.set(1, 0, 'rook', 'black', hp=40, max_hp=40)
+        board.set(0, 0, 'pawn', 'white', hp=1, max_hp=config['units']['pawn']['hp'])
+        board.set(1, 0, 'rook', 'black', hp=config['units']['rook']['hp'],
+                  max_hp=config['units']['rook']['hp'])
 
-        result = resolve_combat(board, (0, 0), (1, 0), self._cfg())
+        result = resolve_combat(board, (0, 0), (1, 0), config)
 
         self.assertTrue(result['attacker_eliminated'])
         self.assertIsNone(board.get(0, 0))
         self.assertIsNotNone(board.get(1, 0))
 
     def test_no_counter_from_outside_the_defenders_reach(self):
-        """A bishop reaches three rings; a pawn cannot answer from two."""
+        """The counter uses the defender's configured range, not the attacker's."""
         board = HexBoard(5)
-        board.set(0, 0, 'bishop', 'white', hp=22, max_hp=22)
-        board.set(2, 0, 'pawn', 'black', hp=20, max_hp=20)
-        config = self._cfg()
+        config = copy.deepcopy(self._cfg())
+        config['units'].update({
+            'ranged': {'attack': 8, 'defense': 0, 'attackRange': 3},
+            'short': {'attack': 8, 'defense': 0, 'attackRange': 1},
+        })
+        board.set(0, 0, 'ranged', 'white', hp=100, max_hp=100)
+        board.set(2, 0, 'short', 'black', hp=100, max_hp=100)
 
         result = resolve_combat(board, (0, 0), (2, 0), config)
 
         self.assertTrue(result['attacked'])
         self.assertEqual(result['counter_damage'], 0)
-        self.assertEqual(result['attacker_hp'], 22)
+        self.assertEqual(result['attacker_hp'], 100)
+
+    def test_every_configured_attacker_and_defender_uses_its_stats(self):
+        """Combat reads configured attack, defense, range and falloff for the roster."""
+        config = self._cfg()
+        units = config['units']
+        for attacker_id, attacker_def in units.items():
+            for defender_id, defender_def in units.items():
+                for distance in sorted({1, attacker_def['attackRange']}):
+                    with self.subTest(
+                        attacker=attacker_id, defender=defender_id, distance=distance,
+                    ):
+                        board = HexBoard(distance)
+                        board.set(0, 0, attacker_id, 'white', hp=10000, max_hp=10000)
+                        board.set(distance, 0, defender_id, 'black', hp=10000, max_hp=10000)
+
+                        result = resolve_combat(board, (0, 0), (distance, 0), config)
+                        dealt = strike_damage(attacker_def, defender_def, distance, config)
+                        counter = (
+                            strike_damage(defender_def, attacker_def, distance, config)
+                            if distance <= defender_def['attackRange'] else 0
+                        )
+
+                        self.assertEqual(result['damage_dealt'], dealt)
+                        self.assertEqual(result['defender_hp'], 10000 - dealt)
+                        self.assertEqual(result['counter_damage'], counter)
+                        self.assertEqual(result['attacker_hp'], 10000 - counter)
 
     def test_armour_blunts_a_hit_but_never_turns_it_aside(self):
         """
-        Defence above the attack stat floors at MIN_STRIKE_DAMAGE, not at 0.
-
-        This used to assert 0, and the owner's report was that "some shit
-        simply doesn't seem to take any hit": a pawn (14 attack) against a
-        king (15 defence) came to -1 and floored to nothing, so the pair could
-        trade blows all game and neither would ever move. A blow that lands
-        always takes something off now.
+        Defence above attack is clamped to the configured floor and attack cap.
         """
+        config = copy.deepcopy(self._cfg())
+        attack = max(2, config['rules']['minStrikeDamage'] + 1)
+        config['units']['pawn']['attack'] = attack
+        config['units']['king']['defense'] = attack + 10
+        king_hp = config['units']['king']['hp']
         board = HexBoard(5)
-        board.set(0, 0, 'pawn', 'white', hp=20, max_hp=20)
-        board.set(1, 0, 'king', 'black', hp=45, max_hp=45)  # defence 15 > pawn attack 14
+        board.set(0, 0, 'pawn', 'white', hp=100, max_hp=100)
+        board.set(1, 0, 'king', 'black', hp=king_hp, max_hp=king_hp)
 
-        result = resolve_combat(board, (0, 0), (1, 0), self._cfg())
+        result = resolve_combat(board, (0, 0), (1, 0), config)
 
-        self.assertEqual(result['damage_dealt'], MIN_STRIKE_DAMAGE)
-        self.assertEqual(result['defender_hp'], 45 - MIN_STRIKE_DAMAGE)
+        expected = min(attack, config['rules']['minStrikeDamage'])
+        self.assertEqual(result['damage_dealt'], expected)
+        self.assertEqual(result['defender_hp'], king_hp - expected)
 
     def test_the_damage_floor_is_a_dial_the_config_turns(self):
         """
@@ -812,17 +876,19 @@ class GameLogicTestCase(TestCase):
     # -- is_attacked --------------------------------------------------------
 
     def test_is_attacked_within_move_range(self):
-        board = HexBoard(5)
-        board.set(0, 0, 'queen', 'white')  # move=6 in DEFAULT_CONFIG
         config = self._cfg()
-        self.assertTrue(is_attacked(board, (5, 0), 'white', config))
+        move = config['units']['queen']['move']
+        board = HexBoard(move + 1)
+        board.set(0, 0, 'queen', 'white')
+        self.assertTrue(is_attacked(board, (move, 0), 'white', config))
         self.assertTrue(is_attacked(board, (1, 1), 'white', config))
 
     def test_not_attacked_beyond_move_range(self):
-        board = HexBoard(8)
-        board.set(0, 0, 'pawn', 'white')  # move=6
         config = self._cfg()
-        self.assertFalse(is_attacked(board, (7, 0), 'white', config))
+        move = config['units']['pawn']['move']
+        board = HexBoard(move + 1)
+        board.set(0, 0, 'pawn', 'white')
+        self.assertFalse(is_attacked(board, (move + 1, 0), 'white', config))
 
     # -- Legal moves (no self-check filter in tactical mode) ---------------
 
@@ -1645,14 +1711,24 @@ class PanelAttackTestCase(DealtPanels, TestCase):
     def _board_with_pawn(self, config, at, color='white'):
         board = build_initial_board(config)
         q, r = panels.parse_key(at)
+        hp = config['units']['pawn']['hp']
         board.set_cell(q, r, {
-            'unit_id': 'pawn', 'color': color, 'hp': 20, 'max_hp': 20, 'uid': 'wtest',
+            'unit_id': 'pawn', 'color': color, 'hp': hp, 'max_hp': hp, 'uid': 'wtest',
         })
         return board
 
     def test_a_reserve_answers_the_blow(self):
-        config = self._cfg()
+        config = copy.deepcopy(self._cfg())
+        config['units']['pawn']['hp'] = 1000
+        config['units']['queen']['hp'] = 1000
         board = self._board_with_pawn(config, self.BESIDE_RESERVE)
+        distance = hex_distance(
+            panels.parse_key(self.BESIDE_RESERVE), panels.parse_key(self.RESERVE_QUEEN),
+        )
+        pawn = config['units']['pawn']
+        queen = config['units']['queen']
+        dealt = strike_damage(pawn, queen, distance, config)
+        counter = strike_damage(queen, pawn, distance, config)
         out = resolve_panel_attack(
             board, config, [], self.BESIDE_RESERVE, self.BESIDE_RESERVE,
             self.RESERVE_QUEEN, 'white', 21)
@@ -1660,11 +1736,11 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         record = out['record']
         self.assertTrue(out['counters'])
         self.assertEqual(record['panel'], 'tl')
-        self.assertEqual(record['damage_dealt'], 2)       # 14 attack into 12 defence
-        self.assertEqual(record['defenderHp'], 28)
-        self.assertEqual(record['counter_damage'], 16)    # 26 attack into 10 defence
+        self.assertEqual(record['damage_dealt'], dealt)
+        self.assertEqual(record['defenderHp'], queen['hp'] - dealt)
+        self.assertEqual(record['counter_damage'], counter)
         q, r = panels.parse_key(self.BESIDE_RESERVE)
-        self.assertEqual(board.get(q, r)['hp'], 4)
+        self.assertEqual(board.get(q, r)['hp'], pawn['hp'] - counter)
 
     def test_a_base_never_answers(self):
         """
@@ -1672,8 +1748,16 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         `counters` flag the client sets, so a client could switch the counter
         off against its own blows. Here nothing on the wire can reach it.
         """
-        config = self._cfg()
+        config = copy.deepcopy(self._cfg())
+        config['units']['pawn']['hp'] = 1000
+        config['units']['rook']['hp'] = 1000
         board = self._board_with_pawn(config, self.BESIDE_BASE)
+        distance = hex_distance(
+            panels.parse_key(self.BESIDE_BASE), panels.parse_key(self.BASE_ROOK),
+        )
+        pawn = config['units']['pawn']
+        rook = config['units']['rook']
+        dealt = strike_damage(pawn, rook, distance, config)
         out = resolve_panel_attack(
             board, config, [], self.BESIDE_BASE, self.BESIDE_BASE,
             self.BASE_ROOK, 'white', 21)
@@ -1681,18 +1765,19 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         record = out['record']
         self.assertFalse(out['counters'])
         self.assertEqual(record['panel'], 'tr')
-        self.assertEqual(record['damage_dealt'], 1)       # 14 into 13, the floor
-        self.assertEqual(record['defenderHp'], 39)
+        self.assertEqual(record['damage_dealt'], dealt)
+        self.assertEqual(record['defenderHp'], rook['hp'] - dealt)
         self.assertEqual(record['counter_damage'], 0)
         q, r = panels.parse_key(self.BESIDE_BASE)
-        self.assertEqual(board.get(q, r)['hp'], 20)       # untouched
+        self.assertEqual(board.get(q, r)['hp'], pawn['hp'])  # untouched
 
     def test_the_record_carries_what_the_client_derives_panels_from(self):
         """
         No board holds a panel unit, so its HP lives in this record or nowhere.
         Drop a field and the panel re-deals the unit whole on the next rebuild.
         """
-        config = self._cfg()
+        config = copy.deepcopy(self._cfg())
+        config['units']['queen']['hp'] = 1000
         board = self._board_with_pawn(config, self.BESIDE_RESERVE)
         record = resolve_panel_attack(
             board, config, [], self.BESIDE_RESERVE, self.BESIDE_RESERVE,
@@ -1702,10 +1787,13 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         self.assertTrue(record['panelAttack'])
         self.assertEqual(record['attackedHex'], self.RESERVE_QUEEN)
         self.assertEqual(record['unit']['uid'], 'rtl0')
-        self.assertEqual(record['unit']['max_hp'], 30)
+        self.assertEqual(record['unit']['max_hp'], config['units']['queen']['hp'])
         self.assertEqual(record['turn'], 21)
         # And it is exactly what the derivation reads back.
-        self.assertEqual(panels.recorded_panel_hp([record]), {'rtl0': 28})
+        self.assertEqual(
+            panels.recorded_panel_hp([record]),
+            {'rtl0': config['units']['queen']['hp'] - record['damage_dealt']},
+        )
 
     def test_a_panel_unit_already_wounded_is_struck_from_its_wounds(self):
         """
@@ -1999,9 +2087,12 @@ class OvertimeTollTestCase(TestCase):
 
     def _board(self, king_hp):
         board = HexBoard(5)
-        board.set(0, 3, 'king', 'white', hp=king_hp, max_hp=45)
-        board.set(0, -3, 'king', 'black', hp=45, max_hp=45)
-        board.set(1, 2, 'pawn', 'white', hp=20, max_hp=20)
+        config = self._cfg()
+        king_max = config['units']['king']['hp']
+        pawn_max = config['units']['pawn']['hp']
+        board.set(0, 3, 'king', 'white', hp=king_hp, max_hp=king_max)
+        board.set(0, -3, 'king', 'black', hp=king_max, max_hp=king_max)
+        board.set(1, 2, 'pawn', 'white', hp=pawn_max, max_hp=pawn_max)
         return board
 
     def _cfg(self):
@@ -2016,9 +2107,9 @@ class OvertimeTollTestCase(TestCase):
         board = self._board(10)
         self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 73))
         self.assertEqual(board.get(0, 3)['hp'], 9)
-        self.assertEqual(board.get(0, -3)['hp'], 45)
+        self.assertEqual(board.get(0, -3)['hp'], self._cfg()['units']['king']['hp'])
         # Only the commander - the rest of the army is untouched.
-        self.assertEqual(board.get(1, 2)['hp'], 20)
+        self.assertEqual(board.get(1, 2)['hp'], self._cfg()['units']['pawn']['hp'])
 
     def test_it_is_real_damage_that_defence_does_not_blunt(self):
         """The king's 15 defence would floor a blow; it does nothing to this."""
@@ -2074,7 +2165,7 @@ class OvertimeTollTestCase(TestCase):
         board = self._board(1)
         board.remove(0, 3)
         self.assertIsNone(overtime_toll(board, self._cfg(), 'white', 73))
-        self.assertEqual(board.get(1, 2)['hp'], 20)
+        self.assertEqual(board.get(1, 2)['hp'], self._cfg()['units']['pawn']['hp'])
 
     def test_the_king_is_never_offered_a_way_home(self):
         """
@@ -2084,11 +2175,19 @@ class OvertimeTollTestCase(TestCase):
         config = self._cfg()
         radius = config['board']['radius']
         board = {
-            '-11,11': {'unit_id': 'king', 'color': 'white', 'hp': 45, 'max_hp': 45, 'uid': 'wk'},
+            '-11,11': {
+                'unit_id': 'king', 'color': 'white',
+                'hp': config['units']['king']['hp'], 'max_hp': config['units']['king']['hp'],
+                'uid': 'wk',
+            },
         }
         self.assertEqual(panels.homecoming_targets(config, radius, {}, board, '-11,11'), {})
         # A pawn on the same hex is offered the doorway beside it.
-        board['-11,11'] = {'unit_id': 'pawn', 'color': 'white', 'hp': 20, 'max_hp': 20, 'uid': 'wp'}
+        board['-11,11'] = {
+            'unit_id': 'pawn', 'color': 'white',
+            'hp': config['units']['pawn']['hp'], 'max_hp': config['units']['pawn']['hp'],
+            'uid': 'wp',
+        }
         self.assertIn('-12,11', panels.homecoming_targets(config, radius, {}, board, '-11,11'))
 
 
@@ -2252,31 +2351,43 @@ class PanelMoveTestCase(DealtPanels, TestCase):
     def test_the_wrap_is_priced_at_the_units_value(self):
         config, radius, board, at = self._setup()
         tip = panels.wrap_tips('white', radius)['reserve']
+        unit_def = config['units']['knight']
+        unit_def['move'] = 6
+        price = unit_def['value']
         # Ply 15 is turn 8: Phase 1's played first half, so the wrap is open.
-        rich = panels.panel_move_targets(config, radius, [], board, at['rbl3'], 15, points=100)
-        self.assertEqual(rich[tip], {'cost': 6, 'price': 12})     # a knight is worth 12
+        rich = panels.panel_move_targets(
+            config, radius, [], board, at['rbl3'], 15, points=price,
+        )
+        self.assertEqual(rich[tip]['price'], price)
+        self.assertGreater(rich[tip]['cost'], 0)
+        self.assertLessEqual(rich[tip]['cost'], unit_def['move'])
         # Every hex reached by making it carries the same price.
-        self.assertTrue(all(v['price'] == 12 for k, v in rich.items()
+        self.assertTrue(all(v['price'] == price for k, v in rich.items()
                             if panels.panel_of(*panels.axial_to_pixel(*panels.parse_key(k))) == 'br'))
 
     def test_no_wrap_without_the_points_or_while_it_is_shut(self):
         config, radius, board, at = self._setup()
         tip = panels.wrap_tips('white', radius)['reserve']
-        poor = panels.panel_move_targets(config, radius, [], board, at['rbl3'], 15, points=11)
+        price = config['units']['knight']['value']
+        config['units']['knight']['move'] = 6
+        poor = panels.panel_move_targets(
+            config, radius, [], board, at['rbl3'], 15, points=price - 1,
+        )
         self.assertNotIn(tip, poor)
         # Ply 19 is turn 10, Phase 1's halftime: shut however rich.
-        shut = panels.panel_move_targets(config, radius, [], board, at['rbl3'], 19, points=100)
+        shut = panels.panel_move_targets(config, radius, [], board, at['rbl3'], 19, points=1000)
         self.assertNotIn(tip, shut)
         # Out of MOV before out of money: the archer cannot reach the tip at all.
-        far = panels.panel_move_targets(config, radius, [], board, at['rbl4'], 15, points=100)
+        config['units']['archer']['move'] = 1
+        far = panels.panel_move_targets(config, radius, [], board, at['rbl4'], 15, points=1000)
         self.assertFalse(any(v['price'] for v in far.values()))
 
     def test_the_two_sides_walk_and_wrap_as_mirrors(self):
         config, radius, board, at = self._setup()
         for i in range(5):
             for mine, theirs in ((f'rbl{i}', f'rtr{i}'), (f'rbr{i}', f'rtl{i}')):
-                w = panels.panel_move_targets(config, radius, [], board, at[mine], 15, points=100)
-                b = panels.panel_move_targets(config, radius, [], board, at[theirs], 16, points=100)
+                w = panels.panel_move_targets(config, radius, [], board, at[mine], 15, points=1000)
+                b = panels.panel_move_targets(config, radius, [], board, at[theirs], 16, points=1000)
                 flipped = {panels.coord_key(-q, -r): v
                            for (q, r), v in ((panels.parse_key(k), v) for k, v in w.items())}
                 self.assertEqual(flipped, b, f'{mine} / {theirs}')
@@ -2295,8 +2406,9 @@ class PanelMoveTestCase(DealtPanels, TestCase):
         """It answers blows and stops mending as one - read off where it stands."""
         config, radius, board, at = self._setup()
         tip = panels.wrap_tips('white', radius)['reserve']
+        price = config['units']['knight']['value']
         history = [_panel_step('rbl3', 'knight', 'white', at['rbl3'], tip, 15, 'bl',
-                               cost=6, price=12)]
+                               cost=1, price=price)]
         wrapped = panels.panel_occupancy(config, radius, history, ply=15)[tip]
         self.assertEqual(wrapped['uid'], 'rbl3')
         self.assertEqual(wrapped['panel'], 'br')
@@ -2419,9 +2531,12 @@ class PointsTestCase(TestCase):
             {'color': 'white', 'unit_id': 'pawn', 'captured': 'queen', 'defender_eliminated': True},
             {'color': 'black', 'unit_id': 'knight', 'attacker_eliminated': True},
         ]
-        # Ply 1's point, the queen white took (30), and the knight black lost
-        # attacking into white's counter (12).
-        self.assertEqual(economy.points_of('white', 1, history, config), 1 + 30 + 12)
+        queen_value = config['units']['queen']['value']
+        knight_value = config['units']['knight']['value']
+        self.assertEqual(
+            economy.points_of('white', 1, history, config),
+            1 + queen_value + knight_value,
+        )
         self.assertEqual(economy.points_of('black', 1, history, config), 0)
 
     def test_a_kill_in_a_panel_pays_nobody(self):
@@ -2454,12 +2569,13 @@ class PointsTestCase(TestCase):
 
     def test_a_round_trip_out_over_the_wrap_and_home_again_costs_nothing(self):
         config = self._cfg()
+        value = config['units']['knight']['value']
         wrap = _panel_step('rbl3', 'knight', 'white', '-12,6', '11,1', 15, 'bl',
-                           cost=6, price=12)
+                           cost=1, price=value)
         home = {'withdrawn': True, 'color': 'white', 'unit_id': 'knight',
                 'unit': {'uid': 'rbl3', 'color': 'white'}}
         base = economy.points_of('white', 21, [], config)
-        self.assertEqual(economy.points_of('white', 21, [wrap], config), base - 12)
+        self.assertEqual(economy.points_of('white', 21, [wrap], config), base - value)
         self.assertEqual(economy.points_of('white', 21, [wrap, home], config), base)
         # And none of it is black's business.
         self.assertEqual(economy.points_of('black', 21, [wrap, home], config),

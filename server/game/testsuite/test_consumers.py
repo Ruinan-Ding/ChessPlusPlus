@@ -778,6 +778,79 @@ class CustomConfigLiveIntegrationTests(TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
+    async def test_custom_unit_stats_drive_live_networked_moves_and_combat(self):
+        game, host_comm, opp_comm = await self._join_room()
+        try:
+            custom_config = copy.deepcopy(DEFAULT_CONFIG)
+            custom_config['setup'] = {
+                'white': {'0,0': 'pawn', '-2,0': 'king'},
+                'black': {'1,0': 'pawn', '3,0': 'king'},
+            }
+            custom_config['units']['pawn'].update({
+                'hp': 137,
+                'move': 1,
+                'attack': 13,
+                'defense': 5,
+                'attackRange': 1,
+            })
+            custom_config['units']['pawn']['value'] = 17
+            await host_comm.send_json_to({
+                'type': 'change_game_mode', 'mode': 'custom', 'gameId': game.game_id,
+            })
+            await _receive_until(host_comm, 'game_mode_changed')
+            await _receive_until(opp_comm, 'game_mode_changed')
+            await host_comm.send_json_to({'type': 'set_custom_config', 'config': custom_config})
+            await _receive_until(host_comm, 'custom_config_saved')
+            await _receive_until(opp_comm, 'custom_config_saved')
+            await _both_ready_then_start(
+                host_comm, opp_comm, game.game_id, hostColor='white',
+            )
+
+            started = await _receive_until(host_comm, 'game_started')
+            await _receive_until(opp_comm, 'game_started')
+            self.assertEqual(started['config']['units']['pawn']['move'], 1)
+            self.assertEqual(started['boardState']['0,0']['hp'], 137)
+            white = host_comm if started['currentTurn'] == 'alice' else opp_comm
+            black = opp_comm if white is host_comm else host_comm
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.config_snapshot['units']['pawn']['value'], 17)
+
+            for ply in range(1, 7):
+                player = white if ply % 2 else black
+                await player.send_json_to({'type': 'pass_turn'})
+                host_pass = await _receive_until(host_comm, 'turn_passed')
+                opp_pass = await _receive_until(opp_comm, 'turn_passed')
+                expected_mover = 'alice' if player is host_comm else 'bob'
+                self.assertEqual(host_pass['passedBy'], expected_mover)
+                self.assertEqual(opp_pass['passedBy'], expected_mover)
+
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.turn_number, 7)
+            self.assertEqual(state.current_turn, state.player_white)
+
+            # The custom move budget is one: a two-step action is rejected,
+            # while the adjacent strike remains available on the unchanged turn.
+            await white.send_json_to({
+                'type': 'make_move', 'from': '0,0', 'to': '0,2',
+            })
+            rejected = await _receive_until(white, 'error')
+            self.assertEqual(rejected['code'], 'INVALID_MOVE')
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.board_state['0,0']['hp'], 137)
+            self.assertEqual(state.turn_number, 7)
+
+            await white.send_json_to({
+                'type': 'make_move', 'from': '0,0', 'to': '0,0', 'attack': '1,0',
+            })
+            made = await _receive_until(white, 'move_made')
+            self.assertEqual(made['boardState']['1,0']['hp'], 137 - (13 - 5))
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.board_state['1,0']['hp'], 137 - (13 - 5))
+            self.assertEqual(state.config_snapshot['units']['pawn']['attack'], 13)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
     async def test_non_host_cannot_set_custom_config(self):
         game, host_comm, opp_comm = await self._join_room()
         try:

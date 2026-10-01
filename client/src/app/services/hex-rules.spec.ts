@@ -3,6 +3,72 @@ import {
   computeAttackZone, computeLegalMoves, computeMoveCosts, inHomeRows, strikeDamage, HOME_ROWS,
   MIN_STRIKE_DAMAGE,
 } from './hex-rules';
+import { DEFAULT_GAME_CONFIG } from './config.service';
+
+describe('configured unit stats', () => {
+  const config = DEFAULT_GAME_CONFIG;
+  const radius = config.board.radius;
+  const distance = (q: number, r: number) => Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
+  const coords = () => {
+    const result: string[] = [];
+    for (let q = -radius; q <= radius; q++) {
+      for (let r = -radius; r <= radius; r++) {
+        if (distance(q, r) <= radius) result.push(`${q},${r}`);
+      }
+    }
+    return result;
+  };
+
+  it('uses every unit’s configured movement budget', () => {
+    for (const [unitId, unit] of Object.entries(config.units)) {
+      const board = { '0,0': { unit_id: unitId, color: 'white' } };
+      const actual = computeMoveCosts(board, 0, 0, config, radius);
+      const expected = coords().filter(key => {
+        const [q, r] = key.split(',').map(Number);
+        return key !== '0,0' && distance(q, r) <= unit.move;
+      });
+
+      expect([...actual.keys()].sort()).withContext(unitId).toEqual(expected.sort());
+      expect(Math.max(0, ...actual.values())).withContext(unitId).toBe(Math.min(unit.move, radius));
+    }
+  });
+
+  it('uses each unit’s configured attack range', () => {
+    for (const [unitId, unit] of Object.entries(config.units)) {
+      const actual = computeAttackZone('0,0', new Set(), config, unitId, radius);
+      const expected = coords().filter(key => {
+        const [q, r] = key.split(',').map(Number);
+        return key !== '0,0' && distance(q, r) <= unit.attackRange;
+      });
+
+      expect([...actual].sort()).withContext(unitId).toEqual(expected.sort());
+    }
+  });
+
+  it('uses every configured attack and defense pair in the damage formula', () => {
+    const falloff = config.rules.rangeFalloff;
+    const minimum = config.rules.minStrikeDamage;
+    for (const [attackerId, attacker] of Object.entries(config.units)) {
+      for (const [defenderId, defender] of Object.entries(config.units)) {
+        for (const range of [1, attacker.attackRange]) {
+          const scaledAttack = attacker.attack <= 0 || range <= 1
+            ? Math.max(0, attacker.attack)
+            : Math.max(
+              1,
+              Math.trunc(attacker.attack * Math.max(0, 1 - falloff * (range - 1))),
+            );
+          const expected = scaledAttack <= 0
+            ? 0
+            : Math.min(scaledAttack, Math.max(minimum, scaledAttack - defender.defense));
+
+          expect(strikeDamage(attackerId, defenderId, range, config))
+            .withContext(`${attackerId} vs ${defenderId} at range ${range}`)
+            .toBe(expected);
+        }
+      }
+    }
+  });
+});
 
 /**
  * The attack zone is what the board paints red: reachable to strike, not to
