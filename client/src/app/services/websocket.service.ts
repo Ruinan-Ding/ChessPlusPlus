@@ -217,6 +217,7 @@ export class WebsocketService {
         const stalled = this.socket;
         if (!stalled || stalled.readyState === WebSocket.OPEN) return;
         console.log('[WebSocket] Handshake timed out, counting it as a failed attempt');
+        this.clearSendQueue();
         // Detach first: this socket's own onclose must not double-count.
         this.abandon(stalled);
         this.socket = null;
@@ -226,6 +227,9 @@ export class WebsocketService {
 
       this.socket.onopen = () => {
         this.clearConnectTimeout();
+        if (this.reconnectingSubject.value || this.reconnectAttemptsSubject.value > 0) {
+          this.clearSendQueue();
+        }
         console.log('[WebSocket] Connection established');
         this.connectionStatusSubject.next(true);
         this.reconnectingSubject.next(false);
@@ -252,6 +256,7 @@ export class WebsocketService {
       this.socket.onclose = (event) => {
         console.log('[WebSocket] Connection closed', event.code, event.reason);
         this.clearConnectTimeout();
+        this.clearSendQueue();
         this.connectionStatusSubject.next(false);
         // Offline is a choice: don't spin up reconnect attempts behind it.
         if (this.isOffline()) {
@@ -406,8 +411,16 @@ export class WebsocketService {
     }
   }
 
+  private clearSendQueue(): void {
+    if (this.sendQueue.length) {
+      console.warn(`[WebSocket] Dropping ${this.sendQueue.length} stale queued message(s)`);
+      this.sendQueue = [];
+    }
+  }
+
   disconnect(): void {
     this.clearConnectTimeout();
+    this.clearSendQueue();
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;

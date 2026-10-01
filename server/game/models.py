@@ -3,6 +3,8 @@ from django.utils import timezone
 from typing import Any
 import uuid
 
+from .validators import name_key
+
 
 def generate_uuid():
     """Generate a UUID string for use as default primary key."""
@@ -97,6 +99,13 @@ class PlayerConnection(models.Model):
     ]
     
     username = models.CharField(max_length=24, unique=True, primary_key=True)
+    # The name as it is compared - "Alice" and "alice" are one name - so the
+    # database refuses the second in the same statement that claims it. Set
+    # by save(); casefold can lengthen a name ("ß" is "ss"), hence 96.
+    name_key = models.CharField(max_length=96, unique=True, editable=False)
+    # Empty while the player has dropped out of a room and has its grace
+    # period to come back (_cleanup_game_room_connection): the row, and the
+    # secret on it, keep the name theirs, but no socket stands behind it.
     channel_name = models.CharField(max_length=255)  # Channels consumer channel name
     # ponytail: anonymous per-browser secret, not a real credential. Swap this
     # field's role for a password/OAuth-backed check if real accounts are added.
@@ -110,6 +119,11 @@ class PlayerConnection(models.Model):
     
     def __str__(self):
         return f"{self.username} ({self.status})"
+
+    def save(self, *args, **kwargs):
+        self.name_key = name_key(self.username)
+        super().save(*args, **kwargs)
+
     # Explicit manager annotation for static analysis
     objects: Any = models.Manager()
     # Explicit DoesNotExist annotation for static analysis
@@ -208,3 +222,22 @@ class GameState(models.Model):
     objects: Any = models.Manager()
     # Explicit DoesNotExist annotation for static analysis
     DoesNotExist: Any
+
+
+class GameDisconnect(models.Model):
+    """Persist an absent seat's reconnect-grace deadline across restarts."""
+
+    game = models.ForeignKey(GameRoom, on_delete=models.CASCADE, related_name='disconnects')
+    username = models.CharField(max_length=24)
+    channel_name = models.CharField(max_length=255)
+    deadline = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['game', 'username'], name='unique_game_disconnect'),
+        ]
+        indexes = [
+            models.Index(fields=['deadline'], name='game_gamedis_deadline_idx'),
+        ]
+
+    objects: Any = models.Manager()

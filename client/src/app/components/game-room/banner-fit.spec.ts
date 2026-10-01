@@ -145,16 +145,31 @@ describe('fitHeader', () => {
   it('keeps a one-row header at its full-size line when the banner shrinks to fit', () => {
     // 9px came off the header at 1536x864 on a stage long enough to shrink
     // the banner, and the columns under it moved with the turn.
-    const { head, banner } = header(1300, '🚩 3 − 💀 1 = 2');
-    const turn = banner.children[1];
-    turn.textContent = 'YOUR TURN - PHASE 1';
-    expect(fitHeader(head, banner).fit).toBe(1);
-    const full = head.getBoundingClientRect().height;
-    turn.textContent = "OPPONENT'S TURN - 4:59 - PHASE 3 POSTMATCH";
-    const got = fitHeader(head, banner);
-    expect(got.stacked).toBeFalse();
-    expect(got.fit).toBeLessThan(1);
-    expect(head.getBoundingClientRect().height).toBe(full);
+    //
+    // The width is found, not fixed: where the long stage first has to shrink
+    // depends on the fonts the browser has. It was a fixed 1300px, which only
+    // shrank with Windows' emoji - with a Linux runner's fonts the stage fit
+    // there whole, and CI failed on every push.
+    const SHORT = 'YOUR TURN - PHASE 1';
+    const LONG = "OPPONENT'S TURN - 4:59 - PHASE 3 POSTMATCH";
+    for (let width = 1600; width >= 260; width -= 20) {
+      const { head, banner } = header(width, '🚩 3 − 💀 1 = 2');
+      const turn = banner.children[1];
+      turn.textContent = LONG;
+      const shrunk = fitHeader(head, banner);
+      expect(shrunk.stacked).withContext(`${width}px: stacked before it shrank`).toBeFalse();
+      if (shrunk.stacked) return;
+      if (shrunk.fit === 1) continue;
+
+      turn.textContent = SHORT;
+      expect(fitHeader(head, banner).fit).withContext(`${width}px`).toBe(1);
+      const full = head.getBoundingClientRect().height;
+      turn.textContent = LONG;
+      expect(fitHeader(head, banner).fit).withContext(`${width}px`).toBeLessThan(1);
+      expect(head.getBoundingClientRect().height).withContext(`${width}px`).toBe(full);
+      return;
+    }
+    fail('the long stage never had to shrink');
   });
 
   describe('held - the tabbed layouts\' header', () => {

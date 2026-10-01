@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { LocalGameService, LOCAL_OPPONENT } from './local-game.service';
+import { DEFAULT_GAME_CONFIG } from './config.service';
 
 /**
  * The offline engine is the only thing standing between the player and the
@@ -25,6 +26,16 @@ describe('LocalGameService', () => {
   });
 
   const last = (type: string) => [...replies].reverse().find(m => m.type === type);
+  const unitOf = (unitId: string) => {
+    const unit = Object.values(DEFAULT_GAME_CONFIG.units).find(({ id }) => id === unitId);
+    if (!unit) throw new Error(`Unknown configured unit ${unitId}`);
+    return unit;
+  };
+  const hpOf = (unitId: string) => unitOf(unitId).hp;
+  const valueOf = (unitId: string) => unitOf(unitId).value;
+  const fullUnit = (unit_id: string, color: string, uid: string) => ({
+    unit_id, color, hp: hpOf(unit_id), max_hp: hpOf(unit_id), uid,
+  });
 
   /**
    * Past every turn given to setting out, where nobody attacks at all.
@@ -54,7 +65,20 @@ describe('LocalGameService', () => {
     expect(started.playerWhite).toBe('Solo');
     expect(started.playerBlack).toBe(LOCAL_OPPONENT);
     expect(started.currentTurn).toBe('Solo');
-    expect(Object.keys(started.boardState).length).toBe(48);   // 24 a side
+    const radius = DEFAULT_GAME_CONFIG.board.radius;
+    const placements = Object.values(DEFAULT_GAME_CONFIG.setup).reduce((total, side) =>
+      total + Object.keys(side).filter(key => {
+        const [q, r] = key.split(',').map(Number);
+        return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) <= radius;
+      }).length, 0);
+    expect(Object.keys(started.boardState).length).toBe(placements);
+    for (const [key, piece] of Object.entries(started.boardState) as [string, any][]) {
+      const unit = Object.values(DEFAULT_GAME_CONFIG.units).find(({ id }) => id === piece.unit_id);
+      expect(unit).withContext(key).toBeDefined();
+      if (!unit) throw new Error(`Unknown configured unit ${piece.unit_id} at ${key}`);
+      expect(piece.hp).withContext(key).toBe(unit.hp);
+      expect(piece.max_hp).withContext(key).toBe(unit.hp);
+    }
   });
 
   it('puts a finished room back to waiting, keeping its settings', async () => {
@@ -79,7 +103,13 @@ describe('LocalGameService', () => {
     // And it deals again from there.
     service.send({ type: 'start_game', hostColor: 'white' });
     await flush();
-    expect(Object.keys(last('game_started').boardState).length).toBe(48);
+    const radius = DEFAULT_GAME_CONFIG.board.radius;
+    const placements = Object.values(DEFAULT_GAME_CONFIG.setup).reduce((total, side) =>
+      total + Object.keys(side).filter(key => {
+        const [q, r] = key.split(',').map(Number);
+        return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) <= radius;
+      }).length, 0);
+    expect(Object.keys(last('game_started').boardState).length).toBe(placements);
   });
 
   it('records a cast made after a blow into a panel after the blow', async () => {
@@ -87,7 +117,7 @@ describe('LocalGameService', () => {
     // went ahead of it, so a panel unit struck and then finished by a spell
     // came back from the dead on a reload.
     await pastOpening();
-    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+    const home = fullUnit('rook', 'black', 'rtr0');
     service.send({
       type: 'panel_attack', intoPanel: true, panel: 'tr',
       from: '-5,9', attack: '-5,8', unit: home,
@@ -112,7 +142,7 @@ describe('LocalGameService', () => {
     await pastOpening();
     const opened = last('turn_passed').turnNumber;
 
-    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+    const home = fullUnit('rook', 'black', 'rtr0');
     service.send({
       type: 'panel_attack', intoPanel: true, panel: 'tr',
       from: attacker, attack: '-5,8', unit: home,
@@ -131,7 +161,7 @@ describe('LocalGameService', () => {
     expect(last('game_state_update').moveHistory.slice(-1)[0]).toEqual(hit);
     expect(hit.damage_dealt).toBeGreaterThan(0);
     // The panel unit's wound is on the record, not on the board.
-    expect(hit.defenderHp).toBeLessThan(40);
+    expect(hit.defenderHp).toBeLessThan(home.hp);
     expect(msg.boardState['-5,8']).toBeUndefined();
     // It answers, and the answer lands on the attacker where it stands - a
     // base unit never starts a fight but always finishes its part of one.
@@ -154,7 +184,7 @@ describe('LocalGameService', () => {
     // unit is standing in. A reserve strikes back; a base never does.
     await pastOpening();
     const attacker = '-4,9';
-    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rbl0' };
+    const home = fullUnit('rook', 'black', 'rbl0');
     const struck = () => last('move_made').move;
 
     service.send({
@@ -180,7 +210,7 @@ describe('LocalGameService', () => {
     expect(started.boardState[to]).toBeUndefined();
     await pastOpening();
 
-    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+    const home = fullUnit('rook', 'black', 'rtr0');
     service.send({
       type: 'panel_attack', intoPanel: true,
       from, to, attack: '-5,7', unit: home,
@@ -198,7 +228,7 @@ describe('LocalGameService', () => {
 
     // A walk the rules would refuse is refused here too, not taken on trust.
     // Black's turn now, so the attacker has to be one of black's.
-    const theirs = { unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'rbl0' };
+    const theirs = fullUnit('rook', 'white', 'rbl0');
     service.send({
       type: 'panel_attack', intoPanel: true,
       from: '0,-9', to: '0,5', attack: '0,6', unit: theirs,
@@ -257,7 +287,7 @@ describe('LocalGameService', () => {
     const kingOf = (board: any) => Object.values(board).find(
       (c: any) => c.color === 'white' && g.config.units[c.unit_id]?.commander) as any;
     const hpBefore = kingOf(g.boardState).hp;
-    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+    const home = fullUnit('rook', 'black', 'rtr0');
 
     service.send({
       type: 'panel_attack', intoPanel: true, panel: 'tr', more: true,
@@ -285,7 +315,7 @@ describe('LocalGameService', () => {
     // Wound back into the same hand-over: the one move of turn 4 is spent.
     (service as any).game.turnNumber = 7;
     (service as any).game.currentTurn = 'Solo';
-    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+    const home = fullUnit('rook', 'black', 'rtr0');
     service.send({
       type: 'panel_attack', intoPanel: true, panel: 'tr',
       from: '-5,9', attack: '-5,8', unit: home,
@@ -303,8 +333,8 @@ describe('LocalGameService', () => {
     g.turnNumber = 2 * 45 - 1;
     g.boardState = {
       ...g.boardState,
-      '-5,5': { unit_id: 'rook', color: 'white', hp: 30, max_hp: 40, uid: 'wr' },
-      '-4,5': { unit_id: 'shieldman', color: 'black', hp: 30, max_hp: 30, uid: 'bs' },
+      '-5,5': { unit_id: 'rook', color: 'white', hp: hpOf('rook') - 10, max_hp: hpOf('rook'), uid: 'wr' },
+      '-4,5': { unit_id: 'shieldman', color: 'black', hp: hpOf('shieldman'), max_hp: hpOf('shieldman'), uid: 'bs' },
     };
     service.send({ type: 'make_move', from: '-5,5', to: '-5,5', attack: '-4,5', more: true });
     await flush();
@@ -374,7 +404,7 @@ describe('LocalGameService', () => {
   it('records a walk inside a panel without ending the turn', async () => {
     // A walk used to reach no engine: the board kept it in its own memory, so
     // a reload re-dealt the unit where it began. Recorded, it is replayed.
-    const archer = { unit_id: 'archer', color: 'white', hp: 16, max_hp: 16, uid: 'rbr4' };
+    const archer = fullUnit('archer', 'white', 'rbr4');
     service.send({
       type: 'panel_move', from: '7,7', to: '6,7', unit: archer, panel: 'br', cost: 1, price: 0,
     });
@@ -394,7 +424,7 @@ describe('LocalGameService', () => {
   it('refuses a walk for the side that is not on turn', async () => {
     service.send({
       type: 'panel_move', from: '-7,-7', to: '-6,-7', panel: 'tl', cost: 1, price: 0,
-      unit: { unit_id: 'archer', color: 'black', hp: 16, max_hp: 16, uid: 'rtl4' },
+      unit: fullUnit('archer', 'black', 'rtl4'),
     });
     await flush();
     expect(last('invalid_move')).toBeTruthy();
@@ -404,7 +434,7 @@ describe('LocalGameService', () => {
   it('refuses an entry onto an occupied hex or off the board', async () => {
     const started = last('game_started');
     const taken = Object.keys(started.boardState)[0];
-    const unit = { unit_id: 'pawn', color: 'white', hp: 10, max_hp: 10, uid: 'rbr9' };
+    const unit = fullUnit('pawn', 'white', 'rbr9');
 
     service.send({ type: 'enter_board', from: '3,9', to: taken, unit });
     service.send({ type: 'enter_board', from: '3,9', to: '40,0', unit });
@@ -562,12 +592,16 @@ describe('LocalGameService', () => {
     // consumers.py sends currentTurn '' with the last move_made; naming the
     // next player starts a clock and sounds a turn for a finished match.
     const config = (service as any).game.config;
+    config.units.rook.attack = config.units.king.defense + hpOf('king') + 1;
+    config.units.king.attack = 0;
+    const kingHp = hpOf('king');
+    const rookHp = hpOf('rook');
     localStorage.setItem('cpp.localGame.v1', JSON.stringify({
       username: 'Solo', hostColor: 'white', started: true, config,
       boardState: {
-        '0,0': { unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'w0,0' },
-        '1,0': { unit_id: 'king', color: 'black', hp: 5, max_hp: 45, uid: 'b1,0' },
-        '-5,0': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'w-5,0' },
+        '0,0': { unit_id: 'rook', color: 'white', hp: rookHp, max_hp: rookHp, uid: 'w0,0' },
+        '1,0': { unit_id: 'king', color: 'black', hp: 1, max_hp: kingHp, uid: 'b1,0' },
+        '-5,0': { unit_id: 'king', color: 'white', hp: kingHp, max_hp: kingHp, uid: 'w-5,0' },
       },
       // Ply 7: the opening is over and Phase 1 is playing, so the killing blow
       // may land.
@@ -612,13 +646,14 @@ describe('LocalGameService', () => {
    */
   describe('the overtime toll', () => {
     /** A game standing at `ply` with both kings on the HP given. */
-    const at = (ply: number, whiteHp: number, blackHp = 40) => {
+    const at = (ply: number, whiteHp: number, blackHp = hpOf('king')) => {
       const config = JSON.parse(JSON.stringify((service as any).game.config));
+      const kingHp = hpOf('king');
       localStorage.setItem('cpp.localGame.v1', JSON.stringify({
         username: 'Solo', hostColor: 'white', started: true, config,
         boardState: {
-          '-5,0': { unit_id: 'king', color: 'white', hp: whiteHp, max_hp: 45, uid: 'wk' },
-          '5,0': { unit_id: 'king', color: 'black', hp: blackHp, max_hp: 45, uid: 'bk' },
+          '-5,0': { unit_id: 'king', color: 'white', hp: whiteHp, max_hp: kingHp, uid: 'wk' },
+          '5,0': { unit_id: 'king', color: 'black', hp: blackHp, max_hp: kingHp, uid: 'bk' },
         },
         // White plays the odd plies, so an odd `ply` is white's to pay for.
         currentTurn: ply % 2 ? 'Solo' : LOCAL_OPPONENT,
@@ -632,26 +667,29 @@ describe('LocalGameService', () => {
     };
 
     it('takes nothing before overtime starts', async () => {
-      const g = at(71, 20);          // one full turn short of hand-over 73
+      const hp = Math.min(20, hpOf('king'));
+      const g = at(71, hp);          // one full turn short of hand-over 73
       g.engine.send({ type: 'pass_turn' });
       await flush();
-      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(20);
+      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(hp);
     });
 
     it('takes one off the king of whoever just played', async () => {
-      const white = at(73, 20);
+      const hp = Math.min(20, hpOf('king'));
+      const kingHp = hpOf('king');
+      const white = at(73, hp);
       white.engine.send({ type: 'pass_turn' });
       await flush();
       let board = white.find('turn_passed').boardState;
-      expect(board['-5,0'].hp).toBe(19);   // white paid
-      expect(board['5,0'].hp).toBe(40);    // black did not
+      expect(board['-5,0'].hp).toBe(hp - 1);   // white paid
+      expect(board['5,0'].hp).toBe(kingHp);    // black did not
 
-      const black = at(74, 20);
+      const black = at(74, hp);
       black.engine.send({ type: 'pass_turn' });
       await flush();
       board = black.find('turn_passed').boardState;
-      expect(board['-5,0'].hp).toBe(20);
-      expect(board['5,0'].hp).toBe(39);
+      expect(board['-5,0'].hp).toBe(hp);
+      expect(board['5,0'].hp).toBe(kingHp - 1);
     });
 
     it('kills a king on 1, and the game ends with it', async () => {
@@ -672,12 +710,14 @@ describe('LocalGameService', () => {
       // a networked match was over.
       const config = JSON.parse(JSON.stringify((service as any).game.config));
       config.rules = { ...config.rules, objective: 'elimination' };
+      const kingHp = hpOf('king');
+      const pawnHp = hpOf('pawn');
       localStorage.setItem('cpp.localGame.v1', JSON.stringify({
         username: 'Solo', hostColor: 'white', started: true, config,
         boardState: {
-          '-5,0': { unit_id: 'king', color: 'white', hp: 1, max_hp: 45, uid: 'wk' },
-          '-4,0': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'wp' },
-          '5,0': { unit_id: 'king', color: 'black', hp: 40, max_hp: 45, uid: 'bk' },
+          '-5,0': { unit_id: 'king', color: 'white', hp: 1, max_hp: kingHp, uid: 'wk' },
+          '-4,0': { unit_id: 'pawn', color: 'white', hp: pawnHp, max_hp: pawnHp, uid: 'wp' },
+          '5,0': { unit_id: 'king', color: 'black', hp: kingHp, max_hp: kingHp, uid: 'bk' },
         },
         currentTurn: 'Solo', turnNumber: 73, moveHistory: [], winner: '', endReason: '',
         turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
@@ -701,35 +741,38 @@ describe('LocalGameService', () => {
       // the BOARD has to be sent as its own message - only the panel half ever
       // was. The mend lived on the room's staged board, the toll came off the
       // 1 HP the engine still had, and the king died anyway.
+      const kingHp = hpOf('king');
       const g = at(73, 1);
-      g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-5,0', hp: 21 }] });
+      g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-5,0', hp: kingHp }] });
       await flush();
-      // Healed to 21, then the toll: 20.
-      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(20);
+      // Healed to full, then the toll takes one back off.
+      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(kingHp - 1);
       expect(g.find('game_over')).toBeUndefined();
     });
 
     it('finds a cast\'s unit by uid when the hex it names is stale', async () => {
       // Addressed by hex alone, a mend on a unit the client had walked fell on
       // an empty square and was silently dropped.
+      const kingHp = hpOf('king');
       const g = at(73, 1);
-      g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-4,0', uid: 'wk', hp: 21 }] });
+      g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-4,0', uid: 'wk', hp: kingHp }] });
       await flush();
-      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(20);
+      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(kingHp - 1);
     });
 
     it('keeps none of a turn\'s casts when it refuses the turn', async () => {
       // Sent as messages of their own, the casts were kept before the move was
       // looked at, so a refused move came back half-played.
-      const g = at(21, 12);
+      const hp = Math.min(12, hpOf('king'));
+      const g = at(21, hp);
       g.engine.send({
         type: 'make_move', from: '-5,0', to: '9,9',
-        effectsBefore: [{ at: '-5,0', uid: 'wk', hp: 40 }],
+        effectsBefore: [{ at: '-5,0', uid: 'wk', hp: hpOf('king') }],
       });
       await flush();
       expect(g.find('invalid_move')).toBeDefined();
       const game = (g.engine as any).game;
-      expect(game.boardState['-5,0'].hp).toBe(12);
+      expect(game.boardState['-5,0'].hp).toBe(hp);
       expect(game.moveHistory.length).toBe(0);
     });
 
@@ -740,11 +783,12 @@ describe('LocalGameService', () => {
       // meant a heal on your own pawn could end a match it had no part in.
       // Black holds no commander on the board - a hand-built position. A mend
       // on white's own king must not read that as a regicide.
-      const g = at(20, 12, 40);
+      const hp = Math.max(1, hpOf('king') - 1);
+      const g = at(20, hp);
       delete (g.engine as any).game.boardState['5,0'];
-      g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-5,0', hp: 20, uid: 'wk' }] });
+      g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-5,0', hp, uid: 'wk' }] });
       await flush();
-      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(20);
+      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(hp);
       expect(g.find('game_over')).toBeUndefined();
     });
 
@@ -753,24 +797,25 @@ describe('LocalGameService', () => {
       // included. Sent ahead of the move, the engine wrote it and then
       // resolved the blow over the top: a king mended after taking a counter
       // lost the mend.
-      const g = at(21, 40);
+      const kingHp = hpOf('king');
+      const g = at(21, kingHp);
       const game = (g.engine as any).game;
       game.boardState = { '-5,0': game.boardState['-5,0'], '-4,0': game.boardState['5,0'] };
       g.engine.send({
         type: 'make_move', from: '-5,0', to: '-5,0', attack: '-4,0',
-        effects: [{ at: '-5,0', uid: 'wk', hp: 45 }],
+        effects: [{ at: '-5,0', uid: 'wk', hp: kingHp }],
       });
       await flush();
       const made = g.find('move_made');
       expect(made.move.counter_damage).toBeGreaterThan(0);
-      expect(made.boardState['-5,0'].hp).toBe(45);
+      expect(made.boardState['-5,0'].hp).toBe(kingHp);
     });
 
     it('never writes an HP past what the unit can hold', async () => {
       const g = at(20, 12);
       g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: '-5,0', hp: 900, uid: 'wk' }] });
       await flush();
-      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(45);
+      expect(g.find('turn_passed').boardState['-5,0'].hp).toBe(hpOf('king'));
     });
 
     it('ends the match when a cast takes the last king off the board', async () => {
@@ -804,13 +849,14 @@ describe('LocalGameService', () => {
    * hexes apiece - so whatever the board banks, it banks level.
    */
   describe('the schedule\'s endings', () => {
-    const at = (ply: number, phaseBank: any = {}, blackHp = 45) => {
+    const at = (ply: number, phaseBank: any = {}, blackHp = hpOf('king')) => {
       const config = JSON.parse(JSON.stringify((service as any).game.config));
+      const kingHp = hpOf('king');
       localStorage.setItem('cpp.localGame.v1', JSON.stringify({
         username: 'Solo', hostColor: 'white', started: true, config,
         boardState: {
-          '-5,0': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'wk' },
-          '5,0': { unit_id: 'king', color: 'black', hp: blackHp, max_hp: 45, uid: 'bk' },
+          '-5,0': { unit_id: 'king', color: 'white', hp: kingHp, max_hp: kingHp, uid: 'wk' },
+          '5,0': { unit_id: 'king', color: 'black', hp: blackHp, max_hp: kingHp, uid: 'bk' },
         },
         currentTurn: ply % 2 ? 'Solo' : LOCAL_OPPONENT,
         turnNumber: ply, moveHistory: [], winner: '', endReason: '',
@@ -952,14 +998,14 @@ describe('LocalGameService', () => {
     const config = (service as any).game.config;
     localStorage.setItem('cpp.localGame.v1', JSON.stringify({
       username: 'Solo', hostColor: 'white', started: true, config,
-      boardState: { '-5,9': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'wp' } },
+      boardState: { '-5,9': { unit_id: 'pawn', color: 'white', hp: hpOf('pawn'), max_hp: hpOf('pawn'), uid: 'wp' } },
       currentTurn: 'Solo', turnNumber: 9, moveHistory: [], winner: '', endReason: '',
       turnStartedAt: new Date().toISOString(), mode: 'default', options: {},
     }));
     const engine = new LocalGameService((service as any).configService);
     const seen: any[] = [];
     engine.messages$.subscribe(m => seen.push(m));
-    const home = { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' };
+    const home = fullUnit('rook', 'black', 'rtr0');
     engine.send({
       type: 'panel_attack', intoPanel: true, panel: 'tr',
       from: '-5,9', attack: '-5,8', unit: home,
@@ -974,7 +1020,7 @@ describe('LocalGameService', () => {
   describe('the rules it keeps without a panel', () => {
     /** A reserve unit of white's, as a panel message carries one. */
     const reserve = (uid: string, over: any = {}) => ({
-      unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid, ...over,
+      unit_id: 'pawn', color: 'white', hp: hpOf('pawn'), max_hp: hpOf('pawn'), uid, ...over,
     });
 
     /**
@@ -982,8 +1028,7 @@ describe('LocalGameService', () => {
      * The windows are read off the ply and nothing else, so these need no
      * panel, no purse and no history - which is the point of them.
      */
-    const at = (ply: number, boardState: any = {}) => {
-      const config = (service as any).game.config;
+    const at = (ply: number, boardState: any = {}, config = (service as any).game.config) => {
       localStorage.setItem('cpp.localGame.v1', JSON.stringify({
         username: 'Solo', hostColor: 'white', started: true, config, boardState,
         currentTurn: ply % 2 ? 'Solo' : LOCAL_OPPONENT,
@@ -1005,11 +1050,11 @@ describe('LocalGameService', () => {
      * under regicide and the game would end on the first move that committed.
      */
     const walker = (at: string, uid = 'w1') => ({
-      [at]: { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid },
+      [at]: { unit_id: 'pawn', color: 'white', hp: hpOf('pawn'), max_hp: hpOf('pawn'), uid },
     });
     const kings = {
-      '0,0': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'wk' },
-      '1,0': { unit_id: 'king', color: 'black', hp: 45, max_hp: 45, uid: 'bk' },
+      '0,0': { unit_id: 'king', color: 'white', hp: hpOf('king'), max_hp: hpOf('king'), uid: 'wk' },
+      '1,0': { unit_id: 'king', color: 'black', hp: hpOf('king'), max_hp: hpOf('king'), uid: 'bk' },
     };
 
     it('refuses an attack in a postmatch, and says which turn', async () => {
@@ -1029,7 +1074,7 @@ describe('LocalGameService', () => {
       // be the four-setup-turn opening the move was made to get rid of.
       const g = at(7, {
         ...kings, ...walker('-5,9'),
-        '-5,8': { unit_id: 'pawn', color: 'black', hp: 20, max_hp: 20, uid: 'b1' },
+        '-5,8': { unit_id: 'pawn', color: 'black', hp: hpOf('pawn'), max_hp: hpOf('pawn'), uid: 'b1' },
       });
       g.engine.send({ type: 'make_move', from: '-5,9', to: '-5,9', attack: '-5,8' });
       await flush();
@@ -1212,15 +1257,17 @@ describe('LocalGameService', () => {
     });
 
     it('takes the extra steps an ability lent, past the old cap of 10', async () => {
-      // A pawn walks 6; -5,9 to 6,-8 is 17 steps. The engine capped a bonus
-      // at 10, so a Surge the config made 12 was offered on the board and
-      // refused here.
-      const capped = at(11, { ...kings, ...walker('-5,9') });
+      // The test fixture gives its pawn 5 MOV; -5,9 to 6,-8 is 17 steps. The
+      // engine capped a bonus at 10, so a Surge the config made 12 was offered
+      // on the board and refused here.
+      const slowerPawnConfig = JSON.parse(JSON.stringify((service as any).game.config));
+      slowerPawnConfig.units.pawn.move = 5;
+      const capped = at(11, { ...kings, ...walker('-5,9') }, slowerPawnConfig);
       capped.engine.send({ type: 'make_move', from: '-5,9', to: '6,-8', moveBonus: 10 });
       await flush();
       expect(capped.seen.find(m => m.type === 'move_made')).toBeUndefined();
 
-      const lent = at(11, { ...kings, ...walker('-5,9') });
+      const lent = at(11, { ...kings, ...walker('-5,9') }, slowerPawnConfig);
       lent.engine.send({ type: 'make_move', from: '-5,9', to: '6,-8', moveBonus: 12 });
       await flush();
       expect(lent.refusal()).toBeUndefined();
@@ -1240,7 +1287,7 @@ describe('LocalGameService', () => {
       service.send({
         type: 'panel_attack', intoPanel: true, panel: 'tr',
         from: '-5,9', attack: '-5,8',
-        unit: { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'rtr0' },
+        unit: fullUnit('rook', 'black', 'rtr0'),
       });
       await flush();
       expect(last('invalid_move').message).toBe('Nobody attacks in the opening');
@@ -1271,7 +1318,7 @@ describe('LocalGameService', () => {
       const standing = last('game_started').boardState['-5,9'];
       service.send({
         type: 'enter_board', from: 'bl-1', to: '0,0',
-        unit: { ...standing, hp: 20 },
+        unit: { ...standing, hp: hpOf(standing.unit_id) },
       });
       await flush();
       expect(last('invalid_move').message).toBe('That unit is already on the board');
@@ -1296,9 +1343,9 @@ describe('LocalGameService', () => {
       await flush();
       service.send({ type: 'request_game_state' });
       await flush();
-      // A pawn's 20, not the 9999 it asked for. A cast may have mended or hurt
+      // The configured pawn HP, not the 9999 it asked for. A cast may have mended or hurt
       // it in the panel, so a lower number is still taken on trust.
-      expect(last('game_state_update').boardState['-10,9'].hp).toBe(20);
+      expect(last('game_state_update').boardState['-10,9'].hp).toBe(hpOf('pawn'));
     });
 
     it('starts three of a panel in a turn and no more', async () => {
@@ -1357,12 +1404,12 @@ describe('LocalGameService', () => {
       // undid the HP clamp one mend later.
       service.send({
         type: 'enter_board', from: 'bl-1', to: '-10,9',
-        unit: reserve('r1', { hp: 20, max_hp: 9999 }),
+        unit: reserve('r1', { hp: hpOf('pawn'), max_hp: 9999 }),
       });
       await flush();
       service.send({ type: 'request_game_state' });
       await flush();
-      expect(last('game_state_update').boardState['-10,9'].max_hp).toBe(20);
+      expect(last('game_state_update').boardState['-10,9'].max_hp).toBe(hpOf('pawn'));
     });
 
     it('refuses a blow into a panel against a unit the config never heard of', async () => {
@@ -1407,7 +1454,9 @@ describe('LocalGameService', () => {
       localStorage.setItem('cpp.localGame.v1', JSON.stringify({
         username: 'Solo', hostColor: 'white', started: true, config,
         boardState: {
-          '-11,11': { unit_id: 'king', color: 'white', hp: 45, max_hp: 45, uid: 'wk' },
+          '-11,11': {
+            unit_id: 'king', color: 'white', hp: hpOf('king'), max_hp: hpOf('king'), uid: 'wk',
+          },
         },
         // Turn 14, Phase 1's postmatch: the way home is open there, so the
         // king is refused by his own rule and not by a shut doorway.
@@ -1442,7 +1491,7 @@ describe('LocalGameService', () => {
       await flush();
       const walk = last('game_state_update').moveHistory.slice(-1)[0];
       expect(walk.panelMove).toBeTrue();
-      expect(walk.price).toBe(5);              // the pawn's value, not the 1 sent
+      expect(walk.price).toBe(valueOf('pawn')); // the pawn's value, not the 1 sent
       expect(walk.cost).toBe(2);               // what it cost to walk is still theirs
     });
   });

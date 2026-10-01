@@ -8,6 +8,7 @@ import { Router } from '@angular/router';
 import { ConfigService } from '../../services/config.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
+import { AuthService } from '../../services/auth.service';
 import { Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 // Reading storage directly throws in private browsing and with site data
@@ -63,6 +64,7 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
     private wsService: WebsocketService,
     private navigationState: NavigationStateService,
     private cdr: ChangeDetectorRef,
+    private authService: AuthService,
   ) {}
 
   /** Where Back goes: the room this was opened from, or the lobby. */
@@ -71,7 +73,8 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
-    this.username = readStore('local', 'username') || '';
+    // This tab's name, not the one every tab shares - see AuthService.
+    this.username = this.authService.getUsername();
     // The lobby already set our status to 'configuring' before navigating here
 
     // If opened from a game room, remember it so Save can push the config

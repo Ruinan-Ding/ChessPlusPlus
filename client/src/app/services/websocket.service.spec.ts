@@ -20,6 +20,7 @@ class StalledSocket {
   onclose: any = null;
   onerror: any = null;
   onmessage: any = null;
+  sent: string[] = [];
 
   constructor(public url: string) {
     StalledSocket.instances.push(this);
@@ -29,7 +30,7 @@ class StalledSocket {
     this.readyState = StalledSocket.CLOSED;
   }
 
-  send(): void { /* never open, never sends */ }
+  send(data: string): void { this.sent.push(data); }
 }
 
 describe('WebsocketService reconnect escalation', () => {
@@ -135,6 +136,29 @@ describe('WebsocketService reconnect escalation', () => {
     expect(engine.length).toBe(solo.length);
   });
 
+  it('delivers the server game snapshot and configured unit stats unchanged', () => {
+    const received: any[] = [];
+    service.messages$.subscribe(message => received.push(message));
+    service.connect('game-1');
+    const socket = StalledSocket.instances[0];
+
+    const snapshot = {
+      type: 'game_started',
+      config: {
+        units: {
+          pawn: { id: 'pawn', hp: 137, move: 4, attack: 23, defense: 8, attackRange: 3, value: 17 },
+        },
+      },
+      boardState: {
+        '0,0': { unit_id: 'pawn', color: 'white', hp: 137, max_hp: 137, uid: 'w0,0' },
+      },
+    };
+    socket.onmessage({ data: JSON.stringify(snapshot) });
+
+    expect(received).toEqual([snapshot]);
+    service.disconnect();
+  });
+
   it('leaves a handshake already in flight alone', () => {
     // login, the lobby and the game room all ask for a connection. Tearing
     // down the socket each time is how a connection stays forever pending.
@@ -148,6 +172,7 @@ describe('WebsocketService reconnect escalation', () => {
   it('lets go of a socket completely when switching rooms', () => {
     service.connect('lobby');
     const first = StalledSocket.instances[0];
+    service.sendMessage({ type: 'leave_game_room', gameId: 'old-room' });
 
     service.connect('game-1');
 
@@ -156,6 +181,24 @@ describe('WebsocketService reconnect escalation', () => {
     expect(first.onclose).toBeNull();
     expect(first.readyState).toBe(StalledSocket.CLOSED);
     expect(StalledSocket.instances.length).toBe(2);
+    expect((service as any).sendQueue).toEqual([]);
+  });
+
+  it('drops queued user actions when a socket closes before reconnecting', () => {
+    service.connect('lobby');
+    const socket = StalledSocket.instances[0];
+    socket.readyState = StalledSocket.OPEN;
+    socket.onopen();
+    socket.readyState = StalledSocket.CLOSED;
+    socket.onclose({ code: 1006, reason: 'network lost' });
+    service.sendMessage({ type: 'chat_message', content: 'stale' });
+    jasmine.clock().tick(3000);
+    const replacement = StalledSocket.instances[1];
+    replacement.readyState = StalledSocket.OPEN;
+    replacement.onopen();
+
+    expect((service as any).sendQueue).toEqual([]);
+    expect(replacement.sent).toEqual([]);
   });
 
   it('caps the backlog and never queues a heartbeat', () => {

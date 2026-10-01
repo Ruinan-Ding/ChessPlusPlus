@@ -216,7 +216,7 @@ interface UnitCooldown {
  */
 const MOVE_ERROR_CODES = new Set([
   'INVALID_MOVE', 'NOT_YOUR_TURN', 'GAME_OVER', 'GAME_NOT_STARTED',
-  'NOT_IN_GAME', 'INTERNAL_ERROR', 'STATE_CHANGED',
+  'NOT_IN_GAME', 'INTERNAL_ERROR', 'STATE_CHANGED', 'STALE_GAME_SOCKET',
 ]);
 
 /** What a room starts with when nobody has picked a clock. */
@@ -578,6 +578,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
 
   /** Whether this page ever asked to join its room - see ngOnDestroy. */
   private roomJoinSent = false;
+  /** A rejoin sent because another tab had taken the seat - see 'error'. */
+  private staleRejoinSent = false;
+  private stateResyncPending = false;
+  private gameOverRevision: number | null = null;
 
   constructor(
     private wsService: WebsocketService,
@@ -706,20 +710,6 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
           this.navigationState.clearIntentionalNavigation();
         }
         
-        const join = () => {
-          this.roomJoinSent = true;
-          this.wsService.sendMessage({
-            type: 'join_game_room',
-            username: this.username,
-            gameId: this.gameId,
-            token: this.accessToken,
-            // The rejoin recreates the server's record of this player, and a
-            // record without the secret cannot vouch for the name back in the
-            // lobby - a reload mid-game used to cost the player their name.
-            secret: this.authService.getIdentitySecret(),
-          });
-          this.lobbyMessages = this.sharedDataService.getLobbyMessages();
-        };
         // A solo game left behind by a closed tab stays latched in session
         // storage: entering a real room, every message would still be
         // answered by the offline engine while the opponent sat alone.
@@ -731,7 +721,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         }
         // Offline games have no socket to wait on, so join right away.
         if (this.wsService.isLocal()) {
-          join();
+          this.joinRoom();
         }
         // Every time the socket comes up - now if it already is, and again
         // after any reconnect. A dropped socket loses the server-side group
@@ -741,16 +731,31 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
           // coming and going says nothing about it.
           filter(connected => connected === true && !this.wsService.isLocal()),
           takeUntil(this.destroy$),
-        ).subscribe(() => join());
+        ).subscribe(() => this.joinRoom());
       });
-      
+
       this.wsService.messages$.pipe(takeUntil(this.destroy$)).subscribe(message => {
         if (!message) return;
         this.handleWebSocketMessage(message);
       });
     });
   }
-  
+
+  private joinRoom(): void {
+    this.roomJoinSent = true;
+    this.wsService.sendMessage({
+      type: 'join_game_room',
+      username: this.username,
+      gameId: this.gameId,
+      token: this.accessToken,
+      // The rejoin recreates the server's record of this player, and a
+      // record without the secret cannot vouch for the name back in the
+      // lobby - a reload mid-game used to cost the player their name.
+      secret: this.authService.getIdentitySecret(),
+    });
+    this.lobbyMessages = this.sharedDataService.getLobbyMessages();
+  }
+
   ngOnDestroy(): void {
     this.destroy$.next();
     this.destroy$.complete();
@@ -953,12 +958,82 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     }
   }
   
+  private acceptStateRevision(message: any): boolean {
+    if (typeof message?.revision === 'undefined') return true;
+    if (!Number.isSafeInteger(message.revision) || message.revision < 0) {
+      console.warn('[GameRoom] Ignoring message with invalid state revision');
+      return false;
+    }
+
+    const current = this.gameState.snapshot.revision;
+    const fullSnapshot = message.type === 'game_started'
+      || message.type === 'game_state_update';
+    if (message.revision < current) return false;
+    if (message.revision === current) {
+      if (fullSnapshot) {
+        this.stateResyncPending = false;
+        return true;
+      }
+      if (message.type === 'game_over' && this.gameOverRevision !== message.revision) {
+        this.gameOverRevision = message.revision;
+        return true;
+      }
+      return false;
+    }
+
+    if (!fullSnapshot && current > 0 && message.revision !== current + 1) {
+      if (!this.stateResyncPending) {
+        this.stateResyncPending = true;
+        this.wsService.sendMessage({ type: 'request_game_state' });
+      }
+      return false;
+    }
+
+    if (fullSnapshot) this.stateResyncPending = false;
+    return true;
+  }
+
+  /** `announce` false applies the result without saying it again - the chat
+   * line and the popup belong to the moment the game ended, not to every
+   * resync of a game already over. */
+  private applyGameOverMessage(message: any, announce = true): void {
+    if (Number.isSafeInteger(message.revision)) this.gameOverRevision = message.revision;
+    this.clearTurnClock();
+    // A winning move replays before the board is handed the completed turn.
+    // Keep its curtain until playbackDone unless the recap is not running.
+    if (!this.playbackRunning) {
+      this.recapRunning = false;
+      this.glowReveal = [];
+    }
+    this.gameState.applyGameOver(message);
+    if (!announce) {
+      this.cdr.markForCheck();
+      return;
+    }
+    if (message.winner) {
+      this.addSystemMessage(`Game over - ${message.winner} wins by ${message.endReason}!`);
+    } else {
+      this.addSystemMessage(`Game over - Draw (${message.endReason}).`);
+    }
+    if (!this.isSinglePlayer) {
+      const iWon = message.winner === this.username;
+      const title = message.winner ? (iWon ? 'You won!' : 'You lost') : 'Draw';
+      this.openEndModal(
+        title,
+        this.endReasonDetail(message),
+        message.endReason === 'disconnect',
+      );
+    }
+    this.cdr.markForCheck();
+  }
+
   handleWebSocketMessage(message: any): void {
     // Handle broadcast_message wrapper (unwrap to actual message type)
     let actualMessage = message;
     if (message.type === 'broadcast_message' && message.data) {
       actualMessage = message.data;
     }
+    if (!this.acceptStateRevision(actualMessage)) return;
     switch (actualMessage.type) {
       case 'game_reset':
         // Back to the pre-game screen with the room intact. Only enough is
@@ -971,6 +1046,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         // came back at wherever they were then.
         this.selectRoomTab('room');
         this.gameState.reset();
+        this.stateResyncPending = false;
+        this.gameOverRevision = null;
         this.stagedActions = [];
         this.submittedTurn = -1;
         this.recapRunning = false;
@@ -985,6 +1062,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         this.isReady = false;  // Reset ready state - button reverts to "Ready" and will be disabled
         this.leaveRoomTab();
         this.gameState.reset();
+        this.stateResyncPending = false;
+        this.gameOverRevision = null;
         this.gameState.applyGameStarted(actualMessage);
         
         // Cleared first: these two lines are the only word the player gets on
@@ -1094,47 +1173,20 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         break;
       }
       case 'game_over': {
-        this.clearTurnClock();
-        // `gameStarted` deliberately stays true: the finished position stays
-        // on screen with its result over it, and the setup controls come back
-        // only when the host resets the room. `gameOver` is what the rest of
-        // the component asks now that started no longer means playable.
-        // Whatever the board was replaying is over, and nothing else will
-        // announce that it finished, so the curtain comes down here - unless
-        // the recap has not played yet. A blow or a cast that WINS resolves
-        // synchronously inside endTurn, before the board has even been handed
-        // the turn to replay, so dropping the curtain here played the one turn
-        // most worth watching without it. The board answers playbackDone at
-        // the end of that run and it comes down there instead.
-        if (!this.playbackRunning) {
-          this.recapRunning = false;
-          this.glowReveal = [];
-        }
-        this.gameState.applyGameOver(actualMessage);
-        if (actualMessage.winner) {
-          this.addSystemMessage(`Game over - ${actualMessage.winner} wins by ${actualMessage.endReason}!`);
-        } else {
-          this.addSystemMessage(`Game over - Draw (${actualMessage.endReason}).`);
-        }
-        // Solo: the result banner on the mode screen already says it, and the
-        // popup's only button dumps you back in the lobby. Skip it.
-        if (!this.isSinglePlayer) {
-          const iWon = actualMessage.winner === this.username;
-          const title = actualMessage.winner ? (iWon ? 'You won!' : 'You lost') : 'Draw';
-          // An opponent who never came back can't rematch, so that ending
-          // returns to the lobby on its own; the others wait for the button.
-          this.openEndModal(
-            title,
-            this.endReasonDetail(actualMessage),
-            actualMessage.endReason === 'disconnect',
-          );
-        }
-        this.cdr.markForCheck();
+        this.applyGameOverMessage(actualMessage);
         break;
       }
-      case 'game_state_update':
-        // Full state refresh (e.g., on reconnect)
+      case 'game_state_update': {
+        // Full state refresh (e.g., on reconnect). Whether the game was
+        // already over is read before the refresh overwrites it: a resync of
+        // a finished game re-posted the result and reopened the popup.
+        const alreadyOver = !!this.gameState.snapshot.endReason;
         this.gameState.applyFullState(actualMessage);
+        if (actualMessage.endReason) {
+          this.reconcilePoints();
+          this.applyGameOverMessage(actualMessage, !alreadyOver);
+          break;
+        }
         // A reload in a networked room used to start both purses at nothing:
         // points were kept in this browser's memory and restored from disk only
         // for a solo room. And a crossing or a walk by the other player arrives
@@ -1152,18 +1204,16 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         // this the countdown, the warning beeps and the auto-pass all stay
         // asleep until the next move.
         this.startTurnClock();
-        if (actualMessage.winner) {
-          this.addSystemMessage(`Game ended - winner: ${actualMessage.winner}`);
-        }
         this.cdr.markForCheck();
         break;
+      }
       case 'draw_offered':
-        this.gameState.applyDrawOffered(actualMessage.offeredBy);
+        this.gameState.applyDrawOffered(actualMessage.offeredBy, actualMessage.revision);
         this.addSystemMessage(`${actualMessage.offeredBy} offered a draw.`);
         this.cdr.markForCheck();
         break;
       case 'draw_response':
-        this.gameState.clearDrawOffer();
+        this.gameState.clearDrawOffer(actualMessage.revision);
         if (!actualMessage.accepted) {
           this.addSystemMessage(`${actualMessage.declinedBy} declined the draw offer.`);
         }
@@ -1218,6 +1268,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         this.isInviter = actualMessage.isInviter;
         break;
       case 'join_game_room_success':
+        this.staleRejoinSent = false;
         // Sent after joining the game room - if the game was already started,
         // request a full state resync (reconnection).
         if (actualMessage.gameStatus === 'started') {
@@ -1264,7 +1315,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         console.log('[GameRoom] isInviter:', this.isInviter);
         const playerNames = new Set(this.players.map(p => p.username));
         this.gameRoomMessages = this.gameRoomMessages.filter(
-          msg => msg.username === 'System' || playerNames.has(msg.username)
+          msg => msg.type === 'system' || playerNames.has(msg.username)
         );
         // Whoever left took their lines with them; the count cannot be more
         // than what is left to read.
@@ -1286,32 +1337,20 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         break;
 
       case 'game_room_message':
-        // If system message about mode/options, remove prior ones to avoid stale gray messages
-        if (actualMessage.username === 'System' && typeof actualMessage.content === 'string') {
-          const c = actualMessage.content;
-          if (c.includes('Game mode changed') || c.includes('Game options updated')) {
-            this.gameRoomMessages = this.gameRoomMessages.filter(msg => {
-              if (msg.username !== 'System') return true;
-              const mc = msg.content || '';
-              return !mc.includes('Game mode changed') && !mc.includes('Game options updated');
-            });
-          }
-        }
-
-        // Create a new array reference instead of mutating to ensure OnPush change detection works
-        {
-          const system = actualMessage.messageType === 'system' || actualMessage.username === 'System';
-          this.gameRoomMessages = [...this.gameRoomMessages, {
-            username: actualMessage.username,
-            content: actualMessage.content,
-            timestamp: actualMessage.timestamp,
-            room: 'gameRoom',
-            type: system ? 'system' : undefined
-          }];
-          if (!system) this.onChatLine(actualMessage.username);
-          this.scrollChatToBottom(system ? 'history' : 'gameRoom', true,
-            !system && actualMessage.username === this.username);
-        }
+        // Always a player's line. The server sends no notices this way - the
+        // room makes its own (addSystemMessage) - so a sender called "System"
+        // was a player, and drawing them as a notice let them post fake ones
+        // (or, saying "Game mode changed", delete the real ones). The server
+        // now refuses the name too.
+        // A new array reference rather than a mutation, for OnPush.
+        this.gameRoomMessages = [...this.gameRoomMessages, {
+          username: actualMessage.username,
+          content: actualMessage.content,
+          timestamp: actualMessage.timestamp,
+          room: 'gameRoom',
+        }];
+        this.onChatLine(actualMessage.username);
+        this.scrollChatToBottom('gameRoom', true, actualMessage.username === this.username);
         this.persistLocalUiState();
         this.cdr.markForCheck();
         break;
@@ -1491,6 +1530,18 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         // has. Ask for the one it does.
         if (actualMessage.code === 'STATE_CHANGED') {
           this.wsService.sendMessage({ type: 'request_game_state' });
+        }
+        // Another tab or window joined this room as this player since this
+        // one did, so the server refuses this socket. Take the seat back -
+        // once, however many messages the turn sent - and the join's own
+        // resync puts the server's board back on screen.
+        // NAME_RECLAIMED is the same thing said of a lobby action - a line of
+        // lobby chat from here.
+        if ((actualMessage.code === 'STALE_GAME_SOCKET' || actualMessage.code === 'NAME_RECLAIMED')
+            && !this.staleRejoinSent) {
+          this.staleRejoinSent = true;
+          this.addSystemMessage('This game was opened somewhere else - rejoining here...');
+          this.joinRoom();
         }
         // Handle case when game room no longer exists (e.g., host disconnected)
         if (message.message === 'Game room not found') {

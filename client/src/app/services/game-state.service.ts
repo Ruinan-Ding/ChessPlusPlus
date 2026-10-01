@@ -67,6 +67,8 @@ export interface GameSnapshot {
   turnStartedAt: string;
   /** Username of player who offered a draw, or ''. */
   drawOfferedBy: string;
+  /** Monotonic server-side version for ordering network state events. */
+  revision: number;
   /**
    * What each scoring phase finished on, as the engine banked it - the
    * server's, or the browser engine's in a solo game. Every hand-over carries
@@ -88,6 +90,7 @@ const EMPTY_SNAPSHOT: GameSnapshot = {
   turnTimeLimit: 0,
   turnStartedAt: '',
   drawOfferedBy: '',
+  revision: 0,
   phaseBank: {},
 };
 
@@ -155,6 +158,7 @@ export class GameStateService {
       turnTimeLimit: timeLimit,
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
+      revision: msg.revision ?? 0,
       phaseBank: msg.phaseBank ?? {},
     });
   }
@@ -173,6 +177,7 @@ export class GameStateService {
       moveHistory: [...prev.moveHistory, ...(msg.effectsBefore ?? []), move, ...(msg.effects ?? [])],
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
+      revision: msg.revision ?? prev.revision,
       phaseBank: msg.phaseBank ?? prev.phaseBank,
     });
   }
@@ -194,6 +199,7 @@ export class GameStateService {
       moveHistory: msg.effectsBefore ? [...prev.moveHistory, ...msg.effectsBefore] : prev.moveHistory,
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
+      revision: msg.revision ?? prev.revision,
       phaseBank: msg.phaseBank ?? prev.phaseBank,
     });
   }
@@ -206,6 +212,7 @@ export class GameStateService {
       winner: msg.winner ?? '',
       endReason: msg.endReason ?? '',
       currentTurn: '',
+      revision: msg.revision ?? prev.revision,
     });
   }
 
@@ -225,20 +232,25 @@ export class GameStateService {
       turnTimeLimit: timeLimit,
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: msg.drawOfferedBy ?? '',
+      revision: msg.revision ?? this.snapshot.revision,
       phaseBank: msg.phaseBank ?? {},
     });
   }
 
   /** Record an incoming draw offer. */
-  applyDrawOffered(offeredBy: string): void {
+  applyDrawOffered(offeredBy: string, revision?: number): void {
     const prev = this.snapshot;
-    this.stateSubject.next({ ...prev, drawOfferedBy: offeredBy });
+    this.stateSubject.next({
+      ...prev, drawOfferedBy: offeredBy, revision: revision ?? prev.revision,
+    });
   }
 
   /** Clear a pending draw offer. */
-  clearDrawOffer(): void {
+  clearDrawOffer(revision?: number): void {
     const prev = this.snapshot;
-    this.stateSubject.next({ ...prev, drawOfferedBy: '' });
+    this.stateSubject.next({
+      ...prev, drawOfferedBy: '', revision: revision ?? prev.revision,
+    });
   }
 
   /** Reset to blank state (e.g. when leaving game room). */

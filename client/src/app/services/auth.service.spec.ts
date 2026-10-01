@@ -20,6 +20,36 @@ describe('AuthService identity secret', () => {
     expect(auth.getIdentitySecret()).toBe(first);
   });
 
+  describe('the name', () => {
+    const clear = () => {
+      localStorage.removeItem('username');
+      sessionStorage.removeItem('username');
+    };
+    beforeEach(clear);
+    afterEach(clear);
+
+    it("keeps a tab its own name, whatever another tab does", () => {
+      // One shared name was overwritten by a second tab's guest name, and the
+      // first tab's next reload rejoined its room as the guest and lost it.
+      localStorage.setItem('username', 'alice');
+      expect(new AuthService().getUsername()).toBe('alice');
+      const firstTab = sessionStorage.getItem('username');
+      expect(firstTab).toBe('alice');   // pinned to the tab on the first read
+
+      // Another tab: a session of its own, the same local storage.
+      sessionStorage.removeItem('username');
+      const second = new AuthService();
+      second.setUsername('Guest123456', false);   // handed a guest name
+      expect(localStorage.getItem('username')).toBe('alice');
+      second.setUsername('bob');                   // then chose one
+      expect(localStorage.getItem('username')).toBe('bob');
+
+      // The first tab reloads: its session, and its name, come back.
+      sessionStorage.setItem('username', firstTab!);
+      expect(new AuthService().getUsername()).toBe('alice');
+    });
+  });
+
   it('keeps the stored secret, and stores a new one where it can', () => {
     localStorage.setItem('identitySecret', 'stored-secret');
     expect(new AuthService().getIdentitySecret()).toBe('stored-secret');

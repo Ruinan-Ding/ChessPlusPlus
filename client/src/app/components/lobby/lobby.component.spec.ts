@@ -54,6 +54,63 @@ describe('LobbyComponent', () => {
     expect(component).toBeTruthy();
   });
 
+  describe('names the server hands back', () => {
+    const clear = () => {
+      localStorage.removeItem('username');
+      sessionStorage.removeItem('username');
+    };
+    afterEach(clear);
+
+    it('keeps a guest name to its tab, and remembers a name only normalized', () => {
+      const socket = mockWebsocketService.messages$ as BehaviorSubject<any>;
+      localStorage.setItem('username', 'Chosen');
+      socket.next({
+        type: 'username_assigned', username: 'Guest123456', originalUsername: 'Chosen',
+        reason: 'taken', message: 'Username "Chosen" was taken.',
+      });
+      expect(component.username).toBe('Guest123456');
+      expect(sessionStorage.getItem('username')).toBe('Guest123456');
+      expect(localStorage.getItem('username')).toBe('Chosen');
+      expect(component.showChangeUsername).toBeTrue();
+
+      component.keepAssignedName();
+      socket.next({
+        type: 'username_assigned', username: 'Alice', originalUsername: 'Ａlice',
+        reason: 'normalized', message: 'Your name is saved as "Alice".',
+      });
+      expect(component.username).toBe('Alice');
+      expect(localStorage.getItem('username')).toBe('Alice');
+      expect(component.showChangeUsername).toBeFalse();
+    });
+
+    it('joins again once when another connection holds its name', () => {
+      const sent: any[] = [];
+      // The stub's sendMessage takes nothing, so the fake is cast to fit it.
+      spyOn(mockWebsocketService, 'sendMessage').and.callFake(((m: any) => { sent.push(m); }) as any);
+      const socket = mockWebsocketService.messages$ as BehaviorSubject<any>;
+      const joins = () => sent.filter(m => m.type === 'join_lobby').length;
+      const reclaimed = { type: 'error', code: 'NAME_RECLAIMED', message: 'in use' };
+
+      socket.next({ ...reclaimed });
+      socket.next({ ...reclaimed });
+      expect(joins()).toBe(1);
+      // Never as a rejoin: that would take the name straight back.
+      expect(sent.find(m => m.type === 'join_lobby').rejoining).toBeFalse();
+
+      // Answered - every join gets a user list - so a later one may rejoin again.
+      socket.next({ type: 'user_list', users: [] });
+      socket.next({ ...reclaimed });
+      expect(joins()).toBe(2);
+    });
+
+    it('offers no rename with an invite out', () => {
+      component.invitePending = true;
+      expect(component.renameLocked).toBeTrue();
+      component.toggleChangeUsername();
+      expect(component.showChangeUsername).toBeFalse();
+    });
+  });
+
   it('says why a rename was refused in the rename panel, and shuts it once one goes through', () => {
     const socket = mockWebsocketService.messages$ as BehaviorSubject<any>;
     component.toggleChangeUsername();

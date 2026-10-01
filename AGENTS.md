@@ -32,7 +32,7 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (297 tests, 26 Sep 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (322 tests, 1 Oct 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
@@ -54,7 +54,10 @@ ng test
 LAYOUT_URL=http://localhost:4201 node scripts/layout-sweep.mjs
 
 # CI (.github/workflows/tests.yml) runs both suites, the migrations check and the production
-# build on every push and pull request.
+# build on every push and pull request. Its Chrome is Linux's: no Arial (Liberation Sans stands
+# in) and perhaps no emoji font, so a spec that lays text out must find its widths, never fix
+# them. banner-fit.spec.ts fixed one (1300px) and CI was red from 29 Sep to 1 Oct 2026 while
+# every spec passed on Windows.
 ```
 
 `DJANGO_DEBUG=true` is required for **every** local `manage.py` invocation. Without it
@@ -150,6 +153,19 @@ and a turn timer that read the board before a deployment wrote over it. A write 
 refused as `STATE_CHANGED` (or `GAME_OVER` if the game ended; `_refuse_lost_write` tells them
 apart), and the room asks for the state again. The timer re-reads and retries rather than
 giving up, or the turn would be left with no clock. A new write path passes the revision too.
+
+**The room orders what it hears by the same revision** (`acceptStateRevision` in
+`game-room.component.ts`). Every broadcast that follows a write carries the row's new
+`revision` - `move_made`, `turn_passed`, `game_over`, `draw_offered`, `draw_response` and the
+two snapshots, `game_started` and `game_state_update` - so **a new broadcast after a write must
+carry it too**. The room drops anything older than what it holds; one that skips ahead is
+dropped as well, and the room asks for `request_game_state` - once, until a snapshot lands. A
+`game_over` can share its revision with the move that ended the game, so one is let through at
+the current revision, once. A draw offer and its decline are writes like any other, so they bump
+the revision, and a move built before one is refused as `STATE_CHANGED`. `start_game` claims the
+row the same way: a new room's is created at revision 1, and a rematch is written only over the
+finished match it read, so two starts cannot both publish. The browser engine sends no
+revisions, and a message without one is taken as it comes.
 
 **7. The config validators answer the same configs alike, and a shared file says which.**
 `client/src/app/services/config-parity.json` lists edits to the shipped config that both
@@ -258,8 +274,9 @@ Decided so far:
     over", which is exactly what a crossing needs when a friend is standing on the tip. The
     board keeps it as `passableCosts` and asks `costAt()`, which reads either. Every unit gets 6 **except the shieldman, which gets 5** -
   the first place a unit's speed is actually part of what it is. `test_engine.py` used to pin
-  every unit to 6; it now checks that each one declares a move at all, which is the thing worth
-  guarding.
+  every unit to 6; it now walks each unit out from an empty board and checks it reaches exactly
+  its own `move` rings - movement read per unit from the config is the thing worth guarding, and
+  the shipped numbers can change without touching a test.
 - **Running out of time passes the turn**, it does not lose the game (superseded: the turn
   timer used to end the match against whoever was on the clock). The server owns that clock and
   passes for you; the client renders it and, if you had a turn staged, tries to commit it first.
@@ -2224,8 +2241,38 @@ host's name without the token.
 one: `get_or_create`, returning whether it is ours now, with `takeover=True` for the rejoin
 path that has already matched the stored secret. The read-then-`update_or_create` it replaced
 left a window - two clients that both saw a name free both wrote it, and the second walked off
-with the first's row, channel name and identity secret. `change_username` claims the new name
-*before* releasing the old, so a rename that loses leaves the player exactly where they were.
+with the first's row, channel name and identity secret. `change_username` releases the old name
+and claims the new one in one transaction (`_rename_player_connection`), so a rename that loses
+leaves the player exactly where they were. A guest name handed out instead is claimed the same
+way, try after try (`_claim_guest_name`) - the second random name used to go unchecked.
+
+**What a name can be - `clean_username` in `validators.py`, the one rule.** NFKC first, so one
+visible name is one name (a full-width `Ａ` or an accent typed as a separate mark used to make a
+second "Alice"), and whitespace runs, line breaks included, become one space. Then refused: any
+control, format, private-use or unassigned character (zero-width spaces and direction overrides
+made look-alikes; a line break forged server log lines), more than 24 characters, and the
+reserved `System` - the room drew a player by that name as its own notices, and their "Game mode
+changed" line deleted the real ones. **Names that differ only in case are one name**:
+`PlayerConnection.name_key` holds the casefolded name, unique, set by `save()`, so the database
+refuses "alice" while "Alice" is held in the statement that claims it, and every "is this name
+held?" asks by key (`_get_name_holder`, `_reclaimed_by_newer_socket`). `join_lobby` answers a name
+it cannot hold with a guest's, as it answers a taken one - it used to be an error, which left the
+lobby with no name at all - and **tells the client whenever the name held is not the one asked
+for**, normalized included (`username_assigned` with `reason`: `taken`, `invalid`, `normalized`),
+because every client sends its own copy of its name back in what it asks. One socket holds one
+name: a second `join_lobby` under another is refused, as `join_game_room` refuses one.
+
+**A name in flight does not change.** `change_username` is refused (`NAME_LOCKED`) in a room and
+for anyone not plainly `online` - with an invite out or in. Renamed with an invite out, the old
+name went free, whoever took it next was sent the room's host token when the invite was
+accepted, and the rename had put the player back to `online` mid-invite. **The pending invite is
+what is asked, not only the status**: a status is overwritten by more than invites (a repeat
+`join_lobby` on the same socket sets it back to `online`), so a lock on the status alone could be
+walked round. The rename clears expired invites first (`_expire_stale_challenges`, as an invite
+does), then refuses while any pending one names the player. The status is part of the delete too,
+so an invite landing between the read and the write is caught. And `set_status` will not set
+`online` over `invited` or `in-game` - no client sends it; it only ever dodged a lock. The lobby
+greys Change out while an invite is pending (`renameLocked`).
 
 **An invited pair is claimed in one statement too.** `_claim_invite_pair` marks both players
 `invited` in a single conditional update that skips anyone already `in-game` or `invited`, and
@@ -2235,9 +2282,20 @@ players inviting each other at the same moment both read "online" in between and
 went out. If creating the invite then fails, both are put back to `online`, or nothing would
 ever release them.
 
-**A room join carries the identity secret.** Leaving a room deletes the player's connection
-row (`_cleanup_game_room_connection`), and rejoining recreates it through
-`_create_or_update_player_connection`. Recreated without a secret, the player's return to the
+**A dropped player's name is held while they may come back.** A game socket that drops
+(`_cleanup_game_room_connection`) *detaches* its row - empties `channel_name` - instead of
+deleting it. Deleted, the name was anybody's for the grace period: a stranger took it, sat in the
+lobby as them and was invited as them. The row's secret now refuses everyone else; the player's
+own browser may take a detached row back from the lobby (`detached` beside `stale` in
+`_handle_join_lobby`), and the room's rejoin re-attaches it. **Nothing treats a detached row as a
+player**: the roster, `_get_player_connections_batch` (invites, tokens, the room's list),
+`_any_player_connected` and `_reclaimed_by_newer_socket` all skip `channel_name=''`, and the sweep
+clears it. A room rejoin also evicts anyone holding the name in another case - the token has
+proved it - and that socket is then `NAME_RECLAIMED`.
+
+**A room join carries the identity secret.** A deliberate leave keeps the player's connection
+row for the lobby to take back; a room join writes it through
+`_create_or_update_player_connection` either way. Recreated without a secret, the player's return to the
 lobby failed its own rejoin check - `bool(existing.secret)` - and was handed a guest's name:
 anyone who reloaded mid-game came back a stranger. The client sends `secret` with
 `join_game_room`; the server stores it once the token has proved the seat, and a join without
@@ -2262,6 +2320,30 @@ laptop - three missed heartbeats, socket still open, seat still held by that nam
 and its game to whoever asked next, with no secret at all. A row carrying no secret has nothing to
 check and nothing to protect, and age alone frees that one. The sweep, the turn clock's liveness
 check and this all read the one constant.
+
+**A socket another one has replaced is refused every room action - `STALE_GAME_SOCKET` - and a
+socket whose row is merely gone is not.** `_holds_its_name` asks `_reclaimed_by_newer_socket`:
+refused only when the player's row names *another* channel, so a second tab that joined the room
+holds the seat and the first can no longer resign it or race its moves. It first asked for a row
+naming *this* channel, and the sweep above deletes a row while its socket is still open - so a
+laptop that slept for a minute came back refused everything, resyncing included, until a reload.
+The room answers the code by joining again, once however many messages were refused
+(`staleRejoinSent`), and drops the refused turn like any other move error: the last tab used holds
+the seat.
+
+**The lobby asks the same of everything it does in a name** - chat, rename, invite, accept,
+decline, status, leave (`LOBBY_NAME_MESSAGES`), refused as `NAME_RECLAIMED`. A socket whose name
+another had taken back - a second tab with the same secret, or the player returning for a name a
+stranger had grabbed - went on chatting and inviting as it, and its rename told every lobby, the
+one really holding the name included, that the name had changed; that lobby then took the new
+name as its own. The lobby answers by joining again, once (`nameRejoinSent`), and is handed the
+name or a guest's.
+
+**A tab's name is its own.** `AuthService` keeps the name a tab plays under in session storage,
+pinned on the first read, and local storage only remembers the last name the player *chose*
+(login, rename, a normalized name) as where a new tab starts. One shared name was overwritten by a
+second tab's guest name, and the first tab's next reload rejoined its room as the guest, was
+refused the seat and forfeited. A guest name is `setUsername(name, false)`: this tab's only.
 
 **A room page leaves only a room it joined - but always takes its socket down.** Opened without a
 token it goes straight back to the lobby, and its `ngOnDestroy` used to send `leave_game_room`
@@ -2300,6 +2382,17 @@ spare your opponent the forfeit.
   the old socket is live. Closing the held side then delivers the late disconnect, which
   daphne logs as `code: 1006` followed by `Ignoring stale disconnect`. Watched working on
   5 Sep 2026 - Bob saw nothing at all and no forfeit fired.
+
+**A disconnect's deadline lives in the database; only its timer lives in memory.**
+`_start_disconnect_grace_timer` writes a `GameDisconnect` row - the room, the player, the dropped
+channel, the deadline - before it arms the task, and the forfeit is taken in one transaction
+with that row (`_end_game_for_disconnect`). No row means no forfeit, whatever the timer
+believed: a rejoin deletes it at the top of `_handle_join_game_room`, which closes the race the
+in-memory cancel alone left open. Every successful join then calls `_resume_game_timers`, which
+re-arms the turn clock from the persisted `turn_started_at` (with its idle-pass count back at
+zero) and any other seat's grace from its stored deadline. A grace task already running is left
+alone; a deadline that passed while the server was down is settled on the spot. Nothing runs
+until somebody joins - DEPLOYMENT.md has the restart story.
 
 **An unanswered invite used to wedge a pair forever.** `expires_at` was written at creation
 and read by nothing the server runs - only by `cleanup_game_state`, a management command

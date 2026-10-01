@@ -15,7 +15,9 @@ from datetime import timedelta
 from django.utils import timezone
 
 from game.consumers import STALE_AFTER
-from game.models import GameChallenge, GameRoom, GameState, PlayerConnection, PlayerReadyStatus
+from game.models import (
+    GameChallenge, GameDisconnect, GameRoom, GameState, PlayerConnection, PlayerReadyStatus,
+)
 from game.engine import economy, panels
 from game.engine.game_logic import board_moves_at
 from game.engine.config_loader import DEFAULT_CONFIG
@@ -187,11 +189,60 @@ class GameStateOptimisticConcurrencyTests(TestCase):
             expected_turn_number=1,  # matches turn_number, but end_reason is no longer ''
         )
         self.assertFalse(applied_move)
-
         refreshed = await GameState.objects.aget(game_id=self.game.game_id)
         self.assertEqual(refreshed.end_reason, 'timeout')  # not clobbered back to in-progress
         self.assertEqual(refreshed.winner, 'bob')
         self.assertEqual(refreshed.board_state, {})
+
+    async def test_only_one_concurrent_draw_offer_can_claim_an_empty_slot(self):
+        self.assertTrue(await self.consumer._update_draw_offer(
+            self.game.game_id, 'alice', '', self.state.revision))
+        self.assertFalse(await self.consumer._update_draw_offer(
+            self.game.game_id, 'bob', '', self.state.revision))
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(refreshed.draw_offered_by, 'alice')
+        self.assertEqual(refreshed.revision, self.state.revision + 1)
+
+        stale_move = await self.consumer._update_game_state(
+            game_id=self.game.game_id,
+            board_state={'stale': True},
+            current_turn='bob',
+            turn_number=2,
+            move_history=[],
+            expected_turn_number=self.state.turn_number,
+            expected_revision=self.state.revision,
+        )
+        self.assertFalse(stale_move)
+
+    async def test_disconnect_deadline_survives_a_stale_forfeit_write(self):
+        deadline = timezone.now() - timedelta(seconds=1)
+        await GameDisconnect.objects.acreate(
+            game=self.game,
+            username='bob',
+            channel_name='old-channel',
+            deadline=deadline,
+        )
+
+        stale_attempt = await self.consumer._end_game_for_disconnect(
+            self.game.game_id, 'bob', 'old-channel', deadline,
+            self.state.revision + 1, 'alice')
+        self.assertEqual(stale_attempt, 'retry')
+        self.assertTrue(await GameDisconnect.objects.filter(
+            game_id=self.game.game_id, username='bob',
+        ).aexists())
+        self.assertFalse((await GameState.objects.aget(game_id=self.game.game_id)).is_finished)
+
+        applied = await self.consumer._end_game_for_disconnect(
+            self.game.game_id, 'bob', 'old-channel', deadline,
+            self.state.revision, 'alice')
+        self.assertEqual(applied, 'ended')
+        self.assertFalse(await GameDisconnect.objects.filter(
+            game_id=self.game.game_id, username='bob',
+        ).aexists())
+        finished = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(finished.end_reason, 'disconnect')
+        self.assertEqual(finished.winner, 'alice')
+        self.assertEqual(finished.revision, self.state.revision + 1)
 
     async def _write_from(self, snapshot, history, turn_number=None):
         """A write the way every commit path makes one: conditional on the
@@ -604,6 +655,72 @@ class DisconnectGraceLiveIntegrationTests(TransactionTestCase):
             finally:
                 await host_comm.disconnect()
 
+    async def test_expired_disconnect_deadline_is_restored_after_process_restart(self):
+        from game.consumers import _pending_disconnect_timers
+
+        with patch('game.consumers.DISCONNECT_GRACE_SECONDS', 30):
+            game, host_comm, opp_comm = await self._start_game(grace_seconds=30)
+            host_rejoin = None
+            try:
+                await opp_comm.disconnect()
+                await _receive_until(host_comm, 'opponent_disconnected', timeout=5)
+
+                # Simulate the process losing its in-memory task while retaining
+                # the persisted deadline, then let the deadline lapse.
+                task = _pending_disconnect_timers.pop((game.game_id, 'bob'))
+                task.cancel()
+                await GameDisconnect.objects.filter(
+                    game_id=game.game_id, username='bob',
+                ).aupdate(deadline=timezone.now() - timedelta(seconds=1))
+
+                host_rejoin = WebsocketCommunicator(
+                    URLRouter(websocket_urlpatterns), f"/ws/game/{game.game_id}/"
+                )
+                await host_rejoin.connect()
+                await host_rejoin.send_json_to({
+                    'type': 'join_game_room', 'username': 'alice',
+                    'gameId': game.game_id, 'token': 'host-tok',
+                })
+                await _receive_until(host_rejoin, 'join_game_room_success')
+                over = await _receive_until(host_rejoin, 'game_over', timeout=5)
+                self.assertEqual(over['endReason'], 'disconnect')
+                self.assertEqual(over['disconnectedPlayer'], 'bob')
+            finally:
+                await host_comm.disconnect()
+                if host_rejoin:
+                    await host_rejoin.disconnect()
+
+    async def test_turn_clock_resumes_from_persisted_start_after_rejoin(self):
+        game, host_comm, opp_comm = await self._start_game(grace_seconds=30)
+        host_rejoin = None
+        try:
+            state = await GameState.objects.aget(game_id=game.game_id)
+            config = copy.deepcopy(state.config_snapshot)
+            config['rules']['turnTimeLimit'] = 1
+            started_at = timezone.now() - timedelta(seconds=3)
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                config_snapshot=config,
+                turn_started_at=started_at,
+            )
+
+            host_rejoin = WebsocketCommunicator(
+                URLRouter(websocket_urlpatterns), f"/ws/game/{game.game_id}/"
+            )
+            await host_rejoin.connect()
+            await host_rejoin.send_json_to({
+                'type': 'join_game_room', 'username': 'alice',
+                'gameId': game.game_id, 'token': 'host-tok',
+            })
+            await _receive_until(host_rejoin, 'join_game_room_success')
+            passed = await _receive_until(host_rejoin, 'turn_passed', timeout=5)
+            self.assertTrue(passed['timedOut'])
+            self.assertEqual(passed['turnNumber'], state.turn_number + 1)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+            if host_rejoin:
+                await host_rejoin.disconnect()
+
 
 class CustomConfigLiveIntegrationTests(TransactionTestCase):
     """
@@ -657,6 +774,79 @@ class CustomConfigLiveIntegrationTests(TransactionTestCase):
 
             state = await GameState.objects.aget(game_id=game.game_id)
             self.assertEqual(state.config_snapshot['board']['radius'], 30)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
+    async def test_custom_unit_stats_drive_live_networked_moves_and_combat(self):
+        game, host_comm, opp_comm = await self._join_room()
+        try:
+            custom_config = copy.deepcopy(DEFAULT_CONFIG)
+            custom_config['setup'] = {
+                'white': {'0,0': 'pawn', '-2,0': 'king'},
+                'black': {'1,0': 'pawn', '3,0': 'king'},
+            }
+            custom_config['units']['pawn'].update({
+                'hp': 137,
+                'move': 1,
+                'attack': 13,
+                'defense': 5,
+                'attackRange': 1,
+            })
+            custom_config['units']['pawn']['value'] = 17
+            await host_comm.send_json_to({
+                'type': 'change_game_mode', 'mode': 'custom', 'gameId': game.game_id,
+            })
+            await _receive_until(host_comm, 'game_mode_changed')
+            await _receive_until(opp_comm, 'game_mode_changed')
+            await host_comm.send_json_to({'type': 'set_custom_config', 'config': custom_config})
+            await _receive_until(host_comm, 'custom_config_saved')
+            await _receive_until(opp_comm, 'custom_config_saved')
+            await _both_ready_then_start(
+                host_comm, opp_comm, game.game_id, hostColor='white',
+            )
+
+            started = await _receive_until(host_comm, 'game_started')
+            await _receive_until(opp_comm, 'game_started')
+            self.assertEqual(started['config']['units']['pawn']['move'], 1)
+            self.assertEqual(started['boardState']['0,0']['hp'], 137)
+            white = host_comm if started['currentTurn'] == 'alice' else opp_comm
+            black = opp_comm if white is host_comm else host_comm
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.config_snapshot['units']['pawn']['value'], 17)
+
+            for ply in range(1, 7):
+                player = white if ply % 2 else black
+                await player.send_json_to({'type': 'pass_turn'})
+                host_pass = await _receive_until(host_comm, 'turn_passed')
+                opp_pass = await _receive_until(opp_comm, 'turn_passed')
+                expected_mover = 'alice' if player is host_comm else 'bob'
+                self.assertEqual(host_pass['passedBy'], expected_mover)
+                self.assertEqual(opp_pass['passedBy'], expected_mover)
+
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.turn_number, 7)
+            self.assertEqual(state.current_turn, state.player_white)
+
+            # The custom move budget is one: a two-step action is rejected,
+            # while the adjacent strike remains available on the unchanged turn.
+            await white.send_json_to({
+                'type': 'make_move', 'from': '0,0', 'to': '0,2',
+            })
+            rejected = await _receive_until(white, 'error')
+            self.assertEqual(rejected['code'], 'INVALID_MOVE')
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.board_state['0,0']['hp'], 137)
+            self.assertEqual(state.turn_number, 7)
+
+            await white.send_json_to({
+                'type': 'make_move', 'from': '0,0', 'to': '0,0', 'attack': '1,0',
+            })
+            made = await _receive_until(white, 'move_made')
+            self.assertEqual(made['boardState']['1,0']['hp'], 137 - (13 - 5))
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(state.board_state['1,0']['hp'], 137 - (13 - 5))
+            self.assertEqual(state.config_snapshot['units']['pawn']['attack'], 13)
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
@@ -828,6 +1018,38 @@ class GameLifecycleGuardTests(TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
+    async def test_only_one_concurrent_rematch_claim_can_reset_state(self):
+        from game.consumers import GameConsumer
+
+        game, host_comm, opp_comm, started = await self._start_game()
+        try:
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                end_reason='resign', winner='alice', revision=F('revision') + 1,
+            )
+            finished = await GameState.objects.aget(game_id=game.game_id)
+
+            def start_args():
+                return (
+                    game.game_id, finished.board_state, 'alice', 'alice', 'bob',
+                    finished.config_snapshot,
+                )
+
+            first, second = await asyncio.gather(
+                GameConsumer()._create_game_state(
+                    *start_args(), expected_revision=finished.revision,
+                    expected_end_reason='resign'),
+                GameConsumer()._create_game_state(
+                    *start_args(), expected_revision=finished.revision,
+                    expected_end_reason='resign'),
+            )
+            self.assertEqual(sum(result is not None for result in (first, second)), 1)
+            refreshed = await GameState.objects.aget(game_id=game.game_id)
+            self.assertFalse(refreshed.is_finished)
+            self.assertEqual(refreshed.revision, finished.revision + 1)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
     async def test_explicit_leave_mid_game_forfeits_to_the_other_player(self):
         game, host_comm, opp_comm, started = await self._start_game()
         try:
@@ -923,6 +1145,14 @@ class GameLifecycleGuardTests(TransactionTestCase):
             # Black offers a draw, then white moves instead of responding.
             await black_comm.send_json_to({'type': 'offer_draw'})
             await _receive_until(white_comm, 'draw_offered')
+
+            await white_comm.send_json_to({'type': 'respond_draw', 'accept': 'false'})
+            invalid_accept = await _receive_until(white_comm, 'error', timeout=5)
+            self.assertEqual(invalid_accept['code'], 'INVALID_REQUEST')
+            state = await GameState.objects.aget(game_id=game.game_id)
+            self.assertFalse(state.is_finished)
+            self.assertEqual(
+                state.draw_offered_by, 'alice' if black_comm is host_comm else 'bob')
 
             await white_comm.send_json_to({'type': 'make_move', 'from': '-5,9', 'to': '-5,8'})
             await _receive_until(white_comm, 'move_made')
@@ -1503,6 +1733,305 @@ class RenameSafetyTests(TransactionTestCase):
             await frank.disconnect()
 
 
+class CleanUsernameTests(SimpleTestCase):
+    """The name as it will be held: one visible name is one name, and nothing
+    in it is invisible, a control, or the client's own "System"."""
+
+    def test_one_visible_name_is_one_name(self):
+        from game.validators import clean_username
+        self.assertEqual(clean_username('Ａlice'), 'Alice')        # full-width A
+        self.assertEqual(clean_username('Á'), 'Á')          # accent typed apart
+        self.assertEqual(clean_username('  ann \n\t lee  '), 'ann lee')
+
+    def test_invisible_control_and_reserved_names_are_refused(self):
+        from game.validators import ValidationError, clean_username
+        for name in ['Alice​', '‮ecila', 'a\x00b', 'System', 'SYSTEM',
+                     'ｓystem', '', '   ', None, 7, 'x' * 25, 'ﷺ' * 2]:
+            with self.subTest(name=name):
+                with self.assertRaises(ValidationError):
+                    clean_username(name)
+
+
+class UsernameHandlingTests(TransactionTestCase):
+    """What holds a name, what a name can be, and when it may change."""
+
+    async def _lobby(self, username, secret, **extra):
+        """Join the lobby; the socket, and the username_assigned if one came."""
+        comm = WebsocketCommunicator(URLRouter(websocket_urlpatterns), "/ws/game/lobby/")
+        await comm.connect()
+        await _receive_until(comm, 'connection_established')
+        await comm.send_json_to({'type': 'join_lobby', 'username': username, 'secret': secret, **extra})
+        assigned = None
+        while True:
+            msg = await comm.receive_json_from(timeout=5)
+            if msg['type'] == 'username_assigned':
+                assigned = msg
+            if msg['type'] == 'user_list':
+                return comm, assigned
+
+    def tearDown(self):
+        from game import consumers as _consumers
+        for task in list(_consumers._pending_disconnect_timers.values()):
+            task.cancel()
+        _consumers._pending_disconnect_timers.clear()
+        _cancel_pending_turn_timers()
+        super().tearDown()
+
+    async def test_a_name_that_cannot_be_held_gets_a_guest_not_an_error(self):
+        comm, assigned = await self._lobby('System', 's')
+        try:
+            self.assertEqual(assigned['reason'], 'invalid')
+            self.assertTrue(assigned['username'].startswith('Guest'))
+            self.assertFalse(await PlayerConnection.objects.filter(username='System').aexists())
+        finally:
+            await comm.disconnect()
+
+    async def test_a_normalized_name_is_told_back(self):
+        # The client sends its own copy of its name with what it asks for, so
+        # the held spelling has to reach it.
+        comm, assigned = await self._lobby('Ａlice', 's')
+        try:
+            self.assertEqual(assigned['reason'], 'normalized')
+            self.assertEqual(assigned['username'], 'Alice')
+        finally:
+            await comm.disconnect()
+
+    async def test_names_differing_only_in_case_are_one_name(self):
+        alice, _ = await self._lobby('Alice', 'a')
+        other, assigned = await self._lobby('alice', 'not-a')
+        try:
+            self.assertEqual(assigned['reason'], 'taken')
+            self.assertTrue(assigned['username'].startswith('Guest'))
+            # A rename into it in another case is refused the same way.
+            await other.send_json_to({
+                'type': 'change_username', 'oldUsername': assigned['username'],
+                'newUsername': 'ALICE', 'secret': 'not-a'})
+            err = await _receive_until(other, 'error')
+            self.assertEqual(err['code'], 'USERNAME_TAKEN')
+        finally:
+            await alice.disconnect()
+            await other.disconnect()
+
+    async def test_its_owner_asking_in_another_case_gets_the_name_as_held(self):
+        alice, _ = await self._lobby('Alice', 'a')
+        back, assigned = await self._lobby('alice', 'a', rejoining=True)
+        try:
+            self.assertEqual(assigned['reason'], 'normalized')
+            self.assertEqual(assigned['username'], 'Alice')
+        finally:
+            await alice.disconnect()
+            await back.disconnect()
+
+    async def test_a_player_may_recase_their_own_name(self):
+        dave, _ = await self._lobby('dave', 'd')
+        try:
+            await dave.send_json_to({
+                'type': 'change_username', 'oldUsername': 'dave', 'newUsername': 'Dave', 'secret': 'd'})
+            changed = await _receive_until(dave, 'username_changed')
+            self.assertEqual(changed['newUsername'], 'Dave')
+        finally:
+            await dave.disconnect()
+
+    async def test_one_socket_holds_one_name(self):
+        comm, _ = await self._lobby('first', 's')
+        try:
+            await comm.send_json_to({'type': 'join_lobby', 'username': 'second', 'secret': 's'})
+            err = await _receive_until(comm, 'error')
+            self.assertEqual(err['code'], 'INVALID_REQUEST')
+            self.assertFalse(await PlayerConnection.objects.filter(username='second').aexists())
+        finally:
+            await comm.disconnect()
+
+    async def test_a_guest_name_already_held_is_not_handed_out(self):
+        await PlayerConnection.objects.acreate(
+            username='Guest000001', channel_name='someone', secret='x')
+        await PlayerConnection.objects.acreate(username='taken', channel_name='other', secret='x')
+        with patch('game.consumers._guest_name', side_effect=['Guest000001', 'Guest000002']):
+            comm, assigned = await self._lobby('taken', 's')
+        try:
+            self.assertEqual(assigned['username'], 'Guest000002')
+            row = await PlayerConnection.objects.aget(username='Guest000001')
+            self.assertEqual(row.channel_name, 'someone')
+        finally:
+            await comm.disconnect()
+
+    async def test_no_rename_with_an_invite_out_and_the_invite_still_finds_its_player(self):
+        alice, _ = await self._lobby('alice', 'a')
+        bob, _ = await self._lobby('bob', 'b')
+        mallory = None
+        try:
+            await alice.send_json_to({'type': 'game_challenge', 'challenger': 'alice', 'opponent': 'bob'})
+            await _receive_until(bob, 'game_challenge')
+            for comm, name in ((alice, 'alice'), (bob, 'bob')):
+                await comm.send_json_to({
+                    'type': 'change_username', 'oldUsername': name,
+                    'newUsername': name + '2', 'secret': name[0]})
+                err = await _receive_until(comm, 'error')
+                self.assertEqual(err['code'], 'NAME_LOCKED', name)
+            row = await PlayerConnection.objects.aget(username='alice')
+            self.assertEqual(row.status, 'invited')
+
+            # The old name never went free, so nobody else holds it when Bob
+            # accepts - the host token reaches Alice.
+            mallory, assigned = await self._lobby('alice', 'm')
+            self.assertEqual(assigned['reason'], 'taken')
+            await bob.send_json_to({'type': 'challenge_accept', 'challenger': 'alice', 'opponent': 'bob'})
+            accepted = await _receive_until(alice, 'challenge_accepted')
+            self.assertTrue(accepted['token'])
+            self.assertNotIn('challenge_accepted', await _drain(mallory, 0.5))
+        finally:
+            for comm in (alice, bob, mallory):
+                if comm:
+                    await comm.disconnect()
+
+    async def test_no_way_round_the_rename_lock_with_an_invite_out(self):
+        alice, _ = await self._lobby('alice', 'a')
+        bob, _ = await self._lobby('bob', 'b')
+        try:
+            await alice.send_json_to({'type': 'game_challenge', 'challenger': 'alice', 'opponent': 'bob'})
+            await _receive_until(bob, 'game_challenge')
+
+            # Setting yourself online over the invite is refused...
+            await alice.send_json_to({'type': 'set_status', 'username': 'alice', 'status': 'online'})
+            err = await _receive_until(alice, 'error')
+            self.assertEqual(err['code'], 'INVALID_STATUS')
+            row = await PlayerConnection.objects.aget(username='alice')
+            self.assertEqual(row.status, 'invited')
+
+            # ...and a repeat join, which does put the status back to online,
+            # still leaves the invite holding the name.
+            await alice.send_json_to({'type': 'join_lobby', 'username': 'alice', 'secret': 'a'})
+            await _receive_until(alice, 'user_list')
+            await alice.send_json_to({
+                'type': 'change_username', 'oldUsername': 'alice', 'newUsername': 'alice2', 'secret': 'a'})
+            err = await _receive_until(alice, 'error')
+            self.assertEqual(err['code'], 'NAME_LOCKED')
+            self.assertTrue(await PlayerConnection.objects.filter(username='alice').aexists())
+            self.assertFalse(await PlayerConnection.objects.filter(username='alice2').aexists())
+        finally:
+            await alice.disconnect()
+            await bob.disconnect()
+
+    async def test_an_invite_nobody_answered_lets_go_of_the_name(self):
+        alice, _ = await self._lobby('alice', 'a')
+        bob, _ = await self._lobby('bob', 'b')
+        try:
+            await alice.send_json_to({'type': 'game_challenge', 'challenger': 'alice', 'opponent': 'bob'})
+            await _receive_until(bob, 'game_challenge')
+            await GameChallenge.objects.filter(challenger='alice').aupdate(
+                expires_at=timezone.now() - timedelta(seconds=1))
+
+            await alice.send_json_to({
+                'type': 'change_username', 'oldUsername': 'alice', 'newUsername': 'alice2', 'secret': 'a'})
+            changed = await _receive_until(alice, ('username_changed', 'error'))
+            self.assertEqual(changed['type'], 'username_changed', changed)
+            # And the invite it was is gone, so nothing can be accepted under
+            # the name it freed.
+            self.assertFalse(await GameChallenge.objects.filter(challenger='alice').aexists())
+        finally:
+            await alice.disconnect()
+            await bob.disconnect()
+
+    async def test_no_rename_in_a_game_room(self):
+        game, host, opp, white, black = await _start_seated_game()
+        try:
+            await host.send_json_to({
+                'type': 'change_username', 'oldUsername': 'alice', 'newUsername': 'alice2'})
+            err = await _receive_until(host, 'error')
+            self.assertEqual(err['code'], 'NAME_LOCKED')
+            self.assertTrue(await PlayerConnection.objects.filter(username='alice').aexists())
+        finally:
+            await host.disconnect()
+            await opp.disconnect()
+
+    async def test_a_socket_that_lost_its_name_no_longer_speaks_for_it(self):
+        old_tab, _ = await self._lobby('carol', 's')
+        watcher, _ = await self._lobby('watcher', 'w')
+        new_tab, _ = await self._lobby('carol', 's', rejoining=True)
+        try:
+            await old_tab.send_json_to({'type': 'chat_message', 'content': 'still me?'})
+            err = await _receive_until(old_tab, 'error')
+            self.assertEqual(err['code'], 'NAME_RECLAIMED')
+            await old_tab.send_json_to({
+                'type': 'change_username', 'oldUsername': 'carol', 'newUsername': 'zed', 'secret': 's'})
+            err = await _receive_until(old_tab, 'error')
+            self.assertEqual(err['code'], 'NAME_RECLAIMED')
+
+            seen = await _drain(new_tab, 0.5)
+            self.assertNotIn('username_changed', seen)
+            self.assertNotIn('chat_message', await _drain(watcher, 0.1))
+            self.assertFalse(await PlayerConnection.objects.filter(username='zed').aexists())
+        finally:
+            for comm in (old_tab, watcher, new_tab):
+                await comm.disconnect()
+
+    async def test_a_dropped_players_name_is_held_through_the_grace_period(self):
+        with patch('game.consumers.DISCONNECT_GRACE_SECONDS', 1):
+            game = await GameRoom.objects.acreate(
+                host='alice', opponent='bob', status='waiting',
+                host_token='host-tok', opponent_token='opp-tok',
+            )
+            application = URLRouter(websocket_urlpatterns)
+            host = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+            opp = WebsocketCommunicator(application, f"/ws/game/{game.game_id}/")
+            # Joined as the client joins: with the browser's secret.
+            for comm, name, token in ((host, 'alice', 'host-tok'), (opp, 'bob', 'opp-tok')):
+                await comm.connect()
+                await comm.send_json_to({
+                    'type': 'join_game_room', 'username': name, 'gameId': game.game_id,
+                    'token': token, 'secret': f'{name}-secret'})
+                await _receive_until(comm, 'join_game_room_success')
+            await _both_ready_then_start(host, opp, game.game_id)
+            await _receive_until(host, 'game_started')
+            await _receive_until(opp, 'game_started')
+
+            await host.disconnect()   # alice drops out of her match
+            stranger = owner = None
+            try:
+                stranger, assigned = await self._lobby('alice', 'not-alices-secret')
+                self.assertEqual(assigned['reason'], 'taken')
+                # Nobody is shown sitting behind the held name.
+                await stranger.send_json_to({'type': 'request_user_list'})
+                listed = await _receive_until(stranger, 'user_list')
+                self.assertNotIn('alice', [u['username'] for u in listed['users']])
+
+                # Her own browser may take it back from the lobby...
+                owner, assigned = await self._lobby('alice', 'alice-secret')
+                self.assertIsNone(assigned)
+                row = await PlayerConnection.objects.aget(username='alice')
+                self.assertNotEqual(row.channel_name, '')
+
+                # ...which is not being back at the board: the forfeit stands.
+                over = await _receive_until(opp, 'game_over', timeout=5)
+                self.assertEqual(over['endReason'], 'disconnect')
+            finally:
+                for comm in (stranger, owner, opp):
+                    if comm:
+                        await comm.disconnect()
+
+    async def test_her_room_takes_her_name_back_from_another_case(self):
+        # Her row went - swept - and a stranger took the name in capitals.
+        game, host, opp, white, black = await _start_seated_game()
+        await PlayerConnection.objects.filter(username='alice').adelete()
+        squatter, assigned = await self._lobby('ALICE', 'x')
+        self.assertIsNone(assigned)
+        rejoined = WebsocketCommunicator(
+            URLRouter(websocket_urlpatterns), f"/ws/game/{game.game_id}/")
+        await rejoined.connect()
+        try:
+            await rejoined.send_json_to({
+                'type': 'join_game_room', 'username': 'alice', 'gameId': game.game_id,
+                'token': 'host-tok'})
+            await _receive_until(rejoined, 'join_game_room_success')
+            self.assertFalse(await PlayerConnection.objects.filter(username='ALICE').aexists())
+            await squatter.send_json_to({'type': 'chat_message', 'content': 'hi'})
+            err = await _receive_until(squatter, 'error')
+            self.assertEqual(err['code'], 'NAME_RECLAIMED')
+        finally:
+            for comm in (squatter, rejoined, host, opp):
+                await comm.disconnect()
+
+
 class StaleSocketTests(TransactionTestCase):
     """
     A socket the player has already replaced closing late must not be read as
@@ -1537,6 +2066,12 @@ class StaleSocketTests(TransactionTestCase):
             # and opened another. The seat is the new one's.
             new = await self._joined(game.game_id, 'alice', 'host-tok')
             try:
+                await old.send_json_to({'type': 'resign'})
+                stale_action = await _receive_until(old, 'error', timeout=5)
+                self.assertEqual(stale_action['code'], 'STALE_GAME_SOCKET')
+                state = await GameState.objects.aget(game_id=game.game_id)
+                self.assertFalse(state.is_finished)
+
                 # Only now does the old one's close finally land.
                 await old.disconnect()
 
@@ -1549,6 +2084,29 @@ class StaleSocketTests(TransactionTestCase):
             finally:
                 await new.disconnect()
                 await opp.disconnect()
+
+    async def test_a_swept_row_is_not_a_replacement(self):
+        """
+        The roster sweep deletes a row nobody has heartbeated for STALE_AFTER,
+        and the socket behind it can still be open. Nobody replaced that
+        socket, so it still plays - it used to be refused everything,
+        resyncing included, until a reload.
+        """
+        game, host, opp, white, black = await _start_seated_game()
+        try:
+            mover = 'alice' if white is host else 'bob'
+            await PlayerConnection.objects.filter(username=mover).adelete()
+
+            await white.send_json_to({'type': 'pass_turn'})
+            answer = await _receive_until(white, ('turn_passed', 'error'))
+            self.assertEqual(answer['type'], 'turn_passed', answer)
+            await white.send_json_to({'type': 'request_game_state'})
+            answer = await _receive_until(white, ('game_state_update', 'error'))
+            self.assertEqual(answer['type'], 'game_state_update', answer)
+            self.assertEqual(answer['turnNumber'], 2)
+        finally:
+            await host.disconnect()
+            await opp.disconnect()
 
 
 class SeatOwnershipTests(TestCase):
@@ -2881,9 +3439,15 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
         game, host_comm, opp_comm, white, black = await _start_seated_game()
         try:
             state = await self._wind(game, 40, bank={'1': {'white': 3, 'black': 1}})
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                end_reason='resign', winner=state.player_black,
+                revision=F('revision') + 1,
+            )
+            finished = await GameState.objects.aget(game_id=game.game_id)
             await GameConsumer()._create_game_state(
                 game.game_id, state.board_state, state.player_white,
-                state.player_white, state.player_black, state.config_snapshot)
+                state.player_white, state.player_black, state.config_snapshot,
+                expected_revision=finished.revision, expected_end_reason='resign')
             stored = await GameState.objects.aget(game_id=game.game_id)
             self.assertEqual(stored.phase_bank, {})
             self.assertEqual(stored.turn_number, 1)

@@ -78,6 +78,127 @@ describe('GameRoomComponent ability panel', () => {
       jasmine.objectContaining({ side: 'mine', index: TARGETED }));
   });
 
+  describe('GameRoomComponent network state revisions', () => {
+    it('requests a full snapshot for a revision gap and ignores stale events', () => {
+      const sent: any[] = [];
+      const gameState = new GameStateService();
+      const c: any = new GameRoomComponent(
+        { sendMessage: (message: any) => sent.push(message) } as any,
+        {} as any, {} as any, {} as any, {} as any,
+        { markForCheck: () => {}, detectChanges: () => {} } as any,
+        gameState, {} as any, { playTone: () => {} } as any, zone,
+      );
+      gameState.applyGameStarted({ revision: 1 });
+
+      expect(c.acceptStateRevision({ type: 'move_made', revision: 3 })).toBeFalse();
+      expect(sent).toEqual([{ type: 'request_game_state' }]);
+      expect(c.acceptStateRevision({ type: 'move_made', revision: 3 })).toBeFalse();
+      expect(sent.length).toBe(1);
+
+      expect(c.acceptStateRevision({ type: 'game_state_update', revision: 3 })).toBeTrue();
+      gameState.applyFullState({ revision: 3, turnNumber: 2 });
+      expect(c.acceptStateRevision({ type: 'move_made', revision: 2 })).toBeFalse();
+      expect(c.acceptStateRevision({ type: 'move_made', revision: 3 })).toBeFalse();
+    });
+
+    it('applies an authoritative full snapshot at the current revision', () => {
+      const gameState = new GameStateService();
+      const c: any = new GameRoomComponent(
+        { sendMessage: () => {} } as any,
+        {} as any, {} as any, {} as any, {} as any,
+        { markForCheck: () => {}, detectChanges: () => {} } as any,
+        gameState, {} as any, { playTone: () => {} } as any, zone,
+      );
+      gameState.applyGameStarted({ revision: 4, turnNumber: 1 });
+      c.stateResyncPending = true;
+      c.reconcilePoints = () => {};
+      c.startTurnClock = () => {};
+
+      c.handleWebSocketMessage({
+        type: 'game_state_update',
+        revision: 4,
+        turnNumber: 7,
+        currentTurn: 'opponent',
+        boardState: { '0,0': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20 } },
+        moveHistory: [],
+        config: DEFAULT_GAME_CONFIG,
+      });
+
+      expect(gameState.snapshot.turnNumber).toBe(7);
+      expect(gameState.snapshot.boardState['0,0'].unit_id).toBe('pawn');
+      expect(c.stateResyncPending).toBeFalse();
+    });
+
+    it('accepts a same-revision game_over only once after its turn event', () => {
+      const gameState = new GameStateService();
+      const c: any = new GameRoomComponent(
+        { sendMessage: () => {} } as any,
+        {} as any, {} as any, {} as any, {} as any,
+        { markForCheck: () => {}, detectChanges: () => {} } as any,
+        gameState, {} as any, { playTone: () => {} } as any, zone,
+      );
+      gameState.applyGameStarted({ revision: 1 });
+
+      expect(c.acceptStateRevision({ type: 'move_made', revision: 2 })).toBeTrue();
+      gameState.applyMoveMade({ revision: 2, move: {} });
+      expect(c.acceptStateRevision({ type: 'game_over', revision: 2 })).toBeTrue();
+      gameState.applyGameOver({ revision: 2, endReason: 'regicide' });
+      expect(c.acceptStateRevision({ type: 'game_over', revision: 2 })).toBeFalse();
+    });
+
+    it('draws a player called "System" as a player, not as a notice', () => {
+      const c: any = new GameRoomComponent(
+        { sendMessage: () => {} } as any,
+        {} as any, {} as any, {} as any, {} as any,
+        { markForCheck: () => {}, detectChanges: () => {} } as any,
+        new GameStateService(), {} as any, { playTone: () => {} } as any, zone,
+      );
+      c.persistLocalUiState = () => {};
+      c.scrollChatToBottom = () => {};
+      c.addSystemMessage('Game mode changed to Default');
+
+      c.handleWebSocketMessage({
+        type: 'game_room_message', username: 'System',
+        content: 'Game mode changed - you have resigned', timestamp: '',
+      });
+
+      expect(c.historyMessages.map((m: any) => m.content)).toEqual(['Game mode changed to Default']);
+      expect(c.gameRoomChatMessages.map((m: any) => m.content))
+        .toEqual(['Game mode changed - you have resigned']);
+    });
+
+    it('announces a finished game once, however many resyncs repeat it', () => {
+      const gameState = new GameStateService();
+      const c: any = new GameRoomComponent(
+        { sendMessage: () => {} } as any,
+        {} as any, {} as any, {} as any, {} as any,
+        { markForCheck: () => {}, detectChanges: () => {} } as any,
+        gameState, {} as any, { playTone: () => {} } as any, zone,
+      );
+      c.username = 'me';
+      c.reconcilePoints = () => {};
+      const said: string[] = [];
+      c.addSystemMessage = (text: string) => said.push(text);
+      const finished = {
+        type: 'game_state_update', revision: 9, turnNumber: 30, currentTurn: 'them',
+        boardState: {}, moveHistory: [], config: DEFAULT_GAME_CONFIG,
+        winner: 'me', endReason: 'regicide',
+      };
+
+      // A reload into a game already over: said once, popup up.
+      c.handleWebSocketMessage(finished);
+      expect(said.length).toBe(1);
+      expect(c.showEndModal).toBeTrue();
+
+      // The player closes it, and a later resync of the same result.
+      c.showEndModal = false;
+      c.handleWebSocketMessage({ ...finished });
+      expect(said.length).toBe(1);
+      expect(c.showEndModal).toBeFalse();
+      expect(gameState.snapshot.currentTurn).toBe('');
+    });
+  });
+
   it('keeps a unit that crossed and later walked home at home, not departed', () => {
     // `departedUids` was every unit that had EVER crossed, and the board hides
     // any panel unit named in it - so a reserve unit that crossed and walked
@@ -2919,6 +3040,30 @@ describe('GameRoomComponent leaving', () => {
     expect(disconnects.length).toBe(1);
   });
 
+  it('takes the seat back once when another tab has it, and drops the refused turn', () => {
+    const { c, sent } = room('tok');
+    c.ngOnInit();
+    const joins = () => sent.filter(m => m.type === 'join_game_room').length;
+    expect(joins()).toBe(1);
+    c.stagedActions = [{ from: '0,0', to: '1,0' }];
+    c.submittedTurn = 3;
+
+    // End Turn sends several messages, and every one of them is refused.
+    const stale = { type: 'error', code: 'STALE_GAME_SOCKET', message: 'replaced' };
+    c.handleWebSocketMessage(stale);
+    c.handleWebSocketMessage(stale);
+
+    expect(joins()).toBe(2);
+    expect(c.stagedActions).toEqual([]);
+    expect(c.submittedTurn).toBe(-1);
+
+    // Joined again, a later refusal can take it back again.
+    c.handleWebSocketMessage({ type: 'join_game_room_success', gameStatus: 'waiting' });
+    c.handleWebSocketMessage(stale);
+    expect(joins()).toBe(3);
+    c.ngOnDestroy();
+  });
+
   it('still takes the socket down for a room it never joined', () => {
     // The leave and the teardown are two different questions. Gating both on
     // the join left a room socket open behind a page that had already gone.
@@ -3378,7 +3523,7 @@ describe('GameRoomComponent tabs', () => {
       c.handleWebSocketMessage({ type: 'game_room_message', username, content: 'hi', timestamp: '' });
     say('them');
     say('me');                     // your own is not news
-    say('System');                 // nor the log's
+    c.addSystemMessage('White moved.');   // nor the log's
     say('them');
     c.ngAfterViewChecked();
     expect(c.roomCue).toBe('2');
@@ -3441,7 +3586,7 @@ describe('GameRoomComponent tabs', () => {
     const c = make();
     const scrolled: string[] = [];
     c.scrollChatToBottom = (which: string) => scrolled.push(which);
-    c.handleWebSocketMessage({ type: 'game_room_message', username: 'System', content: 'White moved.', timestamp: '' });
+    c.addSystemMessage('White moved.');
     c.handleWebSocketMessage({ type: 'game_room_message', username: 'them', content: 'hi', timestamp: '' });
     c.addSystemMessage('Black moved.');
     expect(scrolled).toEqual(['history', 'gameRoom', 'history']);

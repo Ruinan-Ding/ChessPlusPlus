@@ -2698,30 +2698,62 @@ describe('GameBoardComponent setup deal', () => {
     const panels = new Set(Object.keys(reserves).map(k => board.cellsByKey.get(k)?.panel));
     expect(panels).toEqual(new Set(['bl', 'tr']));
     expect(reserves['-17,11']).toEqual({
-      unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'w-17,11',
+      unit_id: 'rook', color: 'white',
+      hp: DEFAULT_GAME_CONFIG.units.rook.hp, max_hp: DEFAULT_GAME_CONFIG.units.rook.hp,
+      uid: 'w-17,11',
     });
   });
 
-  it("hands the room a unit's real numbers, and the hex its two digits", () => {
-    // The room writes these back as a panel unit's HP when a cast lands, so a
-    // clamp here cut a 120-HP unit to 99 for good.
-    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
-    config.units.rook.hp = 120;
-    config.units.rook.move = 104;
-    board = TestBed.createComponent(GameBoardComponent).componentInstance;
-    const state = { '0,0': { unit_id: 'rook', color: 'white', hp: 115, max_hp: 120, uid: 'wr' } };
-    board.config = config;
-    board.radius = 11;
-    board.boardState = state;
-    board.ngOnChanges({
-      config: new SimpleChange(null, config, true),
-      radius: new SimpleChange(null, 11, true),
-      boardState: new SimpleChange(null, state, true),
-    });
-    const hex = board.cellsByKey.get('0,0');
-    const seen = board.describe(hex);
-    expect([seen.hp, seen.hpMax, seen.mv]).toEqual([115, 120, 104]);
-    expect(hex.stats.hp).toBe(99);
+  it("shows every configured unit's full stats to the room", () => {
+    setPanelsDealt(false);
+    for (const [unitId, definition] of Object.entries(DEFAULT_GAME_CONFIG.units)) {
+      const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+      config.setup = { white: {}, black: {} };
+      const changed = {
+        ...definition,
+        hp: 120,
+        move: 104,
+        attack: 77,
+        defense: 31,
+        attackRange: 3,
+        value: 123,
+      };
+      config.units[unitId] = changed;
+      const fixture = TestBed.createComponent(GameBoardComponent);
+      board = fixture.componentInstance;
+      const state = {
+        '0,0': { unit_id: unitId, color: 'white', hp: 115, max_hp: changed.hp, uid: 'w0,0' },
+      };
+      board.config = config;
+      board.radius = config.board.radius;
+      board.boardState = state;
+      board.ngOnChanges({
+        config: new SimpleChange(null, config, true),
+        radius: new SimpleChange(null, config.board.radius, true),
+        boardState: new SimpleChange(null, state, true),
+      });
+      fixture.detectChanges();
+      const hex = board.cellsByKey.get('0,0');
+      const seen = board.describe(hex);
+      expect(seen.hp).withContext(unitId).toBe(115);
+      expect(seen.hpMax).withContext(unitId).toBe(changed.hp);
+      expect(seen.mv).withContext(unitId).toBe(changed.move);
+      expect(seen.atk).withContext(unitId).toBe('77,57,38');
+      expect(seen.def).withContext(unitId).toBe(changed.defense);
+      expect(seen.points).withContext(unitId).toBe(changed.value);
+      expect(hex.stats.hp).withContext(unitId).toBe(99);
+
+      const read = (selector: string) =>
+        fixture.nativeElement.querySelector(`text.${selector}`)?.textContent?.trim();
+      expect(read('stat-hp')).withContext(unitId).toBe(String(hex.stats.hp));
+      expect(read('stat-atk')).withContext(unitId).toBe(String(hex.stats.atk));
+      expect(read('stat-def')).withContext(unitId).toBe(String(hex.stats.def));
+      expect(read('stat-mov')).withContext(unitId).toBe(board.movText(hex));
+      expect(Array.from(fixture.nativeElement.querySelectorAll('text.stat-range'))
+        .map((node: any) => node.textContent.trim()))
+        .withContext(unitId)
+        .toEqual([String(hex.stats.rangeHigh), String(hex.stats.rangeLow)]);
+    }
   });
 
   it('deals a wounded unit wounded, and a dead one not at all', () => {

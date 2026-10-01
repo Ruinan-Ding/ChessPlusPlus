@@ -502,14 +502,12 @@ and single player keeps working, because it always did.
 **Survives** - it is all in the database on the volume: rooms, board state, whose turn it is,
 move history, the frozen config snapshot, ready status.
 
-**Does not survive**: the turn timers. `_pending_turn_timers` and `_pending_disconnect_timers`
-in `consumers.py` are in-process `asyncio` tasks. A deploy or a restart drops them silently -
-the game is still there and still playable, but the clock on the current turn stops, and a
-disconnect grace period in flight never resolves into a forfeit.
-
-In practice: do not deploy while someone is mid-match. If this becomes a real problem the fix is
-to derive the deadline from the persisted `turn_started_at` on reconnect rather than trusting an
-in-memory task, but nothing needs that yet.
+**The timer tasks do not survive**: `_pending_turn_timers` and
+`_pending_disconnect_timers` in `consumers.py` are in-process `asyncio` tasks, so a deploy or
+restart drops them. Their deadlines do survive: turn clocks are reconstructed from the
+persisted `turn_started_at`, and disconnect grace deadlines are stored in the database. The
+next successful room join re-arms the timers; an expired deadline is handled then. Until a
+player rejoins, no timer task is running.
 
 Auto-stop does not cause this. Fly counts a held WebSocket as an active connection, so a machine
 with a game on it stays awake.
