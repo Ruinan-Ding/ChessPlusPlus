@@ -208,3 +208,22 @@ class GameState(models.Model):
     objects: Any = models.Manager()
     # Explicit DoesNotExist annotation for static analysis
     DoesNotExist: Any
+
+
+class GameDisconnect(models.Model):
+    """Persist an absent seat's reconnect-grace deadline across restarts."""
+
+    game = models.ForeignKey(GameRoom, on_delete=models.CASCADE, related_name='disconnects')
+    username = models.CharField(max_length=24)
+    channel_name = models.CharField(max_length=255)
+    deadline = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['game', 'username'], name='unique_game_disconnect'),
+        ]
+        indexes = [
+            models.Index(fields=['deadline'], name='game_gamedis_deadline_idx'),
+        ]
+
+    objects: Any = models.Manager()

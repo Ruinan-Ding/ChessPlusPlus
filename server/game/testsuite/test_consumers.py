@@ -15,7 +15,9 @@ from datetime import timedelta
 from django.utils import timezone
 
 from game.consumers import STALE_AFTER
-from game.models import GameChallenge, GameRoom, GameState, PlayerConnection, PlayerReadyStatus
+from game.models import (
+    GameChallenge, GameDisconnect, GameRoom, GameState, PlayerConnection, PlayerReadyStatus,
+)
 from game.engine import economy, panels
 from game.engine.game_logic import board_moves_at
 from game.engine.config_loader import DEFAULT_CONFIG
@@ -187,11 +189,60 @@ class GameStateOptimisticConcurrencyTests(TestCase):
             expected_turn_number=1,  # matches turn_number, but end_reason is no longer ''
         )
         self.assertFalse(applied_move)
-
         refreshed = await GameState.objects.aget(game_id=self.game.game_id)
         self.assertEqual(refreshed.end_reason, 'timeout')  # not clobbered back to in-progress
         self.assertEqual(refreshed.winner, 'bob')
         self.assertEqual(refreshed.board_state, {})
+
+    async def test_only_one_concurrent_draw_offer_can_claim_an_empty_slot(self):
+        self.assertTrue(await self.consumer._update_draw_offer(
+            self.game.game_id, 'alice', '', self.state.revision))
+        self.assertFalse(await self.consumer._update_draw_offer(
+            self.game.game_id, 'bob', '', self.state.revision))
+        refreshed = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(refreshed.draw_offered_by, 'alice')
+        self.assertEqual(refreshed.revision, self.state.revision + 1)
+
+        stale_move = await self.consumer._update_game_state(
+            game_id=self.game.game_id,
+            board_state={'stale': True},
+            current_turn='bob',
+            turn_number=2,
+            move_history=[],
+            expected_turn_number=self.state.turn_number,
+            expected_revision=self.state.revision,
+        )
+        self.assertFalse(stale_move)
+
+    async def test_disconnect_deadline_survives_a_stale_forfeit_write(self):
+        deadline = timezone.now() - timedelta(seconds=1)
+        await GameDisconnect.objects.acreate(
+            game=self.game,
+            username='bob',
+            channel_name='old-channel',
+            deadline=deadline,
+        )
+
+        stale_attempt = await self.consumer._end_game_for_disconnect(
+            self.game.game_id, 'bob', 'old-channel', deadline,
+            self.state.revision + 1, 'alice')
+        self.assertEqual(stale_attempt, 'retry')
+        self.assertTrue(await GameDisconnect.objects.filter(
+            game_id=self.game.game_id, username='bob',
+        ).aexists())
+        self.assertFalse((await GameState.objects.aget(game_id=self.game.game_id)).is_finished)
+
+        applied = await self.consumer._end_game_for_disconnect(
+            self.game.game_id, 'bob', 'old-channel', deadline,
+            self.state.revision, 'alice')
+        self.assertEqual(applied, 'ended')
+        self.assertFalse(await GameDisconnect.objects.filter(
+            game_id=self.game.game_id, username='bob',
+        ).aexists())
+        finished = await GameState.objects.aget(game_id=self.game.game_id)
+        self.assertEqual(finished.end_reason, 'disconnect')
+        self.assertEqual(finished.winner, 'alice')
+        self.assertEqual(finished.revision, self.state.revision + 1)
 
     async def _write_from(self, snapshot, history, turn_number=None):
         """A write the way every commit path makes one: conditional on the
@@ -603,6 +654,72 @@ class DisconnectGraceLiveIntegrationTests(TransactionTestCase):
                 await opp_comm2.disconnect()
             finally:
                 await host_comm.disconnect()
+
+    async def test_expired_disconnect_deadline_is_restored_after_process_restart(self):
+        from game.consumers import _pending_disconnect_timers
+
+        with patch('game.consumers.DISCONNECT_GRACE_SECONDS', 30):
+            game, host_comm, opp_comm = await self._start_game(grace_seconds=30)
+            host_rejoin = None
+            try:
+                await opp_comm.disconnect()
+                await _receive_until(host_comm, 'opponent_disconnected', timeout=5)
+
+                # Simulate the process losing its in-memory task while retaining
+                # the persisted deadline, then let the deadline lapse.
+                task = _pending_disconnect_timers.pop((game.game_id, 'bob'))
+                task.cancel()
+                await GameDisconnect.objects.filter(
+                    game_id=game.game_id, username='bob',
+                ).aupdate(deadline=timezone.now() - timedelta(seconds=1))
+
+                host_rejoin = WebsocketCommunicator(
+                    URLRouter(websocket_urlpatterns), f"/ws/game/{game.game_id}/"
+                )
+                await host_rejoin.connect()
+                await host_rejoin.send_json_to({
+                    'type': 'join_game_room', 'username': 'alice',
+                    'gameId': game.game_id, 'token': 'host-tok',
+                })
+                await _receive_until(host_rejoin, 'join_game_room_success')
+                over = await _receive_until(host_rejoin, 'game_over', timeout=5)
+                self.assertEqual(over['endReason'], 'disconnect')
+                self.assertEqual(over['disconnectedPlayer'], 'bob')
+            finally:
+                await host_comm.disconnect()
+                if host_rejoin:
+                    await host_rejoin.disconnect()
+
+    async def test_turn_clock_resumes_from_persisted_start_after_rejoin(self):
+        game, host_comm, opp_comm = await self._start_game(grace_seconds=30)
+        host_rejoin = None
+        try:
+            state = await GameState.objects.aget(game_id=game.game_id)
+            config = copy.deepcopy(state.config_snapshot)
+            config['rules']['turnTimeLimit'] = 1
+            started_at = timezone.now() - timedelta(seconds=3)
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                config_snapshot=config,
+                turn_started_at=started_at,
+            )
+
+            host_rejoin = WebsocketCommunicator(
+                URLRouter(websocket_urlpatterns), f"/ws/game/{game.game_id}/"
+            )
+            await host_rejoin.connect()
+            await host_rejoin.send_json_to({
+                'type': 'join_game_room', 'username': 'alice',
+                'gameId': game.game_id, 'token': 'host-tok',
+            })
+            await _receive_until(host_rejoin, 'join_game_room_success')
+            passed = await _receive_until(host_rejoin, 'turn_passed', timeout=5)
+            self.assertTrue(passed['timedOut'])
+            self.assertEqual(passed['turnNumber'], state.turn_number + 1)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+            if host_rejoin:
+                await host_rejoin.disconnect()
 
 
 class CustomConfigLiveIntegrationTests(TransactionTestCase):

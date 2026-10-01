@@ -27,6 +27,7 @@ from .models import (
     PlayerConnection,
     PlayerReadyStatus,
     GameState,
+    GameDisconnect,
 )
 from .validators import (
     ValidationError, GAME_OPTION_KEYS, validate_required_fields, validate_username,
@@ -957,7 +958,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             self.game_id = game_id
 
             # Cancel any pending disconnect-forfeit grace timer
-            had_pending_grace = (game_id, username) in _pending_disconnect_timers
+            had_pending_grace = await self._clear_disconnect_deadline(game_id, username)
             self._cancel_disconnect_timer(game_id, username)
 
             # The game room may arrive on a fresh WebSocket, so refresh the stored
@@ -994,6 +995,8 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'gameId': game_id,
                 'gameStatus': game.status,
             })
+
+            await self._resume_game_timers(game_id)
 
             logger.info(f"User {username} joined game room {game_id}")
         except ValidationError as e:
@@ -1494,7 +1497,8 @@ class GameConsumer(AsyncWebsocketConsumer):
     # ==================== Turn Timer ====================
 
     async def _start_turn_timer(self, game_id: str, time_limit: int, turn_number: int,
-                                current_turn: str, idle_passes: int = 0):
+                                current_turn: str, idle_passes: int = 0,
+                                turn_started_at=None):
         """Start (or restart) the turn timer for the given game.
 
         *idle_passes* counts how many turns in a row this clock has passed
@@ -1503,6 +1507,8 @@ class GameConsumer(AsyncWebsocketConsumer):
         process. A real move arms a fresh timer at zero.
 
         turn_number/current_turn fix the exact turn this timer is watching.
+        When restoring after a process restart, *turn_started_at* preserves
+        the original deadline rather than granting a fresh full clock.
         If a move (or any other game-ending event) has already moved the
         game past that turn by the time the timer wakes up, the timer
         recognises itself as stale and does nothing - this prevents a
@@ -1513,10 +1519,14 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         if time_limit <= 0:
             return  # no time limit configured
+        remaining = float(time_limit)
+        if turn_started_at:
+            remaining = max(0.0, time_limit - (
+                timezone.now() - turn_started_at).total_seconds())
 
         async def _timer_task():
             try:
-                await asyncio.sleep(time_limit)
+                await asyncio.sleep(remaining)
                 # Timer expiration is an automatic pass, not a game loss.
                 # Read, settle and write again if the write loses: a
                 # deployment landing in the same ply beats this pass to the
@@ -1630,33 +1640,57 @@ class GameConsumer(AsyncWebsocketConsumer):
         """
         self._cancel_disconnect_timer(game_id, username)
         dropped_channel = self.channel_name
+        deadline = timezone.now() + timedelta(seconds=DISCONNECT_GRACE_SECONDS)
+        await self._record_disconnect_deadline(
+            game_id, username, dropped_channel, deadline)
+        await self._arm_disconnect_grace_timer(
+            game_id, username, dropped_channel, deadline)
+
+    async def _arm_disconnect_grace_timer(self, game_id: str, username: str,
+                                          dropped_channel: Optional[str], deadline):
+        existing = _pending_disconnect_timers.get((game_id, username))
+        if existing and not existing.done():
+            return
 
         async def _grace_task():
             try:
-                await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
+                await asyncio.sleep(max(0.0, (deadline - timezone.now()).total_seconds()))
                 # Cancelling is the usual way this timer stops, but it only
                 # covers a rejoin that lands after the timer exists. A join
                 # racing the arming above cancels nothing, and forfeits a
                 # player who is back at the board. The row is the seat: back
                 # in a room on a different socket is back.
-                if await self._reclaimed_by_newer_socket(
+                if dropped_channel and await self._reclaimed_by_newer_socket(
                         username, dropped_channel, status='in-game'):
+                    await self._clear_disconnect_deadline(
+                        game_id, username, deadline, dropped_channel)
                     logger.info(
                         f"Grace timer for {username} in {game_id} stood down - reconnected")
                     return
-                game = await self._get_game_by_id(game_id)
-                if not game or game.status == 'closed':
-                    return
-                state = await self._get_game_state(game_id)
+                while True:
+                    game = await self._get_game_by_id(game_id)
+                    if not game or game.status == 'closed':
+                        await self._clear_disconnect_deadline(
+                            game_id, username, deadline, dropped_channel)
+                        return
+                    state = await self._get_game_state(game_id)
 
-                if state and not state.is_finished:
-                    winner = game.opponent if username == game.host else game.host
-                    if await self._end_game(game_id, state, winner, 'disconnect'):
+                    if state and not state.is_finished:
+                        winner = game.opponent if username == game.host else game.host
+                        outcome = await self._end_game_for_disconnect(
+                            game_id, username, dropped_channel, deadline,
+                            state.revision, winner)
+                        if outcome == 'retry':
+                            await asyncio.sleep(0.1)
+                            continue
+                        if outcome != 'ended':
+                            return
                         await self._broadcast_game_over(game_id, winner, 'disconnect', disconnectedPlayer=username)
                         await self._close_game_room(game_id, f"{username} did not reconnect within the grace period")
                         await self._send_user_list()
                         logger.info(f"Game {game_id} forfeited to {winner} - {username} did not reconnect in time")
-                else:
+                        return
+
                     await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
                         'type': 'room_abandoned',
                         'username': username,
@@ -1664,15 +1698,34 @@ class GameConsumer(AsyncWebsocketConsumer):
                     await self._close_game_room(game_id, f"{username} did not reconnect within the grace period")
                     await self._send_user_list()
                     logger.info(f"Room {game_id} abandoned - {username} did not reconnect in time")
+                    return
             except asyncio.CancelledError:
                 pass
             except Exception as e:
                 logger.error(f"Error in disconnect grace timer for game {game_id}: {e}", exc_info=True)
             finally:
-                _pending_disconnect_timers.pop((game_id, username), None)
+                if _pending_disconnect_timers.get((game_id, username)) is asyncio.current_task():
+                    _pending_disconnect_timers.pop((game_id, username), None)
 
         task = asyncio.create_task(_grace_task())
         _pending_disconnect_timers[(game_id, username)] = task
+
+    async def _resume_game_timers(self, game_id: str):
+        """Restore persisted deadlines when a player rejoins after a restart."""
+        state = await self._get_game_state(game_id)
+        if state and not state.is_finished:
+            time_limit = (state.config_snapshot or {}).get('rules', {}).get('turnTimeLimit', 0)
+            if time_limit > 0:
+                await self._start_turn_timer(
+                    game_id, time_limit,
+                    turn_number=state.turn_number,
+                    current_turn=state.current_turn,
+                    turn_started_at=state.turn_started_at,
+                )
+
+        for username, channel_name, deadline in await self._get_disconnect_deadlines(game_id):
+            await self._arm_disconnect_grace_timer(
+                game_id, username, channel_name, deadline)
 
     def _cancel_disconnect_timer(self, game_id: Optional[str], username: Optional[str]):
         """Cancel a pending disconnect-grace timer (if any) - called when the
@@ -1704,6 +1757,45 @@ class GameConsumer(AsyncWebsocketConsumer):
             expected_turn_number=state.turn_number,
             expected_revision=state.revision,
         )
+
+    @database_sync_to_async
+    def _end_game_for_disconnect(self, game_id, username, channel_name, deadline,
+                                 expected_revision, winner):
+        """End a game and consume its grace deadline as one durable transaction."""
+        with transaction.atomic():
+            grace = GameDisconnect.objects.select_for_update().filter(  # type: ignore
+                game_id=game_id,
+                username=username,
+                channel_name=channel_name,
+                deadline=deadline,
+            ).first()
+            if not grace or grace.deadline > timezone.now():
+                return 'cancelled'
+
+            state = GameState.objects.select_for_update().filter(  # type: ignore
+                game_id=game_id,
+            ).first()
+            if not state or state.is_finished:
+                grace.delete()
+                return 'finished'
+            if state.revision != expected_revision:
+                return 'retry'
+
+            rows = GameState.objects.filter(  # type: ignore
+                game_id=game_id,
+                turn_number=state.turn_number,
+                revision=state.revision,
+                end_reason='',
+            ).update(
+                winner=winner,
+                end_reason='disconnect',
+                revision=F('revision') + 1,
+            )
+            if not rows:
+                return 'retry'
+
+            grace.delete()
+            return 'ended'
 
     async def _end_game_with_retry(self, game_id: str, winner: str, end_reason: str,
                                     precondition=None) -> bool:
@@ -2625,7 +2717,10 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'DRAW_ALREADY_OFFERED', 'A draw offer is already pending')
                 return
 
-            await self._set_draw_offer(self.game_id, self.username)
+            if not await self._update_draw_offer(
+                    self.game_id, self.username, '', state.revision):
+                await send_error(self, 'DRAW_ALREADY_OFFERED', 'A draw offer is already pending')
+                return
 
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'draw_offered',
@@ -2673,7 +2768,10 @@ class GameConsumer(AsyncWebsocketConsumer):
                 else:
                     await send_error(self, 'NO_DRAW_OFFER', 'The draw offer is no longer valid')
             else:
-                await self._set_draw_offer(self.game_id, '')  # clear the offer
+                if not await self._update_draw_offer(
+                        self.game_id, '', state.draw_offered_by, state.revision):
+                    await send_error(self, 'NO_DRAW_OFFER', 'The draw offer is no longer valid')
+                    return
                 await broadcast_to_group(self.channel_layer, self.room_group_name, {
                     'type': 'draw_response',
                     'accepted': False,
@@ -3023,6 +3121,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 status='closed',
                 closed_at=timezone.now()
             )
+            GameDisconnect.objects.filter(game_id=game_id).delete()  # type: ignore
             logger.info(f"Game {game_id} closed: {reason} (both players reset to online)")
         except GameRoom.DoesNotExist:  # type: ignore
             logger.warning(f"Game {game_id} not found when closing")
@@ -3164,9 +3263,40 @@ class GameConsumer(AsyncWebsocketConsumer):
         return rows > 0
 
     @database_sync_to_async
-    def _set_draw_offer(self, game_id, username):
-        """Set or clear the draw_offered_by field."""
-        GameState.objects.filter(game_id=game_id).update(draw_offered_by=username)  # type: ignore
+    def _update_draw_offer(self, game_id, username, expected_offer, expected_revision):
+        """Claim an offer only if its snapshot is still the current game state."""
+        rows = GameState.objects.filter(  # type: ignore
+            game_id=game_id, draw_offered_by=expected_offer,
+            revision=expected_revision, end_reason='',
+        ).update(draw_offered_by=username, revision=F('revision') + 1)
+        return rows > 0
+
+    @database_sync_to_async
+    def _record_disconnect_deadline(self, game_id, username, channel_name, deadline):
+        GameDisconnect.objects.update_or_create(  # type: ignore
+            game_id=game_id,
+            username=username,
+            defaults={'channel_name': channel_name, 'deadline': deadline},
+        )
+
+    @database_sync_to_async
+    def _get_disconnect_deadlines(self, game_id):
+        return list(GameDisconnect.objects.filter(  # type: ignore
+            game_id=game_id,
+        ).values_list('username', 'channel_name', 'deadline'))
+
+    @database_sync_to_async
+    def _clear_disconnect_deadline(self, game_id, username, deadline=None, channel_name=None):
+        rows = GameDisconnect.objects.filter(  # type: ignore
+            game_id=game_id,
+            username=username,
+        )
+        if deadline is not None:
+            rows = rows.filter(deadline=deadline)
+        if channel_name is not None:
+            rows = rows.filter(channel_name=channel_name)
+        deleted, _ = rows.delete()
+        return deleted > 0
     
     # ==================== Broadcast Handlers ====================
     

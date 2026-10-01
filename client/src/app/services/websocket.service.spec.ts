@@ -20,6 +20,7 @@ class StalledSocket {
   onclose: any = null;
   onerror: any = null;
   onmessage: any = null;
+  sent: string[] = [];
 
   constructor(public url: string) {
     StalledSocket.instances.push(this);
@@ -29,7 +30,7 @@ class StalledSocket {
     this.readyState = StalledSocket.CLOSED;
   }
 
-  send(): void { /* never open, never sends */ }
+  send(data: string): void { this.sent.push(data); }
 }
 
 describe('WebsocketService reconnect escalation', () => {
@@ -148,6 +149,7 @@ describe('WebsocketService reconnect escalation', () => {
   it('lets go of a socket completely when switching rooms', () => {
     service.connect('lobby');
     const first = StalledSocket.instances[0];
+    service.sendMessage({ type: 'leave_game_room', gameId: 'old-room' });
 
     service.connect('game-1');
 
@@ -156,6 +158,24 @@ describe('WebsocketService reconnect escalation', () => {
     expect(first.onclose).toBeNull();
     expect(first.readyState).toBe(StalledSocket.CLOSED);
     expect(StalledSocket.instances.length).toBe(2);
+    expect((service as any).sendQueue).toEqual([]);
+  });
+
+  it('drops queued user actions when a socket closes before reconnecting', () => {
+    service.connect('lobby');
+    const socket = StalledSocket.instances[0];
+    socket.readyState = StalledSocket.OPEN;
+    socket.onopen();
+    socket.readyState = StalledSocket.CLOSED;
+    socket.onclose({ code: 1006, reason: 'network lost' });
+    service.sendMessage({ type: 'chat_message', content: 'stale' });
+    jasmine.clock().tick(3000);
+    const replacement = StalledSocket.instances[1];
+    replacement.readyState = StalledSocket.OPEN;
+    replacement.onopen();
+
+    expect((service as any).sendQueue).toEqual([]);
+    expect(replacement.sent).toEqual([]);
   });
 
   it('caps the backlog and never queues a heartbeat', () => {
