@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 from io import StringIO
 from unittest.mock import patch
 
@@ -213,6 +214,54 @@ class GameStateOptimisticConcurrencyTests(TestCase):
             expected_revision=self.state.revision,
         )
         self.assertFalse(stale_move)
+
+    async def test_new_disconnect_replaces_a_grace_task_restored_during_its_write(self):
+        from game.consumers import GameConsumer, _pending_disconnect_timers
+
+        key = (self.game.game_id, 'bob')
+        old_deadline = timezone.now() + timedelta(seconds=30)
+        await self.consumer._record_disconnect_deadline(*key, 'old-channel', old_deadline)
+        restoring = GameConsumer()
+        self.consumer.channel_name = 'new-channel'
+        record = self.consumer._record_disconnect_deadline
+        restored = replacement = None
+
+        async def record_after_restore(game_id, username, channel, deadline):
+            nonlocal restored
+            # Restore the old period after start cancels, before it finishes writing.
+            await restoring._arm_disconnect_grace_timer(*key, 'old-channel', old_deadline)
+            restored = _pending_disconnect_timers[key]
+            await record(game_id, username, channel, deadline)
+
+        try:
+            with patch.object(self.consumer, '_record_disconnect_deadline', record_after_restore):
+                await self.consumer._start_disconnect_grace_timer(*key)
+            replacement = _pending_disconnect_timers[key]
+            self.assertIsNot(replacement, restored)
+            await asyncio.gather(restored, return_exceptions=True)
+            self.assertTrue(restored.done())
+
+            [(username, channel, deadline)] = await self.consumer._get_disconnect_deadlines(self.game.game_id)
+            await restoring._arm_disconnect_grace_timer(self.game.game_id, username, channel, deadline)
+            self.assertIs(_pending_disconnect_timers[key], replacement)
+
+            # A late restore must not replace the newer task with its old snapshot.
+            await restoring._arm_disconnect_grace_timer(*key, 'old-channel', old_deadline)
+            self.assertIs(_pending_disconnect_timers[key], replacement)
+
+            # Both the channel and the deadline must match to reuse a task.
+            for channel, deadline in [('other-channel', deadline),
+                                      ('other-channel', deadline + timedelta(seconds=1))]:
+                await record(*key, channel, deadline)
+                await restoring._arm_disconnect_grace_timer(*key, channel, deadline)
+                current = _pending_disconnect_timers[key]
+                self.assertIsNot(current, replacement)
+                await asyncio.gather(replacement, return_exceptions=True)
+                replacement = current
+        finally:
+            self.consumer._cancel_disconnect_timer(*key)
+            tasks = [task for task in (restored, replacement) if task]
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def test_disconnect_deadline_survives_a_stale_forfeit_write(self):
         deadline = timezone.now() - timedelta(seconds=1)
@@ -1239,14 +1288,14 @@ class LobbyIdentityHijackTests(TransactionTestCase):
         try:
             await owner.connect()
             await _receive_until(owner, 'connection_established')
-            await owner.send_json_to({'type': 'join_lobby', 'username': 'alice_test', 'secret': 'correct-secret'})
+            await owner.send_json_to({'type': 'join_lobby', 'username': 'aliceTest', 'secret': 'correct-secret'})
             await _receive_until(owner, 'user_list')
 
             await rejoiner.connect()
             await _receive_until(rejoiner, 'connection_established')
             await rejoiner.send_json_to({
                 'type': 'join_lobby',
-                'username': 'alice_test',
+                'username': 'aliceTest',
                 'rejoining': True,
                 'secret': 'correct-secret',
             })
@@ -1265,19 +1314,19 @@ class LobbyIdentityHijackTests(TransactionTestCase):
         try:
             await owner.connect()
             await _receive_until(owner, 'connection_established')
-            await owner.send_json_to({'type': 'join_lobby', 'username': 'bob_test', 'secret': 'owner-secret'})
+            await owner.send_json_to({'type': 'join_lobby', 'username': 'bobTest', 'secret': 'owner-secret'})
             await _receive_until(owner, 'user_list')
 
             await attacker.connect()
             await _receive_until(attacker, 'connection_established')
             await attacker.send_json_to({
                 'type': 'join_lobby',
-                'username': 'bob_test',
+                'username': 'bobTest',
                 'rejoining': True,
                 'secret': 'wrong-secret',
             })
             assigned = await _receive_until(attacker, 'username_assigned')
-            self.assertEqual(assigned['originalUsername'], 'bob_test')
+            self.assertEqual(assigned['originalUsername'], 'bobTest')
             self.assertTrue(assigned['username'].startswith('Guest'))
         finally:
             await owner.disconnect()
@@ -1300,14 +1349,14 @@ class LobbyIdentityHijackTests(TransactionTestCase):
         player was renamed to a guest - which also cost them their seat.
         """
         await PlayerConnection.objects.acreate(
-            username='carol_test', channel_name='before-the-restart', secret='carol-secret',
+            username='carolTest', channel_name='before-the-restart', secret='carol-secret',
             status='in-game')
-        await PlayerConnection.objects.filter(username='carol_test').aupdate(
+        await PlayerConnection.objects.filter(username='carolTest').aupdate(
             last_activity=timezone.now() - STALE_AFTER - timedelta(seconds=1))
-        seen, comm = await self._join_lobby('carol_test', 'carol-secret')
+        seen, comm = await self._join_lobby('carolTest', 'carol-secret')
         try:
             self.assertNotIn('username_assigned', [m['type'] for m in seen])
-            row = await PlayerConnection.objects.aget(username='carol_test')
+            row = await PlayerConnection.objects.aget(username='carolTest')
             self.assertNotEqual(row.channel_name, 'before-the-restart')
         finally:
             await comm.disconnect()
@@ -1320,34 +1369,34 @@ class LobbyIdentityHijackTests(TransactionTestCase):
         game, to whoever asked for it next.
         """
         await PlayerConnection.objects.acreate(
-            username='erin_test', channel_name='a-sleeping-laptop', secret='erin-secret',
+            username='erinTest', channel_name='a-sleeping-laptop', secret='erin-secret',
             status='in-game')
-        await PlayerConnection.objects.filter(username='erin_test').aupdate(
+        await PlayerConnection.objects.filter(username='erinTest').aupdate(
             last_activity=timezone.now() - STALE_AFTER - timedelta(seconds=1))
-        seen, comm = await self._join_lobby('erin_test', 'not-erins-secret')
+        seen, comm = await self._join_lobby('erinTest', 'not-erins-secret')
         try:
             assigned = next(m for m in seen if m['type'] == 'username_assigned')
-            self.assertEqual(assigned['originalUsername'], 'erin_test')
-            self.assertNotEqual(assigned['username'], 'erin_test')
+            self.assertEqual(assigned['originalUsername'], 'erinTest')
+            self.assertNotEqual(assigned['username'], 'erinTest')
             # The row itself may well be gone - the sweep in
             # _get_all_online_users clears stale rows on every user list, and
             # always has. What matters is that it was not handed over: no row
             # for this name belongs to the socket that asked for it.
             taken = await PlayerConnection.objects.filter(
-                username='erin_test').exclude(channel_name='a-sleeping-laptop').acount()
+                username='erinTest').exclude(channel_name='a-sleeping-laptop').acount()
             self.assertEqual(taken, 0)
         finally:
             await comm.disconnect()
 
     async def test_a_row_still_being_heartbeated_holds_the_name(self):
         await PlayerConnection.objects.acreate(
-            username='dave_test', channel_name='a-live-socket', secret='dave-secret',
+            username='daveTest', channel_name='a-live-socket', secret='dave-secret',
             status='online')
-        seen, comm = await self._join_lobby('dave_test', 'someone-else')
+        seen, comm = await self._join_lobby('daveTest', 'someone-else')
         try:
             assigned = next(m for m in seen if m['type'] == 'username_assigned')
-            self.assertEqual(assigned['originalUsername'], 'dave_test')
-            row = await PlayerConnection.objects.aget(username='dave_test')
+            self.assertEqual(assigned['originalUsername'], 'daveTest')
+            row = await PlayerConnection.objects.aget(username='daveTest')
             self.assertEqual(row.channel_name, 'a-live-socket')
         finally:
             await comm.disconnect()
@@ -1734,14 +1783,15 @@ class RenameSafetyTests(TransactionTestCase):
 
 
 class CleanUsernameTests(SimpleTestCase):
-    """The name as it will be held: one visible name is one name, and nothing
-    in it is invisible, a control, or the client's own "System"."""
+    """Base names use ASCII letters/digits and cannot impersonate System."""
 
-    def test_one_visible_name_is_one_name(self):
-        from game.validators import clean_username
-        self.assertEqual(clean_username('Ａlice'), 'Alice')        # full-width A
-        self.assertEqual(clean_username('Á'), 'Á')          # accent typed apart
-        self.assertEqual(clean_username('  ann \n\t lee  '), 'ann lee')
+    def test_base_names_are_ascii_letters_and_digits(self):
+        from game.validators import ValidationError, clean_username
+        self.assertEqual(clean_username('Alice123'), 'Alice123')
+        self.assertEqual(clean_username('a' * 24), 'a' * 24)
+        for name in ['Alice Smith', 'Ａlice', 'Á', 'Alice!', 'Alice_1', 'Alice#key']:
+            with self.subTest(name=name), self.assertRaises(ValidationError):
+                clean_username(name)
 
     def test_invisible_control_and_reserved_names_are_refused(self):
         from game.validators import ValidationError, clean_username
@@ -1750,6 +1800,46 @@ class CleanUsernameTests(SimpleTestCase):
             with self.subTest(name=name):
                 with self.assertRaises(ValidationError):
                     clean_username(name)
+
+
+class TripcodeTests(SimpleTestCase):
+    def test_same_key_has_a_stable_code_independent_of_the_base_name(self):
+        from game.validators import username_with_tripcode
+        first, _ = username_with_tripcode('Alice#test key')
+        other, _ = username_with_tripcode('Bob', key='test key')
+        self.assertEqual(first.split('!')[1], other.split('!')[1])
+        self.assertNotEqual(first, username_with_tripcode('Alice#another key')[0])
+        self.assertEqual(len(username_with_tripcode('A' * 24 + '#key')[0]), 37)
+
+    def test_private_proof_preserves_the_code_on_reconnect_and_rename(self):
+        from game.validators import username_with_tripcode
+        name, proof = username_with_tripcode('Alice#test key')
+        self.assertEqual(username_with_tripcode(name, token=proof), (name, proof))
+        self.assertEqual(username_with_tripcode('Renamed', token=proof)[0], 'Renamed!' + name.split('!')[1])
+
+    def test_public_codes_and_malformed_proofs_cannot_authenticate(self):
+        from django.core import signing
+        from game.validators import ValidationError, username_with_tripcode
+        name, proof = username_with_tripcode('Alice#test key')
+        wrong_proof = username_with_tripcode('Bob#other key')[1]
+        malformed_proof = signing.Signer(salt='game.tripcode').sign('not-a-tripcode')
+        wrong_salt_proof = signing.Signer(salt='another.feature').sign(name.split('!')[1])
+        for supplied_name, token in [(name, ''), (name.lower(), ''), (name, proof + 'x'),
+                                     (name, wrong_proof), (name, None), (name, 7),
+                                     (name, 'x' * 201), (name, malformed_proof), (name, wrong_salt_proof),
+                                     (name, '\ud800')]:
+            with self.subTest(name=supplied_name, token=repr(token)):
+                with self.assertRaises(ValidationError) as caught:
+                    username_with_tripcode(supplied_name, token=token)
+                self.assertEqual(caught.exception.code, 'INVALID_TRIPCODE')
+
+    def test_invalid_keys_and_base_names_are_refused(self):
+        from game.validators import ValidationError, username_with_tripcode
+        for name, key in [('Alice#', ''), ('Alice#one#two', ''), ('Alice', 'x' * 129),
+                          ('Alice #key', ''), ('Alice', '\ud800'), ('Alice', None),
+                          ('Alice', 7), ('Alice', 'one#two'), ('System#key', ''), (None, '')]:
+            with self.subTest(name=name, key=repr(key)), self.assertRaises(ValidationError):
+                username_with_tripcode(name, key=key)
 
 
 class UsernameHandlingTests(TransactionTestCase):
@@ -1777,6 +1867,68 @@ class UsernameHandlingTests(TransactionTestCase):
         _cancel_pending_turn_timers()
         super().tearDown()
 
+    async def test_unicode_tripcode_boundary_survives_join_and_rename(self):
+        from game.validators import username_with_tripcode
+        key = '😀' * 128
+        base = 'A' * 24
+        comm, assigned = await self._lobby(base + '#' + key, 'unicode-secret')
+        try:
+            name, proof = username_with_tripcode(base, key=key)
+            self.assertEqual(assigned['username'], name)
+            self.assertEqual(assigned['tripcodeToken'], proof)
+            self.assertNotEqual(name, username_with_tripcode(base, key=key[:64])[0])
+            self.assertNotIn(key, json.dumps(assigned, ensure_ascii=False))
+            await comm.send_json_to({
+                'type': 'change_username', 'oldUsername': name, 'newUsername': 'B' * 24,
+                'tripcodeKey': key, 'secret': 'unicode-secret'})
+            renamed = await _receive_until(comm, 'username_assigned')
+            self.assertEqual(renamed['username'], 'B' * 24 + '!' + name.split('!')[1])
+            self.assertEqual(renamed['tripcodeToken'], proof)
+            await comm.send_json_to({
+                'type': 'change_username', 'oldUsername': renamed['username'],
+                'newUsername': 'C' * 24, 'tripcodeKey': key + '😀', 'secret': 'unicode-secret'})
+            error = await _receive_until(comm, 'error')
+            self.assertEqual(error['code'], 'INVALID_TRIPCODE')
+            self.assertTrue(await PlayerConnection.objects.filter(username=renamed['username']).aexists())
+            self.assertNotIn(key, json.dumps(error, ensure_ascii=False))
+        finally:
+            await comm.disconnect()
+
+    async def test_tripcode_join_reconnect_rename_and_remove_keep_keys_private(self):
+        observer, _ = await self._lobby('Observer', 'o')
+        player, assigned = await self._lobby('A' * 24 + '#test key', 'p')
+        back = None
+        try:
+            name, proof = assigned['username'], assigned['tripcodeToken']
+            self.assertEqual(assigned['reason'], 'tripcode')
+            self.assertEqual(len(name), 37)
+            self.assertNotIn('test key', json.dumps(assigned))
+            roster = await _receive_until(observer, 'user_list')
+            while name not in json.dumps(roster):
+                roster = await _receive_until(observer, 'user_list')
+            self.assertNotIn(proof, json.dumps(roster))
+            self.assertNotIn('test key', json.dumps(roster))
+            await player.disconnect()
+            back, _ = await self._lobby(name, 'p', tripcodeToken=proof, rejoining=True)
+            await back.send_json_to({'type': 'change_username', 'oldUsername': name,
+                                    'newUsername': 'Renamed', 'tripcodeToken': proof, 'secret': 'p'})
+            ack = await _receive_until(back, 'username_assigned')
+            renamed = ack['username']
+            self.assertEqual(renamed.split('!')[1], name.split('!')[1])
+            broadcast = await _receive_until(observer, 'username_changed')
+            self.assertEqual(broadcast['newUsername'], renamed)
+            self.assertNotIn('tripcodeToken', broadcast)
+            await back.send_json_to({'type': 'change_username', 'oldUsername': renamed,
+                                    'newUsername': 'Renamed', 'tripcodeToken': '', 'secret': 'p'})
+            removed = await _receive_until(back, 'username_assigned')
+            self.assertEqual(removed['username'], 'Renamed')
+            self.assertEqual(removed['tripcodeToken'], '')
+            self.assertTrue(await PlayerConnection.objects.filter(username='Renamed').aexists())
+        finally:
+            await observer.disconnect()
+            if back:
+                await back.disconnect()
+
     async def test_a_name_that_cannot_be_held_gets_a_guest_not_an_error(self):
         comm, assigned = await self._lobby('System', 's')
         try:
@@ -1786,13 +1938,12 @@ class UsernameHandlingTests(TransactionTestCase):
         finally:
             await comm.disconnect()
 
-    async def test_a_normalized_name_is_told_back(self):
-        # The client sends its own copy of its name with what it asks for, so
-        # the held spelling has to reach it.
+    async def test_a_non_ascii_name_gets_a_guest(self):
+        # Names saved before the ASCII-only rule recover as guests.
         comm, assigned = await self._lobby('Ａlice', 's')
         try:
-            self.assertEqual(assigned['reason'], 'normalized')
-            self.assertEqual(assigned['username'], 'Alice')
+            self.assertEqual(assigned['reason'], 'invalid')
+            self.assertTrue(assigned['username'].startswith('Guest'))
         finally:
             await comm.disconnect()
 

@@ -3,7 +3,7 @@ from django.utils import timezone
 from typing import Any
 import uuid
 
-from .validators import name_key
+from .validators import MAX_USERNAME_LENGTH, name_key
 
 
 def generate_uuid():
@@ -21,8 +21,8 @@ class GameRoom(models.Model):
     ]
     
     game_id = models.CharField(max_length=36, unique=True, primary_key=True, default=generate_uuid)
-    host = models.CharField(max_length=24)  # Username of the host/inviter
-    opponent = models.CharField(max_length=24)  # Username of the opponent
+    host = models.CharField(max_length=MAX_USERNAME_LENGTH)  # Username of the host/inviter
+    opponent = models.CharField(max_length=MAX_USERNAME_LENGTH)  # Username of the opponent
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='waiting')
     game_mode = models.CharField(max_length=10, default='default')  # 'default' or 'custom'
     game_options = models.JSONField(default=dict)  # {'reveal': True/False, etc}
@@ -63,8 +63,8 @@ class GameChallenge(models.Model):
     ]
     
     challenge_id = models.CharField(max_length=36, unique=True, primary_key=True, default=generate_uuid)
-    challenger = models.CharField(max_length=24, db_index=True)
-    responder = models.CharField(max_length=24, db_index=True)
+    challenger = models.CharField(max_length=MAX_USERNAME_LENGTH, db_index=True)
+    responder = models.CharField(max_length=MAX_USERNAME_LENGTH, db_index=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
@@ -98,10 +98,10 @@ class PlayerConnection(models.Model):
         ('in-game', 'In game room'),
     ]
     
-    username = models.CharField(max_length=24, unique=True, primary_key=True)
+    username = models.CharField(max_length=MAX_USERNAME_LENGTH, unique=True, primary_key=True)
     # The name as it is compared - "Alice" and "alice" are one name - so the
     # database refuses the second in the same statement that claims it. Set
-    # by save(); casefold can lengthen a name ("ß" is "ss"), hence 96.
+    # by save(); 96 also keeps room for legacy Unicode names' casefolds.
     name_key = models.CharField(max_length=96, unique=True, editable=False)
     # Empty while the player has dropped out of a room and has its grace
     # period to come back (_cleanup_game_room_connection): the row, and the
@@ -133,7 +133,7 @@ class PlayerConnection(models.Model):
 class PlayerReadyStatus(models.Model):
     """Tracks player ready state within a game room"""
     game_id = models.ForeignKey(GameRoom, on_delete=models.CASCADE, related_name='player_ready_statuses')
-    username = models.CharField(max_length=24)
+    username = models.CharField(max_length=MAX_USERNAME_LENGTH)
     is_ready = models.BooleanField(default=False)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -174,15 +174,15 @@ class GameState(models.Model):
     # Full board representation as JSON  - dict of "q,r" -> {unit_id, color}
     board_state = models.JSONField(default=dict)
     # Username of whoever's turn it is
-    current_turn = models.CharField(max_length=24)
+    current_turn = models.CharField(max_length=MAX_USERNAME_LENGTH)
     turn_number = models.PositiveIntegerField(default=1)
     # Ordered list of moves: [{from_coord, to_coord, unit_id, color, turn, captured?, timestamp}]
     move_history = models.JSONField(default=list)
     # Side assignments
-    player_white = models.CharField(max_length=24)
-    player_black = models.CharField(max_length=24)
+    player_white = models.CharField(max_length=MAX_USERNAME_LENGTH)
+    player_black = models.CharField(max_length=MAX_USERNAME_LENGTH)
     # End-of-game fields
-    winner = models.CharField(max_length=24, blank=True, default='')
+    winner = models.CharField(max_length=MAX_USERNAME_LENGTH, blank=True, default='')
     end_reason = models.CharField(max_length=20, choices=END_REASON_CHOICES, blank=True, default='')
     # Frozen copy of the GameConfig used at game start (prevents mid-game config edits from corrupting state)
     config_snapshot = models.JSONField(default=dict)
@@ -197,7 +197,7 @@ class GameState(models.Model):
     # one ply both matched it and the second erased the first.
     revision = models.PositiveIntegerField(default=0)
     # Draw offer tracking
-    draw_offered_by = models.CharField(max_length=24, blank=True, default='')
+    draw_offered_by = models.CharField(max_length=MAX_USERNAME_LENGTH, blank=True, default='')
     # When the current turn started - persisted so reconnect resyncs report the
     # real turn clock instead of fabricating "now"
     turn_started_at = models.DateTimeField(null=True, blank=True)
@@ -228,7 +228,7 @@ class GameDisconnect(models.Model):
     """Persist an absent seat's reconnect-grace deadline across restarts."""
 
     game = models.ForeignKey(GameRoom, on_delete=models.CASCADE, related_name='disconnects')
-    username = models.CharField(max_length=24)
+    username = models.CharField(max_length=MAX_USERNAME_LENGTH)
     channel_name = models.CharField(max_length=255)
     deadline = models.DateTimeField()
 

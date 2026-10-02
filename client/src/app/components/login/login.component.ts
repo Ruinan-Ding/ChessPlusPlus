@@ -3,6 +3,7 @@ import { Router } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../services/auth.service';
+import { parseUsernameInput, USERNAME_INPUT_ERROR } from '../../services/username';
 import { WebsocketService } from '../../services/websocket.service';
 import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
 
@@ -15,6 +16,7 @@ import { ConnectionDialogComponent } from '../connection-dialog/connection-dialo
 })
 export class LoginComponent implements OnInit {
   username: string = '';
+  loginError = '';
 
   constructor(
     private router: Router,
@@ -31,26 +33,25 @@ export class LoginComponent implements OnInit {
     if (!this.wsService.isOffline()) this.wsService.connect('lobby');
   }
 
-  /** The name's length as the server counts it - see login(). */
+  /** The base name's length, excluding its optional key. */
   get usernameLength(): number {
-    return [...this.username.trim()].length;
+    return this.username.trim().split('#', 1)[0].length;
   }
 
   login(): void {
-    // Counted as the server counts it: trimmed, in characters - `length` is
-    // UTF-16 units, so an emoji counted twice and padding counted at all.
-    const typed = this.username.trim();
-    if (this.usernameLength > 24) {
-      alert('Username cannot exceed 24 characters.');
+    const parsed = parseUsernameInput(this.username);
+    if (!parsed) {
+      this.loginError = USERNAME_INPUT_ERROR;
       return;
     }
-
-    // No name given is not an error - take a random one, same as the lobby
-    // does for anyone arriving without one. Anything else the server cannot
-    // hold comes back as a guest name, with the lobby saying why.
-    const name = typed || `Player${Math.floor(Math.random() * 10000)}`;
-    this.authService.setUsername(name);
-
+    if (parsed.tripcodeKey && this.wsService.isOffline()) {
+      this.loginError = 'Tripcodes need a server connection.';
+      return;
+    }
+    this.authService.setUsername(parsed.username, true, '');
+    this.authService.setTripcodeKey(parsed.tripcodeKey);
+    this.username = parsed.username;
+    this.loginError = '';
     this.router.navigate(['/lobby']);
   }
 }

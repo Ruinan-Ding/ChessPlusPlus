@@ -19,17 +19,24 @@
           type="text"
           [(ngModel)]="newUsername"
           (ngModelChange)="renameError = ''"
-          placeholder="New username"
+          placeholder="Name or Name#key"
           aria-label="New username"
           [attr.aria-invalid]="renameError ? true : null"
-          maxlength="48"
+          autocomplete="off" autocapitalize="off" spellcheck="false"
+          aria-describedby="rename-tripcode-note"
           (keyup.enter)="changeUsername()"
         >
-        <!-- Characters, not UTF-16 units: 48 lets 24 of any kind be typed, and
-             changeUsername() holds it to 24 (newUsernameLength). -->
+        <!-- The parser counts Unicode characters; native maxlength would
+             silently truncate emoji keys before validation. -->
         <div class="char-counter" [ngClass]="{'near-limit': newUsernameLength > 20}">
           {{ newUsernameLength }}/24
         </div>
+        <p id="rename-tripcode-note" class="tripcode-note">Add #key for a tripcode.
+          Don’t use passwords or sensitive information.
+          <span *ngIf="hasTripcode">Leave out # to keep your current code.</span></p>
+        <label class="remove-tripcode" *ngIf="hasTripcode">
+          <input type="checkbox" [(ngModel)]="removeTripcode"> Remove tripcode
+        </label>
         <!-- Why the name was refused, here where it was asked for (renameError). -->
         <p class="rename-error" *ngIf="renameError" role="alert">{{ renameError }}</p>
         <div class="rename-actions">

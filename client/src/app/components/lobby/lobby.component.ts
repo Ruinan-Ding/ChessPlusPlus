@@ -11,12 +11,13 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { AuthService } from '../../services/auth.service';
+import { parseUsernameInput, USERNAME_INPUT_ERROR } from '../../services/username';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 import { closeUserMenu, openUserMenu as showUserMenu } from '../../services/user-menu';
 import { afterDraw, atNewest } from '../../services/scrolling';
 
 /** What the server answers a refused rename with (validators.py, consumers.py). */
-const RENAME_ERRORS = ['USERNAME_TAKEN', 'INVALID_USERNAME', 'USERNAME_TOO_LONG', 'NAME_LOCKED'];
+const RENAME_ERRORS = ['USERNAME_TAKEN', 'INVALID_USERNAME', 'USERNAME_TOO_LONG', 'INVALID_TRIPCODE', 'NAME_LOCKED'];
 
 @Component({
   selector: 'app-lobby',
@@ -44,6 +45,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
   messages: ChatMessage[] = [];
   messageContent: string = '';
   newUsername: string = '';
+  removeTripcode = false;
   showChangeUsername: boolean = false;
   /** The server had to rename us; the panel is open to offer a better one. */
   nameWasTaken: boolean = false;
@@ -73,9 +75,13 @@ export class LobbyComponent implements OnInit, OnDestroy {
     return this.invitePending || !!this.activeInvite;
   }
 
-  /** The rename box's length as the server counts it: characters, trimmed. */
+  get hasTripcode(): boolean {
+    return this.authService.hasTripcode();
+  }
+
+  /** The base name's length, excluding its optional key. */
   get newUsernameLength(): number {
-    return [...this.newUsername.trim()].length;
+    return this.newUsername.trim().split('#', 1)[0].length;
   }
 
   /** A rejoin sent because another connection holds our name - see 'error'. */
@@ -152,7 +158,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
     const current = this.authService.getUsername();
     this.username = current || this.generateRandomUsername();
     if (!current) this.authService.setUsername(this.username);
-    this.newUsername = this.username;
+    this.newUsername = this.authService.getBaseUsername();
     console.log('[Lobby] Username:', this.username);
     
     this.wsService.connectionStatus$.pipe(takeUntil(this.destroy$)).subscribe(connected => {
@@ -221,13 +227,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
           
           if (message.oldUsername === this.username) {
             this.username = message.newUsername;
-            this.newUsername = message.newUsername;
             this.authService.setUsername(this.username);
-            // Done: the panel that asked shuts. It stayed open, holding the
-            // new name, until Cancel was pressed on a rename that had worked.
-            this.showChangeUsername = false;
-            this.nameWasTaken = false;
-            this.renameError = '';
+            this.keepAssignedName();
           }
           this.cdr.markForCheck();
           break;
@@ -321,28 +322,23 @@ export class LobbyComponent implements OnInit, OnDestroy {
           break;
         
         case 'username_assigned':
-          // Someone else has the name we asked for - most often our own old
-          // session, seen again after reconnecting. The server has already put
-          // us on a random one; offer a rename, and keep the random one if the
-          // player would rather not bother.
-          console.log('[Lobby] Username was taken, assigned new username:', message.username);
           this.username = message.username;
           this.addSystemMessage(message.message);
-          // 'normalized': the name asked for, as the server holds it - still
-          // the player's choice, so remembered, and nothing to offer. A guest
-          // name (taken, or one that cannot be held) stays with this tab.
-          if (message.reason === 'normalized') {
-            this.authService.setUsername(message.username);
-            this.newUsername = message.username;
+          if (message.reason === 'normalized' || message.reason === 'tripcode') {
+            this.authService.setUsername(message.username, true, message.tripcodeToken || '');
+            this.keepAssignedName();
           } else {
-            this.authService.setUsername(message.username, false);
+            // A refused name falls back to a guest identity for this tab only.
+            this.authService.setUsername(message.username, false, '');
+            this.removeTripcode = false;
             this.nameWasTaken = true;
             this.showChangeUsername = true;
             this.newUsername = '';
+            this.renameError = '';
           }
           this.cdr.markForCheck();
           break;
-        
+
         case 'error':
           console.error('[Lobby] Backend error:', message);
           // A rename refused, with the panel that asked for it open: said
@@ -361,6 +357,9 @@ export class LobbyComponent implements OnInit, OnDestroy {
           // `rejoining`, which would take the name straight back from the
           // other connection and have the two trade it on every action.
           if (message.code === 'NAME_RECLAIMED') {
+            this.clearCountdownTimer();
+            this.activeInvite = null;
+            this.invitePending = false;
             if (!this.nameRejoinSent) {
               this.nameRejoinSent = true;
               this.addSystemMessage('Your name is in use somewhere else - rejoining...');
@@ -425,6 +424,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
     this.wsService.sendMessage({
       type: 'join_lobby',
       username: this.username,
+      ...this.authService.getTripcodeCredentials(),
       rejoining,
       secret: this.authService.getIdentitySecret()
     });
@@ -501,7 +501,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
     this.showChangeUsername = false;
     this.nameWasTaken = false;
     this.renameError = '';
-    this.newUsername = this.username;
+    this.removeTripcode = false;
+    this.newUsername = this.authService.getBaseUsername();
     this.cdr.markForCheck();
   }
 
@@ -516,36 +517,48 @@ export class LobbyComponent implements OnInit, OnDestroy {
       this.renameError = 'You must be logged in to change your username.';
       return;
     }
-    if (!trimmedUsername || trimmedUsername === this.username) {
-      this.showChangeUsername = false;
-      this.renameError = '';
+    const parsed = parseUsernameInput(trimmedUsername);
+    if (!parsed) {
+      this.renameError = USERNAME_INPUT_ERROR;
       return;
     }
-    if (this.newUsernameLength > 24) {
-      this.renameError = 'Username must be between 1 and 24 characters.';
+    if (parsed.username === this.authService.getBaseUsername() && !parsed.tripcodeKey && !this.removeTripcode) {
+      this.keepAssignedName();
       return;
     }
+    if (this.removeTripcode && parsed.tripcodeKey) {
+      this.renameError = 'Remove #key from the name to remove your tripcode.';
+      return;
+    }
+    if ((parsed.tripcodeKey || this.hasTripcode) && this.wsService.isOffline()) {
+      this.renameError = 'Tripcodes need a server connection.';
+      return;
+    }
+    let credentials = this.authService.getTripcodeCredentials();
+    if (this.removeTripcode) credentials = { tripcodeToken: '' };
+    else if (parsed.tripcodeKey) credentials = { tripcodeKey: parsed.tripcodeKey };
     this.renameError = '';
     try {
       this.wsService.sendMessage({
         type: 'change_username',
+        ...credentials,
         oldUsername: this.username,
-        newUsername: trimmedUsername,
+        newUsername: parsed.username,
         secret: this.authService.getIdentitySecret()
       });
     } catch (error) {
       console.error('Failed to change username:', error);
       this.renameError = 'Failed to change username. Please try again.';
     }
-    // Keep the UI open until the server confirms or rejects the change
   }
 
   toggleChangeUsername(): void {
     if (this.renameLocked && !this.showChangeUsername) return;
     this.showChangeUsername = !this.showChangeUsername;
+    this.removeTripcode = false;
     this.nameWasTaken = false;
     this.renameError = '';
-    this.newUsername = this.username;
+    this.newUsername = this.authService.getBaseUsername();
   }
 
   openUserMenu(event: MouseEvent, user: User): void {

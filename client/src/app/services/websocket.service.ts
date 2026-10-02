@@ -282,7 +282,7 @@ export class WebsocketService {
       this.socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          console.log('[WebSocket] Message received:', data);
+          console.log('[WebSocket] Message received:', data.type);
           
           if (data.type === 'force_disconnect') {
             console.log('[WebSocket] Forced disconnect from server:', data.message);

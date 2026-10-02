@@ -2,22 +2,27 @@
   <h2>Welcome to ChessPlusPlus</h2>
   <div class="login-form">
     <div class="form-group">
-      <label for="username">Enter your username (blank picks one for you):</label>
+      <label for="username">Username (letters and numbers):</label>
       <input 
         type="text" 
         id="username" 
         [(ngModel)]="username" 
-        placeholder="Username" 
+        placeholder="Name or Name#key"
         class="form-control"
-        maxlength="48"
+        autocomplete="off" autocapitalize="off" spellcheck="false"
+        [attr.aria-invalid]="!!loginError"
+        aria-describedby="tripcode-note" (ngModelChange)="loginError = ''"
         (keyup.enter)="login()"
       >
-      <!-- Characters, not UTF-16 units: 48 lets 24 of any kind be typed, and
-           login() holds it to 24 (usernameLength). -->
+      <!-- The parser counts Unicode characters; native maxlength counts UTF-16
+           units and would silently truncate emoji keys before validation. -->
       <div class="char-counter" [ngClass]="{'near-limit': usernameLength > 20}">
         {{ usernameLength }}/24
       </div>
     </div>
+    <p id="tripcode-note" class="tripcode-note">Optional: Name#key adds a public tripcode.
+      Don’t use passwords or sensitive information.</p>
+    <p *ngIf="loginError" class="login-error" role="alert">{{ loginError }}</p>
     <button (click)="login()" class="login-button">
       Enter Lobby
     </button>

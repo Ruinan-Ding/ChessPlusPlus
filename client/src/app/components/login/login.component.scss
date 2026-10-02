@@ -12,7 +12,7 @@
 
 .login-container {
   max-width: 400px;
-  margin: 100px auto;
+  margin: clamp(8px, 8vh, 100px) auto;
   padding: 30px;
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
@@ -71,4 +71,33 @@ label {
 .login-button:disabled {
   background-color: #cccccc;
   cursor: not-allowed;
+}
+
+.tripcode-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #34495e;
+}
+
+.login-error {
+  color: #c0392b;
+  font-size: 12px;
+}
+
+@media (max-height: 600px) {
+  .login-container {
+    padding: 12px;
+  }
+
+  h2 {
+    margin: 0 0 12px;
+  }
+
+  .form-group {
+    margin-bottom: 10px;
+  }
+
+  .form-control, .login-button {
+    padding: 8px;
+  }
 }

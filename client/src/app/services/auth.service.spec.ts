@@ -61,3 +61,48 @@ describe('AuthService identity secret', () => {
     expect(new AuthService().getIdentitySecret()).toBe(made);
   });
 });
+
+describe('AuthService tripcode credentials', () => {
+  const clear = () => {
+    for (const store of [localStorage, sessionStorage]) {
+      store.removeItem('username');
+      store.removeItem('tripcodeToken');
+    }
+  };
+  beforeEach(clear);
+  afterEach(clear);
+
+  it('holds the key in memory and replaces it with the server proof', () => {
+    const auth = new AuthService();
+    auth.setUsername('Alice', true, '');
+    auth.setTripcodeKey('test key');
+    expect(auth.getTripcodeCredentials()).toEqual({ tripcodeKey: 'test key' });
+    expect(sessionStorage.getItem('tripcodeKey')).toBeNull();
+    expect(localStorage.getItem('tripcodeKey')).toBeNull();
+    auth.setUsername('Alice!ABCDEFGHIJK2', true, 'private-proof');
+    expect(auth.getTripcodeCredentials()).toEqual({ tripcodeToken: 'private-proof' });
+    expect(new AuthService().getTripcodeCredentials()).toEqual({ tripcodeToken: 'private-proof' });
+  });
+
+  it('keeps a guest tab separate from the chosen name and proof', () => {
+    const auth = new AuthService();
+    auth.setUsername('Alice!ABCDEFGHIJK2', true, 'private-proof');
+    auth.setUsername('Guest123456', false, '');
+    expect(new AuthService().getTripcodeCredentials()).toEqual({});
+    expect(localStorage.getItem('tripcodeToken')).toBe('private-proof');
+    sessionStorage.removeItem('username');
+    expect(new AuthService().getTripcodeCredentials()).toEqual({ tripcodeToken: 'private-proof' });
+  });
+
+  it('keeps acknowledged credentials in memory when storage is blocked and clears them on logout', () => {
+    spyOn(Storage.prototype, 'getItem').and.throwError('denied');
+    spyOn(Storage.prototype, 'setItem').and.throwError('denied');
+    const auth = new AuthService();
+    auth.setTripcodeKey('test key');
+    auth.setUsername('Alice!ABCDEFGHIJK2', true, 'private-proof');
+    expect(auth.getTripcodeCredentials()).toEqual({ tripcodeToken: 'private-proof' });
+    auth.logout();
+    expect(auth.getTripcodeCredentials()).toEqual({});
+    expect(auth.getUsername()).toBe('');
+  });
+});

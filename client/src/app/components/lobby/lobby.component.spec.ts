@@ -2,6 +2,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { BehaviorSubject } from 'rxjs';
 
+import { AuthService } from '../../services/auth.service';
 import { LobbyComponent } from './lobby.component';
 import { WebsocketService } from '../../services/websocket.service';
 
@@ -47,8 +48,71 @@ describe('LobbyComponent', () => {
     fixture.detectChanges();
   });
 
-  // The stub's socket is shared by every spec here, and holds its last message.
-  afterEach(() => mockWebsocketService.messages$.next(null));
+  afterEach(() => {
+    mockWebsocketService.messages$.next(null);
+    mockWebsocketService.connectionStatus$.next(false);
+    TestBed.inject(AuthService).logout();
+  });
+
+  it('retains a tripcode for renames and reconnects, changes its key, and can remove it', () => {
+    const sent: any[] = [];
+    spyOn(mockWebsocketService, 'sendMessage').and.callFake(((m: any) => sent.push(m)) as any);
+    const socket = mockWebsocketService.messages$ as BehaviorSubject<any>;
+    const ack = (username: string, token: string) => socket.next({
+      type: 'username_assigned', reason: 'tripcode', username, tripcodeToken: token, message: 'saved'
+    });
+    ack('Alice!ABCDEFGHIJK2', 'private-proof');
+    component.newUsername = 'Bob';
+    component.changeUsername();
+    expect(sent.at(-1).tripcodeToken).toBe('private-proof');
+    expect(sent.at(-1).newUsername).toBe('Bob');
+    component.newUsername = 'Bob#new key';
+    component.changeUsername();
+    expect(sent.at(-1).tripcodeKey).toBe('new key');
+    expect(sent.at(-1).tripcodeToken).toBeUndefined();
+    ack('Bob!ABCDEFGHIJK3', 'new-proof');
+    expect(component.newUsername).toBe('Bob');
+    expect(component.showChangeUsername).toBeFalse();
+    mockWebsocketService.connectionStatus$.next(true);
+    expect(sent.at(-1).tripcodeToken).toBe('new-proof');
+    component.removeTripcode = true;
+    component.changeUsername();
+    expect(sent.at(-1).tripcodeToken).toBe('');
+    socket.next({ type: 'username_assigned', reason: 'normalized', username: 'Bob', tripcodeToken: '', message: 'saved' });
+    expect(TestBed.inject(AuthService).hasTripcode()).toBeFalse();
+  });
+
+  it('sends all 128 emoji from native rename entry and refuses 129 without truncating', async () => {
+    const sent: any[] = [];
+    spyOn(mockWebsocketService, 'sendMessage').and.callFake(((m: any) => sent.push(m)) as any);
+    component.toggleChangeUsername();
+    fixture.detectChanges();
+    const input: HTMLInputElement = fixture.nativeElement.querySelector('.change-username input[type=text]');
+    const name = 'B'.repeat(24);
+    for (const length of [128, 129]) {
+      const key = '😀'.repeat(length);
+      const value = `${name}#${key}`;
+      await fixture.whenStable();
+      input.focus();
+      input.select();
+      expect(document.execCommand('insertText', false, value)).toBeTrue();
+      await fixture.whenStable();
+      expect(input.value).toBe(value);
+      expect(component.newUsername).toBe(value);
+      expect(component.newUsernameLength).toBe(24);
+      component.changeUsername();
+      if (length === 128) {
+        expect(sent.at(-1)).toEqual(jasmine.objectContaining({
+          type: 'change_username', newUsername: name, tripcodeKey: key
+        }));
+        expect(component.renameError).toBe('');
+      } else {
+        expect(component.renameError).toContain('128 characters');
+        expect(component.newUsername).toBe(value);
+      }
+    }
+    expect(sent.filter(m => m.type === 'change_username').length).toBe(1);
+  });
 
   it('should create', () => {
     expect(component).toBeTruthy();
@@ -61,7 +125,7 @@ describe('LobbyComponent', () => {
     };
     afterEach(clear);
 
-    it('keeps a guest name to its tab, and remembers a name only normalized', () => {
+    it('keeps a guest name to its tab, and remembers a canonical name', () => {
       const socket = mockWebsocketService.messages$ as BehaviorSubject<any>;
       localStorage.setItem('username', 'Chosen');
       socket.next({
@@ -75,7 +139,7 @@ describe('LobbyComponent', () => {
 
       component.keepAssignedName();
       socket.next({
-        type: 'username_assigned', username: 'Alice', originalUsername: 'Ａlice',
+        type: 'username_assigned', username: 'Alice', originalUsername: 'alice',
         reason: 'normalized', message: 'Your name is saved as "Alice".',
       });
       expect(component.username).toBe('Alice');
@@ -101,6 +165,37 @@ describe('LobbyComponent', () => {
       socket.next({ type: 'user_list', users: [] });
       socket.next({ ...reclaimed });
       expect(joins()).toBe(2);
+    });
+
+    it('can invite again as a guest after its old name was reclaimed', () => {
+      const sent: any[] = [];
+      spyOn(mockWebsocketService, 'sendMessage').and.callFake(((m: any) => sent.push(m)) as any);
+      const socket = mockWebsocketService.messages$ as BehaviorSubject<any>;
+      component.users = [{ username: component.username, status: 'online' }, { username: 'bob', status: 'online' }];
+      component.inviteUser('bob');
+      expect(component.invitePending).toBeTrue();
+
+      socket.next({ type: 'error', code: 'NAME_RECLAIMED', message: 'in use' });
+      expect(component.invitePending).toBeFalse();
+      socket.next({ type: 'username_assigned', username: 'Guest123456', reason: 'taken', message: 'taken' });
+      socket.next({ type: 'user_list', users: [{ username: 'Guest123456', status: 'online' }, { username: 'bob', status: 'online' }] });
+      expect(component.renameLocked).toBeFalse();
+      expect((component as any).canInviteUser('bob').canInvite).toBeTrue();
+      component.inviteUser('bob');
+      const invites = sent.filter(m => m.type === 'game_challenge');
+      expect(invites.length).toBe(2);
+      expect(invites[1].challenger).toBe('Guest123456');
+    });
+
+    it('clears an incoming invitation and its countdown when its name is reclaimed', () => {
+      const socket = mockWebsocketService.messages$ as BehaviorSubject<any>;
+      socket.next({ type: 'game_challenge', challenger: 'bob', inviteId: 'old-invite' });
+      expect(component.activeInvite).not.toBeNull();
+      expect((component as any).countdownTimerId).not.toBeNull();
+      socket.next({ type: 'error', code: 'NAME_RECLAIMED', message: 'in use' });
+      expect(component.activeInvite).toBeNull();
+      expect((component as any).countdownTimerId).toBeNull();
+      expect(component.renameLocked).toBeFalse();
     });
 
     it('offers no rename with an invite out', () => {

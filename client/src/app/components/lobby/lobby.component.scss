@@ -16,10 +16,8 @@
 
 .header {
   display: flex;
-  // One row, whatever the width: the title, the controls and the connection
-  // line shrink their text rather than wrapping. A header that wraps reads as
-  // broken and pushes everything below it down.
-  flex-wrap: nowrap;
+  // A public tripcode extends the name; wrap controls before clipping it.
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
@@ -58,11 +56,11 @@
   .user-info {
     display: flex;
     align-items: center;
-    flex-wrap: nowrap;
-    // Never squeezed: "Disconnected from Game Server" plus Reconnect is the
-    // widest this row gets, and that is exactly when it matters most.
-    flex: 0 0 auto;
-    white-space: nowrap;
+    // Give the name and connection controls their own lines when needed.
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    white-space: normal;
     // Everything in here scales off this one size, so the whole right-hand
     // side shrinks as a unit instead of one part wrapping ahead of the rest -
     // down to 12px and no further, the floor the game room holds its type to.
@@ -80,6 +78,12 @@
     display: flex;
     align-items: center;
     gap: clamp(4px, 0.6vw, 10px);
+    min-width: 0;
+
+    span {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
   }
   
   .change-username {
@@ -88,6 +92,21 @@
     gap: 5px;
     // The panel below the header is prose and inputs; it wraps normally.
     white-space: normal;
+    width: min(280px, 100%);
+
+    .tripcode-note {
+      margin: 0;
+      font-size: 12px;
+      color: #34495e;
+    }
+
+    .remove-tripcode {
+      display: flex;
+      align-items: center;
+      min-height: 24px;
+      gap: 4px;
+      font-size: 12px;
+    }
     
     input {
       padding: 5px;
@@ -259,12 +278,11 @@
       position: relative; /* Ensures the tooltip works */
     }
 
-    /* The name is what gets truncated; the "(You)" tag never does. */
+    // Keep the tripcode visible even when the name needs a second line.
     .username-text {
       min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     
     .user-status {
@@ -321,6 +339,7 @@
   border-radius: 4px;
   background-color: white;
   min-height: 0; /* allow chat-panel to shrink */
+  min-width: 0;
   
   .chat-messages {
     flex-grow: 1;
@@ -332,6 +351,9 @@
   }
   
   .message-item {
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-wrap: anywhere;
     padding: 10px;
     margin: 5px 0;
     border-radius: 10px;
@@ -369,11 +391,13 @@
     
     .message-header {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 8px;
       margin-bottom: 4px;
       
       .message-username {
+        min-width: 0;
         font-family: 'Roboto Condensed', sans-serif;
         font-weight: 600;
         font-size: 1.1em;
