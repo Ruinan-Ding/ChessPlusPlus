@@ -304,6 +304,11 @@ fly secrets set DJANGO_SECRET_KEY="<the key you just generated>"
 fly secrets set DJANGO_ALLOWED_HOSTS="chessplusplus.fly.dev,yourname.github.io"
 ```
 
+**Set the key once and keep it.** A tripcode (`Name#key`, shown as `Name!CODE`) is an HMAC
+under it, and the proof each browser keeps to reuse its code is signed with it. A new key gives
+every player a new code, and every remembered proof stops verifying: those players come back as
+guests until they type their key again.
+
 **Both hosts, and this matters.** `server/core/asgi.py` wraps the WebSocket route in
 `AllowedHostsOriginValidator`, which checks the browser's `Origin` header against
 `ALLOWED_HOSTS`. The page is served from GitHub Pages, so that is the Origin the browser sends.
@@ -521,6 +526,11 @@ There are no accounts. A username is claimed first-come, and the per-browser sec
 and there is no recovery. Once you disconnect, the name is free for anyone. That is a deliberate
 choice for now, not an oversight, but it is worth knowing before the URL goes anywhere public:
 anyone who has it can join the lobby as anyone who is not currently connected.
+
+A tripcode is the one thing a name can carry that others cannot copy: `Name#key` is shown as
+`Name!CODE`, and only that key - or the proof the server hands back to the browser that typed
+it - produces that code. It is still not an account, and the key is not stored anywhere to
+recover; the entry screens warn players not to use a password as one.
 
 `/admin/` is exposed on the Fly host. There is no superuser until you make one
 (`fly ssh console` then `python manage.py createsuperuser`), so it is a login page nobody can

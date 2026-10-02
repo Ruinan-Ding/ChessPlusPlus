@@ -32,7 +32,7 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (322 tests, 1 Oct 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (329 tests, 2 Oct 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
@@ -41,6 +41,8 @@ python scripts/e2e/edges.py    # races, second tab, token lifetime, disconnect a
 python scripts/e2e/endings.py  # two matches played out: to turn 50 on passes, and won on points (~1 min)
 python scripts/e2e/panels.py   # crossings, walks home, blows into a panel - needs the server
                                # started with CPP_DEAL_PANELS=1, or it fails for want of panel units
+# E2E_PORT=<port> aims them at a server other than :8000. edges.py also reads the database
+# itself, so a server on another database needs the same DJANGO_SETTINGS_MODULE in this shell.
 
 # Client (from client/)
 ng serve                                              # serve on :4200
@@ -2246,21 +2248,32 @@ and claims the new one in one transaction (`_rename_player_connection`), so a re
 leaves the player exactly where they were. A guest name handed out instead is claimed the same
 way, try after try (`_claim_guest_name`) - the second random name used to go unchecked.
 
-**What a name can be - `clean_username` in `validators.py`, the one rule.** NFKC first, so one
-visible name is one name (a full-width `Ａ` or an accent typed as a separate mark used to make a
-second "Alice"), and whitespace runs, line breaks included, become one space. Then refused: any
-control, format, private-use or unassigned character (zero-width spaces and direction overrides
-made look-alikes; a line break forged server log lines), more than 24 characters, and the
-reserved `System` - the room drew a player by that name as its own notices, and their "Game mode
-changed" line deleted the real ones. **Names that differ only in case are one name**:
+**What a name can be - `clean_username` in `validators.py`, the one rule.** The owner,
+2 Oct 2026: at least one `a–z`, `A–Z` or `0–9`, with no spaces or other characters; the
+base name stays at most 24 characters, and `System` stays reserved. This replaces the
+Unicode/whitespace-normalizing rule. **Names that differ only in case are one name**:
 `PlayerConnection.name_key` holds the casefolded name, unique, set by `save()`, so the database
 refuses "alice" while "Alice" is held in the statement that claims it, and every "is this name
 held?" asks by key (`_get_name_holder`, `_reclaimed_by_newer_socket`). `join_lobby` answers a name
-it cannot hold with a guest's, as it answers a taken one - it used to be an error, which left the
-lobby with no name at all - and **tells the client whenever the name held is not the one asked
-for**, normalized included (`username_assigned` with `reason`: `taken`, `invalid`, `normalized`),
-because every client sends its own copy of its name back in what it asks. One socket holds one
-name: a second `join_lobby` under another is refused, as `join_game_room` refuses one.
+it cannot hold with a guest's, as it answers a taken one, and tells the client whenever the
+held name differs (`username_assigned`: `taken`, `invalid`, `normalized`, `tripcode`). One socket
+holds one name: a second `join_lobby` under another is refused, as `join_game_room` refuses one.
+
+**Optional tripcodes use `Name#key`.** The owner's decision, 2 Oct 2026: at most one `#`,
+followed by a tripcode key; both name-entry screens say **“Don’t use passwords or sensitive
+information.”** The key may be 1–128 Unicode code points and does not become part of the
+public name. Both fields use `services/username.ts` to validate without native `maxlength`,
+which counts UTF-16 units and truncates valid emoji keys. Native-input specs cover 128 and 129.
+`username_with_tripcode` hashes it with Django's server-secret HMAC into a 12-character public
+suffix: `Name!CODE`. The same key gives the same code independently of the base name. The raw
+key is never stored or echoed; only a signed private proof is returned to that socket, and
+`AuthService` remembers the proof alongside the tab's name for reloads and reconnects. Copying
+an `!CODE` without the proof or key is refused. Every public roster, chat and room uses the
+canonical name, and all name-bearing model fields allow 37 characters (24 + `!` + 12).
+Tripcodes do not bypass the existing name claim, invite lock, browser identity or room token.
+Renaming without `#` retains the current code; the rename panel also offers Remove tripcode.
+Tripcodes require the server; plain names still work offline. Keep `DJANGO_SECRET_KEY` stable:
+changing it changes key-derived codes and, without Django key fallbacks, invalidates remembered proofs.
 
 **A name in flight does not change.** `change_username` is refused (`NAME_LOCKED`) in a room and
 for anyone not plainly `online` - with an invite out or in. Renamed with an invite out, the old
@@ -2337,7 +2350,8 @@ another had taken back - a second tab with the same secret, or the player return
 stranger had grabbed - went on chatting and inviting as it, and its rename told every lobby, the
 one really holding the name included, that the name had changed; that lobby then took the new
 name as its own. The lobby answers by joining again, once (`nameRejoinSent`), and is handed the
-name or a guest's.
+name or a guest's. It clears pending invitations and their countdown first: a request
+refused in the old name has no invitation whose answer could release it.
 
 **A tab's name is its own.** `AuthService` keeps the name a tab plays under in session storage,
 pinned on the first read, and local storage only remembers the last name the player *chose*
@@ -2391,7 +2405,9 @@ believed: a rejoin deletes it at the top of `_handle_join_game_room`, which clos
 in-memory cancel alone left open. Every successful join then calls `_resume_game_timers`, which
 re-arms the turn clock from the persisted `turn_started_at` (with its idle-pass count back at
 zero) and any other seat's grace from its stored deadline. A grace task already running is left
-alone; a deadline that passed while the server was down is settled on the spot. Nothing runs
+alone only when its channel and deadline match. A new period replaces an obsolete task; a
+restore of an older database snapshot cannot replace the persisted period's task. A deadline
+that passed while the server was down is settled on the spot. Nothing runs
 until somebody joins - DEPLOYMENT.md has the restart story.
 
 **An unanswered invite used to wedge a pair forever.** `expires_at` was written at creation
@@ -2508,8 +2524,11 @@ its board-move messages*), so the engine takes each move whole or refuses it who
 
 **Undo stops once End Turn has sent the turn.** `turnSubmitted` (the `submittedTurn` guard
 End Turn already used) disables the button and makes `undoMove` a no-op until the engine
-answers. The staged stack stays up in that gap so the position does not flicker, and popping it
-then changed nothing the engine saw while showing a board that was not being played.
+answers. A successful network rejoin releases the guard too: reconnect drops queued commits,
+and a snapshot at the same ply must still let the player retry or undo. A solo commit is
+answered locally and stays latched. The staged stack stays up in that gap so the position does
+not flicker, and popping it then changed nothing the engine saw while showing a board that
+was not being played.
 
 End Turn deliberately leaves `stagedBoard` in place; the `move_made` handler clears it once the
 confirmed board arrives. Clearing it at send time flashed the pre-move position for a frame,

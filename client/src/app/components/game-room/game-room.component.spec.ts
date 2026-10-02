@@ -101,6 +101,54 @@ describe('GameRoomComponent ability panel', () => {
       expect(c.acceptStateRevision({ type: 'move_made', revision: 3 })).toBeFalse();
     });
 
+    for (const staged of [false, true]) {
+      it(`allows retrying a discarded ${staged ? 'move' : 'pass'} after rejoining at the same ply`, () => {
+        const c = room();
+        const sent: any[] = [];
+        c.wsService = { sendMessage: (m: any) => sent.push(m), isLocal: () => false };
+        c.isSinglePlayer = false;
+        c.gameState = new GameStateService();
+        c.persistLocalUiState = () => {};
+        c.reconcilePoints = () => {};
+        const snapshot = {
+          revision: 4, turnNumber: 7, currentTurn: 'me', playerWhite: 'me', playerBlack: 'them',
+          config: { ...DEFAULT_GAME_CONFIG, rules: { ...DEFAULT_GAME_CONFIG.rules, turnTimeLimit: 0 } },
+          boardState: {}, moveHistory: [],
+        };
+        c.gameState.applyGameStarted(snapshot);
+        if (staged) c.stagedActions = [{
+          at: 1, from: '0,0', to: '1,0', used: 1, attack: null,
+          board: { '1,0': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20 } },
+        }];
+        const commits = () => sent.filter(m => m.type === (staged ? 'make_move' : 'pass_turn'));
+
+        c.endTurn();
+        c.onPlaybackDone();
+        c.endTurn();
+        expect(commits().length).toBe(1);
+        expect(c.canUndo).toBeFalse();
+
+        // The reconnect discarded that queued commit. Its snapshot is unchanged.
+        c.handleWebSocketMessage({ type: 'join_game_room_success', gameStatus: 'started' });
+        c.handleWebSocketMessage({ type: 'game_state_update', ...snapshot });
+        expect(c.turnSubmitted).toBeFalse();
+        expect(c.canUndo).toBe(staged);
+        c.endTurn();
+        c.onPlaybackDone();
+        c.endTurn();
+        expect(commits().length).toBe(2);
+      });
+    }
+
+    it('keeps a solo submission latched when joining its local room', () => {
+      const c = room();
+      c.wsService.isLocal = () => true;
+      c.gameState.snapshot.turnNumber = 7;
+      c.submittedTurn = 7;
+      c.handleWebSocketMessage({ type: 'join_game_room_success', gameStatus: 'started' });
+      expect(c.turnSubmitted).toBeTrue();
+    });
+
     it('applies an authoritative full snapshot at the current revision', () => {
       const gameState = new GameStateService();
       const c: any = new GameRoomComponent(
@@ -3428,7 +3476,7 @@ describe('GameRoomComponent tabs', () => {
       myColor: (who: string) => (who === 'me' ? 'white' : 'black'),
     };
     const c: any = new GameRoomComponent(
-      { sendMessage: () => {} } as any, {} as any, {} as any, {} as any, {} as any,
+      { sendMessage: () => {}, isLocal: () => false } as any, {} as any, {} as any, {} as any, {} as any,
       { markForCheck: () => {}, detectChanges: () => {} } as any, gameState, {} as any,
       { playTone: () => {} } as any, zone,
     );

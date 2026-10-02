@@ -30,7 +30,7 @@ from .models import (
     GameDisconnect,
 )
 from .validators import (
-    ValidationError, GAME_OPTION_KEYS, validate_required_fields, clean_username, name_key,
+    ValidationError, GAME_OPTION_KEYS, validate_required_fields, username_with_tripcode, name_key,
     validate_status, validate_game_mode, validate_game_options,
     validate_chat_message
 )
@@ -545,7 +545,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         """Handle user joining the lobby"""
         try:
             raw_username = data.get('username')
-            original_username = raw_username.strip() if isinstance(raw_username, str) else ''
+            original_username = raw_username.split('#', 1)[0].strip() if isinstance(raw_username, str) else ''
             client_secret = _extract_secret(data)
             # Why the name asked for is not the one held, if it is not: None,
             # 'invalid' or 'taken'. A name that only came back normalized is
@@ -558,9 +558,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             # no name at all - and a name saved before the rules tightened
             # would have done that on every visit.
             try:
-                username = clean_username(original_username)
+                username, tripcode_token = username_with_tripcode(
+                    raw_username, data.get('tripcodeKey', ''), data.get('tripcodeToken', ''))
             except ValidationError as e:
-                username, refused, refusal = '', 'invalid', e.message
+                username, tripcode_token, refused, refusal = '', '', 'invalid', e.message
 
             # One socket, one name, as in _handle_join_game_room. A second join
             # under another name claimed that one too and left the first held
@@ -620,6 +621,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 refused = 'taken'
             if refused:
                 username = await self._claim_guest_name(client_secret)
+                tripcode_token = ''
                 logger.info(f"Username {original_username!r} {refused}, assigned '{username}' instead")
 
             self.username = username
@@ -633,12 +635,13 @@ class GameConsumer(AsyncWebsocketConsumer):
             # Every client keeps its own copy of its name and sends it back
             # in what it asks for, so any difference - a guest name, or the
             # same name normalized - has to be told.
-            if username != original_username:
+            if username != original_username or data.get('tripcodeKey'):
                 await send_json_response(self, {
                     'type': 'username_assigned',
                     'username': username,
                     'originalUsername': original_username,
-                    'reason': refused or 'normalized',
+                    'reason': refused or ('tripcode' if tripcode_token else 'normalized'),
+                    'tripcodeToken': tripcode_token,
                     'message': message,
                 })
             
@@ -710,7 +713,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             old_username = data.get('oldUsername')
             client_secret = _extract_secret(data)
 
-            new_username = clean_username(data.get('newUsername'))
+            new_username, tripcode_token = username_with_tripcode(
+                data.get('newUsername'), data.get('tripcodeKey', ''), data.get('tripcodeToken', ''))
 
             if not self.username or self.username != old_username:
                 await send_error(self, 'INVALID_REQUEST', 'Cannot change username for another user')
@@ -747,7 +751,16 @@ class GameConsumer(AsyncWebsocketConsumer):
                     return
 
             self.username = new_username
-            
+            # Private acknowledgement: the public rename never carries the
+            # proof that lets this browser reuse the tripcode after a reload.
+            if tripcode_token or 'tripcodeToken' in data or 'tripcodeKey' in data:
+                await send_json_response(self, {
+                    'type': 'username_assigned', 'username': new_username,
+                    'reason': 'tripcode' if tripcode_token else 'normalized',
+                    'tripcodeToken': tripcode_token,
+                    'message': f'Your name is saved as "{new_username}".',
+                })
+
             await broadcast_to_group(self.channel_layer, self.room_group_name, {
                 'type': 'username_changed',
                 'oldUsername': old_username,
@@ -1764,9 +1777,20 @@ class GameConsumer(AsyncWebsocketConsumer):
 
     async def _arm_disconnect_grace_timer(self, game_id: str, username: str,
                                           dropped_channel: Optional[str], deadline):
-        existing = _pending_disconnect_timers.get((game_id, username))
-        if existing and not existing.done():
-            return
+        timer_name = f'{dropped_channel}/{deadline.isoformat()}'
+        while True:
+            existing = _pending_disconnect_timers.get((game_id, username))
+            if existing and not existing.done() and existing.get_name() == timer_name:
+                return
+            # A restore can hold an older database snapshot. Only arm the
+            # persisted period, and retry if another task changed during the read.
+            periods = await self._get_disconnect_deadlines(game_id)
+            if _pending_disconnect_timers.get((game_id, username)) is not existing:
+                continue
+            if (username, dropped_channel, deadline) not in periods:
+                return
+            self._cancel_disconnect_timer(game_id, username)
+            break
 
         async def _grace_task():
             try:
@@ -1825,7 +1849,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if _pending_disconnect_timers.get((game_id, username)) is asyncio.current_task():
                     _pending_disconnect_timers.pop((game_id, username), None)
 
-        task = asyncio.create_task(_grace_task())
+        task = asyncio.create_task(_grace_task(), name=timer_name)
         _pending_disconnect_timers[(game_id, username)] = task
 
     async def _resume_game_timers(self, game_id: str):

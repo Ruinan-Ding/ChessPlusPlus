@@ -1272,6 +1272,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         // Sent after joining the game room - if the game was already started,
         // request a full state resync (reconnection).
         if (actualMessage.gameStatus === 'started') {
+          // Reconnect drops queued commits. Even at the same ply, the turn
+          // can be submitted again after joining; solo never lost its commit.
+          if (!this.wsService.isLocal()) this.submittedTurn = -1;
           // Off the Room tab only on coming into a match already under way.
           // The room joins again on every reconnect, and a blip mid-match
           // had thrown a player off the chat or an offer they were answering.

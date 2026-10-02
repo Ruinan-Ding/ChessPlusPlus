@@ -1,7 +1,11 @@
 """
 Message and data validators for WebSocket communication
 """
-import unicodedata
+import base64
+import re
+
+from django.core import signing
+from django.utils.crypto import salted_hmac
 
 
 class ValidationError(Exception):
@@ -28,6 +32,12 @@ def validate_required_fields(data: dict, required_fields: list) -> None:
             raise ValidationError('MISSING_FIELD', f'Missing required field: {field}')
 
 
+MAX_BASE_USERNAME_LENGTH = 24
+MAX_TRIPCODE_KEY_LENGTH = 128
+TRIPCODE_LENGTH = 12
+MAX_USERNAME_LENGTH = MAX_BASE_USERNAME_LENGTH + 1 + TRIPCODE_LENGTH
+
+
 #: Names nobody may hold, compared as name_key() does. The client draws its
 #: own notices under "System", and a player by that name was drawn as one.
 RESERVED_USERNAMES = {'system'}
@@ -40,29 +50,67 @@ def name_key(username: str) -> str:
 
 
 def clean_username(username) -> str:
-    """
-    The name as it will be held, or ValidationError.
-
-    NFKC folds compatibility forms - full-width letters, ligatures, an accent
-    typed as a separate mark - into the plain ones, so one visible name is one
-    name; runs of whitespace, line breaks included, become one space. What is
-    left may not carry control, format, private-use or unassigned characters:
-    zero-width spaces and direction overrides made names that looked like
-    someone else's, and a line break forged lines in the server log.
-    """
+    """The base name: 1–24 ASCII letters/digits, with System reserved."""
     if not isinstance(username, str):
         raise ValidationError('INVALID_USERNAME', 'Username must be a non-empty string')
-    username = ' '.join(unicodedata.normalize('NFKC', username).split())
     if not username:
         raise ValidationError('INVALID_USERNAME', 'Username cannot be empty or only whitespace')
-    if len(username) > 24:
-        raise ValidationError('USERNAME_TOO_LONG', 'Username cannot exceed 24 characters')
-    if any(unicodedata.category(ch).startswith('C') for ch in username):
-        raise ValidationError(
-            'INVALID_USERNAME', 'Username cannot contain invisible or control characters')
+    if len(username) > MAX_BASE_USERNAME_LENGTH:
+        raise ValidationError('USERNAME_TOO_LONG', f'Username cannot exceed {MAX_BASE_USERNAME_LENGTH} characters')
+    if not re.fullmatch(r'[A-Za-z0-9]+', username):
+        raise ValidationError('INVALID_USERNAME', 'Username must contain only a–z, A–Z and 0–9')
     if name_key(username) in RESERVED_USERNAMES:
         raise ValidationError('INVALID_USERNAME', f'"{username}" is reserved')
     return username
+
+
+# A public suffix still requires the matching key or signed reconnect proof.
+TRIPCODE_SUFFIX = re.compile(rf'!([A-Z2-7]{{{TRIPCODE_LENGTH}}})$', re.IGNORECASE)
+
+
+def username_with_tripcode(username, key='', token='') -> tuple[str, str]:
+    """Resolve a name and private reconnect proof without storing the key."""
+    if not isinstance(username, str):
+        raise ValidationError('INVALID_USERNAME', 'Username must be a non-empty string')
+    username = username.strip()
+    if '#' in username:
+        if username.count('#') != 1 or key or token:
+            raise ValidationError('INVALID_TRIPCODE', 'Use at most one # followed by a tripcode key')
+        username, key = username.split('#', 1)
+        if not key:
+            raise ValidationError('INVALID_TRIPCODE', 'Enter a tripcode key after #')
+    suffix = TRIPCODE_SUFFIX.search(username)
+    base = clean_username(username[:suffix.start()] if suffix else username)
+    if not isinstance(key, str):
+        raise ValidationError('INVALID_TRIPCODE', 'Tripcode key must be a string')
+    if len(key) > MAX_TRIPCODE_KEY_LENGTH:
+        raise ValidationError('INVALID_TRIPCODE', f'Tripcode key must be at most {MAX_TRIPCODE_KEY_LENGTH} characters')
+    if '#' in key:
+        raise ValidationError('INVALID_TRIPCODE', 'Use at most one # followed by a tripcode key')
+    proof_error = 'Tripcode could not be verified; enter its key again'
+    if not isinstance(token, str) or len(token) > 200:
+        raise ValidationError('INVALID_TRIPCODE', proof_error)
+    if not key and not token:
+        if suffix:
+            raise ValidationError('INVALID_TRIPCODE', 'Enter the tripcode key to use this name')
+        return base, ''
+    signer = signing.Signer(salt='game.tripcode')
+    if key:
+        try:
+            digest = salted_hmac('game.tripcode', key, algorithm='sha256').digest()
+            code = base64.b32encode(digest).decode('ascii')[:TRIPCODE_LENGTH]
+        except UnicodeEncodeError:
+            raise ValidationError('INVALID_TRIPCODE', 'Tripcode key contains invalid Unicode characters') from None
+    else:
+        try:
+            code = signer.unsign(token)
+        except (signing.BadSignature, UnicodeEncodeError):
+            raise ValidationError('INVALID_TRIPCODE', proof_error) from None
+        if not re.fullmatch(rf'[A-Z2-7]{{{TRIPCODE_LENGTH}}}', code):
+            raise ValidationError('INVALID_TRIPCODE', proof_error)
+    if suffix and suffix.group(1).upper() != code:
+        raise ValidationError('INVALID_TRIPCODE', 'Enter the tripcode key to use this name')
+    return f'{base}!{code}', signer.sign(code)
 
 
 def validate_status(status: str) -> None:
