@@ -55,9 +55,9 @@ class ScoringParityTestCase(SimpleTestCase):
             radius = config['board']['radius']
             ending = scoring.schedule_ending(bank, ply)
             with self.subTest(case=i):
-                self.assertEqual(dict(scoring.capture_claims(board, radius)), expect['claims'])
+                self.assertEqual(dict(scoring.capture_claims(board, radius, config)), expect['claims'])
                 self.assertEqual(
-                    [scoring.cap_of(board, radius, side) for side in ('white', 'black')],
+                    [scoring.cap_of(board, radius, side, config) for side in ('white', 'black')],
                     expect['cap'])
                 self.assertEqual(
                     scoring.bank_ended_phases(bank, config, board, history, ply), expect['bank'])

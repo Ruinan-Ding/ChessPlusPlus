@@ -16,9 +16,9 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
-  attackTiers, captureClaims, captureZoneHexes, captureZoneValues, computeAttackZone,
-  computeLegalMoves, computeMoveCosts, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
-  BASE_PANELS, HEX_DIRS, PANELS_DEALT,
+  attackTiers, captureClaims, captureZones, captureZoneValues, computeAttackZone,
+  computeLegalMoves, computeMoveCosts, canAttack, healingAmount, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
+  BASE_PANELS, HEX_DIRS, PANELS_DEALT, panelOfHex,
 } from '../../services/hex-rules';
 import {
   boardMovesPerTurn, overtimeTollAt, overtimeTollOver,
@@ -26,6 +26,8 @@ import {
   isSetupTurn, isWrapOpen, sideOfPly,
 } from '../../services/phases';
 import { ruleOf } from '../../services/config.service';
+import { unitVeterancy } from '../../services/history-rules';
+export { panelOfHex } from '../../services/hex-rules';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,7 +77,7 @@ interface StrikeMarks {
  * list from what it staged; the board is what knows where a hex is.
  */
 export interface AnimStep {
-  kind: 'move' | 'attack' | 'counter' | 'ability' | 'pick' | 'commit';
+  kind: 'move' | 'attack' | 'counter' | 'heal' | 'ability' | 'pick' | 'commit';
   /** Where the actor stands (attack, ability) or starts from (move). */
   from: string;
   /** Where it lands (move) or what it hits (attack, counter, ability). */
@@ -144,6 +146,9 @@ interface HexCell {
   panel: string;
   /** '' for battlefield, else 'hex-filler panel-xx' picking the panel colour. */
   zoneClass: string;
+  zoneOwner: 'white' | 'black' | '';
+  zoneCenter: boolean;
+  zoneLayer: number;
   /** Whose setup rows this hex is in, from this client's seat; '' between. */
   home: 'mine' | 'theirs' | '';
   /** A reserve hex units enter the board from, and which way its arrow points. */
@@ -342,28 +347,21 @@ function wholeStat(v: number | null | undefined): number | null {
   return v === null || v === undefined ? null : Math.max(0, Math.trunc(v));
 }
 
-/**
- * Placeholder veterancy 0-3. Deterministic from the coord + unit so it does not
- * flicker on every redraw - the real mechanic is not specified yet.
- */
-function placeholderVet(key: string, unitId: string): number {
-  let h = 0;
-  const seed = key + unitId;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
-  return Math.abs(h) % 4;
-}
-
 function attackCellText(unitId: string, config: any, bonus = 0): string {
   return String(twoDigits((attackTiers(unitId, config)[0] ?? 0) + bonus));
 }
 
-/** The far end of a unit's reach; the near end is a ring away from itself. */
+/** The far end of the unit's attack or healing reach. */
 function rangeHigh(unitId: string, config: any): number {
-  return config?.units?.[unitId]?.attackRange ?? 1;
+  const unit = config?.units?.[unitId];
+  return unit?.heal?.length || Math.max(1, unit?.attackRange ?? 1);
 }
 
-/** Nothing strikes its own hex, so the near end of every reach is 1 today. */
-const RANGE_LOW = 1;
+/** Healing starts at ring 1; attack may exclude the nearer rings. */
+function rangeLow(unitId: string, config: any): number {
+  const unit = config?.units?.[unitId];
+  return unit?.heal?.length ? 1 : unit?.attackMinRange ?? 1;
+}
 
 /** Stat as drawn on the hex: plain digits, two at most (see twoDigits). */
 function statText(v: number | null | undefined): string {
@@ -392,18 +390,6 @@ export function hexNumberMap(
  */
 function panelOf(x: number, y: number): string {
   return `${y < 0 ? 't' : 'b'}${x < 0 ? 'l' : 'r'}`;
-}
-
-/**
- * Which corner panel the panel hex `key` sits in, or '' for a key that is no
- * hex. Exported so the game room can tell a base from a reserve off where a
- * panel walk ended, as `panel_of(axial_to_pixel(...))` does on the server.
- */
-export function panelOfHex(key: string, orientation: BoardOrientation = 'edge-up'): string {
-  const [q, r] = String(key).split(',').map(Number);
-  if (!Number.isInteger(q) || !Number.isInteger(r)) return '';
-  const { x, y } = axialToPixel(q, r, orientation);
-  return panelOf(x, y);
 }
 
 /**
@@ -575,6 +561,8 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [attr.points]="hex.points"
             [class.hex-cell]="true"
             [ngClass]="hex.zoneClass"
+            [class.zone-white-base]="hex.zoneOwner === 'white'"
+            [class.zone-black-base]="hex.zoneOwner === 'black'"
             [class.home-mine]="hex.home === 'mine'"
             [class.home-theirs]="hex.home === 'theirs'"
             [class.hex-selected]="hex.key === selectedHex"
@@ -583,6 +571,9 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             [class.hex-move-preview]="!hex.panel && previewMoves.has(hex.key) && (!showingSelection || !legalTargets.has(hex.key))"
             [class.hex-attack-preview]="!hex.panel && previewAttacks.has(hex.key)"
             [class.hex-attack-target]="!hex.panel && showingSelection && attackTargets.has(hex.key)"
+            [class.hex-heal-preview]="!hex.panel && previewHeals.has(hex.key)"
+            [class.hex-heal-target]="!hex.panel && showingSelection && healTargets.has(hex.key)"
+            [class.hex-heal-armed]="!hex.panel && healTargets.has(hex.key) && hex.key === armedAttack"
             [class.hex-attack-armed]="!hex.panel && hex.key === armedAttack"
             [class.preview-dim]="previewDim"
             [class.reach-up]="movWave === 'up' && (legalTargets.has(hex.key) || previewMoves.has(hex.key))"
@@ -618,9 +609,13 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
             *ngIf="hex.zoneClass === 'zone' && !isEntry(hex)"
             [attr.points]="hex.points"
             class="zone-wash"
+            [class.zone-white-base]="hex.zoneOwner === 'white'"
+            [class.zone-black-base]="hex.zoneOwner === 'black'"
             [class.held-white]="captureClaim.get(hex.key) === 'white'"
             [class.held-black]="captureClaim.get(hex.key) === 'black'"
           />
+          <polygon *ngIf="hex.zoneCenter || hex.zoneLayer === 1" [attr.points]="hex.points"
+            [class.zone-center]="hex.zoneCenter" [class.zone-inner]="!hex.zoneCenter" [attr.transform]="'translate(' + hex.cx + ' ' + hex.cy + ') scale(0.88) translate(' + -hex.cx + ' ' + -hex.cy + ')'" />
           <!-- What a hex of this zone is worth to whoever holds it (ZONE_WORTH:
                3 in each side's half, 2 in the middle, 1 at the sides), on
                every empty one. In the bottom of the hex, clear of the move dot
@@ -895,6 +890,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
                     [attr.transform]="textTransform(hex.cx, hex.cy)"
                     class="damage-forecast"
                     [class.counter]="takesCounter(hex.key)"
+                    [class.healing]="healTargets.has(hex.key)"
                     [class.no-damage]="damage === '0'"
               >{{ damage }}</text>
               <!-- Left side: which way this unit has been meddled with. Both
@@ -960,7 +956,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
            the board rather than drawn on it: the board's own text is sized
            to the board, a few pixels tall on a phone, and next to the target
            it sat on the forecast of whoever stood beside it. -->
-      <div *ngIf="armedAttack && !hintOutside" class="armed-hint" [class.high]="armedHintHigh">Tap again to strike</div>
+      <div *ngIf="armedAttack && !hintOutside" class="armed-hint" [class.high]="armedHintHigh">{{ healTargets.has(armedAttack) ? 'Tap again to heal' : 'Tap again to strike' }}</div>
 
       <!-- Zoomed in by a pinch: the way back to the whole board. A finger's
            width square with a zoom-out glyph, named for what it does: the
@@ -1128,8 +1124,8 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
     .home-mine { fill: #d7ecd9; }
     .home-theirs { fill: #f0d7d7; }
 
-    /* The five zones, one colour: they are one thing in five places. The
-       fill is the resting colour; the wash above it is what survives a hex
+    /* Base zones have their side's blue; middle and side zones keep the
+       shared blue. The wash above the resting fill survives a hex
        being lit for reach, since every one of those carries !important. */
     .zone { fill: #b9d4f2; }
 
@@ -1138,6 +1134,12 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       fill-opacity: 0.3;
       pointer-events: none;
     }
+
+    .zone.zone-white-base, .zone-wash.zone-white-base { fill: #bfdbfe; }
+    .zone.zone-black-base, .zone-wash.zone-black-base { fill: #1e3a8a; }
+    .zone-center, .zone-inner { fill: none; stroke: #facc15; pointer-events: none; }
+    .zone-center { stroke-width: 2.5; }
+    .zone-inner { stroke-width: 1.5; stroke-dasharray: 4 2; }
 
     /* Reach over a panel. Translucent on purpose: the panel's own colour
        shows through and the two fuse, so a lit reserve hex still reads as a
@@ -1256,6 +1258,11 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       fill: #d9534f !important;
       cursor: crosshair;
     }
+
+    .hex-heal-preview { fill: #d7edb6 !important; }
+    .hex-heal-preview.preview-dim { fill: #cbd6bd !important; }
+    .hex-heal-target { fill: #8ddd83 !important; cursor: crosshair; }
+    .hex-cell.hex-heal-armed { fill: #348a42 !important; }
 
     /* A blow landing, and an ability charging. Both are moments, not states:
        the runner clears them as the beat ends. */
@@ -1664,6 +1671,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
     .damage-forecast.counter {
       fill: #8e44ad;
     }
+    .damage-forecast.healing { fill: #2c9c51; }
 
     /* A blow this unit's armour turns aside entirely. Grey and still, because
        it is the one forecast that is not a warning. */
@@ -1935,6 +1943,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   @Input() currentTurn = '';
   /** Current turn number. */
   @Input() turnNumber = 0;
+  @Input() moveHistory: any[] = [];
   /** This client's username. */
   @Input() username = '';
   /** This client's color ('white' | 'black'). */
@@ -2075,6 +2084,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * a unit come back for a second the moment another moved after it.
    */
   @Input() movedHexes: readonly string[] = [];
+  /** The unit at movesLeftFor has finished by attacking or healing. */
+  @Input() actionSpent = false;
   /**
    * One-turn stat boosts by hex. Only `mov` matters here - it widens the
    * flood fill for a unit that has not taken its first step yet, after which
@@ -2151,9 +2162,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * target would fire itself on the opponent's move.
    */
   @Output() hexClicked = new EventEmitter<SelectedUnit | null>();
-  /** Attack from `to` (where the unit stands) against the enemy on `attack`. */
+  /** Normal targeted action from `to`; `heal` chooses a friendly unit instead of a strike. */
   @Output() attackMade = new EventEmitter<{
-    from: string; to: string; attack: string;
+    from: string; to: string; attack: string; heal?: boolean;
     /** Set when the blow lands in a panel - the unit no engine holds. */
     targetUnit?: PieceData;
     panel?: string;
@@ -2369,7 +2380,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         atk: attackCellText(unit.unit_id, this.config),
         def: twoDigits(this.config?.units?.[unit.unit_id]?.defense),
         mov: twoDigits(this.config?.units?.[unit.unit_id]?.move),
-        rangeLow: RANGE_LOW,
+        rangeLow: rangeLow(unit.unit_id, this.config),
         rangeHigh: rangeHigh(unit.unit_id, this.config),
         dark: unit.color === 'black',
       }];
@@ -2407,6 +2418,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   legalTargets = new Set<string>();
   /** Enemies the selected unit can hit from where it stands. */
   attackTargets = new Set<string>();
+  healTargets = new Set<string>();
   /** Step cost of each legal destination, for charging the move budget. */
   private moveCosts = new Map<string, number>();
   /** Which hexes make up each corner panel, keyed 'bl' | 'br' | 'tr' | 'tl'. */
@@ -2437,6 +2449,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   /** Reach of whatever unit is being shown - hover first, else the selection. */
   previewMoves = new Set<string>();
   previewAttacks = new Set<string>();
+  previewHeals = new Set<string>();
   /**
    * The crossings for whatever is being looked at rather than driven: the
    * wrap out of a base, the way home, the way onto the board, and a wrap
@@ -2578,7 +2591,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     if (step.kind === 'pick') return this.wait(PICK_MS);
     // The commit itself: a held beat under the amber wash, no unit involved.
     if (step.kind === 'commit') return this.wait(COMMIT_MS);
-    if (step.kind === 'ability') {
+    if (step.kind === 'ability' || step.kind === 'heal') {
       const ms = step.brief ? GLOW_BRIEF_MS : GLOW_MS;
       // Driven on the element rather than through a CSS class: a class only
       // restarts an animation if the browser renders a frame with it off, and
@@ -2714,7 +2727,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     if (changes['boardState'] || changes['radius'] || changes['config']
         || changes['unitBuffs'] || changes['myColor']
         || changes['withdrawn'] || changes['departedUids'] || changes['committedBoard']
-        || changes['panelPositions']
+        || changes['panelPositions'] || changes['moveHistory']
         || changes['panelHp']) {
       this.buildCells();
     }
@@ -2752,7 +2765,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // The board just changed underneath the selection: re-read the stats from
     // the new cell so a piece that moved keeps its panel, and drop a selection
     // whose unit is gone.
-    if (changes['boardState'] && this.selectedHex) {
+    if ((changes['boardState'] || changes['turnNumber'] || changes['moveHistory']) && this.selectedHex) {
       const cell = this.cellsByKey.get(this.selectedHex);
       if (!cell?.piece) this.selectedHex = null;
       this.hexSelected.emit(cell?.piece ? this.describe(cell) : null);
@@ -2841,9 +2854,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // Any tap disarms; only a second tap on the armed enemy strikes it.
     const armed = this.armedAttack;
     this.armedAttack = null;
-    // An armed offensive ability takes the next unit click as its target,
-    // rather than allowing the regular attack-selection path to intercept it.
-    if (this.abilityMode === 'enemy' && hex.piece) {
+    // An armed ability owns the next unit click before normal healing or
+    // attacking. The room handles the target's side, including cancellation.
+    if (this.abilityMode && hex.piece) {
       this.emitSelected(hex);
       return;
     }
@@ -2855,7 +2868,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // If clicking a legal target -> emit the move
     // An enemy inside reach: swing at it. That spends the unit's turn, so it
     // goes out immediately instead of staging like a move does.
-    if (this.selectedHex && this.attackTargets.has(hex.key)) {
+    if (this.selectedHex && (this.attackTargets.has(hex.key) || this.healTargets.has(hex.key))) {
       // A touch screen has no hover, and the hover is where the trade is
       // read before it is made: both units' damage, and whether it answers.
       // So the first tap reads it - arms the target, forecast and all - and
@@ -2876,6 +2889,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       // base does not.
       this.attackMade.emit({
         from: this.selectedHex, to: this.selectedHex, attack: hex.key,
+        ...(this.healTargets.has(hex.key) ? { heal: true } : {}),
         // The panel travels with the blow for the same reason the unit does:
         // no engine holds one, and the record is the only place either
         // survives. What a base does with a wound is not what a reserve does.
@@ -2950,15 +2964,20 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * and the claims both come from hex-rules, because the room scores exactly
    * what is drawn here - two answers to that would be one answer too many.
    *
-   * ponytail: client-side, like points and abilities. The server does not
-   * know a zone from any other hex yet.
+   * The server banks these same claims at each phase end.
    */
   private assignZones(): void {
-    const zone = captureZoneHexes(this.radius);
-    for (const cell of this.cells) {
-      if (!cell.filler && zone.has(cell.key)) cell.zoneClass = 'zone';
+    for (const zone of captureZones(this.radius)) {
+      for (const key of zone.hexes) {
+        const cell = this.cellsByKey.get(key);
+        if (!cell || cell.filler) continue;
+        cell.zoneClass = 'zone';
+        cell.zoneOwner = zone.owner;
+        cell.zoneCenter ||= key === zone.center;
+        cell.zoneLayer = Math.min(cell.zoneLayer < 0 ? Infinity : cell.zoneLayer, hexDistanceKeys(key, zone.center));
+      }
     }
-    this.captureClaim = captureClaims(this.boardState, this.radius);
+    this.captureClaim = captureClaims(this.boardState, this.radius, this.config);
   }
 
   /** Which side holds each capture hex; missing means nobody, or cancelled. */
@@ -3197,6 +3216,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     }
     this.occupancy = { ...this.boardState, ...this.entered, ...inPanels };
 
+    // A staged withdrawal has no crossing in the history yet. Its committed
+    // location still tells veterancy which zone earned the earlier awards.
+    const committedLocations = new Map<string, string>();
+    for (const [at, unit] of Object.entries(this.committedBoard)) {
+      if (unit?.uid) committedLocations.set(unit.uid, at);
+    }
+
     this.cells = coords.map((c, i) => {
       const key = `${c.q},${c.r}`;
       const piece = (c.onBattlefield
@@ -3220,17 +3246,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
               hp: twoDigits(piece.hp),
               atk: attackCellText(piece.unit_id, this.config, this.unitBuffs[piece.uid ?? '']?.atk ?? 0),
               def: twoDigits(def?.defense),
-              rangeLow: RANGE_LOW,
+              rangeLow: rangeLow(piece.unit_id, this.config),
               rangeHigh: rangeHigh(piece.unit_id, this.config),
             }
           : null,
-        // Keyed on the unit, not the hex: veterancy that changed every time
-        // a unit walked would flicker the ability slots it gates.
-        vet: piece ? placeholderVet(piece.uid ?? key, piece.unit_id) : 0,
+        vet: piece ? unitVeterancy(piece.uid ?? `${piece.color[0]}${key}`, committedLocations.get(piece.uid ?? '') ?? key,
+          this.moveHistory, this.turnNumber, this.radius, orientation) : 0,
         filler: !c.onBattlefield,
         panel: c.onBattlefield ? '' : panelOf(c.x, c.y),
         // Four panels around the hexagon, one per corner.
         zoneClass: c.onBattlefield ? '' : `hex-filler panel-${panelOf(c.x, c.y)}`,
+        zoneOwner: '',
+        zoneCenter: false,
+        zoneLayer: -1,
         home: c.onBattlefield ? this.homeOf(c.r) : '',
         gateway: c.onBattlefield ? '' : arrows.get(key)?.dir ?? '',
         arrowSide: c.onBattlefield || !arrows.has(key)
@@ -4760,6 +4788,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     const max = pc ? (pc.max_hp ?? def?.hp) : null;
     const unit = pc ? `${pc.color} ${def?.name ?? pc.unit_id}, HP ${pc.hp}${max != null ? ` of ${max}` : ''}` : 'empty';
     const offer = cell.key === this.selectedHex ? 'selected'
+      : this.healTargets.has(cell.key) ? 'can heal'
       : this.attackTargets.has(cell.key) ? 'can attack'
       : this.legalTargets.has(cell.key) ? 'can move here' : '';
     return `${where}: ${unit}${offer ? `, ${offer}` : ''}`;
@@ -4895,7 +4924,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // not framed on the last one's reach, most of its own off the screen.
     const hexPx = this.hexOnScreen();
     if (!(hexPx > 0) || hexPx >= GameBoardComponent.TAP_ZOOM_BELOW) return this.unzoomFromReach();
-    const reach = [from.key, ...this.legalTargets, ...this.attackTargets]
+    const reach = [from.key, ...this.legalTargets, ...this.attackTargets, ...this.healTargets]
       .map(key => this.cellsByKey.get(key))
       .filter((cell): cell is HexCell => !!cell);
     if (reach.length < 2) return this.unzoomFromReach();
@@ -5005,6 +5034,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   private clearTargets(): void {
     this.legalTargets.clear();
     this.attackTargets.clear();
+    this.healTargets.clear();
     this.moveCosts.clear();
     this.passableCosts.clear();
     this.entryTargets.clear();
@@ -5064,6 +5094,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       // many the stretch allows: the allowance counts moves, the rule counts
       // units. Checked before the allowance, which would otherwise wave it
       // through on the strength of a move meant for somebody else.
+      if (key === this.movesLeftFor && this.actionSpent) return;
       if (this.movedHexes.includes(key) && key !== this.movesLeftFor) return;
       if (this.movesLeftFor && key !== this.movesLeftFor && !this.movesToSpare) {
         // Except for a walk home while setting out. Three of them may go in a
@@ -5102,16 +5133,24 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // and a phase's postmatch alike, which is what both engines refuse.
     // Offering a target here would stage a blow they then reject.
     if (!cell.panel && !this.settingOut) {
-      const range: number = this.config?.units?.[cell.piece.unit_id]?.attackRange ?? 1;
+      const unit = this.config?.units?.[cell.piece.unit_id];
+      const heals = (unit?.heal?.length ?? 0) > 0;
+      const range: number = heals ? unit.heal.length : unit?.attackRange ?? 1;
       for (const other of this.cells) {
-        if (!other.piece || other.piece.color === cell.piece.color) continue;
+        if (!other.piece || other.key === key) continue;
+        if (heals) {
+          if (!other.panel && other.piece.color === cell.piece.color
+              && hexDistanceKeys(key, other.key) <= range) this.healTargets.add(other.key);
+          continue;
+        }
+        if (other.piece.color === cell.piece.color) continue;
         // No panel is in a fight at all unless an engine holds one. Only the
         // browser engine does, so a server game draws the panels and leaves
         // them out of it - the same line `entryBind` draws for crossings.
         // Offering the blow there would send a message the server has no
         // answer for, and stall the turn on it.
         if (other.panel && !this.entryBind) continue;
-        if (hexDistanceKeys(key, other.key) <= range) this.attackTargets.add(other.key);
+        if (canAttack(unit, hexDistanceKeys(key, other.key))) this.attackTargets.add(other.key);
       }
     }
     this.refreshForecast();
@@ -5159,6 +5198,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     this.previewKey = memo;
     this.previewMoves = new Set<string>();
     this.previewAttacks = new Set<string>();
+    this.previewHeals = new Set<string>();
     this.previewWrap = new Map();
     this.previewDenied = new Map();
     this.previewRefund = new Map();
@@ -5212,10 +5252,22 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // edge reaches into the panel beside it, and the overlay has to say so.
     // Left to its own bound the zone stops dead at the hexagon's rim, which
     // reads as the range ending there when it does not.
-    this.previewAttacks = computeAttackZone(
-      key, this.previewMoves, this.config, cell.piece.unit_id, this.radius,
-      this.strikeBounds[cell.piece.color],
-    );
+    const healRange = this.config?.units?.[cell.piece.unit_id]?.heal?.length ?? 0;
+    if (healRange) {
+      const fieldMoves = new Set([...this.previewMoves].filter(hex => {
+        const [q, r] = hex.split(',').map(Number);
+        return isInsideBoard(q, r, this.radius);
+      }));
+      this.previewHeals = computeAttackZone(
+        key, fieldMoves, this.config, cell.piece.unit_id, this.radius, undefined, healRange, 1,
+      );
+    } else if (canAttack(this.config?.units?.[cell.piece.unit_id],
+                         this.config?.units?.[cell.piece.unit_id]?.attackMinRange ?? 1)) {
+      this.previewAttacks = computeAttackZone(
+        key, this.previewMoves, this.config, cell.piece.unit_id, this.radius,
+        this.strikeBounds[cell.piece.color],
+      );
+    }
   }
 
   /**
@@ -5235,12 +5287,20 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     this.forecast = null;
     const from = this.selectedHex;
     const to = this.hoveredHex;
-    if (!from || !to || !this.config || !this.attackTargets.has(to)) return;
+    if (!from || !to || !this.config
+        || !(this.attackTargets.has(to) || this.healTargets.has(to))) return;
     const me = this.cellsByKey.get(from)?.piece;
     const them = this.cellsByKey.get(to)?.piece;
     if (!me || !them) return;
 
     const distance = hexDistanceKeys(from, to);
+    if (this.healTargets.has(to)) {
+      this.forecast = {
+        target: to, targetHp: them.hp + healingAmount(me.unit_id, them, distance, this.config),
+        attacker: from, attackerHp: me.hp,
+      };
+      return;
+    }
     // Boosts are part of the trade, so the forecast has to price them in or
     // it promises a number the strike will not deliver.
     const dealt = strikeDamage(me.unit_id, them.unit_id, distance, this.config,
@@ -5251,9 +5311,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // in AGENTS.md. The last of those was missing here, so hovering a base
     // unit drew a purple number over your own face for a blow that was never
     // coming, and the trade read as worse than it was.
-    const theirRange: number = this.config?.units?.[them.unit_id]?.attackRange ?? 1;
     const answers = !BASE_PANELS.has(this.cellsByKey.get(to)?.panel ?? '');
-    const counter = answers && targetHp > 0 && distance <= theirRange
+    const counter = answers && targetHp > 0 && canAttack(this.config?.units?.[them.unit_id], distance)
       ? strikeDamage(them.unit_id, me.unit_id, distance, this.config,
                      this.buffOf(to, 'atk'), this.buffOf(from, 'def'))
       : 0;
@@ -5285,6 +5344,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     if (after === null) return null;
     const dealt = hp - after;
     if (dealt > 0) return `-${dealt}`;
+    if (dealt < 0) return `+${-dealt}`;
     // A blow that takes nothing off. Since the floor came in this needs an
     // attacker with no attack stat at all - `rules.minStrikeDamage` means
     // armour alone can no longer reduce a landed blow to nothing, unless the
@@ -5438,6 +5498,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // open while setting out - three may go in a turn and none of them is that
     // move. `refreshTargets` offers such a unit its doorways and nothing else,
     // so it is drivable exactly when one of them is really open to it.
+    if (hex.key === this.movesLeftFor && this.actionSpent) return false;
     if (this.movedHexes.includes(hex.key) && hex.key !== this.movesLeftFor) return false;
     if (this.movesLeftFor && hex.key !== this.movesLeftFor && !this.movesToSpare) {
       return this.settingOut && this.canWalkHome(hex);

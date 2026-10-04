@@ -2,11 +2,11 @@ import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 import { ConfigService, ruleOf } from './config.service';
 import {
-  computeLegalMoves, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
+  computeLegalMoves, canAttack, healingAmount, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
 } from './hex-rules';
 import {
   boardMoveLandings, boardMovesAt, homecomingsAt, lockedPanelUnits, openingMovedHexes,
-  panelMoverAllowed,
+  panelMoverAllowed, unitVeterancy,
 } from './history-rules';
 import {
   boardMovesPerTurn, overtimeTollAt, isEntryOpen,
@@ -192,7 +192,7 @@ export class LocalGameService {
       case 'make_move':
         this.move(
           msg.from, msg.to, msg.attack, msg.moveBonus, msg.bonuses, msg.withdraw,
-          msg.effects, msg.effectsBefore, msg.more);
+          msg.effects, msg.effectsBefore, msg.more, msg.heal);
         break;
 
       case 'enter_board':
@@ -314,7 +314,7 @@ export class LocalGameService {
         const hp: number = config?.units?.[unitId as string]?.hp ?? 1;
         // uid mirrors build_initial_board: identity that survives moves.
         board[`${q},${r}`] = {
-          unit_id: unitId, color, hp, max_hp: hp, uid: `${color[0]}${q},${r}`,
+          unit_id: unitId, color, hp, max_hp: hp, uid: `${color[0]}${q},${r}`, vet: 0,
         };
       }
     }
@@ -620,9 +620,12 @@ export class LocalGameService {
       delete board[from];
     }
 
+    if (g.config?.units?.[attacker.unit_id]?.heal?.length) {
+      this.emit({ type: 'invalid_move', message: 'This unit heals instead of attacking' });
+      return;
+    }
     const distance = hexDistanceKeys(to, attack);
-    const range = g.config?.units?.[attacker.unit_id]?.attackRange ?? 1;
-    if (distance > range) {
+    if (!canAttack(g.config?.units?.[attacker.unit_id], distance)) {
       this.emit({ type: 'invalid_move', message: 'Out of range' });
       return;
     }
@@ -649,8 +652,7 @@ export class LocalGameService {
       // Whether it answers at all is the panel's rule, and the client owns
       // panels - this engine has no idea which one a unit is standing in. A
       // reserve strikes back; a base never does.
-      const theirRange = g.config?.units?.[unit.unit_id]?.attackRange ?? 1;
-      if (counters && distance <= theirRange) {
+      if (counters && canAttack(g.config?.units?.[unit.unit_id], distance)) {
         const counter = strikeDamage(
           unit.unit_id, attacker.unit_id, distance, g.config,
           bonuses?.targetAtk ?? 0, bonuses?.def ?? 0);
@@ -781,6 +783,7 @@ export class LocalGameService {
      * over - see `holding` below.
      */
     more?: boolean,
+    heal?: string,
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
@@ -791,6 +794,10 @@ export class LocalGameService {
       return;
     }
 
+    if (heal && (attack || withdraw)) {
+      this.emit({ type: 'invalid_move', message: 'Heal, attack or walk home: choose one' });
+      return;
+    }
     const start = { ...g.boardState };
     const before = this.landEffects(start, effectsBefore);
     const piece = start[from];
@@ -868,7 +875,7 @@ export class LocalGameService {
             ? !leaving
             : (relocating
                && !computeLegalMoves(start, q, r, g.config, radius, budget).has(to)))
-        || (!relocating && !attack)) {
+        || (!relocating && !attack && !heal)) {
       this.emit({ type: 'invalid_move', message: 'Illegal move' });
       return;
     }
@@ -885,7 +892,7 @@ export class LocalGameService {
     // in some earlier turn of a phase it has nothing to do with.
     if (isSetupTurn(g.turnNumber)) {
       // Landing on an enemy is an attack too, by another road.
-      if (attack || (relocating && start[to] && start[to].color !== movingColor)) {
+      if (attack || heal || (relocating && start[to] && start[to].color !== movingColor)) {
         this.emit({ type: 'invalid_move', message: noAttackMessage(g.turnNumber) });
         return;
       }
@@ -959,10 +966,32 @@ export class LocalGameService {
       return;
     }
 
+    if (heal) {
+      const target = board[heal];
+      const parts = typeof heal === 'string' ? heal.split(',') : [];
+      const [hq, hr] = parts.map(s => s.trim() ? Number(s) : NaN);
+      const distance = typeof heal === 'string' ? hexDistanceKeys(to, heal) : NaN;
+      const range = g.config?.units?.[piece.unit_id]?.heal?.length ?? 0;
+      if (parts.length !== 2 || !Number.isInteger(hq) || !Number.isInteger(hr) || !isInsideBoard(hq, hr, radius)
+          || !isInsideBoard(tq, tr, radius) || !target || target.color !== piece.color
+          || heal === to || distance < 1 || distance > range) {
+        this.emit({ type: 'invalid_move', message: 'Healing needs another friendly battlefield unit in range' });
+        return;
+      }
+      const amount = healingAmount(piece.unit_id, target, distance, g.config);
+      board[heal] = { ...target, hp: target.hp + amount };
+      Object.assign(record, {
+        healedHex: heal, healed_amount: amount, healed_hp: board[heal].hp, healed_unit: target.unit_id,
+      });
+    }
     if (attack) {
+      if (g.config?.units?.[piece.unit_id]?.heal?.length) {
+        this.emit({ type: 'invalid_move', message: 'This unit heals instead of attacking' });
+        return;
+      }
       const target = board[attack];
-      const range = g.config?.units?.[piece.unit_id]?.attackRange ?? 1;
-      if (!target || target.color === piece.color || hexDistanceKeys(to, attack) > range) {
+      if (!target || target.color === piece.color
+          || !canAttack(g.config?.units?.[piece.unit_id], hexDistanceKeys(to, attack))) {
         this.emit({ type: 'invalid_move', message: 'Nothing to attack there' });
         return;
       }
@@ -984,8 +1013,7 @@ export class LocalGameService {
         board[attack] = hurt;
         record.defender_hp = hurt.hp;
         // The survivor answers, if we are inside its own reach.
-        const theirRange = g.config?.units?.[target.unit_id]?.attackRange ?? 1;
-        if (distance <= theirRange) {
+        if (canAttack(g.config?.units?.[target.unit_id], distance)) {
           const counter = strikeDamage(
             target.unit_id, piece.unit_id, distance, g.config, theirAtkUp, defUp);
           record.counter_damage = counter;
@@ -1309,7 +1337,19 @@ export class LocalGameService {
     queueMicrotask(() => this.outgoing.next(msg));
   }
 
+  private rankBoard(): void {
+    const g = this.game;
+    if (!g) return;
+    const radius = g.config?.board?.radius ?? 11;
+    const orientation = g.config?.board?.orientation ?? 'edge-up';
+    for (const [at, unit] of Object.entries(g.boardState)) {
+      if (unit) unit.vet = unitVeterancy(unit.uid ?? `${unit.color[0]}${at}`, at,
+        g.moveHistory, g.turnNumber, radius, orientation);
+    }
+  }
+
   private persist(): void {
+    this.rankBoard();
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.game));
     } catch { /* storage full or blocked - the game just won't survive a reload */ }
@@ -1319,6 +1359,7 @@ export class LocalGameService {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       this.game = raw ? JSON.parse(raw) : null;
+      this.rankBoard();
     } catch {
       this.game = null;
     }

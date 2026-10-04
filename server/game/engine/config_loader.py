@@ -183,6 +183,11 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
             rng = unit.get('attackRange', 1)
             if not isinstance(rng, int) or isinstance(rng, bool) or rng < 1 or rng > 50:
                 errors.append(f"units.{unit_id}.attackRange must be an integer 1-50, got {rng}")
+            minimum = unit.get('attackMinRange', 1)
+            if type(minimum) is not int or not 1 <= minimum <= 50:
+                errors.append(f"units.{unit_id}.attackMinRange must be an integer 1-50")
+            elif type(rng) is int and minimum > rng:
+                errors.append(f"units.{unit_id}.attackMinRange must not exceed attackRange")
             # The schema requires defence and combat reads it. A unit without
             # one loads as armour 0 and fights with silently wrong numbers.
             dfn = unit.get('defense')
@@ -199,9 +204,29 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                 if field not in unit:
                     continue
                 value = unit[field]
-                if not isinstance(value, int) or isinstance(value, bool) or value < least:
+                if field == 'attack' and isinstance(value, list):
+                    if not 1 <= len(value) <= 4 or (type(rng) is not int or type(minimum) is not int or len(value) != rng - minimum + 1) or any(
+                        type(damage) is not int or damage < 0 for damage in value
+                    ):
+                        errors.append(
+                            f"units.{unit_id}.attack must have 1-4 nonnegative integer entries, "
+                            f"one per ring from attackMinRange to attackRange, got {value}")
+                elif not isinstance(value, int) or isinstance(value, bool) or value < least:
                     errors.append(
                         f"units.{unit_id}.{field} must be an integer >= {least}, got {value}")
+            if 'heal' in unit:
+                heal = unit['heal']
+                if not isinstance(heal, list) or not 1 <= len(heal) <= 4 or any(
+                    type(amount) is not int or amount < 0 for amount in heal
+                ):
+                    errors.append(f"units.{unit_id}.heal must have 1-4 nonnegative integer entries")
+            if 'captureZones' in unit:
+                zones = unit['captureZones']
+                if not isinstance(zones, list) or any(
+                    not isinstance(zone, str) or zone not in ('home', 'middle', 'side', 'enemy')
+                    for zone in zones
+                ) or len(set(zones)) != len(zones):
+                    errors.append(f"units.{unit_id}.captureZones must be a unique list of home, middle, side, enemy")
             if 'ability' in unit:
                 errors.extend(_unit_ability_errors(
                     unit_id, unit['ability'], config.get('abilities')))
@@ -373,6 +398,7 @@ def build_initial_board(config: Dict[str, Any]) -> HexBoard:
                 'hp': hp,
                 'max_hp': hp,
                 'uid': f"{color[0]}{coord_str}",
+                'vet': 0,
             })
 
     logger.info(f"Built initial board: radius={radius}, pieces={len(board.to_dict())}")

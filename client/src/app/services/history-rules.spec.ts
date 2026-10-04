@@ -1,6 +1,6 @@
 import {
   boardMovesAt, homecomingsAt, lockedPanelUnits,
-  openingMovedHexes, panelMoverAllowed, panelMoversAt,
+  openingMovedHexes, panelMoverAllowed, panelMoversAt, unitVeterancy,
 } from './history-rules';
 import { ruleOf } from './config.service';
 
@@ -249,5 +249,57 @@ describe('boardMovesAt', () => {
     // Ply 27 is turn 14, Phase 1’s postmatch.
     const setup = [move({ withdrawn: true, turn: 27 })] as any[];
     expect(boardMovesAt(setup, 27, 'white')).toBe(0);
+  });
+});
+
+
+describe('phase-only veterancy', () => {
+  const rank = (at: string, ply: number, history: any[] = [], orientation = 'edge-up') =>
+    unitVeterancy('v', at, history, ply, 11, orientation);
+  const step = (turn: number, from: string, to: string, flags: any = {}) => ({
+    turn, from, to, unit: { uid: 'v' }, panelMove: true, ...flags,
+  });
+
+  it('awards both sides only at Phase 1 and postmatch starts, capped at three', () => {
+    for (const at of ['0,0', '11,1', '-11,-1']) {
+      for (const [ply, vet] of [[1, 0], [6, 0], [7, 1], [8, 1], [17, 1], [26, 1],
+        [27, 2], [28, 2], [29, 2], [48, 2], [49, 3], [50, 3], [51, 3], [71, 3], [73, 3], [99, 3]]) {
+        expect(rank(at, ply)).withContext(`${at} at ${ply}`).toBe(vet);
+      }
+    }
+    for (const at of ['-12,1', '12,-1']) expect(rank(at, 99)).toBe(0);
+  });
+
+  it('counts location at the award, not current location or the source panel label', () => {
+    const history = [step(8, '-12,1', '11,1', { panel: 'bl' }),
+      step(27, '11,1', '3,8', { panelMove: false, entered: true })];
+    expect(rank('3,8', 27, history)).toBe(1);
+    expect(rank('3,8', 28, history)).toBe(1); // black's half grants nothing extra
+    expect(rank('0,0', 49, history)).toBe(2); // ordinary board walks keep stars
+    expect(rank('0,0', 71, JSON.parse(JSON.stringify(history)))).toBe(3);
+  });
+
+  it('awards before deployments made during the boundary ply', () => {
+    const history = [step(7, '-12,1', '11,1')];
+    expect(rank('11,1', 7, history)).toBe(0);
+    expect(rank('11,1', 8, history)).toBe(0);
+    expect(rank('11,1', 27, history)).toBe(1);
+  });
+
+  it('keeps earned stars in a base, earns none there, and resumes in reserve', () => {
+    const history = [step(28, '3,8', '-12,9', { panelMove: false, withdrawn: true }),
+      step(50, '-12,9', '11,1')];
+    expect(rank('-12,9', 49, history.slice(0, 1))).toBe(2);
+    expect(rank('11,1', 50, history)).toBe(2);
+    expect(rank('11,1', 71, history)).toBe(3);
+  });
+
+  it('ignores combat and other units, and respects either board orientation', () => {
+    const history = [{ turn: 6, attacked: true, damage_dealt: 99, captured: 'pawn' },
+      step(6, '11,1', '-12,1', { unit: { uid: 'other' } })];
+    expect(rank('0,0', 6, history)).toBe(0);
+    expect(rank('0,0', 27, history)).toBe(2);
+    expect(rank('-6,12', 7, [], 'edge-up')).toBe(1);
+    expect(rank('-6,12', 7, [], 'vertex-up')).toBe(0);
   });
 });

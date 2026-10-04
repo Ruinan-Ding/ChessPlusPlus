@@ -46,10 +46,10 @@ describe('scoring parity with the server', () => {
       const bank = c.bank as PhaseBank;
       const expected = c.expect;
       const ending = scheduleEnding(bank, c.ply);
-      const claims = Object.fromEntries([...captureClaims(c.board, c.config.board.radius)].sort());
+      const claims = Object.fromEntries([...captureClaims(c.board, c.config.board.radius, c.config)].sort());
       const actual = {
         claims,
-        cap: sides.map(side => capOf(c.board, c.config.board.radius, side)),
+        cap: sides.map(side => capOf(c.board, c.config.board.radius, side, c.config)),
         bank: bankEndedPhases(bank, c.config, c.board, c.history, c.ply),
         deaths: sides.map(side => [1, 2, 3, undefined].map(p => deathsOf(c.config, c.history, side, p))),
         decided: decidedOnPoints(bank),

@@ -407,7 +407,7 @@ export function turnPointsBy(color: 'white' | 'black', ply: number): number {
  * opening's first turn is a setup turn like the rest of it.) Counted in spans,
  * so an earlier phase's postmatch pushes this along too.
  */
-function phaseStartTurn(index: number): number {
+export function phaseStartTurn(index: number): number {
   let turn = 1;
   for (let i = 0; i < index; i++) turn += phaseSpan(PHASES[i]);
   return turn;

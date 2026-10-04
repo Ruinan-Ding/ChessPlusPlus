@@ -595,6 +595,59 @@ describe('GameRoomComponent ability panel', () => {
     expect(sent.length).toBe(1);
   });
 
+  it('stages, undoes and commits a bishop heal as its one action without CP or an attack', () => {
+    const c = room();
+    const sent: any[] = [];
+    c.wsService.sendMessage = (m: any) => sent.push(m);
+    c.persistLocalUiState = () => {};
+    c.playSteps = () => {};
+    c.gameState.snapshot.turnNumber = 7;
+    c.gameState.snapshot.config = structuredClone(DEFAULT_GAME_CONFIG);
+    c.gameState.snapshot.config.units.bishop.heal = [14, 13, 12, 11];
+    c.gameState.snapshot.boardState = {
+      '0,0': { unit_id: 'bishop', color: 'white', hp: 22, max_hp: 22, uid: 'bishop' },
+      '3,0': { unit_id: 'rook', color: 'white', hp: 5, max_hp: 50, uid: 'rook' },
+    };
+    const cp = c.myCpSpent;
+    c.onPlayerMove({ from: '0,0', to: '1,0', cost: 1 });
+    const heal = { from: '1,0', to: '1,0', attack: '3,0', heal: true };
+    c.onPlayerAttack(heal);
+    expect(c.stagedBoard['3,0'].hp).toBe(18);
+    expect(c.gameState.snapshot.boardState['3,0'].hp).toBe(5);
+    expect(c.canMoveOnBoard).toBeFalse();
+    expect(c.movesLeft).toBe(0);
+    expect(c.attackMarkers).toEqual([]);
+    expect(c.movedUnitHexes).toEqual(['1,0']);
+    expect(c.myCpSpent).toBe(cp);
+    c.onPlayerAttack(heal);
+    expect(c.stagedActions.length).toBe(2);
+    c.undoMove();
+    expect(c.stagedBoard['3,0'].hp).toBe(5);
+    expect(c.canMoveOnBoard).toBeTrue();
+    c.onPlayerAttack(heal);
+    c.endTurn();
+    expect(sent).toEqual([{ type: 'make_move', from: '0,0', to: '1,0', heal: '3,0' }]);
+    expect(c.myCpSpent).toBe(cp);
+    expect(c.describeMove({ from: '0,0', to: '1,0', color: 'white', unit_id: 'bishop',
+      healedHex: '3,0', healed_unit: 'rook', healed_amount: 13, healed_hp: 18, attacked: false }))
+      .toContain('healed rook');
+  });
+
+  it('never plays or deals a counter from a healer, even carrying an ATK boost', () => {
+    const c = room();
+    c.persistLocalUiState = () => {}; c.playSteps = () => {};
+    c.gameState.snapshot.turnNumber = 7;
+    c.gameState.snapshot.config = DEFAULT_GAME_CONFIG;
+    c.gameState.snapshot.boardState = {
+      '0,0': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'wp' },
+      '1,0': { unit_id: 'bishop', color: 'black', hp: 22, max_hp: 22, uid: 'bb' },
+    };
+    c.buffs = { bb: { atk: 30, def: 0, mov: 0 } };
+    c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '1,0' });
+    expect(c.stagedBoard['0,0'].hp).toBe(20);
+    expect(c.stagedActions.at(-1).countered).toBeFalse();
+  });
+
   it('folds a unit’s several steps into one board move, and keeps units apart', () => {
     const c = room();
     const step = (from: string, to: string, used: number, attack: string | null = null) =>
@@ -1406,7 +1459,7 @@ describe('GameRoomComponent ability panel', () => {
     };
 
     // The middle of the patch: its own hex and the six around it.
-    expect(score('mine')).toEqual({ cap: 7, death: 0, total: 7 });
+    expect(score('mine')).toEqual({ cap: 19, death: 0, total: 19 });
     expect(score('opponent')).toEqual({ cap: 0, death: 0, total: 0 });
 
     // Black killed a white pawn. A pawn is worth 5 in the config, and white
@@ -1414,7 +1467,7 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.moveHistory = [
       { color: 'black', unit_id: 'pawn', captured: 'pawn', defender_eliminated: true, turn: 8 },
     ];
-    expect(score('mine')).toEqual({ cap: 7, death: 5, total: 2 });
+    expect(score('mine')).toEqual({ cap: 19, death: 5, total: 14 });
 
     // A counter-attack kills the mover's own unit, and counts against them.
     c.gameState.snapshot.moveHistory = [
@@ -1449,7 +1502,7 @@ describe('GameRoomComponent ability panel', () => {
     // Seven held, tripled in Phase 3.
     expect(c.phaseScore('mine').banked).toEqual([]);
     expect(c.phaseScore('mine').multiplier).toBe(3);
-    expect(c.phaseScore('mine').match).toBe(21);
+    expect(c.phaseScore('mine').match).toBe(57);
 
     // Phases 1 and 2, as they finished.
     c.gameState.snapshot.phaseBank = { 1: { white: 4, black: 9 }, 2: { white: 6, black: 1 } };
@@ -1459,16 +1512,16 @@ describe('GameRoomComponent ability panel', () => {
     expect(us.banked).toEqual([4, 6]);
     expect(them.banked).toEqual([9, 1]);
     // The running phase counts towards the match before it has ended.
-    expect(us.match).toBe(31);
+    expect(us.match).toBe(67);
     expect(them.match).toBe(10);
     expect(us.leading).toBeTrue();
     expect(them.leading).toBeFalse();
 
     // Level pegging lights neither, so a glow always means a lead.
-    c.gameState.snapshot.phaseBank = { 1: { white: 0, black: 21 } };
+    c.gameState.snapshot.phaseBank = { 1: { white: 0, black: 57 } };
     (c as any).standingsCache = null;
-    expect(c.phaseScore('mine').match).toBe(21);
-    expect(c.phaseScore('opponent').match).toBe(21);
+    expect(c.phaseScore('mine').match).toBe(57);
+    expect(c.phaseScore('opponent').match).toBe(57);
     expect(c.phaseScore('mine').leading).toBeFalse();
     expect(c.phaseScore('opponent').leading).toBeFalse();
   });
@@ -1581,19 +1634,19 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.moveHistory = [
       { color: 'black', unit_id: 'pawn', captured: 'pawn', defender_eliminated: true, turn: 8 },
     ];
-    // Phase 1, as the engine banked it when its postmatch began: 7 held, 5 lost.
+    // Phase 1, as the engine banked it when its postmatch began: 19 held, 5 lost.
     c.gameState.snapshot.turnNumber = 27;
-    c.gameState.snapshot.phaseBank = { 1: { white: 2, black: 0 } };
+    c.gameState.snapshot.phaseBank = { 1: { white: 14, black: 0 } };
 
     // The postmatch is still Phase 1's by the index, but nothing of it is
     // live: the phase is in the bank, and read live beside it as well it
-    // would be counted twice - 2 banked and the same 2 running, for 4.
+    // would be counted twice - 14 banked and the same 14 running, for 28.
     const mine = c.phaseScore('mine');
     expect(mine).toEqual(jasmine.objectContaining({ cap: 0, death: 0, total: 0 }));
-    expect(mine.banked).toEqual([2]);
-    expect(mine.match).toBe(2);
+    expect(mine.banked).toEqual([14]);
+    expect(mine.match).toBe(14);
     c.gameState.snapshot.turnNumber = 28;   // black's half reads the same
-    expect(c.phaseScore('mine').match).toBe(2);
+    expect(c.phaseScore('mine').match).toBe(14);
 
     // A postmatch shows no multiplier: it scores nothing to multiply.
     c.gameState.snapshot.turnNumber = 49;   // turn 25, Phase 2's postmatch
@@ -1604,8 +1657,8 @@ describe('GameRoomComponent ability panel', () => {
     // doubled, because it is Phase 2.
     c.gameState.snapshot.turnNumber = 29;
     expect(c.phaseScore('mine')).toEqual(
-      jasmine.objectContaining({ cap: 7, death: 0, total: 14, multiplier: 2 }));
-    expect(c.phaseScore('mine').match).toBe(16);
+      jasmine.objectContaining({ cap: 19, death: 0, total: 38, multiplier: 2 }));
+    expect(c.phaseScore('mine').match).toBe(52);
   });
 
   it('reads the verdict from Phase 3\'s postmatch, a turn before overtime', () => {
@@ -1840,6 +1893,33 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.statHp).toBe('16/20');
     c.selectedUnit = { ...unit, hpMax: null };
     expect(c.statHp).toBe('20');
+  });
+
+  it('embeds each range in ATK, keeping the base under buffs', () => {
+    const c = room();
+    c.gameState.snapshot.config = structuredClone(DEFAULT_GAME_CONFIG);
+    c.selectedUnit = { key: '0,0', uid: 'u', unitId: 'archer', name: 'Archer', color: 'white',
+      hp: 6, hpMax: 6, atk: '4,3,2,1', def: 4, mv: 6, points: 8, vet: 0, drivable: true };
+    expect(c.statAtk).toBe('3:4/4 4:3/3 5:2/2 6:1/1');
+    expect(c.statHel).toBe('—');
+    expect(c.statVet).toBe('—');
+    c.buffs = { u: { atk: 2 } };
+    expect(c.statAtk).toBe('3:6/4 4:5/3 5:4/2 6:3/1');
+  });
+
+  it('shows the bishop’s healing rings and puts earned stars in VET instead of its title', () => {
+    const c = room();
+    c.gameState.snapshot.config = structuredClone(DEFAULT_GAME_CONFIG);
+    c.selectedUnit = { key: '0,0', uid: 'b', unitId: 'bishop', name: 'Bishop', color: 'white',
+      hp: 8, hpMax: 8, atk: '0', def: 4, mv: 6, points: 16, vet: 0, drivable: true };
+    expect(c.statAtk).toBe('—');
+    expect(c.statHel).toBe('1:8/8');
+    for (const [vet, stars] of ['—', '★', '★★', '★★★'].entries()) {
+      c.selectedUnit = { ...c.selectedUnit, vet };
+      expect(c.statVet).toBe(stars);
+      expect(c.unitPanelTitle).toBe('Bishop - 16 pts');
+    }
+    expect(c.statParts('hel').map((p: any) => p.ring)).toEqual([1]);
   });
 
   it('says "Tap again to strike" in the Unit strip, wherever there is one', () => {
@@ -2220,14 +2300,14 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.turnNumber = 1;
     (c as any).standingsCache = null;
     expect(c.phaseScore('mine')).toEqual(jasmine.objectContaining(
-      { cap: 7, death: 0, total: 7, multiplier: 1, banked: [], match: 0, leading: false }));
+      { cap: 19, death: 0, total: 19, multiplier: 1, banked: [], match: 0, leading: false }));
     expect(c.phaseScore('opponent').leading).toBeFalse();
     expect(c.showScore).toBeTrue();
 
     // Phase 1 counts it.
     c.gameState.snapshot.turnNumber = 10;   // turn 5
     (c as any).standingsCache = null;
-    expect(c.phaseScore('mine').cap).toBe(7);
+    expect(c.phaseScore('mine').cap).toBe(19);
 
     // Overtime scores nothing at all - it is a deathmatch - so the header
     // stops drawing the numbers rather than freezing them on screen.
@@ -2823,7 +2903,7 @@ describe('GameRoomComponent ability panel', () => {
     // The right-hand zone, 1 a hex, so what is held is the count of hexes
     // (the middle one is 2 a hex).
     c.gameState.snapshot.boardState = { '7,0': { unit_id: 'pawn', color: 'white' } };
-    expect(c.phaseScore('mine').cap).toBe(7);
+    expect(c.phaseScore('mine').cap).toBe(19);
 
     // A step away is staged, not sent. The board being drawn is the staged
     // one, and the score reads the same board the player is looking at.
@@ -2832,7 +2912,7 @@ describe('GameRoomComponent ability panel', () => {
 
     // Taking it back puts the hexes back.
     c.stagedActions = [];
-    expect(c.phaseScore('mine').cap).toBe(7);
+    expect(c.phaseScore('mine').cap).toBe(19);
   });
 
   it('takes the glow down with an ability given back the same turn', () => {
@@ -3334,8 +3414,8 @@ describe('GameRoomComponent fitting the window', () => {
     // height, which keeps them, scaled. (Much shorter is the tabs.)
     const d = fit(1904, 670);
     expect(d.roomLayout).toBe('columns');
-    expect(d.roomZoom).toBeCloseTo(670 / 730, 6);
-    expect(d.roomHeight).toBeCloseTo(730, 6);
+    expect(d.roomZoom).toBeCloseTo(670 / 1025, 6);
+    expect(d.roomHeight).toBeCloseTo(1025, 6);
   });
 
   it('leaves a window big enough for the whole room alone', () => {
@@ -3345,56 +3425,51 @@ describe('GameRoomComponent fitting the window', () => {
     expect(c.roomHeight).toBeNull();
   });
 
-  it('scales none of the windows people play in', () => {
-    // Every one of these was drawn smaller while the room was one picture at
-    // 1480x1120 - a 1080p screen at 96%, the owner's 1904x946 at 85%, a
-    // 1366x768 laptop at 69%. Their layouts are the stylesheet's now. (1280x720
-    // was one of them until their ability panel went back in the left column,
-    // 29 Sep 2026, and the columns' least height went from 705 to 730.)
-    for (const [w, h] of [[1920, 1080], [1904, 946], [1536, 864], [1366, 768], [1280, 800], [1180, 730]]) {
+  it('leaves the columns unscaled once the taller left column fits', () => {
+    for (const [w, h] of [[1920, 1080], [1600, 1025], [1180, 1025]]) {
       expect(fit(w, h).roomZoom).withContext(`${w}x${h}`).toBe(1);
     }
-    expect(fit(1180, 729).roomZoom).toBeLessThan(1);
-    expect(fit(1179, 730).roomZoom).toBeLessThan(1);
+    expect(fit(1180, 1024).roomZoom).toBeLessThan(1);
+    expect(fit(1179, 1025).roomZoom).toBeLessThan(1);
   });
 
-  it('keeps the three columns, scaled a little, just short of their least size', () => {
+  it('keeps desktop panels visible while fitting the taller left column', () => {
     // A 1366x768 laptop's browser window: every panel in sight is worth a
     // pixel of type, so this is not the tabs.
     for (const [w, h] of [[1366, 650], [1100, 700], [1180, 640], [1280, 720]]) {
       const c = fit(w, h);
       expect(c.roomLayout).withContext(`${w}x${h}`).toBe('columns');
-      expect(c.roomZoom).withContext(`${w}x${h}`).toBeGreaterThanOrEqual(0.87);
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBeGreaterThanOrEqual(640 / 1025);
       expect(c.roomZoom).withContext(`${w}x${h}`).toBeLessThan(1);
     }
     // A touch screen as far as ROOM_MILD_ZOOM, and no further.
-    for (const [w, h] of [[1366, 670], [1100, 700], [1180, 660]]) {
+    for (const [w, h] of [[1366, 930], [1100, 950], [1180, 930]]) {
       const c = fit(w, h, true);
       expect(c.roomLayout).withContext(`${w}x${h} held`).toBe('columns');
       expect(c.roomZoom).withContext(`${w}x${h} held`).toBeGreaterThanOrEqual(0.9);
       expect(c.roomZoom).withContext(`${w}x${h} held`).toBeLessThan(1);
     }
-    expect(fit(1366, 650, true).roomLayout).toBe('tabbed');
+    expect(fit(1366, 922, true).roomLayout).toBe('tabbed');
   });
 
   it("keeps a computer's window in the columns much further down than a touch screen", () => {
-    // The owner, 28 Sep 2026: "the game is unplayable with anything tucked
-    // away". A window with a mouse keeps every panel in sight, scaled, down
-    // to 72%; the same size held in the hand is a tablet, and has the tabs.
-    // (75% until the columns' least height went from 705 to 730: 72% keeps
-    // every window that had them - 960x540 is 74% now.)
+    // Moving Unit below Abilities must not send an existing desktop window
+    // to tabs. The same touch screen keeps the 90% limit and uses its tabs.
     for (const [w, h] of [[1366, 620], [1280, 600], [1024, 768], [1024, 600], [960, 540]]) {
       const c = fit(w, h);
       expect(c.roomLayout).withContext(`${w}x${h}`).toBe('columns');
-      expect(c.roomZoom).withContext(`${w}x${h}`).toBeGreaterThanOrEqual(0.72);
+      expect(c.roomZoom).withContext(`${w}x${h}`).toBeGreaterThanOrEqual(540 / 1025);
       expect(c.roomZoom).withContext(`${w}x${h}`).toBeLessThan(0.9);
       expect(c.unitPinned).withContext(`${w}x${h}`).toBeTrue();
       expect(fit(w, h, true).roomLayout).withContext(`${w}x${h} held`).toBe('tabbed');
     }
-    // Smaller than that, the type would be under 9px: the tabs after all.
+    // The desktop width and height cutoffs still select the tabs below them.
     expect(fit(900, 520).roomLayout).toBe('tabbed');
     expect(fit(800, 505).roomLayout).toBe('tabbed');
     expect(fit(800, 1000).roomLayout).toBe('stacked');
+    expect(fit(850, 526).roomLayout).toBe('columns');
+    expect(fit(849, 1000).roomLayout).toBe('stacked');
+    expect(fit(1284, 525).roomLayout).toBe('tabbed');
   });
 
   it('gives a landscape touch screen short of that the board and one column of tabs, unscaled', () => {
@@ -3407,9 +3482,9 @@ describe('GameRoomComponent fitting the window', () => {
   });
 
   it('pins the Unit panel above the tabs only where the window is tall enough for it', () => {
-    expect(fit(1024, 768, true).unitPinned).toBeTrue();
-    expect(fit(1024, 690, true).unitPinned).toBeTrue();
-    expect(fit(1024, 689, true).unitPinned).toBeFalse();
+    expect(fit(1024, 805, true).unitPinned).toBeTrue();
+    expect(fit(1024, 804, true).unitPinned).toBeFalse();
+    expect(fit(1024, 768, true).unitPinned).toBeFalse();
     expect(fit(844, 390, true).unitPinned).toBeFalse();
     // In the columns it is always in sight.
     expect(fit(1920, 1080).unitPinned).toBeTrue();

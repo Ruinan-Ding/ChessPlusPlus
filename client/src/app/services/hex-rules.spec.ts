@@ -6,7 +6,7 @@ import {
 import { DEFAULT_GAME_CONFIG } from './config.service';
 
 describe('configured unit stats', () => {
-  const config = DEFAULT_GAME_CONFIG;
+  const config: any = DEFAULT_GAME_CONFIG;
   const radius = config.board.radius;
   const distance = (q: number, r: number) => Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
   const coords = () => {
@@ -20,7 +20,7 @@ describe('configured unit stats', () => {
   };
 
   it('uses every unit’s configured movement budget', () => {
-    for (const [unitId, unit] of Object.entries(config.units)) {
+    for (const [unitId, unit] of Object.entries<any>(config.units)) {
       const board = { '0,0': { unit_id: unitId, color: 'white' } };
       const actual = computeMoveCosts(board, 0, 0, config, radius);
       const expected = coords().filter(key => {
@@ -34,11 +34,12 @@ describe('configured unit stats', () => {
   });
 
   it('uses each unit’s configured attack range', () => {
-    for (const [unitId, unit] of Object.entries(config.units)) {
+    for (const [unitId, unit] of Object.entries<any>(config.units)) {
       const actual = computeAttackZone('0,0', new Set(), config, unitId, radius);
       const expected = coords().filter(key => {
         const [q, r] = key.split(',').map(Number);
-        return key !== '0,0' && distance(q, r) <= unit.attackRange;
+        return key !== '0,0' && distance(q, r) >= (unit.attackMinRange ?? 1)
+          && distance(q, r) <= unit.attackRange;
       });
 
       expect([...actual].sort()).withContext(unitId).toEqual(expected.sort());
@@ -48,11 +49,12 @@ describe('configured unit stats', () => {
   it('uses every configured attack and defense pair in the damage formula', () => {
     const falloff = config.rules.rangeFalloff;
     const minimum = config.rules.minStrikeDamage;
-    for (const [attackerId, attacker] of Object.entries(config.units)) {
-      for (const [defenderId, defender] of Object.entries(config.units)) {
+    for (const [attackerId, attacker] of Object.entries<any>(config.units)) {
+      for (const [defenderId, defender] of Object.entries<any>(config.units)) {
         for (const range of [1, attacker.attackRange]) {
-          const scaledAttack = attacker.attack <= 0 || range <= 1
-            ? Math.max(0, attacker.attack)
+          const scaledAttack = range < (attacker.attackMinRange ?? 1) ? 0
+            : Array.isArray(attacker.attack) ? attacker.attack[range - (attacker.attackMinRange ?? 1)]
+            : attacker.attack <= 0 || range <= 1 ? Math.max(0, attacker.attack)
             : Math.max(
               1,
               Math.trunc(attacker.attack * Math.max(0, 1 - falloff * (range - 1))),
@@ -197,6 +199,29 @@ describe('strikeDamage', () => {
   });
 });
 
+describe('explicit attack rings', () => {
+  it('uses the archer’s four exact attacks, before armor and boosts', () => {
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    config.units.pawn.defense = 0;
+    // A percentage change must leave explicitly configured ring attacks alone.
+    config.rules.rangeFalloff = 1;
+    expect(attackTiers('archer', config)).toEqual([4, 3, 2, 1]);
+    for (const [i, attack] of [4, 3, 2, 1].entries()) {
+      expect(strikeDamage('archer', 'pawn', i + 3, config)).toBe(attack);
+      expect(strikeDamage('archer', 'pawn', i + 3, config, 2, 3)).toBe(Math.max(1, attack - 1));
+    }
+    const zone = computeAttackZone('0,0', new Set(), config, 'archer', 11);
+    expect(zone.has('2,0')).toBeFalse();
+    expect(zone.has('3,0')).toBeTrue();
+    expect(zone.has('6,0')).toBeTrue();
+    expect(zone.has('7,0')).toBeFalse();
+    expect(strikeDamage('archer', 'pawn', 2, config, 30)).toBe(0);
+    expect(strikeDamage('shieldman', 'pawn', 1, config, 30)).toBe(0);
+    config.units.archer.attack[1] = 0;
+    expect(strikeDamage('archer', 'pawn', 4, config, 30)).toBe(0);
+  });
+});
+
 describe('computeMoveCosts', () => {
   const config = { units: { runner: { id: 'runner', move: 4 } } };
   const roomy = { units: { runner: { id: 'runner', move: 6 } } };
@@ -261,18 +286,17 @@ describe('capture zones', () => {
     expect(zone.has('3,0')).toBeFalse();
   });
 
-  it('holds seven hexes from the middle of a patch and fewer from its rim', () => {
+  it('holds the whole patch from an unopposed centre and fewer from its rim', () => {
     // The middle zone, 2 a hex.
     const middle = captureClaims({ '0,0': { unit_id: 'u', color: 'white' } }, R);
-    expect(middle.size).toBe(7);
-    expect(captureScore(middle, 'white', R)).toBe(14);
+    expect(middle.size).toBe(19);
+    expect(captureScore(middle, 'white', R)).toBe(38);
     expect(captureScore(middle, 'black', R)).toBe(0);
 
-    // On the rim three of the six neighbours are outside the patch, and
-    // adjacency stops at its edge - the open board is worth nothing.
+    // Outer-ring units score only their occupied hex.
     const rim = captureClaims({ '2,0': { unit_id: 'u', color: 'white' } }, R);
-    expect(rim.size).toBe(4);
-    expect(captureScore(rim, 'white', R)).toBe(8);
+    expect(rim.size).toBe(1);
+    expect(captureScore(rim, 'white', R)).toBe(2);
   });
 
   it("makes the zone in each side's half worth 3 a hex, the middle 2 and the sides 1", () => {
@@ -288,7 +312,7 @@ describe('capture zones', () => {
     // Worth the same to either side.
     for (const color of ['white', 'black'] as const) {
       const near = captureClaims({ '-3,6': { unit_id: 'u', color } }, R);
-      expect(captureScore(near, color, R)).withContext(color).toBe(21);
+      expect(captureScore(near, color, R)).withContext(color).toBe(57);
     }
   });
 
@@ -320,9 +344,9 @@ describe('capture zones', () => {
       '2,0': { unit_id: 'u', color: 'black' },
     }, R);
     // Three apart, so nothing overlaps - white keeps all seven, and black
-    // keeps the four of its own that are still inside the patch, 2 apiece.
+    // keeps only its occupied outer-ring hex, 2 apiece.
     expect(captureScore(claims, 'white', R)).toBe(14);
-    expect(captureScore(claims, 'black', R)).toBe(8);
+    expect(captureScore(claims, 'black', R)).toBe(2);
   });
 
   it('cancels both units outright when they stand next to each other', () => {
@@ -335,15 +359,14 @@ describe('capture zones', () => {
     expect(claims.get('1,0')).toBeUndefined();
   });
 
-  it('does not double-count a hex two of one side\u2019s units both reach', () => {
+  it('does not double-count friendly claims within a centre-controlled zone', () => {
     const claims = captureClaims({
       '0,0': { unit_id: 'u', color: 'white' },
       '1,0': { unit_id: 'u', color: 'white' },
     }, R);
-    // Seven each, less the four hexes they share: their own two and the two
-    // either side of the pair - ten hexes, 2 apiece.
-    expect(claims.size).toBe(10);
-    expect(captureScore(claims, 'white', R)).toBe(20);
+    // The centre holds nineteen; its adjacent friend adds no duplicate score.
+    expect(claims.size).toBe(19);
+    expect(captureScore(claims, 'white', R)).toBe(38);
   });
 });
 
@@ -385,5 +408,61 @@ describe('inHomeRows', () => {
     expect(inHomeRows('white', 1, 2)).toBeTrue();
     expect(inHomeRows('black', 1, 2)).toBeFalse();
     expect(inHomeRows('white', 0, 2)).toBeFalse();
+  });
+});
+
+
+describe('capture permissions and centre control', () => {
+  const centers = ['-3,6', '0,0', '7,0', '-7,0', '3,-6'];
+  const piece = (unit_id: string, color: 'white' | 'black') => ({ unit_id, color });
+
+  it('uses the cumulative roster permissions for both sides in all five zones', () => {
+    for (const color of ['white', 'black'] as const) {
+      const locations = color === 'white' ? centers : centers.map(key => key.split(',').map(n => -Number(n)).join(','));
+      for (const [id, expected] of [
+        ['pawn', [57, 0, 0, 0, 0]], ['archer', [57, 0, 0, 0, 0]], ['shieldman', [57, 0, 0, 0, 0]],
+        ['bishop', [57, 38, 19, 19, 0]], ['rook', [57, 38, 19, 19, 0]], ['knight', [57, 38, 19, 19, 0]],
+        ['king', [57, 38, 19, 19, 57]], ['queen', [57, 38, 19, 19, 57]],
+      ] as const) {
+        const actual = locations.map(at => captureScore(captureClaims({ [at]: piece(id, color) }, 11, DEFAULT_GAME_CONFIG), color, 11));
+        expect(actual).withContext(`${id} ${color}`).toEqual([...expected]);
+      }
+    }
+  });
+
+  it('loses the bonus to any eligible enemy in the zone and restores it when that enemy leaves', () => {
+    const center = { '0,0': piece('bishop', 'white') };
+    const scored = (board: any) => captureScore(captureClaims(board, 11, DEFAULT_GAME_CONFIG), 'white', 11);
+    expect(scored(center)).toBe(38);
+    // A pawn cannot neutralize the middle, so it cannot block the bonus.
+    expect(scored({ ...center, '2,0': piece('pawn', 'black') })).toBe(38);
+    const contested = { ...center, '2,0': piece('rook', 'black') };
+    const claims = captureClaims(contested, 11, DEFAULT_GAME_CONFIG);
+    expect(captureScore(claims, 'white', 11)).toBe(12);
+    expect(captureScore(claims, 'black', 11)).toBe(2);
+    expect(claims.has('1,0')).toBeFalse();
+    expect(scored({ ...center, '3,0': piece('rook', 'black') })).toBe(38);
+    // The enemy's own pawn is eligible in its home zone and blocks an invading queen.
+    const invaded = captureClaims({ '3,-6': piece('queen', 'white'), '5,-6': piece('pawn', 'black') }, 11, DEFAULT_GAME_CONFIG);
+    expect(captureScore(invaded, 'white', 11)).toBe(18);
+    expect(captureScore(invaded, 'black', 11)).toBe(3);
+  });
+
+  it('scores only an outer unit’s hex while it still disrupts adjacent enemy claims', () => {
+    const alone = { '2,0': piece('bishop', 'white') };
+    expect(captureScore(captureClaims(alone, 11, DEFAULT_GAME_CONFIG), 'white', 11)).toBe(2);
+    const claims = captureClaims({ ...alone, '0,1': piece('rook', 'black') }, 11, DEFAULT_GAME_CONFIG);
+    expect(captureScore(claims, 'white', 11)).toBe(2);
+    expect(captureScore(claims, 'black', 11)).toBe(10);
+    expect(claims.has('1,0')).toBeFalse();
+    expect(claims.has('1,1')).toBeFalse();
+    expect(claims.get('0,1')).toBe('black');
+    expect(captureScore(captureClaims({ '1,0': piece('bishop', 'white') }, 11, DEFAULT_GAME_CONFIG), 'white', 11)).toBe(14);
+  });
+
+  it('reads permissions from opaque config ids and allows an explicit empty list', () => {
+    const config = { units: { custom: { captureZones: ['middle'] }, none: { captureZones: [] } } };
+    expect(captureScore(captureClaims({ '0,0': piece('custom', 'black') }, 11, config), 'black', 11)).toBe(38);
+    expect(captureClaims({ '0,0': piece('none', 'white') }, 11, config).size).toBe(0);
   });
 });

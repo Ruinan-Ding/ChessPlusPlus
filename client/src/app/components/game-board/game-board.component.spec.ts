@@ -61,6 +61,190 @@ describe('GameBoardComponent reach preview', () => {
 
   const cell = (key: string) => board.cells.find(c => c.key === key)!;
 
+  it('keeps close enemies out of archer targets and removes a shieldman’s attack reach', () => {
+    board.config = structuredClone(DEFAULT_GAME_CONFIG);
+    board.radius = 11;
+    board.controlAllSides = true; board.turnColor = 'white'; board.myColor = 'white';
+    board.boardState = {
+      '0,0': { unit_id: 'archer', color: 'white', hp: 6, max_hp: 6 },
+      '2,0': { unit_id: 'pawn', color: 'black', hp: 12, max_hp: 12 },
+      '3,0': { unit_id: 'pawn', color: 'black', hp: 12, max_hp: 12 },
+      '6,0': { unit_id: 'pawn', color: 'black', hp: 12, max_hp: 12 },
+      '7,0': { unit_id: 'pawn', color: 'black', hp: 12, max_hp: 12 },
+    };
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false),
+      config: new SimpleChange(null, board.config, false), radius: new SimpleChange(4, 11, false) });
+    board.onHexClick(cell('0,0'));
+    expect([...board.attackTargets].sort()).toEqual(['3,0', '6,0']);
+    expect(cell('0,0').stats!.rangeLow).toBe(3);
+    expect(cell('0,0').stats!.rangeHigh).toBe(6);
+    board.movesLeft = 0; board.movesLeftFor = '0,0';
+    board.onHexHover(cell('0,0'));
+    expect(board.previewAttacks.has('2,0')).toBeFalse();
+    expect(board.previewAttacks.has('3,0')).toBeTrue();
+    board.boardState = { ...board.boardState,
+      '0,0': { unit_id: 'shieldman', color: 'white', hp: 30, max_hp: 30 } };
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false) });
+    board.onHexClick(cell('0,0'));
+    expect(board.attackTargets.size).toBe(0);
+    board.onHexHover(cell('0,0'));
+    expect(board.previewAttacks.size).toBe(0);
+  });
+
+  it('offers a healer only other friendly battlefield units, previews HP and confirms touch healing', () => {
+    board.config = { ...config, units: { ...config.units, medic: {
+      name: 'Medic', symbol: 'M', attack: 0, attackRange: 1, heal: [14, 13, 12, 11], move: 1, hp: 22,
+    } } };
+    board.boardState = {
+      '0,0': { unit_id: 'medic', color: 'white', hp: 22, max_hp: 22 },
+      '3,0': { unit_id: 'guard', color: 'white', hp: 5, max_hp: 30 },
+      '-3,0': { unit_id: 'guard', color: 'black', hp: 9, max_hp: 9 },
+    };
+    board.controlAllSides = true;
+    board.turnColor = 'white';
+    board.myColor = 'white';
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false), config: new SimpleChange(config, board.config, false) });
+    board.onHexClick(cell('0,0'));
+    expect([...board.healTargets]).toEqual(['3,0']);
+    expect(board.attackTargets.size).toBe(0);
+    expect(cell('0,0').stats!.rangeHigh).toBe(4);
+    const seen: any[] = []; board.attackMade.subscribe(e => seen.push(e));
+    (board as any).lastPointer = 'touch';
+    board.onHexClick(cell('3,0'));
+    expect(seen.length).toBe(0);
+    expect(board.forecastDamage('3,0')).toBe('+12');
+    expect(board.forecastDamage('0,0')).toBeNull();
+    expect(board.keyWordsFor(cell('3,0'))).toContain('can heal');
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.armed-hint').textContent).toContain('heal');
+    expect(fixture.nativeElement.querySelector('.hex-heal-armed')).not.toBeNull();
+    board.onHexClick(cell('3,0'));
+    expect(seen).toEqual([{ from: '0,0', to: '0,0', attack: '3,0', heal: true }]);
+    board.movesLeftFor = '0,0';
+    board.actionSpent = true;
+    board.onHexClick(cell('0,0'));
+    expect(board.healTargets.size).toBe(0);
+    expect(board.drivable(cell('0,0'))).toBeFalse();
+    board.actionSpent = false;
+    board.turnNumber = 27;
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 27, false) });
+    board.onHexClick(cell('0,0'));
+    expect(board.healTargets.size).toBe(0);
+  });
+
+  it('gives an armed friendly ability the next unit click before normal healing or attacking', () => {
+    board.config = structuredClone(DEFAULT_GAME_CONFIG);
+    board.radius = 11;
+    board.controlAllSides = true; board.turnColor = 'white'; board.myColor = 'white';
+    board.boardState = {
+      '0,0': { unit_id: 'bishop', color: 'white', hp: 8, max_hp: 8, uid: 'medic' },
+      '1,0': { unit_id: 'rook', color: 'white', hp: 1, max_hp: 40, uid: 'ally' },
+      '-1,0': { unit_id: 'pawn', color: 'black', hp: 12, max_hp: 12, uid: 'enemy' },
+    };
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false),
+      config: new SimpleChange(null, board.config, false), radius: new SimpleChange(4, 11, false) });
+    const attack = spyOn(board.attackMade, 'emit');
+    const clicked = spyOn(board.hexClicked, 'emit');
+    for (const pointer of ['mouse', 'touch']) {
+      board.abilityMode = null;
+      board.onHexClick(cell('0,0'));
+      expect(board.healTargets.has('1,0')).toBeTrue();
+      (board as any).lastPointer = pointer;
+      board.abilityMode = 'friendly';
+      board.ngOnChanges({ abilityMode: new SimpleChange(null, 'friendly', false) });
+      clicked.calls.reset();
+      board.onHexClick(cell('1,0'));
+      expect(clicked).toHaveBeenCalledWith(jasmine.objectContaining({ uid: 'ally' }));
+      expect(attack).not.toHaveBeenCalled();
+      expect(board.armedAttack).toBeNull();
+      // The room also needs the wrong-kind click to cancel the armed cast.
+      clicked.calls.reset();
+      board.onHexClick(cell('-1,0'));
+      expect(clicked).toHaveBeenCalledWith(jasmine.objectContaining({ uid: 'enemy' }));
+      expect(attack).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps original battlefield veterans ranked through staged withdrawal, Undo and commit', () => {
+    board.config = structuredClone(DEFAULT_GAME_CONFIG);
+    board.radius = 11; board.turnNumber = 27; board.controlAllSides = true;
+    const selected = spyOn(board.hexSelected, 'emit');
+    for (const color of ['white', 'black'] as const) {
+      const sign = color === 'white' ? 1 : -1;
+      const origin = [-4 * sign, 9 * sign].join(',');
+      const landing = [-12 * sign, 10 * sign].join(',');
+      const rook = { unit_id: 'rook', color, hp: 40, max_hp: 40, uid: `original-${color}` };
+      board.myColor = color; board.turnColor = color; board.moveHistory = []; board.withdrawn = [];
+      board.committedBoard = { [origin]: rook }; board.boardState = board.committedBoard;
+      board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false),
+        committedBoard: new SimpleChange(null, board.committedBoard, false),
+        config: new SimpleChange(null, board.config, false), radius: new SimpleChange(4, 11, false) });
+      expect(cell(origin).vet).toBe(2);
+      board.boardState = { [landing]: rook };
+      board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false) });
+      expect(cell(landing).vet).toBe(2);
+      expect(board.vetPips(cell(landing)).map(pip => pip.glyph)).toEqual(['★', '★']);
+      board.onHexClick(cell(landing));
+      expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ key: landing, vet: 2 }));
+      board.boardState = board.committedBoard;
+      board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false) });
+      expect(cell(origin).vet).toBe(2);
+      board.boardState = {}; board.committedBoard = {};
+      board.withdrawn = [{ at: landing, unit: rook }];
+      board.moveHistory = [{ from: origin, to: landing, turn: 27, withdrawn: true, unit: rook, color, unit_id: 'rook' }] as any;
+      board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false),
+        committedBoard: new SimpleChange(null, board.committedBoard, false),
+        withdrawn: new SimpleChange(null, board.withdrawn, false), moveHistory: new SimpleChange(null, board.moveHistory, false) });
+      expect(cell(landing).vet).toBe(2);
+    }
+  });
+
+  it('starts both sides unranked on the battlefield and in both panels', () => {
+    board.turnNumber = 1;
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 1, false) });
+    const occupied = board.cells.filter(c => c.piece);
+    // The fixture deals both panels, so a field-only reset cannot pass.
+    expect(new Set(occupied.map(c => c.panel))).toEqual(new Set(['', 'tl', 'tr', 'bl', 'br']));
+    expect(new Set(occupied.map(c => c.piece!.color))).toEqual(new Set(['white', 'black']));
+    for (const hex of occupied) {
+      expect(hex.vet).withContext(hex.key).toBe(0);
+      expect(board.vetPips(hex).map(p => p.glyph)).withContext(hex.key).toEqual(['-']);
+    }
+    (board as any).cdr.detectChanges();
+    const glyphs = [...fixture.nativeElement.querySelectorAll('text.vet-star')] as SVGTextElement[];
+    expect(glyphs.length).toBe(occupied.length);
+    expect(glyphs.every(g => g.textContent?.trim() === '-')).toBeTrue();
+    // The Unit panel receives the same zero as the actual board glyph.
+    const selected = jasmine.createSpy('selected');
+    board.hexSelected.subscribe(selected);
+    board.onHexClick(cell('0,0'));
+    expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ vet: 0 }));
+  });
+
+  it('renders boundary stars in every eligible zone and refreshes the selected Unit panel', () => {
+    board.turnNumber = 6;
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 6, false) });
+    const selected = jasmine.createSpy('selected');
+    board.hexSelected.subscribe(selected);
+    board.onHexClick(cell('0,0'));
+    for (const [ply, vet] of [[7, 1], [8, 1], [27, 2], [28, 2], [49, 3], [71, 3]]) {
+      const previous = board.turnNumber;
+      board.turnNumber = ply;
+      board.ngOnChanges({ turnNumber: new SimpleChange(previous, ply, false) });
+      (board as any).cdr.detectChanges();
+      for (const hex of board.cells.filter(c => c.piece)) {
+        const earned = !['bl', 'tr'].includes(hex.panel) ? vet : 0;
+        expect(hex.vet).withContext(`${hex.key} at ${ply}`).toBe(earned);
+        expect(board.vetPips(hex).filter(p => p.glyph === '★').length).toBe(earned);
+      }
+      expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ key: '0,0', vet }));
+      // Stars are actually painted, not just present on the render model.
+      const eligible = board.cells.filter(c => c.piece && !['bl', 'tr'].includes(c.panel)).length;
+      const stars = [...fixture.nativeElement.querySelectorAll('text.vet-star')] as SVGTextElement[];
+      expect(stars.filter(g => g.textContent?.trim() === '★').length).toBe(eligible * vet);
+    }
+  });
+
   it('takes overtime out of the king, on the king', async () => {
     // Overtime bleeds a point off a side at the end of each of its
     // hand-overs. The header counts it; the board shows it as the king of
@@ -552,6 +736,30 @@ describe('GameBoardComponent reach preview', () => {
     // the class once, so the full count is also the proof they do not overlap
     // and that none of them ran off the board.
     expect(zoned.length).toBe(5 * 19);
+  });
+
+  it('keeps a distinct centre outline on occupied zones and side-specific base blues when flipped', () => {
+    board.radius = 11;
+    board.ngOnChanges({ radius: new SimpleChange(4, 11, false) });
+    for (const rotate of [false, true]) {
+      board.rotateBoard = rotate;
+      (board as any).cdr.detectChanges();
+      const centers = board.cells.filter(cell => cell.zoneCenter);
+      expect(centers.map(cell => cell.key).sort()).toEqual(['-3,6', '-7,0', '0,0', '3,-6', '7,0'].sort());
+      expect(fixture.nativeElement.querySelectorAll('.zone-center').length).toBe(5);
+      expect(fixture.nativeElement.querySelectorAll('.zone-inner').length).toBe(30);
+      expect(board.cells.filter(cell => cell.zoneLayer === 1).length).toBe(30);
+      expect(centers.some(cell => cell.piece)).toBeTrue();
+      for (const [owner, fill] of [['white', 'rgb(191, 219, 254)'], ['black', 'rgb(30, 58, 138)']]) {
+        expect(board.cells.filter(cell => cell.zoneOwner === owner).length).toBe(19);
+        const hex = fixture.nativeElement.querySelector(`.hex-cell.zone-${owner}-base`);
+        expect(getComputedStyle(hex).fill).toBe(fill);
+      }
+      const outline = fixture.nativeElement.querySelector('.zone-center');
+      expect(getComputedStyle(outline).fill).toBe('none');
+      expect(getComputedStyle(outline).stroke).toBe('rgb(250, 204, 21)');
+      expect(getComputedStyle(outline).pointerEvents).toBe('none');
+    }
   });
 
   it('draws a dark line along every edge where a panel meets the battlefield', () => {
@@ -2716,6 +2924,7 @@ describe('GameBoardComponent setup deal', () => {
         attack: 77,
         defense: 31,
         attackRange: 3,
+        attackMinRange: 1,
         value: 123,
       };
       config.units[unitId] = changed;

@@ -3,34 +3,29 @@
 .game-room-container {
   // The lesser of two, between 12px and 20px:
   //
-  // - Height: the window has to hold the taller column, the header and the
-  //   room's padding. Measured unit by unit in headless Chrome, 29 Sep 2026,
-  //   with a line of chat in the chat and History and the chat each held to
-  //   one whole entry, both ability panels in the left column and the Unit
-  //   panel atop the right: 725px at 12px, 791 at 14, 877 at 16, 973 at 18,
-  //   1084 at 20. Not one straight line - at the bottom the 12px type and the
-  //   24px buttons are floors that do not shrink with the unit - so two, and
-  //   the lower of the two answers: 35 units + 309px up to about 15px, 52
-  //   units + 49px above it, each with a few px to spare. (Their panel had
-  //   been atop the right column, 28 Sep to 29 Sep, at 700px to 1050: back
-  //   in the left one with the Unit panel still there it was 910px to 1379,
-  //   and the Unit panel crossing over is what brought it back to this.)
+  // - Height: the left column now holds both ability panels and Unit.
+  //   Measured in headless Chrome, 3 Oct 2026, with a three-ring unit's
+  //   stats (including HEL/RNG) and its own ability detail open: 1010px at
+  //   12px, 1108 at 14, 1226 at 16, 1363 at 18 and 1517 at 20. Two lines
+  //   cover the type and button floors with room to spare: 50 units + 420px,
+  //   and 78 units - 8px. The 1025px floor keeps the whole Unit panel in
+  //   sight when its contents change, as well as when nothing is selected.
   // - The board first. It is drawn 1.194 times as wide as it is tall, so
   //   once the rails leave it that much width for its height it is as big as
   //   the window allows, and only then do the rails grow into what is left.
   //   With the rails at 36.25 units, the gaps and padding at 4, and 5.33 of
-  //   header over the board, that is u <= (W - 1.194 H) / 33.9. On a window
+  //   header over the board, that is u <= (W - 1.194 H) / 37.65. On a window
   //   where the board is short of width - any 16:10 screen - this is what
   //   holds the rails at their floor: they give way before the board does.
   //
-  // Everything else - the type floor, the 24px targets, the rails' 248px -
+  // Everything else - the type floor, the 24px targets, the rails' width floors -
   // bites only at the bottom of the range, which is what the room's least
   // size (fitRoom) was measured at. Below it the room is still zoomed, and
   // the window's units are safe in here all the same: every term only falls
   // as the window does, so there the unit sits at its 12px floor and the
   // room is laid out at exactly the size that floor was measured at.
-  --u: clamp(12px, min(calc((100dvh - 309px) / 35), calc((100dvh - 49px) / 52),
-    calc((100vw - 119.4dvh) / 33.9)), 20px);
+  --u: clamp(12px, min(calc((100dvh - 420px) / 50), calc((100dvh + 8px) / 78),
+    calc((100vw - 119.4dvh) / 37.65)), 20px);
   font-size: var(--u);
   @each $n, $name in $u-named {
     --#{$name}: calc(#{$n} * var(--u));
@@ -292,11 +287,15 @@
   .match-panels {
     display: flex;
     flex-direction: column;
-    gap: u(0.625);
-    flex: 0 0 max(248px, #{u(16.25)});
+    gap: u(0.375);
+    flex: 0 0 max(300px, #{u(20)});
     min-height: 0;
     overflow-y: auto;
   }
+
+  // Three panels share this column now. Give their contents a little less
+  // space between rows without taking height off any button or text.
+  .match-panels .panel-body { gap: u(0.375); }
 
   /* Theirs, not yours: the Opponent panel always, and the Unit panel while it
      is showing one of their units. A darker ground says whose side of the
@@ -342,7 +341,7 @@
     }
   }
 
-  // Under their panel, History and the Game/Lobby box share what is left:
+  // History and the Game/Lobby box share the right column:
   // a little more to the box, which holds the roster as well as a chat. Both
   // are logs that scroll, so each keeps a floor of a few lines rather than a
   // share - a share of a short column was a slot nobody could read.
@@ -367,8 +366,8 @@
     &:hover:not(:disabled) { background: #46505a; }
   }
 
-  // Resign and Offer Draw, under the hex-number toggle. Equal halves, so the
-  // pair reads as a pair rather than as two different controls.
+  // Resign and Offer Draw at the bottom of the left column. Equal halves,
+  // so the pair reads as a pair rather than as two different controls.
   .match-actions {
     flex: 0 0 auto;
     display: grid;
@@ -674,28 +673,41 @@
     &:hover { background-color: #f1f4f7; }
   }
 
-  // HP / ATK / DEF / MOV, two per row, colour-matched to the board numbers.
+  // HP/MOV, ATK/DEF, HEL/VET. Range-labelled ATK and HEL share the wide
+  // column; the narrow one takes the width DEF or three stars actually need.
   .stat-grid {
     display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content;
+    gap: u(0.375) u(0.125);
+  }
+
+  // HP and MOV use equal halves of their own first row.
+  .primary-stats {
+    grid-column: 1 / -1;
+    display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: u(0.375);
+    gap: u(0.125);
+    .stat-cell {
+      flex-wrap: nowrap;
+      gap: u(0.125);
+      padding: u(0.25);
+    }
   }
 
   .stat-cell {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    // "26,19/26,19" sits beside its label - the component shrinks the text
-    // to keep it there (statFontSize). The shrinking stops at the 12px type
-    // floor, so at the bottom of the room's range a value that long drops
-    // under its label rather than running out of the cell.
-    flex-wrap: wrap;
+    // Four range-labelled pairs fit at the 12px floor without wrapping.
+    flex-wrap: nowrap;
     white-space: nowrap;
-    gap: u(0.375);
-    padding: u(0.25) u(0.5);
+    gap: u(0.125);
+    padding: u(0.25);
     border-radius: 6px;
     background-color: #f5f7fa;
     font-size: t(0.82);
+    // A star uses a fallback font; fixed leading keeps the row one height.
+    line-height: 1.2;
 
     // The room's unit, as statFontSize gives each value - HP included.
     strong { font-size: t(1); }
@@ -739,6 +751,10 @@
         text-underline-offset: 0.2em;
       }
     }
+    // Like the other stats, HEL and RNG colour their values. The owner
+    // clarified that the requested light colours belong on the numbers.
+    &.hel strong { color: #4ade80; }
+    &.vet strong { color: #facc15; }
     &.atk strong { color: #b91c1c; }
     &.def strong { color: #1d4ed8; }
     // MOV is gold, and waves out of that. A dark gold: #e0a800 was 2:1 on the
@@ -809,14 +825,9 @@
 
   .opponent-panel,
   .abilities-panel { flex: 0 0 auto; }
-  // The unit panel is its own height, never less: it was basis 0 and free to
-  // shrink, and in any window shorter than its column the two ability panels
-  // above it crushed it to its border - the stats, the unit's abilities and
-  // its effects, gone. The owner: "this game is NOT playable with that gone".
-  // The room scales to fit instead (fitRoom). Nor more, now it tops the right
-  // column: it took whatever the left one had left over, and there it would
-  // take the chat's share (History and the chat grow instead).
-  .stats-panel { flex: 0 0 auto; min-height: 0; }
+  // Fill what the left column has left without shrinking the unit's stats.
+  // The effects box takes the extra height; Resign/Offer Draw stay at the bottom.
+  .stats-panel { flex: 1 0 auto; min-height: 0; }
 
   // The solo opponent's shortcut to their setup. Sized like the words beside
   // it, with its padding cut to the 24px target: it took the ⋮ button's 18px
@@ -1080,7 +1091,7 @@
     cursor: pointer;
   }
 
-  // Right column: the Unit panel, History, and one tabbed box for Game and
+  // Right column: History, and one tabbed box for Game and
   // Lobby, so the two aren't both claiming screen width at once. Sized the
   // same way as .match-panels, and for the same reason - see the note there.
   // Like it, it scrolls rather than clips if it is ever shorter than its
@@ -1089,7 +1100,7 @@
     display: flex;
     flex-direction: column;
     gap: u(0.625);
-    // The same floor as the left column: the Unit panel's stats want it.
+    // The same floor as the left column: the room's controls want it.
     flex: 0 0 max(248px, #{u(20)});
     min-height: 0;
     overflow-y: auto;

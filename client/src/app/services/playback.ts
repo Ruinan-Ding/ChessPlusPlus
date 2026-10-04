@@ -5,6 +5,7 @@ export interface PlayableAction {
   from: string;
   to: string;
   attack: string | null;
+  heal?: string;
   killed?: string;
   /** Who was killed there, when something was. */
   killedUnit?: { color: 'white' | 'black' };
@@ -76,6 +77,12 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
     }
     const origin = at(action.from);
     const owner = action.from || null;
+    if (action.heal) {
+      steps.push({ kind: 'heal', from: action.heal, to: action.heal, mark: action.mark, brief: collapseMoves });
+      owners.push(origins.find(origin => at(origin) === action.heal) ?? null);
+      if (action.from && action.to) standing.set(action.from, action.to);
+      continue;
+    }
     if (action.attack) {
       steps.push({ kind: 'attack', from: action.to, to: action.attack });
       owners.push(owner);
@@ -115,7 +122,7 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
       if (at(owner) !== owner) recap.push({ kind: 'move', from: owner, to: at(owner) });
     }
     if (step.kind === 'move') return;              // folded into its unit's line
-    if (step.kind === 'ability' && owner !== null) {
+    if ((step.kind === 'ability' || step.kind === 'heal') && owner !== null) {
       // It landed on a unit that acted, so it lands where that unit is now.
       recap.push({ ...step, from: at(owner), to: at(owner) });
       return;

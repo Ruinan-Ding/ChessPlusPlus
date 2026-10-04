@@ -82,8 +82,8 @@ export function phaseTotal(cap: number, deaths: number, multiplier: number): num
 }
 
 /** What a side is holding on `board`, right now. */
-export function capOf(board: Record<string, any> | null | undefined, radius: number, color: Side): number {
-  return captureScore(captureClaims(board ?? {}, radius), color, radius);
+export function capOf(board: Record<string, any> | null | undefined, radius: number, color: Side, config?: any): number {
+  return captureScore(captureClaims(board ?? {}, radius, config), color, radius);
 }
 
 /**
@@ -146,7 +146,7 @@ export function bankEndedPhases(
   for (const phase of SCORING_PHASES) {
     if (bank?.[phase] || !phaseOver(phase, ply)) continue;
     out ??= { ...(bank ?? {}) };
-    claims ??= captureClaims(board ?? {}, radius);
+    claims ??= captureClaims(board ?? {}, radius, config);
     out[phase] = {
       white: phaseTotal(captureScore(claims, 'white', radius), deathsOf(config, history, 'white', phase), PHASES[phase].multiplier),
       black: phaseTotal(captureScore(claims, 'black', radius), deathsOf(config, history, 'black', phase), PHASES[phase].multiplier),

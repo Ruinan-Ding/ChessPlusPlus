@@ -33,6 +33,10 @@ export interface MoveRecord {
   defender_eliminated: boolean;
   moved: boolean;
   defender_hp?: number;
+  healedHex?: string;
+  healed_amount?: number;
+  healed_hp?: number;
+  healed_unit?: string;
   /** Only present on a move that attacked - see move_record in consumers.py. */
   attacker_eliminated?: boolean;
   /**

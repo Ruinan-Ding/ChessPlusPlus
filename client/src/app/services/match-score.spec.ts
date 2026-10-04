@@ -20,12 +20,11 @@ describe('match-score', () => {
   });
 
   it('claims a unit its hex and the zone hexes beside it', () => {
-    // In the middle of a zone: its own hex and all six around it - seven
+    // In the middle of a zone: the unopposed centre claims nineteen
     // hexes of the middle zone, 2 apiece.
-    expect(capOf({ '0,0': pawn('white') }, 11, 'white')).toBe(14);
-    // On a zone's rim: only the zone hexes beside it count - four of the
-    // left-hand zone, 1 apiece.
-    expect(capOf({ '-5,0': pawn('white') }, 11, 'white')).toBe(4);
+    expect(capOf({ '0,0': pawn('white') }, 11, 'white')).toBe(38);
+    // On the outer ring: only the occupied hex scores, 1 in the left zone.
+    expect(capOf({ '-5,0': pawn('white') }, 11, 'white')).toBe(1);
     // Two sides touching cancel the hexes both reach: the two they stand on
     // and the two beside both, which leaves three apiece.
     const touching = { '0,0': pawn('white'), '1,0': pawn('black') };
@@ -70,15 +69,25 @@ describe('match-score', () => {
     ];
     // Handed to ply 26 or before, Phase 1 is still being played.
     expect(bankEndedPhases({}, PAWN, board, history, 26)).toEqual({});
-    // Handed to ply 27 - its postmatch - it is over: 14 held, 5 lost.
+    // Handed to ply 27 - its postmatch - it is over: 38 held, 5 lost.
     const bank = bankEndedPhases({}, PAWN, board, history, 27);
-    expect(bank).toEqual({ 1: { white: 9, black: 0 } });
+    expect(bank).toEqual({ 1: { white: 33, black: 0 } });
     // The postmatch reshuffles the board; the bank is the play's and stays -
     // and nothing new banked hands the same object back.
     expect(bankEndedPhases(bank, PAWN, {}, history, 29)).toBe(bank);
     // Phase 2 waits for its own postmatch.
     expect(bankEndedPhases(bank, PAWN, board, history, 48)[2]).toBeUndefined();
     expect(bankEndedPhases(bank, PAWN, board, history, 49)[2]).toBeDefined();
+  });
+
+  it('uses the match config for live claims and for the phase bank', () => {
+    const config = { board: { radius: 11 }, units: { custom: { captureZones: ['middle'] } } };
+    const board = { '0,0': { unit_id: 'custom', color: 'white' } };
+    expect(capOf(board, 11, 'white', config)).toBe(38);
+    expect(bankEndedPhases({}, config, board, [], 27)).toEqual({ 1: { white: 38, black: 0 } });
+    config.units.custom.captureZones = [];
+    expect(capOf(board, 11, 'white', config)).toBe(0);
+    expect(bankEndedPhases({}, config, board, [], 27)).toEqual({ 1: { white: 0, black: 0 } });
   });
 
   it('never banks a phase below nothing', () => {
@@ -127,12 +136,12 @@ describe('match-score', () => {
     // The owner, 24 Sep 2026: "the total victory points for each phase is
     // multiplied by 2 on phase 2, multipled by 3 on phase 3".
     expect([1, 2, 3].map(p => phaseTotal(7, 5, p))).toEqual([2, 4, 6]);
-    // Banked that way: one pawn in the middle holds 14, every phase.
+    // Banked that way: one unrestricted pawn in the middle holds 38, every phase.
     const board = { '0,0': pawn('white') };
     let bank = bankEndedPhases({}, PAWN, board, [], 27);
     bank = bankEndedPhases(bank, PAWN, board, [], 49);
     bank = bankEndedPhases(bank, PAWN, board, [], 71);
-    expect([1, 2, 3].map(p => bank[p].white)).toEqual([14, 28, 42]);
+    expect([1, 2, 3].map(p => bank[p].white)).toEqual([38, 76, 114]);
   });
 
   it('converts the victory points at overtime, but never after a points win', () => {

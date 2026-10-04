@@ -18,7 +18,7 @@ import {
   AnimStep, FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap, panelOfHex,
 } from '../game-board/game-board.component';
 import {
-  hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
+  canAttack, healingAmount, hexDistanceKeys, isInsideBoard, strikeDamage, BASE_PANELS,
 } from '../../services/hex-rules';
 import {
   PhaseBank, capOf, cpAwarded, deathsOf, decidedOnPoints, matchVerdict, phaseTotal,
@@ -304,6 +304,8 @@ interface StagedAction {
   used: number;
   /** Hex it struck, or null for a plain step. */
   attack: string | null;
+  /** Friendly battlefield hex healed instead of attacking. No ability spend. */
+  heal?: string;
   /** When it was staged, so Undo can tell it from a panel walk. */
   at?: number;
   /** What walking home into the base paid back, for Undo to take away again. */
@@ -404,56 +406,46 @@ function fallen(
  * (client/scripts/layout-sweep.mjs) finds every column whole, nothing cut
  * short and nothing past the window's edge with the unit at its floor.
  *
- * It was 1480 x 1120, when the whole room was one scaled picture: 1120 was
- * the left column holding both ability panels and the Unit panel. Their panel
- * went to the right one (28 Sep 2026, 705 tall), and came back over yours at
- * the owner's word (29 Sep: "put it back", "we need to make it try to fit")
- * - with the Unit panel crossing to the right in its place, 730: both ability
- * panels over the Unit panel, as they had been, wanted 910.
- *
- * A little below it the three columns are scaled, no further than
- * ROOM_MILD_ZOOM; below that the room changes layout instead (`roomLayout`) -
- * the board and a column of tabs, or the board over the tabs - laid out to
- * the window and never scaled.
+ * The Unit panel moved below both ability panels on 3 Oct 2026. The
+ * taller left column needs 1025px at its 12px unit, including the new
+ * HEL/VET row, a ranged unit's stats and an open ability detail. Smaller desktop windows keep
+ * every panel visible, scaled; touch screens keep their 90% limit and
+ * use the existing tabbed or stacked layout below it.
  */
 const ROOM_MIN_WIDTH = 1180;
-const ROOM_MIN_HEIGHT = 730;
+const ROOM_MIN_HEIGHT = 1025;
 
 /**
  * How far the three columns may be scaled on a touch screen - a tablet, a
  * phone - before the room goes to the tabs instead (`roomLayout`). A little
  * scaling keeps every panel in sight at once, which is worth a pixel of type;
  * past it, on a screen held in the hand, the tabs. The owner, 27 Sep 2026:
- * "tabs are fine". A computer's window goes much further (ROOM_DESKTOP_ZOOM).
+ * "tabs are fine". A computer's window keeps its existing width and height limits.
  */
 const ROOM_MILD_ZOOM = 0.9;
 
 /**
- * How far the three columns may be scaled on a computer - a mouse and a
- * window - before the tabs: much further than on a touch screen. The owner,
- * 28 Sep 2026, asked whether their own 1284x649 window should go to the
- * tabs for bigger type: *"its weird you considered that since the game is
- * unplayable with anything tucked away"*. So a computer's window keeps every
- * panel in sight, smaller, down to where its type would fall under about 9px
- * - a 960x540 window is 74% - and only a window smaller than that gets the
- * tabs. It was 75% until ROOM_MIN_HEIGHT went from 705 to 730: 72% keeps the
- * columns on every window that had them (529px tall and up), at 8.6px at the
- * very least. A touch screen keeps ROOM_MILD_ZOOM: there the choice was a
- * tablet at 69% or a phone at 33%, and the owner took the tabs ("tabs are
- * fine").
+ * Keep every desktop window that already showed all the panels in columns.
+ * These are the old 1180x730 floor times its 72% limit, rounded up to whole
+ * pixels. The owner chose all panels visible after moving Unit left, even
+ * with smaller text; testing the new fit against 72% would send their own
+ * 1284x649 window to tabs. Width and height keep their old limits separately
+ * so allowing the taller column does not turn a narrow phone into columns.
  */
-const ROOM_DESKTOP_ZOOM = 0.72;
+const ROOM_DESKTOP_MIN_WIDTH = 850;
+const ROOM_DESKTOP_MIN_HEIGHT = 526;
 
 /**
  * The least window height at which the tabbed layout keeps the Unit panel
  * pinned above the tabs rather than behind a tab of its own: the two-row
  * header, the column's controls, the Unit panel, the tab strip and the
- * tallest tab (Yours and Theirs, 685px) whole at the 12px unit, with 5px to
- * spare. Measured in headless Chrome, 28 Sep 2026. Pinned is worth the
+ * tallest tab whole at the 12px unit, with a three-ring unit's HEL/VET row
+ * and its ability detail open: 799px plus room to spare. Measured in
+ * headless Chrome, 3 Oct 2026. Pinned is worth the
  * smaller type it costs just above this: the Unit panel is what a hover or a
  * tap on the board fills in, and behind a tab it fills in out of sight.
  */
-const UNIT_PIN_MIN_HEIGHT = 690;
+const UNIT_PIN_MIN_HEIGHT = 805;
 
 /**
  * Below this width the tabbed layout's header is two rows from the start:
@@ -1855,11 +1847,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   get unitPanelTitle(): string {
     const u = this.displayUnit;
     if (!u) return 'Unit';
-    // Veterancy rides right behind the name, same stars the hex draws.
-    const stars = '\u2605'.repeat(Math.max(0, Math.min(3, u.vet)));
-    // The side is not part of the name - it sits at the far end of the tab,
-    // see unitSideLabel.
-    return `${u.name}${stars ? ' ' + stars : ''} - ${u.points} pts`;
+    // Veterancy has its own VET cell; the side stays at the far end of the tab.
+    return `${u.name} - ${u.points} pts`;
   }
 
   /** Whose unit this is, drawn at the far end of the panel's tab. */
@@ -2747,6 +2736,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * says "Tap again to strike" while it is, in place of the board's own hint.
    */
   boardArmed = false;
+
+  get boardArmedHint(): string {
+    return this.boardRef?.healTargets.has(this.boardRef.armedAttack ?? '')
+      ? 'Tap again to heal' : 'Tap again to strike';
+  }
 
   onArmedChange(armed: boolean): void {
     this.boardArmed = armed;
@@ -3820,8 +3814,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   /**
-   * Shrink a stat until it fits beside its label on one line. The cell is
-   * half a narrow panel, and "26,19/26,19" is a lot of characters.
+   * Shrink long stats to the 12px floor. ATK and HEL share the wide column
+   * so four range-labelled pairs still fit beside their labels.
    */
   statFontSize(text: string): string {
     const units = Math.max(0.6, 1 - Math.max(0, text.length - 7) * 0.055);
@@ -3832,11 +3826,18 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   // The panel draws these from statParts, one span per half so only the
   // modified number waves. These are the same numbers as one string, and
   // exist only to be measured - statFontSize sizes the cell by its length.
-  // Derived rather than worked out again: two ways to build "20/20, 15/15"
+  // Derived rather than worked out again: two ways to build "20/20 15/15"
   // is two things to keep in step, and the one that drifts is the width.
   get statAtk(): string { return this.statText('atk'); }
+  get statHel(): string { return this.statText('hel'); }
   get statDef(): string { return this.statText('def'); }
   get statMov(): string { return this.statText('mov'); }
+
+  /** The same earned stars the board draws, with a dash before the first. */
+  get statVet(): string {
+    const rank = this.displayUnit?.vet ?? 0;
+    return '\u2605'.repeat(Math.max(0, Math.min(3, rank))) || '—';
+  }
   /**
    * "12/20" - the HP the panel shows, a forecast's included; "12" when the
    * config gives the unit no maximum. A null went into the string as it was:
@@ -3849,10 +3850,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     return `${now ?? '—'}${u.hpMax != null ? `/${u.hpMax}` : ''}`;
   }
 
-  private statText(stat: 'atk' | 'def' | 'mov'): string {
+  private statText(stat: 'atk' | 'hel' | 'def' | 'mov'): string {
     const parts = this.statParts(stat);
-    // Each ring is shown as current/original, e.g. "20/20, 15/15".
-    return parts.length ? parts.map(p => `${p.now}/${p.base}`).join(', ') : '\u2014';
+    // ATK and HEL carry their reach in each pair, e.g. "1:15/15 2:14/14".
+    return parts.length ? parts.map(p => `${p.ring ? p.ring + ':' : ''}${p.now}/${p.base}`).join(' ') : '\u2014';
   }
 
   /**
@@ -3861,15 +3862,17 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * is being read against, and a number that moves is no use as a reference.
    * Attack comes as one pair per ring.
    */
-  statParts(stat: 'atk' | 'def' | 'mov'): Array<{ now: string; base: string }> {
+  statParts(stat: 'atk' | 'hel' | 'def' | 'mov'): Array<{ now: string; base: string; ring?: number }> {
     const u = this.displayUnit;
     if (!u) return [];
-    const add = this.displayBuff?.[stat] ?? 0;
-    if (stat === 'atk') {
-      return u.atk.split(',').map(n => {
-        const base = Number(n);
-        return { now: String(base + add), base: String(base) };
-      });
+    const add = stat === 'hel' ? 0 : this.displayBuff?.[stat] ?? 0;
+    if (stat === 'atk' || stat === 'hel') {
+      const tiers: number[] = stat === 'atk' ? u.atk.split(',').map(Number)
+        : this.gameState.snapshot.config?.units?.[u.unitId]?.heal ?? [];
+      if (!tiers.some(amount => amount > 0)) return [];
+      const minimum = stat === 'atk'
+        ? this.gameState.snapshot.config?.units?.[u.unitId]?.attackMinRange ?? 1 : 1;
+      return tiers.map((base, i) => ({ ring: i + minimum, now: String(base + add), base: String(base) }));
     }
     const base = (stat === 'def' ? u.def : u.mv) ?? 0;
     const spent = stat === 'mov' ? this.moveUsed : 0;
@@ -3931,7 +3934,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * edited, so their identities are all the cache key needed.
    */
   private standingsCache: {
-    board: unknown; history: unknown; turn: number; bank: unknown;
+    board: unknown; history: unknown; turn: number; bank: unknown; config: unknown;
     standings: { mine: Standing; opponent: Standing };
   } | null = null;
 
@@ -4011,7 +4014,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const phase = phaseIndexAt(turn);
     const cache = this.standingsCache;
     if (cache && cache.board === board && cache.history === history
-        && cache.turn === turn && cache.bank === this.phaseBank) {
+        && cache.turn === turn && cache.bank === this.phaseBank && cache.config === snapshot.config) {
       return cache.standings;
     }
 
@@ -4037,7 +4040,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     // `(0 - 0) x3 = 0` said nothing. The opening and overtime carry 1.
     const multiplier = idle ? 1 : PHASES[phase].multiplier;
     const build = (color: 'white' | 'black'): Standing => {
-      const cap = idle ? 0 : capOf(board, radius, color);
+      const cap = idle ? 0 : capOf(board, radius, color, snapshot.config);
       const death = idle ? 0 : deathsOf(snapshot.config, history, color, phase);
       const total = phaseTotal(cap, death, multiplier);
       const banked = SCORING_PHASES
@@ -4060,7 +4063,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const standings = mineColor === 'black'
       ? { mine: black, opponent: white }
       : { mine: white, opponent: black };
-    this.standingsCache = { board, history, turn, bank: this.phaseBank, standings };
+    this.standingsCache = { board, history, turn, bank: this.phaseBank, config: snapshot.config, standings };
     return standings;
   }
 
@@ -4258,7 +4261,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * Three columns, the board and one column of tabs, or the board over the
    * tabs. The columns hold down to ROOM_MIN_WIDTH x ROOM_MIN_HEIGHT unscaled,
    * and below it scaled - a little on a touch screen (ROOM_MILD_ZOOM), a good
-   * deal on a computer (ROOM_DESKTOP_ZOOM). A landscape window short of
+   * deal on a computer (the existing desktop size limits). A landscape window short of
    * that - a tablet or a phone on its side, a tiny browser window - gets the
    * tabs beside the board: the board as big as the window allows, and beside
    * it the turn's controls, the Unit panel while there is height for it, and
@@ -4374,7 +4377,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   private onPointerChange = () => { this.fitRoom(); this.refitHeader(); };
 
   /** A touch screen with no mouse - a phone, a tablet - rather than a
-   *  computer's window, which keeps the columns further down (ROOM_DESKTOP_ZOOM).
+   *  computer's window, which keeps the columns at its existing size limits.
    *  The list it reads answers for now, whatever has changed since it was made. */
   get touchOnly(): boolean {
     return !!this.pointerQuery?.matches;
@@ -4385,8 +4388,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const width = window.innerWidth;
     const height = window.innerHeight;
     const zoom = Math.min(1, width / ROOM_MIN_WIDTH, height / ROOM_MIN_HEIGHT);
-    const least = this.touchOnly ? ROOM_MILD_ZOOM : ROOM_DESKTOP_ZOOM;
-    const layout = zoom >= least ? 'columns' : width >= height ? 'tabbed' : 'stacked';
+    const columns = this.touchOnly ? zoom >= ROOM_MILD_ZOOM
+      : width >= ROOM_DESKTOP_MIN_WIDTH && height >= ROOM_DESKTOP_MIN_HEIGHT;
+    const layout = columns ? 'columns' : width >= height ? 'tabbed' : 'stacked';
     if (layout !== this.roomLayout) {
       this.refitHeader();
       // Any log may have been out of sight under another tab.
@@ -4579,8 +4583,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   /**
    * What a third star is worth, per unit. Placeholder numbers, and shown in
    * the unit panel only.
-   * ponytail: display-only - veterancy itself is a client-side placeholder
-   * (placeholderVet), and neither engine knows about it, so feeding these
+   * ponytail: display-only - these bonus numbers are still placeholders,
+   * and neither engine applies them to combat, so feeding these
    * into combat would put the two sides' maths out of step. Wire it through
    * hex-rules and the server together, or not at all.
    */
@@ -4789,6 +4793,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     else if (move.panelMove) where = move.price ? ` (wrapped, ${move.price} pts)` : ' (in its panel)';
     else if (move.withdrawn) where = ' (walked home)';
     const path = `${this.hexLabel(move.from)} -> ${this.hexLabel(move.to)}${where}`;
+    if (move.healedHex) {
+      const origin = move.from !== move.to ? path : this.hexLabel(move.to);
+      return `${move.color} ${move.unit_id} ${origin} healed ${move.healed_unit ?? 'unit'} `
+        + `${this.hexLabel(move.healedHex)} for ${move.healed_amount} (${move.healed_hp} HP)`;
+    }
     if (!move.attacked) return `${move.color} ${move.unit_id}: ${path}`;
 
     // Struck from `to`, where the attacker ended up - a different hex from the
@@ -4899,7 +4908,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * turn. Found in a browser on 22 Sep 2026 - 357 specs had nothing to say.
    */
   get movedUnitHexes(): string[] {
-    return this.boardMoves.slice(0, -1).map(step => step.to);
+    const moves = this.boardMoves;
+    return moves.filter((step, i) => i < moves.length - 1 || step.attack || step.heal).map(step => step.to);
   }
 
   get pendingMove(): { from: string; to: string; used: number } | null {
@@ -4922,7 +4932,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     if (moves.length < boardMovesPerTurn(this.gameState.snapshot.turnNumber)) return true;
     // Every move spoken for: only the unit mid-move may keep walking, and only
     // while it has not already struck.
-    return !moves[moves.length - 1]?.attack;
+    const last = moves[moves.length - 1];
+    return !last?.attack && !last?.heal;
   }
 
   /**
@@ -4937,7 +4948,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   private canSwingFrom(hex: string): boolean {
     const moves = this.boardMoves;
     const mine = moves.find(m => m.to === hex);
-    if (mine) return !mine.attack;
+    if (mine) return !mine.attack && !mine.heal;
     return moves.length < boardMovesPerTurn(this.gameState.snapshot.turnNumber);
   }
   /** Which side the host takes in a solo game; the placeholder gets the other. */
@@ -5056,12 +5067,12 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   /**
-   * An attack stages like a step, so it can be taken back. The damage is
-   * previewed with the same sums the server uses (see hex-rules); the
+   * A strike or heal stages like a step, so it can be taken back. Its HP
+   * change is previewed with the same sums the server uses (see hex-rules); the
    * authoritative result arrives with move_made once End Turn sends it.
    */
   onPlayerAttack(event: {
-    from: string; to: string; attack: string;
+    from: string; to: string; attack: string; heal?: boolean;
     targetUnit?: Record<string, any>; panel?: string; counters?: boolean;
   }): void {
     if (!this.canEndTurn || !this.canSwingFrom(event.to)) return;
@@ -5080,6 +5091,26 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     if (!attacker || !target) return;
 
     const distance = hexDistanceKeys(event.to, event.attack);
+    if (event.heal) {
+      const range = config?.units?.[attacker.unit_id]?.heal?.length ?? 0;
+      if (isSetupTurn(this.gameState.snapshot.turnNumber) || intoPanel
+          || this.offBoard(event.to) || this.offBoard(event.attack)
+          || target.color !== attacker.color || distance < 1 || distance > range) return;
+      const amount = healingAmount(attacker.unit_id, target, distance, config);
+      board[event.attack] = { ...target, hp: target.hp + amount };
+      const last = this.pendingMove;
+      const prev = last && last.to === event.from ? last : null;
+      const mark = `+${amount}`;
+      this.stagedActions.push({
+        at: Date.now(), board, from: prev?.from ?? event.from, to: event.to,
+        used: prev?.used ?? 0, attack: null, heal: event.attack, mark,
+      });
+      this.playSteps([{ kind: 'heal', from: event.attack, to: event.attack, mark, uid: target.uid }]);
+      this.persistLocalUiState();
+      this.cdr.markForCheck();
+      return;
+    }
+    if (!canAttack(config?.units?.[attacker.unit_id], distance)) return;
     // An ATK or DEF boost is real damage, not just a number in the panel.
     const dealt = strikeDamage(
       attacker.unit_id, target.unit_id, distance, config,
@@ -5107,8 +5138,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       // A panel answers only if it is a reserve: the base is struck and says
       // nothing. The preview has to agree with the engine on that, or a base
       // blow shows a counter it never takes.
-      const theirRange = config?.units?.[target.unit_id]?.attackRange ?? 1;
-      if ((!intoPanel || event.counters) && distance <= theirRange) {
+      if ((!intoPanel || event.counters) && canAttack(config?.units?.[target.unit_id], distance)) {
         answered = true;
         const counter = strikeDamage(
           target.unit_id, attacker.unit_id, distance, config,
@@ -5174,10 +5204,16 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * and 3 a side may strike with one unit and then walk the next, and asking
    * the whole turn left that second unit with 0 MOV after its first hop.
    */
+  get unitActionSpent(): boolean {
+    const last = this.lastBoardAction;
+    return !!(last?.attack || last?.heal);
+  }
+
   get movesLeft(): number | null {
     const pending = this.pendingMove;
     if (!pending) return null;
-    if (this.boardMoves.find(move => move.from === pending.from)?.attack) return 0;
+    const action = this.boardMoves.find(move => move.from === pending.from);
+    if (action?.attack || action?.heal) return 0;
     const unit = this.stagedBoard?.[pending.to];
     const base = this.gameState.snapshot.config?.units?.[unit?.unit_id]?.move ?? 0;
     // A +MOV boost is real steps, not just a number in the panel.
@@ -5461,6 +5497,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     }
     this.castingBrief = !!step.brief;
     if (step.kind === 'move') this.playMoveSound();
+    else if (step.kind === 'heal') this.playHealSound();
     else if (step.kind === 'ability') this.playAbilitySound();
     // The commit's own beat is silent - playEndTurnSound has already sounded
     // for it, and anything else here would read as a blow that never landed.
@@ -5831,6 +5868,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         from: step.from,
         to: step.to,
         ...(swing ? { attack: swing } : {}),
+        ...(step.heal ? { heal: step.heal } : {}),
         ...(moveBonus ? { moveBonus } : {}),
         ...(boosted ? { bonuses } : {}),
         // Walking off the board into a base. Both engines answer it: the

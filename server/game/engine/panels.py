@@ -39,6 +39,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 # lived here as a private copy until the schedule was ported whole; one copy of
 # a rule is the only kind that cannot drift from itself.
 from .phases import hand_overs_by  # noqa: F401  (re-exported as panels.hand_overs_by)
+from .phases import PHASES, PLIES_PER_TURN, SCORING_PHASES, phase_start_turn
 
 #: Radius of a single hex in the client's SVG units. Only ratios and signs
 #: matter here, but the client's own value is kept so the bounding-box
@@ -349,6 +350,7 @@ def dealt_panels(
                 'max_hp': full,
                 'uid': uid,
                 'panel': panel,
+                'vet': 0,
             }
     return dealt
 
@@ -410,6 +412,7 @@ def set_up_panels(
                 'max_hp': full,
                 'uid': uid,
                 'panel': panel,
+                'vet': 0,
             }
     return dealt
 
@@ -729,6 +732,7 @@ def panel_occupancy(
         # Read off where it stands NOW: a unit wrapped out of its base is a
         # reserve unit, and answers blows as one.
         unit['panel'] = panel_of(*axial_to_pixel(aq, ar, orientation))
+        unit['vet'] = unit_veterancy(uid, at, moves, ply or 1, radius, orientation)
         standing[at] = unit
     return standing
 
@@ -1311,3 +1315,45 @@ def panel_move_targets(
             continue
         out[hex_key] = {'cost': total, 'price': price}
     return out
+
+
+def unit_veterancy(uid, at, history, ply, radius, orientation='edge-up'):
+    """Phase-only stars. Mirrors history-rules.unitVeterancy in the browser.
+
+    Identity follows panel crossings, so only where this unit stood at each
+    award matters, including after a reload. Veterans keep their stars in a
+    base but gain none there. Combat and ordinary walks award nothing.
+    """
+    crossings = []
+    for move in history or []:
+        if not isinstance(move, dict) or (move.get('unit') or {}).get('uid') != uid:
+            continue
+        if not (move.get('entered') or move.get('withdrawn') or move.get('panelMove')):
+            continue
+        if type(move.get('turn')) is not int:
+            continue
+        try:
+            parse_key(move.get('from'))
+            parse_key(move.get('to'))
+        except (ValueError, TypeError):
+            continue
+        crossings.append(move)
+    boundaries = [phase_start_turn(1)] + [
+        phase_start_turn(index) + PHASES[index]['turns'] for index in SCORING_PHASES]
+    where = crossings[0]['from'] if crossings else at
+    next_move, vet = 0, 0
+    for turn in boundaries:
+        boundary = (turn - 1) * PLIES_PER_TURN + 1
+        if boundary > ply:
+            break
+        # A deployment in the new stage happens AFTER that stage's award.
+        while next_move < len(crossings) and crossings[next_move]['turn'] < boundary:
+            where = crossings[next_move]['to']
+            next_move += 1
+        try:
+            q, r = parse_key(where)
+        except (ValueError, TypeError):
+            continue
+        if on_battlefield(q, r, radius) or panel_of(*axial_to_pixel(q, r, orientation)) not in BASE_PANELS:
+            vet = min(3, vet + 1)
+    return vet

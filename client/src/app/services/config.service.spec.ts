@@ -53,6 +53,10 @@ describe('ConfigService validation, against the server\'s', () => {
     }
   });
 
+  it('accepts an explicit empty capture permission list', () => {
+    expect(service.validateGameRules(edited(['units', 'pawn', 'captureZones'], [])).valid).toBeTrue();
+  });
+
   it('takes every field in the shared cases left out, at its default', () => {
     for (const path of parity.absent) {
       expect(service.validateGameRules(edited(path, undefined, true)).valid)
@@ -66,6 +70,12 @@ describe('ConfigService validation, against the server\'s', () => {
     const result = service.validateGameRules(config);
     expect(result.valid).toBeFalse();
     expect(result.errors!.join()).toContain('one unit a hex');
+  });
+
+  it('keeps old ring-1 attack lists valid when minimum range is absent', () => {
+    const config: any = edited(['units', 'archer', 'attackRange'], 4);
+    delete config.units.archer.attackMinRange;
+    expect(service.validateGameRules(config).valid).toBeTrue();
   });
 
   it('refuses a radius that is not a whole number', () => {

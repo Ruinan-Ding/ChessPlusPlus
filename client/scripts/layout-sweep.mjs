@@ -17,9 +17,9 @@
 // prose and forms, and may scroll down.
 //
 // CHROME overrides where Chrome is looked for. Exits non-zero if any size the
-// room is meant to hold fails a check: the three columns from 1180x730 up,
-// and on a computer's window short of that, scaled down to 72% (their type's
-// floor reported, not failed); the board and one column of tabs (roomLayout
+// room is meant to hold fails a check: the three columns from 1180x1025 up,
+// and on a computer's window down to 850x526, scaled (their type's floor
+// reported, not failed); the board and one column of tabs (roomLayout
 // 'tabbed') on a landscape touch screen, or a computer window smaller still,
 // every tab of it; and the board over the tabs (roomLayout 'stacked') on an
 // upright tablet, every tab of it, with touch emulated - before the match, in
@@ -52,37 +52,33 @@ const PORT = Number(process.env.LAYOUT_DEBUG_PORT ?? 9333);
 // ROOM_MIN_WIDTH x ROOM_MIN_HEIGHT in game-room.component.ts. Kept in step by
 // hand - if the two disagree, the sizes between them are either failed for
 // being scaled or never asserted at all.
-const FLOOR = { w: 1180, h: 730 };
+const FLOOR = { w: 1180, h: 1025 };
 
-// Desktop and laptop windows, by the viewport a browser leaves rather than
-// the screen: a 1920x1080 screen is about 1920x950 inside Chrome, and a
-// 1366x768 laptop about 1366x650. (1280x720, 1280x705, 1200x720 and 1180x705
-// were here until the floor went from 705 to 730 - their ability panel back in
-// the left column, 29 Sep 2026 - and are reported now, scaled a little.)
+// Desktop and laptop viewports: columns unscaled at the new 1025px floor,
+// scaled below it. Keep the older small sizes in the same checks as the
+// large ones, so moving Unit cannot quietly send a laptop to tabs.
 const ASSERTED = [
   [3440, 1440], [2560, 1440], [1920, 1200], [1920, 1080], [1920, 950], [1904, 946],
   [1680, 1050], [1600, 900], [1536, 864], [1536, 740], [1440, 900], [1440, 780],
-  [1366, 768], [1280, 800], [1180, 820], [1180, 730],
+  [1366, 768], [1280, 800], [1180, 820], [1180, 730], [1180, 1000], [1180, 1025], [1284, 649],
 ];
 // The board and one column of tabs: touch screens on their side, from
-// 1024x768 (an iPad, Unit pinned) down to 505px tall; under 560 the tallest
+// 1024x805 (Unit pinned) down to 505px tall; under 560 the tallest
 // tabs may scroll a little (recordShort). Each size is measured on every
 // tab, touch emulated.
 const TABBED = [
-  [1366, 620], [1280, 600], [1024, 768], [1024, 690], [1024, 600], [1000, 640], [960, 540],
+  [1366, 620], [1280, 600], [1024, 805], [1024, 768], [1024, 690], [1024, 600], [1000, 640], [960, 540],
   [900, 520], [800, 505],
 ];
-// A computer's window short of the columns keeps them, scaled, down to 72%
-// (ROOM_DESKTOP_ZOOM - the owner: "the game is unplayable with anything
-// tucked away"): these are the columns, their type under 12px and reported,
-// everything else held as ever. Smaller still, the tabs after all.
+// Keep all panels visible on the desktop sizes that already had columns.
+// Their smaller type and targets are reported; overlap and clipping fail.
 const SMALL_WINDOWS = [[1366, 620], [1280, 600], [1024, 768], [1024, 600], [960, 540]];
 const TINY_WINDOWS = [[900, 520], [800, 505]];
 // The board over the tabs, on an upright tablet: an iPad Pro, an iPad Air, a
 // 10.2" iPad, an iPad mini, and the older 768x1024. Touch emulated, every tab.
 const STACKED = [[1024, 1366], [820, 1180], [810, 1080], [744, 1133], [768, 1024]];
 // Measured, not failed: the columns scaled a little (a laptop just short of
-// 730), and phones either way up, whose tallest tab may scroll - though on
+// 1025), and phones either way up, whose tallest tab may scroll - though on
 // a phone too, what the Room tab's cue leads to has to be in sight, and no
 // control may be cut off, and those are failed. A phone's by what its
 // browser leaves, not its screen: an
@@ -211,6 +207,12 @@ async function openSoloRoom(send, ev, beforeStart = async () => {}) {
   await waitToClick('Start Game', 'room');
   await sleep(5000);
   if (!(await ev(`!!document.querySelector('app-game-board svg')`))) throw new Error('the board never drew');
+  await ev(`(() => {
+    const b = ng.getComponent(document.querySelector('app-game-board'));
+    b.emitSelected(b.cells.find(c => c.piece?.unit_id === 'archer'));
+    ng.getComponent(document.querySelector('app-game-room')).cdr.detectChanges();
+    return true;
+  })()`);
   // One line of chat, so the chat has an entry to be judged by below. A solo
   // game answers its own messages.
   await ev(`(() => {
@@ -254,6 +256,42 @@ const PROBE = `(() => {
   for (const [sel, name] of [['.match-panels', 'left column'], ['.side-rail', 'right column']]) {
     const el = room.querySelector(sel);
     if (el && el.scrollHeight > el.clientHeight + 1) faults.push(name + ' needs ' + (el.scrollHeight - el.clientHeight) + 'px more height');
+  }
+  // The owner's arrangement: Unit directly below Abilities on the left,
+  // History at the top of the right column and the room sharing the rest.
+  // Measure the result on screen; a detached template check cannot see it.
+  if (!room.classList.contains('with-tabs')) {
+    const unit = room.querySelector('.stats-panel').getBoundingClientRect();
+    const abilities = room.querySelector('.abilities-panel').getBoundingClientRect();
+    const rail = room.querySelector('.side-rail').getBoundingClientRect();
+    const history = room.querySelector('.history-panel').getBoundingClientRect();
+    const left = room.querySelector('.match-panels').getBoundingClientRect();
+    const last = room.querySelector('.match-actions')?.getBoundingClientRect() ?? unit;
+    if (Math.abs(last.bottom - left.bottom) > 1) faults.push('Unit does not fill the remaining left column');
+    if (Math.abs(unit.left - abilities.left) > 1 || unit.top < abilities.bottom - 1) {
+      faults.push('Unit is not below Abilities in the left column');
+    }
+    if (Math.abs(history.top - rail.top) > 1) faults.push('History does not use the top of the right column');
+  }
+  // Range-labelled ATK and HEL stay on their label's line and inside the
+  // panel, measured in the browser's actual font rather than fixed widths.
+  for (const stat of ['atk', 'hel']) {
+    const cell = room.querySelector('.stat-cell.' + stat);
+    if (!cell || !shown(cell)) continue;
+    const name = stat.toUpperCase();
+    const label = cell.querySelector(':scope > span').getBoundingClientRect();
+    const words = document.createRange();
+    words.selectNodeContents(cell.querySelector('strong'));
+    const text = words.getBoundingClientRect();
+    const box = cell.getBoundingClientRect();
+    const grid = cell.closest('.stat-grid').getBoundingClientRect();
+    if (box.right > grid.right + 1) faults.push(name + ' row runs outside the Unit panel');
+    if (text.top >= label.bottom - 1 || text.bottom <= label.top + 1) {
+      faults.push(name + ' values are below their label');
+    }
+    if (text.right > box.right + 1 || text.left < label.right - 1) {
+      faults.push(name + ' values run outside their cell or over their label');
+    }
   }
   const header = room.querySelector(':scope > header');
   if (header.scrollWidth > header.clientWidth + 1) faults.push('header overruns by ' + (header.scrollWidth - header.clientWidth) + 'px');
@@ -596,26 +634,22 @@ try {
   const judge = (m, w, h, want) => {
     const bad = [...m.faults];
     if (layoutOf(m) !== want) bad.push(`the ${layoutOf(m)} layout, at a size that should be the ${want}`);
-    if (m.scaled) bad.push(`scaled to ${m.zoom} at a size the room should lay out unscaled`);
-    if (m.textUnder) bad.push(`${m.textUnder} text runs under ${MIN_TEXT}px, smallest ${m.textMin}px ("${m.textMinWhat}")`);
-    if (m.targetsUnder) bad.push(`${m.targetsUnder} controls under ${MIN_TARGET}px, smallest ${m.smallest.side}px ("${m.smallest.label}")`);
+    const zoom = want === 'columns' ? Math.min(1, w / FLOOR.w, h / FLOOR.h) : 1;
+    if (Math.abs(m.zoom - zoom) > 0.015) bad.push(`scaled to ${m.zoom}, expected ${zoom.toFixed(2)}`);
+    if (zoom === 1 && m.textUnder) bad.push(`${m.textUnder} text runs under ${MIN_TEXT}px, smallest ${m.textMin}px ("${m.textMinWhat}")`);
+    if (zoom === 1 && m.targetsUnder) bad.push(`${m.targetsUnder} controls under ${MIN_TARGET}px, smallest ${m.smallest.side}px ("${m.smallest.label}")`);
     return bad.length ? bad : null;
   };
   // The columns scaled on a computer's window: the layout and every fault
   // held; the type and the targets under their floors only reported, being
   // the trade the owner chose over tucking panels away.
-  const judgeScaled = (m, w, h) => {
-    const bad = [...m.faults];
-    if (layoutOf(m) !== 'columns') bad.push(`the ${layoutOf(m)} layout, at a size that should be the columns, scaled`);
-    if (!m.scaled || m.zoom < 0.72) bad.push(`scaled to ${m.zoom}, where it should be 0.72 or more and under 1`);
-    return bad.length ? bad : null;
-  };
+  const judgeScaled = (m, w, h) => judge(m, w, h, 'columns');
   const record = (label, w, h, m, bad) => {
     if (bad) failed++; else held++;
     row(label, w, h, m, bad);
   };
   // Under 560px tall the tabs' column is at the unit's floor and has the Unit
-  // panel's strip to hold as well - its two lines are what keep a unit's
+  // panel's strip to hold as well - its numbers are what keep a unit's
   // numbers in sight while its panel is a tab - so the tallest tabs may
   // scroll a little there. That is reported (' -- '); all else is held.
   const SHORT = 560;

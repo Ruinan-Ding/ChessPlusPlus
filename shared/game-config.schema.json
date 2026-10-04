@@ -92,9 +92,22 @@
             "description": "Maximum hit points for this unit type."
           },
           "attack": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Attack damage dealt when this unit initiates combat."
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            ],
+            "description": "Attack before defense. An integer uses rules.rangeFalloff beyond the first ring. A list supplies exact attack for rings attackMinRange through attackRange, ignoring rangeFalloff; it must have one entry per supported ring, at most four."
           },
           "commander": {
             "type": "boolean",
@@ -104,7 +117,13 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 50,
-            "description": "How many rings of adjacency this unit can strike, by hex distance and ignoring obstacles. 1 = the six neighbouring hexes. Beyond the first ring damage falls off by rules.rangeFalloff per extra ring. Omitted means 1."
+            "description": "Outermost ring this unit can strike, by hex distance and ignoring obstacles. Scalar attack falls off by rules.rangeFalloff per ring beyond 1; a list gives each supported ring its own attack. Omitted means 1."
+          },
+          "attackMinRange": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Innermost ring this unit can strike or counterattack. Must not exceed attackRange. Omitted means 1. An attack list starts at this ring."
           },
           "defense": {
             "type": "integer",
@@ -114,6 +133,29 @@
           "ability": {
             "type": "string",
             "description": "Catalogue id of this unit type's own ability, cast from the Unit panel onto the unit itself - so it must be a 'friendly' one. Paid from its side's purse like the same ability anywhere else; its cooldown and uses are the unit's own. Omitted means the unit has none."
+          },
+          "heal": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Healing amount at distances 1 through the number of entries. Replaces this unit’s attack action: heal one other friendly battlefield unit, optionally after moving, capped at its max HP, with no CP cost. At most four adjacent hex rings. Omitted means this unit has no healing action."
+          },
+          "captureZones": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "home",
+                "middle",
+                "side",
+                "enemy"
+              ]
+            },
+            "description": "Zones this unit can capture or neutralize: home is its own 3x zone, enemy the opposing 3x zone, middle the 2x zone, side either 1x zone. Empty means none; omitted means unrestricted for older configs. Permissions also determine which enemies can prevent full-zone control from the centre."
           }
         },
         "additionalProperties": false

@@ -274,7 +274,8 @@ Decided so far:
   - **`computeMoveCosts` reports what it walked THROUGH as well as where it may stop**, via an
     optional `passable` map. `moveCosts` alone cannot answer "how far to a hex I can only pass
     over", which is exactly what a crossing needs when a friend is standing on the tip. The
-    board keeps it as `passableCosts` and asks `costAt()`, which reads either. Every unit gets 6 **except the shieldman, which gets 5** -
+    board keeps it as `passableCosts` and asks `costAt()`, which reads either. Pawn, archer,
+    bishop, queen and king get 6; shieldman and rook get 4; knight gets 8 -
   the first place a unit's speed is actually part of what it is. `test_engine.py` used to pin
   every unit to 6; it now walks each unit out from an empty board and checks it reaches exactly
   its own `move` rings - movement read per unit from the config is the thing worth guarding, and
@@ -300,8 +301,33 @@ Decided so far:
   immediately; there is deliberately no ability DSL yet.
 - **Passive, activatable, and unit-level ultimate** abilities. Activatables recharge over N
   turns; ultimates get 1–2 charges per match.
-- **Veterancy:** XP from damage dealt, damage received, and kills. Reaching a rank unlocks an
-  ability or passive. Rank is *derived* from XP, never stored.
+- **Veterancy comes only from phase boundaries**, replacing the old XP proposal. Everyone
+  starts at **zero**, on both sides and in every zone. **At the start of Phase 1, every unit
+  on the battlefield or in the green reserve gains its first star. At the start of each
+  numbered phase's postmatch, those units gain one more, capped at vet 3.** Both sides gain
+  together, once at the stage's first ply, not again for black's half. Being present at that
+  boundary is what counts; entering reserve or battlefield afterwards earns nothing until
+  the next award. Halftimes, later phase starts, ordinary turns, damage and kills grant none.
+  **A red-base unit gains no stars there, but a veteran returning home keeps its earned
+  stars.** This replaces the earlier wording that all base units always have zero: newly
+  dealt base units start at zero; an experienced unit is not reset by coming home.
+  - The owner, 3 Oct 2026: *"verterncy is only gained by being in the field or reserve (green
+    panel) after a phase end. it gets a star right after a pahse, starting effect in phase
+    phase. all units in the base (red panel, has 0 vet) everything in the field has vet 1
+    starting phase 1. that is the only way to gain vet"*, then *"that means to actually apply
+    that on the game board. everyone starting at vet 0"*. The timing and cap were clarified:
+    *"im not seeing them gain vet after each phase. at start of phase 1, everything in reserve
+    and board gets vet 1. after then everything gets vet at start of postmatch. max is vet 3"*.
+    Returning to base: *"Keep its earned stars"*.
+  - `unitVeterancy` in `history-rules.ts` and `unit_veterancy` in `panels.py` reconstruct each
+    unit's rank from its uid and panel crossings at those boundaries. The board draws that
+    rank and sends it to the Unit panel, including after a reload. A staged withdrawal reads
+    the unit's committed battlefield location until its crossing is recorded, so its earned
+    stars stay visible before End Turn as well as after it. Both engines carry `vet`
+    in battlefield cells; panel occupancy derives it from the same record. No XP tally or
+    random placeholder ranks. Existing ability rank gates read these earned stars; the
+    placeholder third-star bonus numbers remain display-only, and server abilities stay
+    deferred (PUNCHLIST 6.15).
 - **Four reserve planes flank the battlefield** — two per player. They are drawn as *hexes in
   the same grid*, filling the hexagon's bounding square so the whole play area is one square of
   hexagons. They are not part of the battlefield: units there are out of play, and
@@ -369,7 +395,7 @@ Decided so far:
     alone made a spent white plate wash out while a spent black one only went mid-grey. Only
     the side whose turn it is greys; the opponent's panels are not the player's to move.
   - **The wrap costs points.** Crossing costs the unit's **own worth** - its config `value`,
-    the same number a death is scored by, so a rook is 18 - taken off the crossing side's
+    the same number a death is scored by, so a rook is 12 - taken off the crossing side's
     points (`wrapCost()` / `wrapCrossed` in `game-board.component.ts`, spent by
     `onWrapCrossed()` in the room). **A side that cannot pay is not offered the crossing**:
     nothing beyond the tip enters the flood, so there is no hex to click. **The price is still
@@ -946,11 +972,26 @@ Decided so far:
   not a reading:** asked whether the x3 zone by the OTHER side's base pays its taker 3 as well,
   the owner answered *"worth 3 a hex"* - so a zone's worth never depends on who holds it. The board
   writes the worth (x3, x2, x1) at the bottom of every empty zone hex. A unit standing in one
-  claims the hex under it and the zone hexes beside it, so the middle of a patch holds seven hexes
-  and its rim fewer. Adjacency stops at the zone's edge; the open board around a zone is worth
-  nothing. **A hex both sides reach is held by neither**, which is what cancels two lines of units
-  meeting in a zone: their claims overlap along the seam and every hex in the overlap goes
-  neutral, and a cancelled hex reads exactly like an empty one, to the score and on the board.
+  scores only its occupied hex on the **outer ring** (distance 2 from the centre). On the
+  **inner ring** (distance 1), it also scores adjacent zone hexes. Every eligible unit, including
+  outer-ring units, **neutralizes opposing claims on its occupied and adjacent hexes** even
+  where it earns no points itself. Dashed gold inset outlines mark the six inner-ring hexes.
+  **An eligible unit on the centre holds all nineteen hexes if no eligible enemy is anywhere
+  inside that zone.** With an eligible enemy in the zone, the centre scores only its own hex
+  and immediate neighbours; other units keep their layer rules. Enemies
+  outside the zone or unable to affect it neither neutralize claims nor remove the bonus.
+  The five centres have a gold inset outline, visible beneath an occupied unit's plate.
+  Adjacency stops at the zone's edge; the open board around a zone is worth nothing.
+  **Capture and neutralization permissions are cumulative**, specified 4 Oct 2026: pawn,
+  archer and shieldman affect only their own nearest 3x zone; bishop, rook and knight can also
+  affect the middle 2x and both side 1x zones; king and queen can affect every zone including
+  the enemy's 3x. These are optional per-unit `captureZones` lists (`home`, `middle`, `side`,
+  `enemy`), relative to the unit's side; an omitted list keeps older configs unrestricted and
+  an empty list permits none. Engine code never branches on unit ids. Black's 3x zone is
+  dark blue, white's light blue, independent of seat or board rotation; held claims retain
+  their amber/violet wash. **A hex within an eligible enemy's immediate adjacency is neutralized
+  for the claiming side**, even if that enemy does not earn points from the hex itself. A
+  cancelled hex reads exactly like an empty one, to the score and on the board.
   Geometry, worth and claims are `captureZoneValues()` / `captureClaims()` / `captureScore()` in
   `hex-rules.ts`, read by the board (which colours them, white's amber and black's violet) and by
   the room (which scores them), so the two can never disagree. **The server has them too**
@@ -978,7 +1019,7 @@ Decided so far:
   worth, skull, deaths, total.
   **Cap is what you hold right now**, read off the board every time and gone the moment you walk
   away; it is not banked and it is *not* ability points. **Death accumulates**: losing a unit
-  costs you its config `value` (a pawn is 5) - **except one killed in a base** (a red panel,
+  costs you its config `value` (a pawn is 8) - **except one killed in a base** (a red panel,
   `BASE_PANELS`), which costs nothing; one killed in a reserve (green) costs as on the board.
   *The owner, 24 Sep 2026: "killing things in base (red panel) should not count towards
   victory points ... in green panel it ... counts towards victory points".* `deathsOf()` /
@@ -1253,18 +1294,16 @@ Decided so far:
   and laptops), B (tablets on their side, small windows) and C (upright screens, phones,
   touch, the other screens) are done, and what two reviews of them found is fixed (6.42,
   6.43).
-  - **Three layouts** (`roomLayout`, decided in `fitRoom()`). The three columns from 1180x730
-    up, unscaled; short of that still the columns, scaled - on a computer's window down to 72%
-    (`ROOM_DESKTOP_ZOOM`: a 960x540 window is 74%), on a touch screen only to 90%
-    (`ROOM_MILD_ZOOM`), `touchOnly` telling the two apart by `(hover: none) and (pointer:
-    coarse)` and a change of it choosing again. The owner, 28 Sep 2026: *"the game is
-    unplayable with anything tucked away"* - a computer keeps every panel in sight as far as
-    its type stays about 9px (8.6 at the very least: 72% was chosen when the floor went from
-    705 to 730, so that every window that had the columns kept them, 529px tall and up). Below
-    that, a landscape window gets the board and one column
-    of tabs (`tabbed`), and a portrait one the board over the tabs (`stacked`) - for a phone or
-    a tablet, which the owner took the tabs for ("tabs are fine"), and a tiny computer window.
-    What the two share is one block of the stylesheet, under `.with-tabs`.
+  - **Three layouts** (`roomLayout`, decided in `fitRoom()`). The three columns from
+    1180x1025 up, unscaled; smaller desktop windows keep the columns when at least 850px
+    wide and 526px tall, the same windows as before Unit moved left. Their scaling fits the
+    taller column. **The owner chose all panels visible, even with smaller text**, 3 Oct
+    2026. Touch screens keep the 90% limit (`ROOM_MILD_ZOOM`), `touchOnly` telling the two
+    apart by `(hover: none) and (pointer: coarse)` and a change of it choosing again. Below
+    those limits, a landscape window gets the board and one column of tabs (`tabbed`),
+    and a portrait one the board over the tabs (`stacked`). Unit stays pinned when its
+    contents fit; its own tab and compact strip keep it accessible below that height.
+    What the two smaller layouts share is one block under `.with-tabs`.
   - **One unit sizes everything but the board.** `--u` on `.game-room-container`, between 12px
     and 20px, and every type size, padding, gap and both columns' widths are written in it -
     `u(n)` and `t(n)` in the stylesheet, `t` being type with a 12px floor. The board is not in
@@ -1276,22 +1315,62 @@ Decided so far:
     at their floor. The formula and its measurements are in the comment above `--u`.
   - **Floors, each on the thing itself.** Type 12px (`t()`, and the `max(12px, ...)` the
     component's `abilityFontSize`/`statFontSize` return, HP's included); every control in the
-    header and the columns 24px each way (WCAG 2.2, 2.5.8); each column 248px wide, what two
-    ability buttons need side by side at 12px. Buttons and inputs get a base size in the unit
+    header and the columns 24px each way (WCAG 2.2, 2.5.8); the left column has a 300px width
+    floor for labelled stat pairs, the right 248px for its controls. Buttons and inputs get a base size in the unit
     (`:where(button, input, ...)`) - they do not inherit font size, and every one nobody sized
     stayed 13.33px.
-  - **Their panel is over yours in the left column; the Unit panel tops the right one.** Both
-    ability panels with the Unit panel under them were what made the room need 1120px of
-    height. Phase A (28 Sep 2026) put theirs over History and the chat, and the owner, 29 Sep:
-    *"why did you move opponent ... almost blocking the chat box"* - put it back, and *"we need
-    to make it try to fit"*. Back over yours with the Unit panel still in the left column, the
-    columns wanted a window 910px tall at the 12px unit (705 before); with the Unit panel moved
-    to the top of the right column - it reads either side's unit, beside the board - 730. The
-    Unit panel is its own height there (`flex: 0 0 auto`; it had taken the left column's spare,
-    and in the right one it would take the chat's), and History and the Game/Lobby box share
-    the rest 1 : 3 (it was 1 : 1.4) - the chat showed one message on the owner's 1284x649 window
-    (43px to History's 174), and is about even with History now (110, 107; 156, 149 at 1080p).
-    Measured with `--u` forced unit by unit and the window bisected, in headless Chrome.
+  - **Their abilities, then yours, then Unit in the left column.** The owner, 3 Oct
+    2026: *"in the game, the unit tab on the top right should be on the bottom left below
+    the abilities tab"*, then *"ok move it there, then that would expand history and the
+    players tab a bit"*. Unit is directly below your Abilities, before Resign/Offer Draw.
+    History tops the right column and Game/Lobby share the rest at their existing 1:3
+    ratio. On the owner's 1284x649 window History grew from 107px to 152px, and the room
+    box from 317px to 452px. The owner added the same day: *"try to fill the rest of
+    the verticle spaces with the unit tab on the left"*. Unit fills the remaining left
+    column height (`flex: 1 0 auto`), its effects box taking the extra space, with
+    Resign/Offer Draw at the bottom. It keeps its own content height as the floor;
+    neither ability panel may crush its stats or effects. The column's gaps are a
+    little tighter, and its sizing was measured with a three-ring unit and its ability
+    detail open, not only the empty Unit panel. The earlier arrangement of 29 Sep put
+    Unit top-right to fit a shorter column; this decision supersedes that placement.
+  - **Unit stats are HP/MOV, ATK/DEF, HEL/VET.** The owner, 3 Oct 2026:
+    *"actually for ATK, do this for archer, instead of RNG, embed that into atk, so its
+    atk is "1:15/15 2:14/14 3:13/13 4:12/12". make bishop heal instead of ATK, so make
+    its ATK a dash and hav its HEL "1:14/14 2:13/13 3:12/12 4:11/11". change RNG to VET
+    instead, where its a dash, 1star, 2star, or3star. you can remove the star in the unit
+    name. reorder the unit table like "HP|MOV, ATK|DEF, HEL|VET" make HEL long like ATK"*.
+    Range belongs to each current/base pair in ATK and HEL. Both use the wide column;
+    DEF and VET use the narrow one. HP and MOV share equal halves of the first row.
+    The owner's 4 Oct roster below supersedes those example amounts: archer attacks
+    are 4, 3, 2, 1 at rings 3-6. Bishop's attack is zero (shown as `—`), with
+    healing amount 8 at ring 1 in `units.<id>.heal`.
+    An absent heal list means no healing stat; both validators require 1-4 nonnegative
+    whole-number entries when present. **Healing replaces the attack action**:
+    optionally move, then heal one **other friendly battlefield unit** in its configured
+    healing rings (currently ring 1), capped at that unit's max HP, with **no CP cost**. The owner answered
+    *"Yes, use those healing rules"*, 3 Oct 2026, to that exact proposal.
+    It follows the attack action's stage gates: no healing while setting out,
+    no healer or target in a panel, and healing ends that unit's movement and
+    action for the turn. No defence or range falloff subtracts from HEL; it
+    never counters or deals damage. `make_move {from, to, heal}` rides the same
+    revision, allowance and hand-over path as a strike, and cannot carry an
+    attack or withdrawal alongside it. Both engines resolve the amount from
+    the room's config, not from client HP, and history records `healedHex`,
+    `healed_amount`, `healed_hp`, `healed_unit`. Undo drops the staged HP change
+    and restores the bishop's action; a reload keeps committed healing. This
+    is a normal unit action, not a catalogue ability cast.
+    VET shows `—`, `★`, `★★` or `★★★` from the same earned rank as the board. The Unit
+    heading retains the name and point value and no longer carries stars; board stars
+    remain. HEL keeps the requested light green (`#4ade80`), and VET takes RNG's light
+    yellow (`#facc15`), on the normal stat cell background. These colours belong on
+    the value text, as the owner clarified earlier: *"i meant the text of the value
+    light green and light yellow, just like how atk hp def mov has colored text"*.
+    The left column and tabbed column have a 300px width floor to fit four labelled
+    pairs at the 12px font floor; the right desktop column keeps its existing width.
+    The compact strip names the available action stat and VET, with each stat kept
+    together and tight vertical gaps in unpinned tabbed layouts.
+    A lower attack bound is intended for some units, but none has been assigned yet.
+    The desktop height floor stays 1025px, and landscape touch pins Unit from 805px.
   - **The logs scroll, nothing else does.** History and the chats keep to their newest line
     (`scrollChatToBottom`): a line coming in moves one only if it was at its newest, so a
     player reading back is not pulled off it - unless the line is their own (`own`), which
@@ -1362,7 +1441,7 @@ Decided so far:
     through afresh every second. `--banner-fit` is what its font sizes multiply by.
   - **The tabs** (`.tabbed`): the board on the left, as big as the window allows, and one
     column: Undo and End Turn, Show Hex and Flip, the Unit panel while the window is at least
-    `UNIT_PIN_MIN_HEIGHT` (690) tall, a strip of tabs - Yours, Unit (only when it is not
+    `UNIT_PIN_MIN_HEIGHT` (805) tall, a strip of tabs - Yours, Unit (only when it is not
     pinned), Theirs, History, Room - the panel the tab picks, and Resign and Offer Draw. The
     panels stay in the markup where the columns put them: the columns become `display:
     contents` and `main`'s grid places what was in them, so there is one copy of every panel.
@@ -1376,7 +1455,7 @@ Decided so far:
     box were `overflow: hidden` for the columns, and on a phone that hid the chat's input.
     History's expand button is not drawn under the tabs (it has the whole panel already), and
     the Room tab stays filled if History was expanded before the layout changed. **Where the
-    Unit panel is a tab, its strip is not** (`.unit-strip`): two lines - the unit and its
+    Unit panel is a tab, its strip is not** (`.unit-strip`): the unit and its
     side, then HP, ATK, DEF and MOV - where the pinned panel would stand, under the board on a
     phone, in sight whatever tab is showing; pressed, it opens the panel. Behind its tab the
     panel filled in, on a hover or a tap, where nobody could see it, and a phone's board draws
@@ -1561,19 +1640,14 @@ Decided so far:
     its place set the line 2-3px taller at every size, so the panel's numbers jumped between
     a unit with a star and one without. 1.12 is under Arial's own at every size the room
     draws, so no heading grew for it.
-  - **Where the room still scales**: short of the columns - on a computer to 72%, on a touch
-    screen to 90% (above).
-    `ROOM_MIN_WIDTH`/`ROOM_MIN_HEIGHT` (1180 x 730) is the least size at which the sweep finds
-    the columns whole with the unit at its floor. The window's units are safe inside the
-    zoomed room: every term only falls as the window does, so below the floor the unit sits at
-    12px and the room is laid out at exactly the size that was measured. **The floors give way
-    there, not a panel**: the owner's own window, 1284x649, draws the columns at 0.89 - its
-    text at 10.7px and 37 controls under 24px (0.92 and 11px before their panel went back to
-    the left column) - and that is the right trade. Holding the floors
-    would take the tabs, at a size where every panel fits in sight at once, and the owner,
-    28 Sep 2026, asked whether it should: *"its weird you considered that since the game is
-    unplayable with anything tucked away"*. So never offer hiding a panel to make type bigger;
-    tabs are for a screen the columns cannot be drawn on at all.
+  - **Where the room still scales**: smaller desktop windows fit the 1180x1025
+    column floor, and touch screens go only as far as 90% before using tabs. The desktop
+    layout's limits are independent of the new floor: changing the old 730px floor to
+    1025px while keeping the 72% test would hide the panels on the owner's own window.
+    The 850x526 limits keep every desktop window that had all three columns. The owner's
+    1284x649 window now draws them at 0.633, its smallest type 7.6px: the explicit choice
+    was to keep every panel visible. The type and target floors remain on the controls
+    themselves before that scaling; the board takes the width the smaller rails free.
   - **The other screens.** The lobby's header wraps under 720px wide and its roster stands over
     its chat; held to one row it had run the connection line and the chat off a phone's screen.
     Its words have the 12px floor. Every control on the three is 24px each way at the least:
@@ -1914,9 +1988,8 @@ re-check before building on it:
 Deferred, not rejected: global (army-wide) ultimates, stat growth on rank, the real config
 editor UI.
 
-Not yet specified at all: the actual unit roster (the config still ships chess-piece
-placeholders), concrete stat values, ability numbers, XP thresholds, and how many charges an
-ultimate gets.
+The owner specified the eight-unit roster's stats on 4 Oct 2026 (below). Remaining content
+work is the abilities and their progression rules; never infer missing effects or numbers.
 
 ## Single-player rooms (client-side, offline)
 
@@ -2024,9 +2097,13 @@ and `attack` names the hex it strikes from there.
   exchange, which ends `draw_mutual` rather than crediting the survivor of a list order.
   The end reason names the objective (`regicide` / `elimination`); `find_defeated()` still
   answers "is it over" for callers that need nothing else.
-- **Reach** is `units.<id>.attackRange` in rings of hex distance, ignoring obstacles. Damage
-  falls off `rules.rangeFalloff` (0.25) per ring past the first, floored, never under 1 — see
-  `ranged_damage()`.
+- **Reach** is `units.<id>.attackRange` in rings of hex distance, ignoring obstacles. A
+  scalar `attack` falls off `rules.rangeFalloff` (0.25) per ring past the first, floored,
+  never under 1 — see `ranged_damage()`. An `attack` list gives exact attack per ring,
+  before defence, without percentage falloff. Both validators require 1-4 nonnegative
+  whole-number entries, one per ring from optional `attackMinRange` (default 1) through
+  `attackRange`. Too-close strikes and counters are refused. Old scalar and ring-1 list
+  configs still work. The owner's archer values of 4 Oct 2026 are `[4, 3, 2, 1]`, rings 3-6.
 - **Damage is `attack - defense`**, floored at **`MIN_STRIKE_DAMAGE` (1)**: armour blunts a
   hit but never turns it aside entirely, and never heals (`strike_damage()`). It floored at 0
   until 16 Sep 2026, which left whole matchups unable to hurt each other at all — a pawn (14
@@ -2518,7 +2595,7 @@ under-charges a unit that had to go round something, and the server would then r
 recomputes legal targets from what is left after every hop, and the Unit panel's MOV shows what
 remains. Attacking is staged too - previewed with the same damage sums the server uses - and
 ends the unit's movement for the turn. End Turn sends each unit's move as one message -
-`make_move {from, to, attack?}`, or `panel_attack` for a blow into a panel - in the order they
+`make_move {from, to, attack? / heal?}`, or `panel_attack` for a blow into a panel - in the order they
 were played, `more` on all but the last, its casts included (see *a turn's casts ride inside
 its board-move messages*), so the engine takes each move whole or refuses it whole.
 
@@ -2594,7 +2671,8 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
   actives are not gated - `vetNeeded()` returns 0 for them, and `abilityHint()` leaves the
   requirement clause out entirely rather than printing an empty one.
 - **Casting is click-then-target.** `selectAbility()` arms the slot rather than firing it; the
-  next unit clicked on the board receives it. A friendly-target ability buffs, an enemy-target
+  next unit clicked on the board receives it, before normal healing or attacking can take
+  that click. A friendly-target ability buffs, an enemy-target
   one damages, and clicking the wrong kind cancels. Points and cooldown are spent on landing,
   not on arming. An offensive cast **stages like a move** - it pushes onto `stagedActions`, so
   it shows through a staged step and Undo takes it back.
@@ -2733,8 +2811,8 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
   every entry with the turns it has left, and boosted-over-base (`statAtk` etc.), so
   a +4 on a base 26 reads `30/26`; **+MOV is real steps**, fed to the board as `unitBuffs` and
   into `movesLeft` once a step is staged.
-- **Veterancy is drawn beside the name** in `unitPanelTitle` (`Pawn ★★★ - White`), the same
-  placeholder rank the hex draws.
+- **Veterancy is drawn beside the name** in `unitPanelTitle`, using the same rank the
+  hex draws. New units start at zero; phase awards update the heading with earned stars.
 - **Boosts have to be declared on `make_move`.** Both engines re-derive the turn from where
   the unit started, off the unit's own stats, so a boosted move is rejected as illegal and a
   boosted strike lands base damage unless `endTurn()` says otherwise. It sends `moveBonus` (the
@@ -2767,8 +2845,9 @@ Per-unit state hangs off that id, never off the hex:
 
 - **Boosts** (`buffs` in the game room) are keyed by `uid`, so a boost survives a staged step,
   an Undo and the server's own confirmation with no re-keying anywhere.
-- **Veterancy** is `placeholderVet(uid, unit_id)`. Keyed on the hex, as it first was, a unit's
-  rank changed every time it walked - and rank gates its ability slots.
+- **Veterancy starts at zero and is earned at the specified phase boundaries** (Game spec).
+  Rank is reconstructed from the unit's uid and recorded panel crossings, and carried in
+  battlefield cells. Movement and reloads preserve it; returning to base does not reset it.
 
 Anything per-unit added later (cooldowns, XP, statuses) belongs in the cell for the same reason.
 Re-keying per-unit state on every move is a bug waiting for the one caller that forgets.
@@ -2851,10 +2930,27 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
   a whole file to LF. `git diff --stat` will not show it (`core.autocrlf` normalises the
   comparison), so only a byte count does. It has happened twice to the Python test files. Use the
   file-aware editor, or a Python rewrite that opens the file in binary.
-- **The roster is the six chess-piece placeholders plus two the owner asked for**: an
-  **Archer** (`A`, bow-and-arrow glyph - value 8, hp 16, atk 15, def 7, range 3, move 6) and a
-  **Shieldman** (`S`, shield glyph - value 9, hp 30, atk 8, def 18, range 1, move 5). Stats are
-  invented on the existing scale; the owner said to make them up. They stand on the pawn row -
+- **Unit roster stats, 4 Oct 2026.** Owner: *"now lets work on the actual stats to the units (which after we implment abilities, it will probably complete the core conept of this game). pawn:: HP:12 MOV:6 ATK:1:6 DEF:6 cost:4. sheildman:: HP:30 MOV:4 DEF:24 cost:8. archer:: HP:6 MOV:6 ATK:3:4.4:3.3:2.4:1 DEF:4 cost:8. rook:: HP:40 MOV:4 ATK:1:12 DEF:16 MOV:4 cost:12. knight:: HP:18 MOV:8 ATK:1:12 DEF:10 cost:14. bishop:: HP:8 MOV:6 HEL:1:4 DEF:4 cost:16. queen:: HP::30 MOV:6 ATK1:18.2:12 DEF:12 cost:20. king::HP60 MOV:6 ATK1:24 DEF:18 cost:24"*. Clarifications: *"Rings 3–6: 3:4 4:3 5:2 6:1"* for archer; *"No attack (ATK —)"* for shieldman. Cost is the existing config `value`, used for unit worth, crossing costs, deaths and homecoming refunds. The shared config alone sets these numbers:
+
+  | Unit | HP | MOV | ATK (ring:amount) | DEF | HEL (ring:amount) | Cost |
+  |---|---|---|---|---|---|---|
+  | Pawn | 12 | 6 | 1:8 | 8 | — | 8 |
+  | Shieldman | 30 | 4 | — | 24 | — | 8 |
+  | Archer | 6 | 6 | 3:4 4:3 5:2 6:1 | 4 | — | 8 |
+  | Rook | 40 | 4 | 1:12 | 16 | — | 12 |
+  | Knight | 18 | 8 | 1:12 | 10 | — | 14 |
+  | Bishop | 8 | 6 | — | 4 | 1:8 | 16 |
+  | Queen | 30 | 6 | 1:18 2:12 | 12 | — | 20 |
+  | King | 60 | 6 | 1:24 | 18 | — | 24 |
+
+  Later on 4 Oct the owner raised pawn ATK, DEF and cost to 8, and bishop HEL to 8; those newer values are in the table.
+
+  Archer cannot strike or counter at rings 1-2. Shieldman cannot strike or counter. Bishop's healing action retains its targeting, max-HP cap and zero CP cost, now at ring 1 only. ATK is before defence; the existing minimum damage rule still applies. No stat growth or ability effects are implied by this roster.
+
+- **The roster is the six chess-piece names plus two the owner asked for**: an
+  **Archer** (`A`, bow-and-arrow glyph - value 8, hp 6, atk 4/3/2/1 at rings 3-6, def 4, move 6) and a
+  **Shieldman** (`S`, shield glyph - value 8, hp 30, no attack, def 24, move 4). Their former
+  placeholder stats were superseded by the owner's complete roster on 4 Oct 2026. They stand on the pawn row -
   **24 units a side, 48 on the board.** Rows, white's numbers (black is the point mirror
   `(q,r) -> (-q,-r)`, and every change is applied to both - a one-sided setup is never what is
   wanted):

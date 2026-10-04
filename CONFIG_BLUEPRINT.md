@@ -11,12 +11,23 @@ rule that is right. Where one is wrong, change the number or write a note under 
 - **A plan, not a config file.** Nothing reads this document. Units and abilities are kept
   separate and are not in it.
 
-Last updated 26 Sep 2026.
+Last updated 4 Oct 2026.
 
 ---
 
 ## New since the last review
 
+- [ ] **Capture and neutralization use each unit's cumulative zone permissions.** Permissions
+  are in the shared unit config: home 3x, middle 2x, sides 1x and enemy 3x. Live, 4 Oct 2026.
+- [ ] **Outer-ring units score only their occupied hex; inner-ring units also score adjacent
+  hexes.** All eligible units still neutralize adjacent enemy claims. Live, 4 Oct 2026.
+- [ ] **An unopposed centre holds all nineteen zone hexes.** Any enemy inside that zone that
+  is eligible to capture or neutralize it removes the bonus; normal adjacent claims then
+  apply. Ineligible enemies do not block it. Live, 4 Oct 2026.
+
+- [ ] **Explicit attack values per ring skip percentage falloff.** Otherwise the
+  existing 0.25 per extra ring still applies. Live, 3 Oct 2026. Unit values remain in
+  the shared config. (See [Combat](#9-combat).)
 - [ ] **Capture zones are worth 3, 2 or 1 a hex.** The zone in each side's half is 3, the
   middle one 2, and the two at the sides 1. A zone is worth the same to whichever side holds
   it - white holding the ×3 zone by black's base gets 3 a hex too (**confirmed by the owner,
@@ -27,7 +38,8 @@ Last updated 26 Sep 2026.
   Planned; the numbers come out the same today.
 
 Screen only, not rules: a dark line now marks where the bases and reserves meet the
-battlefield, and there are sounds for overtime's toll on a king and for a base healing. When
+battlefield; black's 3x zone is dark blue, white's light blue, and each capture centre
+has a gold inset outline, with dashed outlines on the six inner-ring hexes. There are sounds for overtime's toll on a king and for a base healing. When
 both happen in the same turn, the toll plays first and the heal after it.
 
 Fixed to match the rules below (the rules did not change): a unit wrapped out of its base
@@ -134,6 +146,12 @@ What abilities and crossings are paid with.
 The score. `scoring`
 
 - [ ] **Five capture zones** of **19** hexes each (a centre and 2 rings). `scoring.zones`
+- [ ] Capture and neutralization respect **per-unit cumulative zone permissions** in the
+  shared config. Omitted permissions retain unrestricted older configs. `units[].captureZones`
+- [ ] A unit on the **centre holds all 19 hexes** while **no eligible enemy is inside the
+  zone**. Otherwise normal adjacent claims apply. Ineligible enemies cannot neutralize it.
+  `scoring.centerControl`
+
 - [ ] **What a hex is worth to the side holding it** (new, live): `scoring.zones[].worth`
 
   | Zone | Centre | Worth a hex | Hexes |
@@ -144,7 +162,9 @@ The score. `scoring`
   | Left side | 264 | **1** | 216-218, 239-242, 262-266, 286-289, 310-312 |
   | Right side | 278 | **1** | 230-232, 253-256, 276-280, 300-303, 324-326 |
 
-- [ ] A unit in a zone holds **its own hex and the zone hexes next to it**.
+- [ ] An **outer-ring unit scores only its occupied hex**; an **inner-ring unit also scores
+  adjacent zone hexes**. All eligible units **neutralize opposing claims on their own and
+  adjacent hexes**, including outer-ring units. An opposed centre uses immediate neighbours.
   `scoring.claimReach`
 - [ ] A hex **both sides reach counts for neither**. `scoring.contestedIsNeutral`
 - [ ] A death costs its side **the dead unit's value**, in the phase it happened.
@@ -186,8 +206,8 @@ The score. `scoring`
 
 `combat`
 
-- [ ] A ranged attack loses **0.25** of its attack for each ring past the first.
-  `combat.rangeFalloff`
+- [ ] An attack without explicit per-ring values loses **0.25** of its attack for each
+  ring past the first. `combat.rangeFalloff`
 - [ ] A blow that lands deals **at least 1** after defence. `combat.minStrikeDamage`
 - [ ] A ranged hit is **at least 1** before defence. `combat.minRangedDamage`
 - [ ] A defender **strikes back** if the attacker is within its range.

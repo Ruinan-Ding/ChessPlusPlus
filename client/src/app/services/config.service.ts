@@ -49,7 +49,7 @@ export function ruleOf(config: any, key: CountedRule): number {
  */
 const UNIT_FIELDS = new Set([
   'id', 'name', 'symbol', 'display', 'move', 'value', 'hp', 'attack', 'defense',
-  'commander', 'attackRange', 'ability',
+  'commander', 'attackRange', 'attackMinRange', 'ability', 'heal', 'captureZones',
 ]);
 
 /** The whole numbers every unit type needs besides `defense`, and the least of each. */
@@ -274,6 +274,12 @@ export class ConfigService {
         if (!Number.isInteger(range) || range < 1 || range > 50) {
           errors.push(`units.${unitId}.attackRange must be an integer 1-50`);
         }
+        const minimum = unit?.attackMinRange === undefined ? 1 : unit.attackMinRange;
+        if (!Number.isInteger(minimum) || minimum < 1 || minimum > 50) {
+          errors.push(`units.${unitId}.attackMinRange must be an integer 1-50`);
+        } else if (Number.isInteger(range) && minimum > range) {
+          errors.push(`units.${unitId}.attackMinRange must not exceed attackRange`);
+        }
         // The schema requires defence and combat reads it. A unit without one
         // loads as armour 0 and fights with silently wrong numbers.
         if (!Number.isInteger(unit?.defense) || unit.defense < 0) {
@@ -283,9 +289,25 @@ export class ConfigService {
         // on the hex and struck for 1; a move of "5" was a TypeError on the
         // server.
         for (const [field, least] of UNIT_NUMBERS) {
-          if (!Number.isInteger(unit?.[field]) || unit[field] < least) {
+          const value = unit?.[field];
+          if (field === 'attack' && Array.isArray(value)) {
+            if (value.length < 1 || value.length > 4 || value.length !== range - minimum + 1 ||
+                value.some(damage => !Number.isInteger(damage) || damage < 0)) {
+              errors.push(`units.${unitId}.attack must have 1-4 nonnegative integer entries, one per ring from attackMinRange to attackRange`);
+            }
+          } else if (!Number.isInteger(value) || value < least) {
             errors.push(`units.${unitId}.${field} must be an integer >= ${least}`);
           }
+        }
+        if (unit?.heal !== undefined && (!Array.isArray(unit.heal) ||
+            unit.heal.length < 1 || unit.heal.length > 4 ||
+            unit.heal.some((amount: any) => !Number.isInteger(amount) || amount < 0))) {
+          errors.push(`units.${unitId}.heal must have 1-4 nonnegative integer entries`);
+        }
+        if (unit?.captureZones !== undefined && (!Array.isArray(unit.captureZones) ||
+            unit.captureZones.some((zone: any) => !['home', 'middle', 'side', 'enemy'].includes(zone)) ||
+            new Set(unit.captureZones).size !== unit.captureZones.length)) {
+          errors.push(`units.${unitId}.captureZones must be a unique list of home, middle, side, enemy`);
         }
         // A misspelt field is not an extra - it is a stat left unset:
         // `"atack": 20` loaded, and the unit fought with no attack at all.

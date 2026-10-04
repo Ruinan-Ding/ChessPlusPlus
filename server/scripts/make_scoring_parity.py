@@ -28,6 +28,7 @@ SERVER = os.path.dirname(HERE)
 sys.path.insert(0, SERVER)
 
 from game.engine import phases, scoring  # noqa: E402
+from game.engine.config_loader import DEFAULT_CONFIG  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(SERVER), 'client', 'src', 'app', 'services', 'scoring-parity.json')
 SEED = 20260925
@@ -71,6 +72,18 @@ def make_cases(rng):
             'board': board, 'history': history, 'bank': bank,
             'ply': rng.choice(PLIES + [rng.randint(1, 120)]),
         })
+    for color in ('white', 'black'):
+        opponent = 'black' if color == 'white' else 'white'
+        for unit_id in DEFAULT_CONFIG['units']:
+            for zone in scoring.capture_zones(11):
+                q, r = map(int, zone['center'].split(','))
+                for enemy in (None, 'pawn', 'rook', 'queen'):
+                    board = {zone['center']: {'unit_id': unit_id, 'color': color}}
+                    if enemy:
+                        board[f'{q + 2},{r}'] = {'unit_id': enemy, 'color': opponent}
+                    cases.append({'config': {'board': {'radius': 11}, 'units': {uid: {'value': u['value'], 'captureZones': u['captureZones']}
+                                               for uid, u in DEFAULT_CONFIG['units'].items()}}, 'board': board, 'history': [],
+                                  'bank': {}, 'ply': 27})
     return cases
 
 
@@ -80,8 +93,8 @@ def answers(case):
     radius = config['board']['radius']
     ending = scoring.schedule_ending(bank, ply)
     return {
-        'claims': dict(sorted(scoring.capture_claims(board, radius).items())),
-        'cap': [scoring.cap_of(board, radius, side) for side in ('white', 'black')],
+        'claims': dict(sorted(scoring.capture_claims(board, radius, config).items())),
+        'cap': [scoring.cap_of(board, radius, side, config) for side in ('white', 'black')],
         'bank': scoring.bank_ended_phases(bank, config, board, history, ply),
         'deaths': [[scoring.deaths_of(config, history, side, p) for p in (1, 2, 3, None)]
                    for side in ('white', 'black')],

@@ -14,13 +14,19 @@
         "black": "♚"
       },
       "move": 6,
-      "value": 40,
-      "hp": 45,
-      "attack": 16,
+      "value": 24,
+      "hp": 60,
+      "attack": 24,
       "attackRange": 1,
       "commander": true,
-      "defense": 15,
-      "ability": "dash"
+      "defense": 18,
+      "ability": "dash",
+      "captureZones": [
+        "home",
+        "middle",
+        "side",
+        "enemy"
+      ]
     },
     "queen": {
       "id": "queen",
@@ -31,12 +37,21 @@
         "black": "♛"
       },
       "move": 6,
-      "value": 30,
+      "value": 20,
       "hp": 30,
-      "attack": 26,
+      "attack": [
+        18,
+        12
+      ],
       "attackRange": 2,
       "defense": 12,
-      "ability": "dash"
+      "ability": "dash",
+      "captureZones": [
+        "home",
+        "middle",
+        "side",
+        "enemy"
+      ]
     },
     "rook": {
       "id": "rook",
@@ -46,13 +61,18 @@
         "white": "♖",
         "black": "♜"
       },
-      "move": 6,
-      "value": 18,
+      "move": 4,
+      "value": 12,
       "hp": 40,
-      "attack": 20,
-      "attackRange": 2,
-      "defense": 13,
-      "ability": "dash"
+      "attack": 12,
+      "attackRange": 1,
+      "defense": 16,
+      "ability": "dash",
+      "captureZones": [
+        "home",
+        "middle",
+        "side"
+      ]
     },
     "bishop": {
       "id": "bishop",
@@ -63,12 +83,20 @@
         "black": "♝"
       },
       "move": 6,
-      "value": 14,
-      "hp": 22,
-      "attack": 22,
-      "attackRange": 3,
-      "defense": 10,
-      "ability": "dash"
+      "value": 16,
+      "hp": 8,
+      "attack": 0,
+      "attackRange": 1,
+      "defense": 4,
+      "ability": "dash",
+      "heal": [
+        8
+      ],
+      "captureZones": [
+        "home",
+        "middle",
+        "side"
+      ]
     },
     "knight": {
       "id": "knight",
@@ -78,13 +106,18 @@
         "white": "♘",
         "black": "♞"
       },
-      "move": 6,
-      "value": 12,
-      "hp": 28,
-      "attack": 18,
+      "move": 8,
+      "value": 14,
+      "hp": 18,
+      "attack": 12,
       "attackRange": 1,
-      "defense": 11,
-      "ability": "dash"
+      "defense": 10,
+      "ability": "dash",
+      "captureZones": [
+        "home",
+        "middle",
+        "side"
+      ]
     },
     "archer": {
       "id": "archer",
@@ -96,11 +129,20 @@
       },
       "move": 6,
       "value": 8,
-      "hp": 16,
-      "attack": 15,
-      "attackRange": 3,
-      "defense": 7,
-      "ability": "dash"
+      "hp": 6,
+      "attack": [
+        4,
+        3,
+        2,
+        1
+      ],
+      "attackRange": 6,
+      "defense": 4,
+      "ability": "dash",
+      "attackMinRange": 3,
+      "captureZones": [
+        "home"
+      ]
     },
     "shieldman": {
       "id": "shieldman",
@@ -110,13 +152,16 @@
         "white": "🛡︎",
         "black": "🛡︎"
       },
-      "move": 5,
-      "value": 9,
+      "move": 4,
+      "value": 8,
       "hp": 30,
-      "attack": 8,
+      "attack": 0,
       "attackRange": 1,
-      "defense": 18,
-      "ability": "dash"
+      "defense": 24,
+      "ability": "dash",
+      "captureZones": [
+        "home"
+      ]
     },
     "pawn": {
       "id": "pawn",
@@ -127,12 +172,15 @@
         "black": "♟"
       },
       "move": 6,
-      "value": 5,
-      "hp": 20,
-      "attack": 14,
+      "value": 8,
+      "hp": 12,
+      "attack": 8,
       "attackRange": 1,
-      "defense": 10,
-      "ability": "dash"
+      "defense": 8,
+      "ability": "dash",
+      "captureZones": [
+        "home"
+      ]
     }
   },
   "abilities": {

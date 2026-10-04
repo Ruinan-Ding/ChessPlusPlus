@@ -162,6 +162,18 @@ describe('buildPlayback', () => {
     ]);
   });
 
+  it('replays healing as an HP pulse with no attack or counter, following a target that later moves', () => {
+    expect(buildPlayback([
+      step('0,0', '1,0'),
+      step('0,0', '1,0', null, { heal: '3,0', mark: '+13' }),
+      step('3,0', '4,0'),
+    ], true)).toEqual([
+      { kind: 'move', from: '0,0', to: '1,0' },
+      { kind: 'move', from: '3,0', to: '4,0' },
+      { kind: 'heal', from: '4,0', to: '4,0', mark: '+13', brief: true },
+    ]);
+  });
+
   it('lands a cast on one unit where that unit ended, not where another did', () => {
     // A mend on A, then B walks. The cast followed "the" acting unit, which
     // after B's walk was B - so A's mend popped over B.

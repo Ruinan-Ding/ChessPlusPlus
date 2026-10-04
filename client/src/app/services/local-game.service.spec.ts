@@ -112,6 +112,31 @@ describe('LocalGameService', () => {
     expect(Object.keys(last('game_started').boardState).length).toBe(placements);
   });
 
+  it('awards stars on passes, persists them, and reconstructs an older save on reload', async () => {
+    expect(Object.values(last('game_started').boardState).every((u: any) => u.vet === 0)).toBeTrue();
+    for (const [ply, vet] of [[6, 1], [26, 2], [48, 3], [70, 3]]) {
+      const g = (service as any).game;
+      g.turnNumber = ply;
+      g.currentTurn = LOCAL_OPPONENT;
+      service.send({ type: 'pass_turn' });
+      await flush();
+      const passed = last('turn_passed');
+      expect(passed.turnNumber).toBe(ply + 1);
+      expect(Object.values(passed.boardState).every((u: any) => u.vet === vet)).toBeTrue();
+      const saved = JSON.parse(localStorage.getItem('cpp.localGame.v1')!);
+      expect(Object.values(saved.boardState).every((u: any) => u.vet === vet)).toBeTrue();
+    }
+    const saved = JSON.parse(localStorage.getItem('cpp.localGame.v1')!);
+    Object.values(saved.boardState).forEach((u: any) => delete u.vet);
+    localStorage.setItem('cpp.localGame.v1', JSON.stringify(saved));
+    const restored = new LocalGameService((service as any).configService);
+    const seen: any[] = [];
+    restored.messages$.subscribe(m => seen.push(m));
+    restored.send({ type: 'request_game_state' });
+    await flush();
+    expect(Object.values(seen[0].boardState).every((u: any) => u.vet === 3)).toBeTrue();
+  });
+
   it('records a cast made after a blow into a panel after the blow', async () => {
     // The blow's record used to be the last word on the unit's HP: the cast
     // went ahead of it, so a panel unit struck and then finished by a spell
@@ -334,7 +359,7 @@ describe('LocalGameService', () => {
     g.boardState = {
       ...g.boardState,
       '-5,5': { unit_id: 'rook', color: 'white', hp: hpOf('rook') - 10, max_hp: hpOf('rook'), uid: 'wr' },
-      '-4,5': { unit_id: 'shieldman', color: 'black', hp: hpOf('shieldman'), max_hp: hpOf('shieldman'), uid: 'bs' },
+      '-4,5': { unit_id: 'pawn', color: 'black', hp: hpOf('pawn'), max_hp: hpOf('pawn'), uid: 'bs' },
     };
     service.send({ type: 'make_move', from: '-5,5', to: '-5,5', attack: '-4,5', more: true });
     await flush();
@@ -551,6 +576,126 @@ describe('LocalGameService', () => {
     expect(state.boardState['-5,8'].unit_id).toBe('pawn');
   });
 
+  it('enforces archer minimum range after walking, counters, shieldman silence and bishop range', async () => {
+    const g = (service as any).game;
+    const position = (actor: string, victim = 'pawn', distance = 1) => {
+      replies.length = 0;
+      g.turnNumber = 7; g.currentTurn = 'Solo'; g.moveHistory = [];
+      g.boardState = {
+        '0,0': fullUnit(actor, 'white', 'actor'),
+        [`${distance},0`]: { ...fullUnit(victim, 'black', 'victim'), hp: 100, max_hp: 100 },
+        '-8,0': fullUnit('king', 'white', 'wk'),
+        '8,0': fullUnit('king', 'black', 'bk'),
+      };
+    };
+    for (const [unit, distance] of [['archer', 1], ['archer', 2], ['archer', 7], ['shieldman', 1]] as const) {
+      position(unit, 'pawn', distance);
+      const before = structuredClone(g.boardState);
+      service.send({ type: 'make_move', from: '0,0', to: '0,0', attack: `${distance},0` });
+      await flush();
+      expect(last('invalid_move')).withContext(`${unit} ring ${distance}`).toBeDefined();
+      expect(g.boardState).toEqual(before); expect(g.turnNumber).toBe(7);
+    }
+    position('archer', 'pawn', 3);
+    service.send({ type: 'make_move', from: '0,0', to: '-1,0', attack: '3,0' }); await flush();
+    expect(last('move_made').move.damage_dealt).toBe(1); // Ring 4 attack 3, armor 6, floor 1.
+    expect(last('move_made').move.counter_damage).toBe(0);
+    for (const victim of ['archer', 'shieldman']) {
+      position('pawn', victim);
+      service.send({ type: 'make_move', from: '0,0', to: '0,0', attack: '1,0', bonuses: { targetAtk: 30 } });
+      await flush();
+      expect(last('move_made').move.counter_damage).withContext(victim).toBe(0);
+    }
+    for (const distance of [1, 2]) {
+      position('bishop', 'rook', distance); g.boardState[`${distance},0`].color = 'white';
+      g.boardState[`${distance},0`].hp = 1;
+      service.send({ type: 'make_move', from: '0,0', to: '0,0', heal: `${distance},0` }); await flush();
+      if (distance === 1) expect(last('move_made').move.healed_amount).toBe(8);
+      else expect(last('invalid_move')).toBeDefined();
+    }
+  });
+
+  describe('normal unit healing', () => {
+    const position = (ply = 7) => {
+      const g = (service as any).game;
+      g.config.units.bishop.heal = [14, 13, 12, 11];
+      g.turnNumber = ply;
+      g.boardState = {
+        '0,0': fullUnit('bishop', 'white', 'healer'),
+        '3,0': { ...fullUnit('rook', 'white', 'friend'), hp: 1, max_hp: 50 },
+        '0,1': fullUnit('pawn', 'black', 'enemy'),
+        '-6,0': fullUnit('king', 'white', 'wk'),
+        '6,0': fullUnit('king', 'black', 'bk'),
+      };
+      return g;
+    };
+
+    it('uses each exact ring, caps HP, and reloads the committed heal', async () => {
+      for (const [ring, amount] of [[1, 14], [2, 13], [3, 12], [4, 11]]) {
+        const g = position();
+        g.currentTurn = 'Solo';
+        g.moveHistory = [];
+        g.boardState[`${ring},0`] = g.boardState['3,0'];
+        if (ring !== 3) delete g.boardState['3,0'];
+        service.send({ type: 'make_move', from: '0,0', to: '0,0', heal: `${ring},0` });
+        await flush();
+        const made = last('move_made');
+        expect(made.move.healed_amount).toBe(amount);
+        expect(made.boardState[`${ring},0`].hp).toBe(1 + amount);
+        expect(made.boardState['0,0'].hp).toBe(hpOf('bishop'));
+        expect(made.move.attacked).toBeFalse();
+        expect(made.move.counter_damage).toBeUndefined();
+      }
+      const g = position(); g.currentTurn = 'Solo'; g.moveHistory = [];
+      g.boardState['3,0'].hp = 48;
+      service.send({ type: 'make_move', from: '0,0', to: '1,0', heal: '3,0' });
+      await flush();
+      expect(last('move_made').move.healed_amount).toBe(2);
+      expect(last('move_made').boardState['3,0'].hp).toBe(50);
+      const fresh = new LocalGameService((service as any).configService);
+      const seen: any[] = []; fresh.messages$.subscribe(m => seen.push(m));
+      fresh.send({ type: 'request_game_state' }); await flush();
+      const snapshot = seen.find(m => m.type === 'game_state_update');
+      expect(snapshot.boardState['3,0'].hp).toBe(50);
+      expect(snapshot.moveHistory.at(-1).healedHex).toBe('3,0');
+      // The heal resolves before overtime's toll, so an endangered king can be saved.
+      const overtime = position(89); overtime.currentTurn = 'Solo'; overtime.moveHistory = [];
+      overtime.boardState['-6,0'].hp = 1;
+      service.send({ type: 'make_move', from: '0,0', to: '-2,0', heal: '-6,0' }); await flush();
+      expect(last('move_made').boardState['-6,0'].hp).toBe(9);  // 1 + ring-4's 11 - toll 3
+      expect(last('move_made').turnNumber).toBe(90);
+      const counter = position(); counter.currentTurn = LOCAL_OPPONENT; counter.moveHistory = [];
+      service.send({ type: 'make_move', from: '0,1', to: '0,1', attack: '0,0', bonuses: { targetAtk: 30 } });
+      await flush();
+      expect(last('move_made').move.counter_damage).toBe(0);
+      expect(last('move_made').boardState['0,1'].hp).toBe(hpOf('pawn'));
+    });
+
+    it('refuses invalid targets, combined actions, enemy strikes and setup heals atomically', async () => {
+      const g = position(); const original = JSON.stringify(g.boardState);
+      const bad: any[] = [
+        { heal: '0,0' }, { heal: '0,1' }, { heal: '6,0' }, { heal: '-6,0' }, { heal: '2,0' },
+        { heal: '12,-4' }, { heal: 'bad' }, { heal: 123 }, { heal: ',0' },
+        { heal: '3,0', attack: '6,0' }, { heal: '3,0', withdraw: true },
+        { attack: '6,0' }, { from: '3,0', to: '3,0', heal: '0,0' },
+        { to: '1,0', heal: '6,0' },
+      ];
+      for (const data of bad) {
+        service.send({ type: 'make_move', from: '0,0', to: '0,0', ...data }); await flush();
+        expect(last('invalid_move')).withContext(JSON.stringify(data)).toBeDefined();
+        expect(JSON.stringify(g.boardState)).toBe(original);
+        expect(g.turnNumber).toBe(7);
+        expect(g.moveHistory.length).toBe(0);
+      }
+      for (const ply of [1, 27, 49, 71]) {
+        g.turnNumber = ply;
+        service.send({ type: 'make_move', from: '0,0', to: '1,0', heal: '3,0' }); await flush();
+        expect(JSON.stringify(g.boardState)).toBe(original);
+        expect(g.turnNumber).toBe(ply);
+      }
+    });
+  });
+
   it('lands the ability boosts the panel promises', async () => {
     // Two units toe to toe, written straight into the cache: the real setups
     // start twenty hexes apart and this is about the sums, not the walk.
@@ -576,6 +721,9 @@ describe('LocalGameService', () => {
       return [...seen].reverse().find(m => m.type === 'move_made').move;
     };
 
+    // Keep this boost test above the damage floor, independently of roster balance.
+    config.units.rook.attack = 20;
+    config.units.rook.defense = 10;
     const plain = await strike();
     expect(plain.damage_dealt).toBeGreaterThan(0);
 
@@ -845,8 +993,8 @@ describe('LocalGameService', () => {
    * The schedule's two endings, which this engine enforces the way the server
    * does (match-score.ts): a side past the other's margin once Phase 3 has
    * banked and its postmatch is played wins on points, and a match still
-   * standing once turn 50 is played out is black's. Both kings stand on the rim of a side zone each - the same four
-   * hexes apiece - so whatever the board banks, it banks level.
+   * standing once turn 50 is played out is black's. Both kings stand on the rim of a side zone each - one occupied
+   * hex apiece - so whatever the board banks, it banks level.
    */
   describe('the schedule\'s endings', () => {
     const at = (ply: number, phaseBank: any = {}, blackHp = hpOf('king')) => {
@@ -872,11 +1020,11 @@ describe('LocalGameService', () => {
       const g = at(26);   // black's half of turn 13, the last of Phase 1's play
       g.engine.send({ type: 'pass_turn' });
       await flush();
-      expect(g.find('turn_passed').phaseBank).toEqual({ 1: { white: 4, black: 4 } });
+      expect(g.find('turn_passed').phaseBank).toEqual({ 1: { white: 1, black: 1 } });
       // And it is the game's: a reload brings it back.
       g.engine.send({ type: 'request_game_state' });
       await flush();
-      expect(g.find('game_state_update').phaseBank).toEqual({ 1: { white: 4, black: 4 } });
+      expect(g.find('game_state_update').phaseBank).toEqual({ 1: { white: 1, black: 1 } });
     });
 
     it('ends the match at the end of turn 50, with both kings standing - black\'s', async () => {
@@ -931,7 +1079,7 @@ describe('LocalGameService', () => {
       const g = at(70, { 1: { white: 12, black: 0 }, 2: { white: 0, black: 0 } });
       await passes(g, 1);   // black's half of turn 35: into the postmatch
       // Four hexes apiece, tripled in Phase 3.
-      expect(g.find('turn_passed').phaseBank[3]).toEqual({ white: 12, black: 12 });
+      expect(g.find('turn_passed').phaseBank[3]).toEqual({ white: 3, black: 3 });
       expect(g.find('turn_passed').currentTurn).toBe('Solo');
       await passes(g, 1);   // white's half of the postmatch
       expect(g.find('game_over')).toBeUndefined();

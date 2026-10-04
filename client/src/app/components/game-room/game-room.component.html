@@ -88,29 +88,25 @@
       <!-- "Tap again to strike" at the end of its first line, where the board
            no longer draws it over its units (the board's hintOutside). -->
       <span class="strip-head"><span class="strip-name">{{ displayUnit ? displayUnit.name + ' - ' + unitSideLabel : 'Unit' }}</span><span
-        class="strip-hint" *ngIf="boardArmed">Tap again to strike</span></span>
+        class="strip-hint" *ngIf="boardArmed">{{ boardArmedHint }}</span></span>
       <span class="strip-stats" *ngIf="displayUnit; else noStripUnit">
         <span class="hp">HP <strong [class.forecast]="displayUnit.hpAfter != null">{{ statHp }}</strong></span>
-        <span class="atk">ATK <strong>{{ statAtk }}</strong></span>
+        <span class="atk" *ngIf="statAtk !== '—'">ATK <strong>{{ statAtk }}</strong></span>
+        <span class="hel" *ngIf="statHel !== '—'">HEL <strong>{{ statHel }}</strong></span>
         <span class="def">DEF <strong>{{ statDef }}</strong></span>
         <span class="mov">MOV <strong>{{ statMov }}</strong></span>
+        <span class="vet">VET <strong>{{ statVet }}</strong></span>
       </span>
       <ng-template #noStripUnit><span class="strip-stats">Tap a unit to read it here</span></ng-template>
     </button>
 
-    <!-- Left column: their abilities, then your side - the turn's controls
-         and your abilities. Plain stacked rectangles - they used to be clipped
+    <!-- Left column: their abilities, the turn's controls, your abilities,
+         and the Unit panel. Plain stacked rectangles - they used to be clipped
          into the hexagon's corners, which left far too little usable area for
          their controls. -->
     <div class="match-panels">
 
-      <!-- Theirs, at the top of the left column, over yours - where it was
-           before 28 Sep 2026, when it went to the top of the right one and
-           squeezed the chat under it. The owner, 29 Sep 2026: "put it back",
-           and "we need to make it try to fit". Both ability panels here with
-           the Unit panel under them wanted a window 910px tall at the least
-           (705 as it was): the Unit panel went to the right column, and it is
-           725. -->
+      <!-- Their abilities stay over yours, with the Unit panel below both. -->
       <section class="match-panel opponent-panel">
         <h3 class="panel-head"><span>{{ abilityHeader('opponent', 'Opponent') }}</span><span
           class="points">{{ abilityPurseLabel('opponent') }}<button type="button" class="tip-btn"
@@ -463,8 +459,152 @@
         </div>
       </section>
 
-      <!-- Same shape as Your Abilities. Live only on the opponent's turn, and
-           only when you are driving both sides - never in multiplayer. -->
+      <!-- The unit under the pointer or the finger, below your abilities.
+           The right column gives its freed height to History and the room. -->
+      <section class="match-panel stats-panel" [class.theirs]="unitPanelDim">
+        <h3 class="panel-head"><span>{{ unitAbilityTitle }}</span>
+          <!-- The "?" is for the two tallies drawn with nobody selected. Its
+               place is kept while a unit is shown, so the side label beside
+               it does not move as the pointer crosses the board. -->
+          <span class="unit-side">{{ unitSideLabel }}<button type="button" class="tip-btn"
+            [class.idle]="!!displayUnit" aria-label="What the two counts are"
+            [attr.aria-expanded]="tip?.id === 'tally'" (click)="toggleTip('tally', $event)">?</button></span></h3>
+        <div class="panel-body" *ngIf="abilitiesComingSoon">
+          <p class="coming-soon">Coming soon.</p>
+        </div>
+        <div class="panel-body" *ngIf="!abilitiesComingSoon">
+          <div class="stat-grid">
+            <!-- Only the current half of a boosted value waves. -->
+            <div class="primary-stats">
+              <div class="stat-cell hp"><span>HP</span>
+                <strong [class.forecast]="displayUnit?.hpAfter != null" [style.font-size]="statFontSize(statHp)">
+                  <ng-container *ngIf="displayUnit; else noUnitHp"><span
+                    [ngClass]="hpWave">{{ displayUnit.hpAfter ?? displayUnit.hp }}</span><ng-container
+                    *ngIf="displayUnit.hpMax != null">/{{ displayUnit.hpMax }}</ng-container></ng-container>
+                  <ng-template #noUnitHp>—</ng-template>
+                </strong></div>
+              <div class="stat-cell mov"><span>MOV</span>
+                <strong [style.font-size]="statFontSize(statMov)">
+                  <ng-container *ngIf="displayUnit; else noMOV">
+                    <ng-container *ngFor="let part of statParts('mov'); let i = index"
+                    ><span *ngIf="i">, </span><span
+                      [ngClass]="panelWave('mov')">{{ part.now }}</span>/{{ part.base }}</ng-container>
+                  </ng-container>
+                  <ng-template #noMOV>&#8212;</ng-template>
+                </strong></div>
+            </div>
+            <div class="stat-cell atk"><span>ATK</span>
+              <strong [style.font-size]="statFontSize(statAtk)">
+                <ng-container *ngIf="statParts('atk').length; else noATK">
+                  <ng-container *ngFor="let part of statParts('atk'); let i = index"
+                  ><span *ngIf="i">&#160;</span>{{ part.ring }}:<span
+                    [ngClass]="panelWave('atk')">{{ part.now }}</span>/{{ part.base }}</ng-container>
+                </ng-container>
+                <ng-template #noATK>&#8212;</ng-template>
+              </strong></div>
+            <div class="stat-cell def"><span>DEF</span>
+              <strong [style.font-size]="statFontSize(statDef)">
+                <ng-container *ngIf="displayUnit; else noDEF">
+                  <ng-container *ngFor="let part of statParts('def'); let i = index"
+                  ><span *ngIf="i">, </span><span
+                    [ngClass]="panelWave('def')">{{ part.now }}</span>/{{ part.base }}</ng-container>
+                </ng-container>
+                <ng-template #noDEF>&#8212;</ng-template>
+              </strong></div>
+            <div class="stat-cell hel" title="Healing a friendly unit"><span>HEL</span>
+              <strong [style.font-size]="statFontSize(statHel)">
+                <ng-container *ngFor="let part of statParts('hel'); let i = index"
+                  ><span *ngIf="i">&#160;</span>{{ part.ring }}:{{ part.now }}/{{ part.base }}</ng-container>
+                <ng-container *ngIf="!statParts('hel').length">—</ng-container>
+              </strong></div>
+            <div class="stat-cell vet" title="Earned veterancy"><span>VET</span>
+              <strong>{{ statVet }}</strong></div>
+          </div>
+          <div class="ability-detail" *ngIf="unitAbilityFocus; else unitAbilityList"
+               [class.ability-disabled]="!unitAbilityIsPassive() && !unitAbilityCanActivate()">
+            <div class="ability-detail-content">
+              <p>{{ unitAbilityHint(unitAbilityFocus.index) }}</p>
+              <p class="arming-hint">{{ unitAbilityNote }}</p>
+            </div>
+            <div class="ability-detail-actions">
+              <button *ngIf="!unitAbilityIsPassive()" class="scaffold-btn" type="button"
+                      [disabled]="!unitAbilityCanActivate()"
+                      (click)="activateUnitAbility()">Use</button>
+              <button class="ability-back-btn" type="button" (click)="unitAbilityFocus = null">Back</button>
+            </div>
+          </div>
+          <ng-template #unitAbilityList><div class="panel-buttons">
+            <!-- Always drawn, so selecting a unit never resizes the panel.
+                 With nobody selected the two slots carry the army's tally
+                 instead of standing empty - still greyed, because there is
+                 nothing to press. -->
+            <div class="unit-ability-row" *ngIf="!displayUnit">
+              <button class="passive-row locked blank tally" type="button" disabled
+                      [title]="tallyTitles.mine"
+              >Total: {{ liveUnits }}</button>
+              <button class="scaffold-btn locked blank tally" type="button" disabled
+                      [title]="tallyTitles.theirs"
+              >Opponent: {{ opponentUnits }}</button>
+            </div>
+            <div class="unit-ability-row" *ngIf="displayUnit">
+              <!-- Passive on the left, the unit's own ability on the right,
+                   and the passive slot is always drawn: without a path there
+                   is none to name yet, but the slot is still where it goes. -->
+              <ng-container *ngIf="pathChoice('mine') as path; else noPassive">
+                <button class="passive-row"
+                        [title]="abilityHint(path.passive)"
+                        [style.font-size]="abilityFontSize(path.passive, 0)"
+                        [class.locked]="displayUnit.vet < 1"
+                        [class.picked-recent]="isRecentPick('mine', path.passive)"
+                        [disabled]="!!displayUnit.panel"
+                        (click)="selectUnitAbility(path.passive)"
+                >{{ abilityLabel(path.passive, 0) }}</button>
+              </ng-container>
+              <ng-template #noPassive>
+                <button class="passive-row locked" type="button" disabled
+                        title="Take a path to gain its passive."
+                >Passive</button>
+              </ng-template>
+              <!-- The unit type's own ability (`units.<id>.ability`), with its
+                   own cooldown. `!== null`, because slot 0 is an ability.
+                   Locked until the unit has the stars it needs, but not
+                   disabled, and nor is the passive: a tap opens what it does
+                   and what it needs ("Unavailable: needs ★★"), with Use off.
+                   Disabled, a touch screen could not read it at all - its
+                   words were in a tooltip. A unit in a panel still is. -->
+              <button class="scaffold-btn" type="button" *ngIf="displayUnitAbility !== null; else noOwnAbility"
+                      [style.font-size]="abilityFontSize(displayUnitAbility, unitCooldownOf(displayUnit.uid))"
+                      [title]="unitAbilityHint(displayUnitAbility)"
+                      [class.focused]="unitAbilityFocus?.index === displayUnitAbility"
+                      [class.locked]="!vetUnlocked(displayUnitAbility)"
+                      [class.ability-unavailable]="!displayUnitAbilityReady"
+                      [disabled]="!!displayUnit.panel"
+                      (click)="selectUnitAbility(displayUnitAbility)"
+              >{{ abilityLabel(displayUnitAbility, unitCooldownOf(displayUnit.uid)) }}</button>
+              <ng-template #noOwnAbility>
+                <button class="scaffold-btn locked" type="button" disabled
+                        title="This unit has no ability of its own."
+                >No ability</button>
+              </ng-template>
+            </div>
+          </div></ng-template>
+          <p class="arming-hint" *ngIf="pendingAbility">Click the selected target.</p>
+
+          <!-- What is riding on this unit, and for how long. Scrolls: a unit
+               can carry more than the panel is tall. -->
+          <div class="effects-box">
+            <div class="effects-list">
+              <div class="effect-row" *ngFor="let effect of displayEffects">
+                <span class="effect-name">{{ effect.name }}</span>
+                <span class="effect-detail">{{ effect.detail }}</span>
+                <span class="effect-life">{{ effect.life }}</span>
+              </div>
+              <div class="effect-empty" *ngIf="!displayEffects.length">Nothing in effect.</div>
+            </div>
+          </div>
+
+        </div>
+      </section>
 
       <!-- The two things you can do to a running game, under the board's own
            controls rather than in the rail. -->
@@ -510,6 +650,7 @@
           [radius]="state.config?.board?.radius ?? 11"
           [currentTurn]="state.currentTurn"
           [turnNumber]="state.turnNumber"
+          [moveHistory]="state.moveHistory"
           [username]="username"
           [myColor]="gameState.myColor(username)"
           [endReason]="state.endReason"
@@ -537,6 +678,7 @@
           [showNumbers]="showHexNumbers"
           [movesLeft]="movesLeft"
           [movesLeftFor]="pendingMove?.to ?? null"
+          [actionSpent]="unitActionSpent"
           [boardMovesSpent]="boardMoves.length"
           [movedHexes]="movedUnitHexes"
           [unitBuffs]="boardBuffs"
@@ -654,148 +796,8 @@
       </div>
     </div>
 
-    <!-- Right column: the Unit panel, the history, and Game and Lobby sharing
-         one tabbed box. -->
+    <!-- Right column: History, and Game and Lobby sharing one tabbed box. -->
     <div class="side-rail">
-      <!-- The unit under the pointer or the finger, either side's: at the top
-           of the right column, beside the board it reads, at its own height -
-           History and the chat share the rest. Here since 29 Sep 2026, when
-           their ability panel went back to the left column over yours. -->
-      <section class="match-panel stats-panel" [class.theirs]="unitPanelDim">
-        <h3 class="panel-head"><span>{{ unitAbilityTitle }}</span>
-          <!-- The "?" is for the two tallies drawn with nobody selected. Its
-               place is kept while a unit is shown, so the side label beside
-               it does not move as the pointer crosses the board. -->
-          <span class="unit-side">{{ unitSideLabel }}<button type="button" class="tip-btn"
-            [class.idle]="!!displayUnit" aria-label="What the two counts are"
-            [attr.aria-expanded]="tip?.id === 'tally'" (click)="toggleTip('tally', $event)">?</button></span></h3>
-        <div class="panel-body" *ngIf="abilitiesComingSoon">
-          <p class="coming-soon">Coming soon.</p>
-        </div>
-        <div class="panel-body" *ngIf="!abilitiesComingSoon">
-          <div class="stat-grid">
-            <!-- Only the current half of "x/20" answers for the unit's state,
-                 so only it waves. -->
-            <div class="stat-cell hp"><span>HP</span>
-              <strong [class.forecast]="displayUnit?.hpAfter != null" [style.font-size]="statFontSize(statHp)">
-                <ng-container *ngIf="displayUnit; else noUnitHp"><span
-                  [ngClass]="hpWave">{{ displayUnit.hpAfter ?? displayUnit.hp }}</span><ng-container
-                  *ngIf="displayUnit.hpMax != null">/{{ displayUnit.hpMax }}</ng-container></ng-container>
-                <ng-template #noUnitHp>—</ng-template>
-              </strong></div>
-            <div class="stat-cell atk"><span>ATK</span>
-              <strong [style.font-size]="statFontSize(statAtk)">
-                <ng-container *ngIf="displayUnit; else noATK">
-                  <ng-container *ngFor="let part of statParts('atk'); let i = index"
-                  ><span *ngIf="i">, </span><span
-                    [ngClass]="panelWave('atk')">{{ part.now }}</span>/{{ part.base }}</ng-container>
-                </ng-container>
-                <ng-template #noATK>&#8212;</ng-template>
-              </strong></div>
-            <div class="stat-cell def"><span>DEF</span>
-              <strong [style.font-size]="statFontSize(statDef)">
-                <ng-container *ngIf="displayUnit; else noDEF">
-                  <ng-container *ngFor="let part of statParts('def'); let i = index"
-                  ><span *ngIf="i">, </span><span
-                    [ngClass]="panelWave('def')">{{ part.now }}</span>/{{ part.base }}</ng-container>
-                </ng-container>
-                <ng-template #noDEF>&#8212;</ng-template>
-              </strong></div>
-            <div class="stat-cell mov"><span>MOV</span>
-              <strong [style.font-size]="statFontSize(statMov)">
-                <ng-container *ngIf="displayUnit; else noMOV">
-                  <ng-container *ngFor="let part of statParts('mov'); let i = index"
-                  ><span *ngIf="i">, </span><span
-                    [ngClass]="panelWave('mov')">{{ part.now }}</span>/{{ part.base }}</ng-container>
-                </ng-container>
-                <ng-template #noMOV>&#8212;</ng-template>
-              </strong></div>
-          </div>
-          <div class="ability-detail" *ngIf="unitAbilityFocus; else unitAbilityList"
-               [class.ability-disabled]="!unitAbilityIsPassive() && !unitAbilityCanActivate()">
-            <div class="ability-detail-content">
-              <p>{{ unitAbilityHint(unitAbilityFocus.index) }}</p>
-              <p class="arming-hint">{{ unitAbilityNote }}</p>
-            </div>
-            <div class="ability-detail-actions">
-              <button *ngIf="!unitAbilityIsPassive()" class="scaffold-btn" type="button"
-                      [disabled]="!unitAbilityCanActivate()"
-                      (click)="activateUnitAbility()">Use</button>
-              <button class="ability-back-btn" type="button" (click)="unitAbilityFocus = null">Back</button>
-            </div>
-          </div>
-          <ng-template #unitAbilityList><div class="panel-buttons">
-            <!-- Always drawn, so selecting a unit never resizes the panel.
-                 With nobody selected the two slots carry the army's tally
-                 instead of standing empty - still greyed, because there is
-                 nothing to press. -->
-            <div class="unit-ability-row" *ngIf="!displayUnit">
-              <button class="passive-row locked blank tally" type="button" disabled
-                      [title]="tallyTitles.mine"
-              >Total: {{ liveUnits }}</button>
-              <button class="scaffold-btn locked blank tally" type="button" disabled
-                      [title]="tallyTitles.theirs"
-              >Opponent: {{ opponentUnits }}</button>
-            </div>
-            <div class="unit-ability-row" *ngIf="displayUnit">
-              <!-- Passive on the left, the unit's own ability on the right,
-                   and the passive slot is always drawn: without a path there
-                   is none to name yet, but the slot is still where it goes. -->
-              <ng-container *ngIf="pathChoice('mine') as path; else noPassive">
-                <button class="passive-row"
-                        [title]="abilityHint(path.passive)"
-                        [style.font-size]="abilityFontSize(path.passive, 0)"
-                        [class.locked]="displayUnit.vet < 1"
-                        [class.picked-recent]="isRecentPick('mine', path.passive)"
-                        [disabled]="!!displayUnit.panel"
-                        (click)="selectUnitAbility(path.passive)"
-                >{{ abilityLabel(path.passive, 0) }}</button>
-              </ng-container>
-              <ng-template #noPassive>
-                <button class="passive-row locked" type="button" disabled
-                        title="Take a path to gain its passive."
-                >Passive</button>
-              </ng-template>
-              <!-- The unit type's own ability (`units.<id>.ability`), with its
-                   own cooldown. `!== null`, because slot 0 is an ability.
-                   Locked until the unit has the stars it needs, but not
-                   disabled, and nor is the passive: a tap opens what it does
-                   and what it needs ("Unavailable: needs ★★"), with Use off.
-                   Disabled, a touch screen could not read it at all - its
-                   words were in a tooltip. A unit in a panel still is. -->
-              <button class="scaffold-btn" type="button" *ngIf="displayUnitAbility !== null; else noOwnAbility"
-                      [style.font-size]="abilityFontSize(displayUnitAbility, unitCooldownOf(displayUnit.uid))"
-                      [title]="unitAbilityHint(displayUnitAbility)"
-                      [class.focused]="unitAbilityFocus?.index === displayUnitAbility"
-                      [class.locked]="!vetUnlocked(displayUnitAbility)"
-                      [class.ability-unavailable]="!displayUnitAbilityReady"
-                      [disabled]="!!displayUnit.panel"
-                      (click)="selectUnitAbility(displayUnitAbility)"
-              >{{ abilityLabel(displayUnitAbility, unitCooldownOf(displayUnit.uid)) }}</button>
-              <ng-template #noOwnAbility>
-                <button class="scaffold-btn locked" type="button" disabled
-                        title="This unit has no ability of its own."
-                >No ability</button>
-              </ng-template>
-            </div>
-          </div></ng-template>
-          <p class="arming-hint" *ngIf="pendingAbility">Click the selected target.</p>
-
-          <!-- What is riding on this unit, and for how long. Scrolls: a unit
-               can carry more than the panel is tall. -->
-          <div class="effects-box">
-            <div class="effects-list">
-              <div class="effect-row" *ngFor="let effect of displayEffects">
-                <span class="effect-name">{{ effect.name }}</span>
-                <span class="effect-detail">{{ effect.detail }}</span>
-                <span class="effect-life">{{ effect.life }}</span>
-              </div>
-              <div class="effect-empty" *ngIf="!displayEffects.length">Nothing in effect.</div>
-            </div>
-          </div>
-
-        </div>
-      </section>
       <section class="match-panel history-panel" [class.expanded]="historyExpanded">
         <h3>
           <span>{{ historyTitle }}</span>

@@ -45,11 +45,13 @@ from .engine.board import HexBoard, parse_coord, hex_distance
 from .engine.game_logic import (
     board_move_landings,
     board_moves_at,
+    can_attack,
     defeated_sides,
     get_legal_moves_filtered,
     opening_moved_hexes,
     overtime_toll,
     resolve_combat,
+    resolve_heal,
     resolve_panel_attack,
 )
 from .engine.phases import (
@@ -164,6 +166,11 @@ def _settle_hand_over(state, board, history, beaten) -> HandOver:
 
     board_state = board.to_dict()
     next_ply = state.turn_number + 1
+    radius = config.get('board', {}).get('radius', DEFAULT_CONFIG['board']['radius'])
+    orientation = config.get('board', {}).get('orientation', 'edge-up')
+    for at, unit in board_state.items():
+        unit['vet'] = panels.unit_veterancy(
+            unit.get('uid', f"{unit['color'][0]}{at}"), at, history, next_ply, radius, orientation)
     bank = bank_ended_phases(state.phase_bank, config, board_state, history, next_ply)
     if not end_reason:
         ending = schedule_ending(bank, next_ply)
@@ -2014,6 +2021,11 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return
             mover = state.current_turn
 
+            # Healing replaces the strike, never supplements it or a walk home.
+            if data.get('heal') and (data.get('attack') or data.get('withdraw')):
+                await send_error(self, 'INVALID_MOVE', 'Heal, attack or walk home: choose one')
+                return
+
             from_coord = data['from']  # "q,r"
             to_coord = data['to']      # "q,r"
 
@@ -2052,7 +2064,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             # handing it to a single postmatch turn would stop a unit that had
             # moved in some earlier turn of a phase it has nothing to do with.
             if is_setup_turn(state.turn_number):
-                if data.get('attack'):
+                if data.get('attack') or data.get('heal'):
                     await send_error(
                         self, 'INVALID_MOVE', no_attack_message(state.turn_number))
                     return
@@ -2178,6 +2190,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             # ends up (possibly where it already stands) and `attack` names a
             # hex it strikes from there.
             attack_coord = data.get('attack')
+            heal_coord = data.get('heal')
             # A message may also carry moveBonus/bonuses - one-turn ability
             # boosts. They are ignored here: abilities live on the client, so
             # honouring them would hand a free stat upgrade to anyone willing
@@ -2189,11 +2202,24 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if (tq, tr) not in legal_dests:
                     await send_error(self, 'INVALID_MOVE', 'Illegal move for this piece')
                     return
-            elif not attack_coord:
+            elif not attack_coord and not heal_coord:
                 await send_error(self, 'INVALID_MOVE', 'A move must change hexes')
                 return
 
-            if attack_coord:
+            if heal_coord:
+                try:
+                    hq, hr = parse_coord(heal_coord)
+                    if (tq, tr) != (fq, fr):
+                        board.move(fq, fr, tq, tr)
+                    combat = resolve_heal(board, (tq, tr), (hq, hr), config)
+                    combat['moved'] = (tq, tr) != (fq, fr)
+                except ValueError as e:
+                    await send_error(self, 'INVALID_MOVE', str(e))
+                    return
+            elif attack_coord:
+                if config.get('units', {}).get(piece['unit_id'], {}).get('heal'):
+                    await send_error(self, 'INVALID_MOVE', 'This unit heals instead of attacking')
+                    return
                 try:
                     aq, ar = parse_coord(attack_coord)
                 except ValueError:
@@ -2203,8 +2229,8 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if not target or target['color'] == my_color:
                     await send_error(self, 'INVALID_MOVE', 'No enemy unit on the attacked hex')
                     return
-                unit_range = config.get('units', {}).get(piece['unit_id'], {}).get('attackRange', 1)
-                if hex_distance((tq, tr), (aq, ar)) > unit_range:
+                unit_def = config.get('units', {}).get(piece['unit_id'], {})
+                if not can_attack(unit_def, hex_distance((tq, tr), (aq, ar))):
                     await send_error(self, 'INVALID_MOVE', 'That hex is out of attack range')
                     return
                 if (tq, tr) != (fq, fr):
@@ -2233,6 +2259,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                 move_record['attackedHex'] = attack_coord
                 move_record['counter_damage'] = combat.get('counter_damage', 0)
                 move_record['attacker_eliminated'] = combat.get('attacker_eliminated', False)
+            if heal_coord:
+                for key in ('healedHex', 'healed_amount', 'healed_hp', 'healed_unit'):
+                    move_record[key] = combat[key]
             if combat['defender_hp'] is not None:
                 move_record['defender_hp'] = combat['defender_hp']
 
@@ -2560,6 +2589,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'hp': unit['hp'],
                 'max_hp': unit['max_hp'],
                 'uid': unit['uid'],
+                'vet': unit['vet'],
             }
             board = HexBoard.from_dict(radius, board_state)
             eq, er = panels.parse_key(to_key)

@@ -14,8 +14,11 @@
  */
 
 import { ruleOf } from './config.service';
-import { BASE_PANELS } from './hex-rules';
-import { isInitialization, isPostmatch, isSetupTurn } from './phases';
+import { BASE_PANELS, isInsideBoard, panelOfHex } from './hex-rules';
+import {
+  PHASES, PLIES_PER_TURN, SCORING_PHASES, phaseStartTurn,
+  isInitialization, isPostmatch, isSetupTurn,
+} from './phases';
 
 /**
  * A move record, as loosely as the history actually holds one: what a record
@@ -225,4 +228,40 @@ export function homecomingsAt(
     out.add(unit.uid);
   }
   return out;
+}
+
+/**
+ * Earned stars, reconstructed from the unit's recorded panel crossings.
+ * Mirrors panels.unit_veterancy. Everyone starts at zero; both sides gain
+ * together at Phase 1's start and each postmatch's start, capped at three.
+ * Only battlefield/reserve occupancy at that boundary counts. A veteran
+ * keeps its stars when it walks home, but earns none while in the base.
+ * Ordinary walks, damage and kills cannot change rank. Deriving from the
+ * record also brings existing saved games up to date without a migration.
+ */
+export function unitVeterancy(
+  uid: string, at: string, history: Move[] | undefined, ply: number,
+  radius: number, orientation = 'edge-up',
+): number {
+  const crossings = (history ?? []).filter(move => move?.unit?.uid === uid
+    && (move.entered || move.withdrawn || move.panelMove)
+    && Number.isInteger(move.turn) && normalizeKey(move.from) && normalizeKey(move.to));
+  const boundaries = [phaseStartTurn(1),
+    ...SCORING_PHASES.map(index => phaseStartTurn(index) + PHASES[index].turns)]
+    .map(turn => (turn - 1) * PLIES_PER_TURN + 1);
+  let where = normalizeKey(crossings[0]?.from ?? at);
+  let next = 0, vet = 0;
+  for (const boundary of boundaries) {
+    if (boundary > ply) break;
+    // A deployment recorded in the new stage happens AFTER its award.
+    while (next < crossings.length && crossings[next].turn < boundary) {
+      where = normalizeKey(crossings[next++].to);
+    }
+    if (!where) continue;
+    const [q, r] = where.split(',').map(Number);
+    if (isInsideBoard(q, r, radius) || !BASE_PANELS.has(panelOfHex(where, orientation))) {
+      vet = Math.min(3, vet + 1);
+    }
+  }
+  return vet;
 }
