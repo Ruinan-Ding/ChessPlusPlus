@@ -12,6 +12,11 @@
     { "path": ["rules", "postmatchEntries"], "value": null },
     { "path": ["rules", "homecomingsPerSetupTurn"], "value": null },
     { "path": ["rules", "cpAtStart"], "value": null },
+    { "path": ["rules", "upAtStart"], "value": null },
+    { "path": ["rules", "upAtStart"], "value": "10" },
+    { "path": ["rules", "upAtStart"], "value": -1 },
+    { "path": ["rules", "upAtStart"], "value": 1.5 },
+    { "path": ["rules", "upAtStart"], "value": true },
     { "path": ["rules", "cpPhaseOffset"], "value": null },
     { "path": ["units", "archer", "attack"], "value": [] },
     { "path": ["units", "archer", "attack"], "value": [15, 14, 13] },
@@ -54,7 +59,9 @@
     { "path": ["units", "pawn", "ability"], "value": null },
     { "path": ["setup", "black", "-5,11"], "value": "pawn" },
     { "path": ["setup", "black", "-05,11"], "value": "pawn" },
-    { "path": ["setup", "white", "-05,11"], "value": "pawn" }
+    { "path": ["setup", "white", "-05,11"], "value": "pawn" },
+    { "path": ["abilities", "catalogue", "sap", "target"], "value": null },
+    { "path": ["abilities", "catalogue", "sap", "target"], "value": "ally" }
   ],
   "absent": [
     ["rules", "rangeFalloff"],
@@ -63,6 +70,7 @@
     ["rules", "maxTurns"],
     ["rules", "turnTimeLimit"],
     ["rules", "panelMoversPerTurn"],
+    ["rules", "upAtStart"],
     ["units", "bishop", "heal"],
     ["units", "pawn", "attackRange"],
     ["units", "pawn", "captureZones"],

@@ -1,6 +1,6 @@
 import {
   bankEndedPhases, capOf, cpAwarded, decidedOnPoints, deathsOf, matchVerdict, phaseTotal,
-  scheduleEnding, vpAsPoints,
+  scheduleEnding, vpAsPoints, unitPoints, halftimeUpAwards,
 } from './match-score';
 import { captureZoneHexes } from './hex-rules';
 
@@ -12,6 +12,24 @@ import { captureZoneHexes } from './hex-rules';
 describe('match-score', () => {
   const PAWN = { units: { pawn: { value: 5 } }, board: { radius: 11 } };
   const pawn = (color: 'white' | 'black') => ({ unit_id: 'pawn', color });
+
+  it('snapshots each halftime VP once for both sides, with phase losses and multipliers', () => {
+    const board = { '-3,6': pawn('white'), '7,0': pawn('black') };
+    for (const [phase, ply] of [[1, 17], [2, 39], [3, 61]]) {
+      const history = [{ turn: ply - 1, color: 'white', unit_id: 'pawn', attacker_eliminated: true }];
+      expect(halftimeUpAwards(PAWN, board, history, ply - 1)).toEqual([]);
+      expect(halftimeUpAwards(PAWN, board, history, ply + 1)).toEqual([]);
+      const awards = halftimeUpAwards(PAWN, board, history, ply);
+      expect(awards).toEqual([{ turn: ply, halftimeUp: { phase, white: 52 * phase, black: 19 * phase } }]);
+      expect(halftimeUpAwards(PAWN, {}, [...history, ...awards], ply)).toEqual([]);
+      expect(unitPoints(PAWN, awards, 'white')).toBe(10 + 52 * phase);
+      expect(unitPoints(PAWN, awards, 'black')).toBe(10 + 19 * phase);
+    }
+    const deaths = [{ turn: 60, color: 'white', unit_id: 'expensive', attacker_eliminated: true }];
+    const config = { ...PAWN, units: { expensive: { value: 100 } }, rules: { upAtStart: 0 } };
+    expect(halftimeUpAwards(config, board, deaths, 61)[0].halftimeUp.white).toBe(0);
+    expect(unitPoints(config, [], 'white')).toBe(0);
+  });
 
   it('makes five zones of nineteen hexes on the shipped board', () => {
     const zone = captureZoneHexes(11);

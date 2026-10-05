@@ -17,6 +17,15 @@ Last updated 4 Oct 2026.
 
 ## New since the last review
 
+- [ ] **UP is separate from ability points:** start with **10**, spend unit value on the
+  base-to-reserve crossing, receive battlefield attack/counter kill value and homecoming
+  refunds. Ability and panel kills pay none. Each halftime adds a persisted snapshot of
+  each side's own current phase VP to its UP. Owner confirmed, 4 Oct 2026.
+
+- [ ] **Every postmatch permits abilities and normal unit healing; normal attacks remain
+  forbidden.** This includes both sides' turns and all ability categories, with their usual
+  costs, cooldowns and target rules. Online casts remain deferred. Live, 4 Oct 2026.
+
 - [ ] **Capture and neutralization use each unit's cumulative zone permissions.** Permissions
   are in the shared unit config: home 3x, middle 2x, sides 1x and enemy 3x. Live, 4 Oct 2026.
 - [ ] **Outer-ring units score only their occupied hex; inner-ring units also score adjacent
@@ -112,20 +121,20 @@ White's, by hex. Black's is the mirror. `setup`
 
 `stageRules`
 
-- [ ] **Opening (1-3):** no attacks, no abilities, no wrap. Up to **3** units out of the
+- [ ] **Opening (1-3):** no attacks, casts or normal healing; no wrap. Up to **3** units out of the
   reserve and **3** walks home a turn.
 - [ ] **First half (4-8, 15-19, 26-30):** attacks, abilities and **the wrap**. Nothing out of
   the reserve and no walking home.
 - [ ] **Second half (9-13, 20-24, 31-35):** attacks and abilities. Up to **3** units out of
   the reserve a turn. No wrap and no walking home.
-- [ ] **Postmatch (14, 25, 36):** no attacks, no abilities, no wrap. Up to **5** units out of
+- [ ] **Postmatch (14, 25, 36):** abilities and normal healing, no normal attacks, no wrap. Up to **5** units out of
   the reserve and **3** walks home.
 - [ ] **Overtime (37-50):** attacks and abilities. **Walking home is allowed**, within the
   turn's battlefield moves. Nothing out of the reserve and no wrap.
 
 ## 5. Points
 
-What abilities and crossings are paid with.
+What pool abilities are paid with. Unit transactions use UP below.
 
 - [ ] **1** point a turn in the opening. `match.opening.pointsPerTurn`
 - [ ] **1, 2 and 3** points a turn in Phases 1, 2 and 3, each new rate starting at the phase's
@@ -135,11 +144,16 @@ What abilities and crossings are paid with.
 - [ ] **0** points a turn in overtime. `match.overtime.pointsPerTurn`
 - [ ] When overtime starts, **all** of a side's banked victory points become points.
   `match.overtime.vpToPoints`
-- [ ] A kill pays the killer **the dead unit's value**. `economy.killPay`
-- [ ] A kill made by a counter-attack pays **the defender**. `economy.counterKillPays`
-- [ ] A kill in a base or a reserve pays **nothing**. `economy.panelKillsPay`
-- [ ] Walking home **refunds the unit's value**. `economy.walkHomeRefund`
-- [ ] The wrap **costs the unit's value**. `economy.wrapPrice`
+### Unit points (UP)
+
+- [ ] Each side starts with **10 UP**. `rules.upAtStart` is already shared config.
+- [ ] Each halftime start adds **that side's current phase VP snapshot once**, including
+  losses, the zero floor and the phase multiplier. The award is retained after board changes.
+- [ ] A battlefield attack/counter kill pays **the dead unit's value in UP**. `economy.killPay`
+  A counter kill pays **the defender**. `economy.counterKillPays`
+- [ ] Ability kills and kills in either panel pay **no UP**. `economy.panelKillsPay`
+- [ ] Walking home **refunds the unit's value in UP**. `economy.walkHomeRefund`
+- [ ] The base-to-reserve wrap **costs the unit's value in UP**. `economy.wrapPrice`
 
 ## 6. Victory points
 

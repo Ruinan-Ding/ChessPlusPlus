@@ -84,7 +84,8 @@
           },
           "value": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Unit worth in UP, also used for phase loss scoring."
           },
           "hp": {
             "type": "integer",
@@ -242,9 +243,10 @@
                 "enum": [
                   "friendly",
                   "enemy",
-                  "universal"
+                  "universal",
+                  "all-enemies"
                 ],
-                "description": "What a cast is aimed at; 'universal' needs no target."
+                "description": "What a cast is aimed at. 'universal' needs no target and grants points. 'all-enemies' needs no target and changes stats on the enemy battlefield and green reserve units present when cast. Red base units and later arrivals are excluded; affected units keep the effect when returning to base."
               },
               "cost": {
                 "type": "integer",
@@ -391,6 +393,11 @@
           "type": "integer",
           "minimum": 0,
           "description": "The base of the CP each side is awarded at the start of a phase's postmatch: Phase N's award is N times this (5, 10 and 15 at the default), plus both sides' scores for the phase, plus the gap between them for the side that scored less. Default 5."
+        },
+        "upAtStart": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unit points each side starts with; omitted means 10. UP pays unit crossings and receives unit kill rewards, homecoming refunds and halftime VP snapshots."
         }
       },
       "additionalProperties": false

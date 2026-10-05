@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { LocalGameService, LOCAL_OPPONENT } from './local-game.service';
-import { DEFAULT_GAME_CONFIG } from './config.service';
+import { unitPoints } from './match-score';
+import { DEFAULT_GAME_CONFIG, ConfigService } from './config.service';
 
 /**
  * The offline engine is the only thing standing between the player and the
@@ -59,6 +60,52 @@ describe('LocalGameService', () => {
   // The stock unit these tests push about is the pawn on -5,9. The two hexes
   // it has been on before, -9,9 and -7,9, have each in turn been dealt an
   // archer; -5,9 is a pawn on the setup as it stands.
+
+  it('persists both halftime UP awards on moves and passes, once through reload and later board changes', async () => {
+    for (const [phase, ply] of [[1, 17], [2, 39], [3, 61]]) {
+      const g = (service as any).game;
+      g.turnNumber = ply - 1; g.currentTurn = LOCAL_OPPONENT; g.moveHistory = [];
+      g.phaseBank = {}; g.endReason = ''; g.winner = '';
+      g.boardState = {
+        '-10,0': fullUnit('king', 'white', 'wk'), '10,0': fullUnit('king', 'black', 'bk'),
+        '-3,6': fullUnit('pawn', 'white', 'wp'), '7,0': fullUnit('rook', 'black', 'br'),
+      };
+      replies.length = 0;
+      service.send(phase === 2 ? { type: 'make_move', from: '10,0', to: '10,-1' } : { type: 'pass_turn' });
+      await flush();
+      const handed = last(phase === 2 ? 'move_made' : 'turn_passed');
+      const award = { turn: ply, halftimeUp: { phase, white: 57 * phase, black: 19 * phase } };
+      expect(handed.effects).withContext(`phase ${phase}`).toEqual([award]);
+      const restored = new LocalGameService(TestBed.inject(ConfigService));
+      expect((restored as any).game.moveHistory.filter((m: any) => m.halftimeUp)).toEqual([award]);
+      g.boardState = { '-10,0': fullUnit('king', 'white', 'wk'), '10,0': fullUnit('king', 'black', 'bk') };
+      service.send({ type: 'pass_turn' }); await flush();
+      expect(g.moveHistory.filter((m: any) => m.halftimeUp)).toEqual([award]);
+      expect(unitPoints(g.config, g.moveHistory, 'white')).toBe(10 + 57 * phase);
+      expect(unitPoints(g.config, g.moveHistory, 'black')).toBe(10 + 19 * phase);
+      expect(g.phaseBank[String(phase)]).toBeUndefined();
+    }
+  });
+
+  it('refuses unaffordable UP crossings for either side even with plenty of regular points', async () => {
+    const g = (service as any).game;
+    for (const color of ['white', 'black']) {
+      g.turnNumber = color === 'white' ? 15 : 16;
+      g.currentTurn = color === 'white' ? 'Solo' : LOCAL_OPPONENT;
+      g.moveHistory = []; g.config.rules.upAtStart = 7;
+      const unit = fullUnit('pawn', color, `${color}-pool`);
+      replies.length = 0;
+      service.send({ type: 'panel_move', from: 'base', to: 'reserve', panel: color === 'white' ? 'bl' : 'tr',
+        cost: 1, price: 1, unit }); await flush();
+      expect(last('invalid_move').message).toBe('Not enough UP for the crossing');
+      expect(g.moveHistory).toEqual([]);
+      g.config.rules.upAtStart = 8;
+      service.send({ type: 'panel_move', from: 'base', to: 'reserve', panel: color === 'white' ? 'bl' : 'tr',
+        cost: 1, price: 1, unit }); await flush();
+      expect(unitPoints(g.config, g.moveHistory, color as 'white' | 'black')).toBe(0);
+      expect(g.moveHistory[0].price).toBe(8);
+    }
+  });
 
   it('starts a game with both setups placed and white to move', () => {
     const started = last('game_started');
@@ -604,7 +651,7 @@ describe('LocalGameService', () => {
       position('pawn', victim);
       service.send({ type: 'make_move', from: '0,0', to: '0,0', attack: '1,0', bonuses: { targetAtk: 30 } });
       await flush();
-      expect(last('move_made').move.counter_damage).withContext(victim).toBe(0);
+      expect(last('move_made').move.counter_damage).withContext(victim).toBe(victim === 'shieldman' ? 22 : 0);
     }
     for (const distance of [1, 2]) {
       position('bishop', 'rook', distance); g.boardState[`${distance},0`].color = 'white';
@@ -613,6 +660,61 @@ describe('LocalGameService', () => {
       if (distance === 1) expect(last('move_made').move.healed_amount).toBe(8);
       else expect(last('invalid_move')).toBeDefined();
     }
+  });
+
+  it('commits a Warcry shieldman attack and enforces movement drains', async () => {
+    const g = (service as any).game;
+    g.turnNumber = 9; g.currentTurn = 'Solo'; g.moveHistory = [];
+    g.boardState = {
+      '0,0': fullUnit('shieldman', 'white', 's'),
+      '1,0': { ...fullUnit('pawn', 'black', 'p'), hp: 100, max_hp: 100 },
+      '-8,0': fullUnit('king', 'white', 'wk'), '8,0': fullUnit('king', 'black', 'bk'),
+    };
+    service.send({ type: 'make_move', from: '0,0', to: '0,0', attack: '1,0', bonuses: { atk: 8 } });
+    await flush();
+    expect(last('move_made').move.damage_dealt).toBe(1);
+    expect(last('move_made').boardState['0,0'].hp).toBe(29);
+    g.turnNumber = 11; g.currentTurn = 'Solo'; g.moveHistory = [];
+    g.boardState = { '0,0': fullUnit('pawn', 'white', 'p'), '-8,0': fullUnit('king', 'white', 'wk'), '8,0': fullUnit('king', 'black', 'bk') };
+    replies.length = 0;
+    service.send({ type: 'make_move', from: '0,0', to: '5,0', moveBonus: -2 });
+    await flush();
+    expect(last('invalid_move')).toBeDefined();
+    expect(g.boardState['0,0'].uid).toBe('p');
+    service.send({ type: 'make_move', from: '0,0', to: '4,0', moveBonus: -2 });
+    await flush();
+    expect(last('move_made').boardState['4,0'].uid).toBe('p');
+  });
+
+  it('persists and broadcasts the Phase 3 full heal once, including reserve HP records', async () => {
+    const g = (service as any).game;
+    const reserve = { ...fullUnit('pawn', 'white', 'reserve'), hp: 1 };
+    g.boardState = { '0,0': { ...fullUnit('king', 'white', 'W'), hp: 1 },
+      '1,0': { ...fullUnit('king', 'black', 'B'), hp: 2 },
+      '2,0': { ...fullUnit('pawn', 'white', 'late'), hp: 3 } };
+    g.moveHistory = [{ turn: 8, from: '-12,1', to: '2,0', entered: true, unit: fullUnit('pawn', 'white', 'late') },
+      { turn: 60, from: '', to: '', intoPanel: true, panelEffect: true,
+        unit: reserve, panel: 'br', attackedHex: '11,1', defenderHp: 1 }];
+    g.turnNumber = 70; g.currentTurn = g.playerBlack; g.phaseBank = {};
+    service.send({ type: 'pass_turn' }); await flush();
+    const passed = last('turn_passed');
+    expect(passed.turnNumber).toBe(71);
+    expect(passed.boardState['0,0'].hp).toBe(hpOf('king'));
+    expect(passed.boardState['1,0'].hp).toBe(hpOf('king'));
+    expect(passed.boardState['2,0'].hp).toBe(3);
+    expect(passed.effects.length).toBe(1);
+    expect(passed.effects[0].unit.uid).toBe('reserve');
+    expect(passed.effects[0].defenderHp).toBe(hpOf('pawn'));
+    const restored = new LocalGameService(TestBed.inject(ConfigService));
+    const messages: any[] = []; restored.messages$.subscribe(m => messages.push(m));
+    restored.send({ type: 'request_game_state' }); await flush();
+    const state = messages.find(m => m.type === 'game_state_update');
+    expect(state.boardState['0,0'].hp).toBe(hpOf('king'));
+    expect(state.moveHistory[state.moveHistory.length - 1]).toEqual(passed.effects[0]);
+    g.boardState['0,0'].hp = 7;
+    service.send({ type: 'pass_turn' }); await flush();
+    expect(last('turn_passed').boardState['0,0'].hp).toBe(7);
+    expect(last('turn_passed').effects).toBeUndefined();
   });
 
   describe('normal unit healing', () => {
@@ -671,7 +773,28 @@ describe('LocalGameService', () => {
       expect(last('move_made').boardState['0,1'].hp).toBe(hpOf('pawn'));
     });
 
-    it('refuses invalid targets, combined actions, enemy strikes and setup heals atomically', async () => {
+    it('commits and reloads normal healing for both players in every postmatch', async () => {
+      for (const ply of [27, 28, 49, 50, 71, 72]) {
+        const g = position(ply);
+        const color = ply % 2 ? 'white' : 'black';
+        g.currentTurn = color === 'white' ? 'Solo' : LOCAL_OPPONENT;
+        g.endReason = ''; g.moveHistory = [];
+        g.boardState['0,0'].color = color;
+        g.boardState['3,0'].color = color;
+        service.send({ type: 'make_move', from: '0,0', to: '1,0', heal: '3,0' });
+        await flush();
+        const made = last('move_made');
+        expect(made.turnNumber).withContext(`ply ${ply}`).toBe(ply + 1);
+        expect(made.boardState['3,0'].hp).toBe(14);
+        expect(made.move.attacked).toBeFalse();
+        const fresh = new LocalGameService((service as any).configService);
+        const seen: any[] = []; fresh.messages$.subscribe(m => seen.push(m));
+        fresh.send({ type: 'request_game_state' }); await flush();
+        expect(seen.find(m => m.type === 'game_state_update').boardState['3,0'].hp).toBe(14);
+      }
+    });
+
+    it('refuses invalid targets, combined actions, enemy strikes and opening heals atomically', async () => {
       const g = position(); const original = JSON.stringify(g.boardState);
       const bad: any[] = [
         { heal: '0,0' }, { heal: '0,1' }, { heal: '6,0' }, { heal: '-6,0' }, { heal: '2,0' },
@@ -687,7 +810,7 @@ describe('LocalGameService', () => {
         expect(g.turnNumber).toBe(7);
         expect(g.moveHistory.length).toBe(0);
       }
-      for (const ply of [1, 27, 49, 71]) {
+      for (const ply of [1, 2, 5, 6]) {
         g.turnNumber = ply;
         service.send({ type: 'make_move', from: '0,0', to: '1,0', heal: '3,0' }); await flush();
         expect(JSON.stringify(g.boardState)).toBe(original);
@@ -1361,11 +1484,64 @@ describe('LocalGameService', () => {
       expect(g.seen.find(m => m.type === 'move_made')).toBeDefined();
     });
 
-    it('fires no ability on a turn given to setting out', async () => {
-      // The one ability rule the engine can keep with the abilities unsettled:
-      // it need not know what a cast is worth to know none should have come.
-      // Ply 27, Phase 1's postmatch.
-      const g = at(27, { ...kings, ...walker('-5,9') });
+    it('commits postmatch HP casts on passes and moves, including a Dash-length walk', async () => {
+      for (const ply of [27, 28, 49, 50, 71, 72]) {
+        const color = ply % 2 ? 'white' : 'black';
+        const board = { ...kings, '-5,5': { ...fullUnit('pawn', color, 'actor'), hp: 4 } };
+        const cast = [{ uid: 'actor', at: '-5,5', hp: 8 }];
+        for (const type of ['pass_turn', 'make_move']) {
+          const g = at(ply, structuredClone(board));
+          g.engine.send({ type, effectsBefore: cast,
+            ...(type === 'make_move' ? { from: '-5,5', to: '-5,-2', moveBonus: 4, bonuses: { atk: 8 } } : {}),
+          });
+          await flush();
+          expect(g.refusal()).withContext(`${ply}: ${type}`).toBeUndefined();
+          const made = g.seen.find(m => m.type === (type === 'make_move' ? 'move_made' : 'turn_passed'));
+          expect(made.boardState[type === 'make_move' ? '-5,-2' : '-5,5'].hp).toBe(8);
+          expect(made.turnNumber).toBe(ply + 1);
+          const fresh = new LocalGameService((service as any).configService);
+          const restored: any[] = []; fresh.messages$.subscribe(m => restored.push(m));
+          fresh.send({ type: 'request_game_state' }); await flush();
+          expect(restored.find(m => m.type === 'game_state_update').boardState).toEqual(made.boardState);
+        }
+      }
+    });
+
+    it('refuses boosted normal attacks and enemy landings in both halves of every postmatch', async () => {
+      for (const ply of [27, 28, 49, 50, 71, 72]) {
+        const color = ply % 2 ? 'white' : 'black';
+        const board = { ...kings,
+          '-5,5': fullUnit('pawn', color, 'actor'),
+          '-4,5': fullUnit('pawn', color === 'white' ? 'black' : 'white', 'enemy'),
+        };
+        for (const action of [{ to: '-5,5', attack: '-4,5' }, { to: '-4,5' }]) {
+          const g = at(ply, structuredClone(board));
+          const before = structuredClone((g.engine as any).game.boardState);
+          g.engine.send({ type: 'make_move', from: '-5,5', bonuses: { atk: 8 }, ...action });
+          await flush();
+          expect(g.refusal()).toBeDefined();
+          expect(g.seen.find(m => m.type === 'move_made')).toBeUndefined();
+          expect((g.engine as any).game.boardState).toEqual(before);
+        }
+      }
+    });
+
+    it('lets a Phase 3 postmatch cast kill a king before points or overtime can settle the match', async () => {
+      for (const ply of [71, 72]) {
+        const victim = ply % 2 ? '1,0' : '0,0';
+        const g = at(ply, structuredClone(kings));
+        (g.engine as any).game.phaseBank = { 1: { white: 0, black: 100 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+        g.engine.send({ type: 'pass_turn', effectsBefore: [{ at: victim, uid: kings[victim as keyof typeof kings].uid, hp: 0 }] });
+        await flush();
+        expect(g.seen.find(m => m.type === 'game_over')).toEqual(jasmine.objectContaining({
+          winner: ply % 2 ? 'Solo' : LOCAL_OPPONENT, endReason: 'regicide',
+        }));
+      }
+    });
+
+    it('fires no ability during the opening', async () => {
+      // The opening refuses casts arriving with either a move or a pass.
+      const g = at(1, { ...kings, ...walker('-5,9') });
       g.engine.send({
         type: 'make_move', from: '-5,9', to: '-5,8',
         effectsBefore: [{ uid: 'w1', hp: 6, at: '-5,9' }],
@@ -1389,14 +1565,14 @@ describe('LocalGameService', () => {
       // `Number(x) || 0` was inert as a guard: nonsense came back NaN, which
       // is falsy, so it passed for "no ability"; a negative one is truthy, so
       // it refused a move no ability had touched.
-      const nonsense = at(27, { ...kings, ...walker('-5,9') });
+      const nonsense = at(1, { ...kings, ...walker('-5,9') });
       nonsense.engine.send({
         type: 'make_move', from: '-5,9', to: '-5,8', moveBonus: 'x' as any,
       });
       await flush();
       expect(nonsense.refusal()).toBe('No ability fires while a side is setting out');
 
-      const negative = at(27, { ...kings, ...walker('-5,9') });
+      const negative = at(1, { ...kings, ...walker('-5,9') });
       negative.engine.send({
         type: 'make_move', from: '-5,9', to: '-5,8', bonuses: { atk: -1 } as any,
       });
@@ -1622,10 +1798,7 @@ describe('LocalGameService', () => {
     });
 
     it('charges the wrap what the unit is worth, not what the message says', async () => {
-      // The price is a config lookup, so it needs no panel and no purse: a
-      // message claiming the crossing was a bargain is corrected. Whether the
-      // side could afford it is still the room's - a solo purse holds what
-      // abilities paid in and out as well.
+      // Config sets the price even when the message names a bargain.
       //
       // Past the setup turns first: the wrap is shut on every one of them, so
       // the crossing would be refused before its price was ever worked out.

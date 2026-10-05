@@ -1357,3 +1357,29 @@ def unit_veterancy(uid, at, history, ply, radius, orientation='edge-up'):
         if on_battlefield(q, r, radius) or panel_of(*axial_to_pixel(q, r, orientation)) not in BASE_PANELS:
             vet = min(3, vet + 1)
     return vet
+
+
+def promotion_heals(config, board_state, history, ply):
+    """One full heal for existing vet-3 field/reserve units at Phase 3 postmatch."""
+    boundary = (phase_start_turn(3) + PHASES[3]['turns'] - 1) * PLIES_PER_TURN + 1
+    if ply != boundary:
+        return []
+    radius = config.get('board', {}).get('radius', 11)
+    orientation = config.get('board', {}).get('orientation', 'edge-up')
+    for at, unit in board_state.items():
+        uid = unit.get('uid', f"{unit['color'][0]}{at}")
+        if unit.get('hp', 0) > 0 and unit_veterancy(uid, at, history, ply - 1, radius, orientation) == 3:
+            unit['hp'] = unit.get('max_hp', config.get('units', {}).get(unit['unit_id'], {}).get('hp', unit['hp']))
+    heals = []
+    for at, unit in panel_occupancy(config, radius, history, orientation, ply - 1).items():
+        full = unit.get('max_hp', unit['hp'])
+        if (unit['panel'] in BASE_PANELS or unit['vet'] != 3
+                or unit['hp'] <= 0 or unit['hp'] >= full):
+            continue
+        heals.append({
+            'from': '', 'to': '', 'unit_id': unit['unit_id'], 'color': unit['color'], 'turn': ply,
+            'captured': None, 'attacked': False, 'damage_dealt': 0, 'moved': False,
+            'defender_eliminated': False, 'intoPanel': True, 'panelEffect': True,
+            'promotionHeal': True, 'unit': dict(unit), 'defenderHp': full, 'panel': unit['panel'],
+        })
+    return heals

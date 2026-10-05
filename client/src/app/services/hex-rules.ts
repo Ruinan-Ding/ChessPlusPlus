@@ -212,9 +212,10 @@ export function computeAttackZone(
 }
 
 /** Whether a unit has an attack at this distance, counters included. */
-export function canAttack(unit: any, distance: number): boolean {
+export function canAttack(unit: any, distance: number, atkBonus = 0): boolean {
   const attack = unit?.attack ?? 1;
-  const armed = Array.isArray(attack) ? attack.some(value => value > 0) : attack > 0;
+  const armed = Array.isArray(attack)
+    ? attack.some(value => value + atkBonus > 0) : attack + atkBonus > 0;
   return armed && !unit?.heal?.length
     && distance >= (unit?.attackMinRange ?? 1) && distance <= (unit?.attackRange ?? 1);
 }
@@ -237,10 +238,7 @@ export function healingAmount(unitId: string, target: { unit_id: string; hp: num
   return Math.max(0, Math.min(amount, max - target.hp));
 }
 
-/**
- * Damage per ring for a unit, outermost ring last: [16] for a melee unit,
- * [26, 19] for one that reaches two rings. Drawn on the hex as "26,19".
- */
+/** Attack amounts from attackMinRange through attackRange, in ring order. */
 export function attackTiers(unitId: string, config: any): number[] {
   const unit = config?.units?.[unitId];
   if (!unit) return [];
@@ -438,9 +436,8 @@ export const MIN_STRIKE_DAMAGE = 1;
  * raw stat, because that is where the hex and the unit panel show it: a +2 on
  * a unit whose second ring reads 19 makes that ring 21, not 21 less falloff.
  *
- * An attack of nothing is still nothing: the floor lifts a blow that was
- * blunted, not one that was never thrown. Without that guard a unit with no
- * attack stat at all would chip away a point a turn.
+ * Effective ATK includes boosts: a unit with zero base ATK can strike while
+ * boosted. Zero effective ATK never receives the minimum-damage floor.
  *
  * Read off the config rather than a constant so the browser and the server
  * cannot drift - this is the same config object `rangedDamage` takes
@@ -451,10 +448,9 @@ export function strikeDamage(
   atkBonus = 0, defBonus = 0,
 ): number {
   const attacker = config?.units?.[attackerId] ?? {};
-  if (!canAttack(attacker, distance)) return 0;
+  if (!canAttack(attacker, distance, atkBonus)) return 0;
   const defender = config?.units?.[defenderId] ?? {};
   const base = rangedDamage(attacker.attack ?? 1, distance, config, attacker.attackMinRange ?? 1);
-  if (base <= 0) return 0;
   const attack = base + atkBonus;
   if (attack <= 0) return 0;
   // Never more than the attacker could deal unblunted. The floor lifts a hit

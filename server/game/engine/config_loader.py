@@ -61,7 +61,7 @@ DEFAULT_CONFIG: Dict[str, Any] = _read_default_config()
 #: still carrying cpPerPhase loads and ignores it.
 COUNTED_RULES = (
     'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart',
-    'cpPhaseOffset')
+    'cpPhaseOffset', 'upAtStart')
 
 
 def rule_of(config: Optional[Dict[str, Any]], key: str) -> Any:
@@ -162,6 +162,14 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
     Returns a list of error strings (empty = valid).
     """
     errors: List[str] = []
+
+    abilities = config.get('abilities')
+    catalogue = abilities.get('catalogue') if isinstance(abilities, dict) else None
+    if isinstance(catalogue, dict):
+        for ability_id, entry in catalogue.items():
+            if isinstance(entry, dict) and 'target' in entry:
+                if entry['target'] not in ('friendly', 'enemy', 'universal', 'all-enemies'):
+                    errors.append(f"abilities.catalogue.{ability_id}.target is invalid")
 
     if 'version' not in config:
         errors.append("Missing 'version'")

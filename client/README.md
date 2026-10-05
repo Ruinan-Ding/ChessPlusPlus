@@ -1,59 +1,49 @@
 # Client
 
-This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 19.2.4.
+Angular 19 frontend. Run commands from `client/`; the Angular CLI is a local dependency,
+so use `npx ng` or the npm scripts. Install with `npm install` (CI uses `npm ci`).
 
-## Development server
-
-To start a local development server, run:
-
-```bash
-ng serve
-```
-
-Once the server is running, open your browser and navigate to `http://localhost:4200/`. The application will automatically reload whenever you modify any of the source files.
-
-## Code scaffolding
-
-Angular CLI includes powerful code scaffolding tools. To generate a new component, run:
+## Run and build
 
 ```bash
-ng generate component component-name
+npx ng serve
+npx ng build
 ```
 
-For a complete list of available schematics (such as `components`, `directives`, or `pipes`), run:
+Development serves at http://localhost:4200. The production build goes to
+`dist/client/browser/`. See the [root README](../README.md) for the backend and `start.sh`.
+Under this repo's WSL environment, Node dependencies are Windows installs; invoke commands
+through `cmd.exe /c "npx ng serve"` or `cmd.exe /c "npx ng build"`.
+
+## Checks
 
 ```bash
-ng generate --help
+npx ng test --watch=false --browsers=ChromeHeadless
+npx tsc --noEmit -p tsconfig.app.json
 ```
 
-## Building
-
-To build the project run:
+On the current WSL/Windows setup, the client suite uses the installed Chrome:
 
 ```bash
-ng build
+cmd.exe /c "set CHROME_BIN=C:\Program Files\Google\Chrome\Application\chrome.exe&& npx ng test --watch=false --browsers=ChromeHeadless"
 ```
 
-This will compile your project and store the build artifacts in the `dist/` directory. By default, the production build optimizes your application for performance and speed.
+After template or stylesheet changes, run the existing layout sweep against a development
+server on a spare port, as described in [AGENTS.md](../AGENTS.md). The project has no Angular
+CLI `e2e` target. Live WebSocket checks are in `server/scripts/e2e/`; browser layout checks
+are in `scripts/layout-sweep.mjs`.
 
-## Running unit tests
+## Rules and state
 
-To execute unit tests with the [Karma](https://karma-runner.github.io) test runner, use the following command:
+Both engines load [the shared default config](../shared/default-config.json). The client
+normalizes and validates it in `src/app/services/config.service.ts`; change the schema and
+both validators together when a config field changes.
 
-```bash
-ng test
-```
-
-## Running end-to-end tests
-
-For end-to-end (e2e) testing, run:
-
-```bash
-ng e2e
-```
-
-Angular CLI does not come with an end-to-end testing framework by default. You can choose one that suits your needs.
-
-## Additional Resources
-
-For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+`PieceData` and `BoardState` are shared from `game-state.service.ts`. Selected units carry
+numeric attack tiers until display formatting. `ability-rules.ts` contains the existing pure
+solo effect and cooldown calculations; the room owns targeting, staging and persistence.
+The first four pairs use the specified shared catalogue. `history-rules.ts` also applies
+the Phase 3 veteran full heal; the board announces full turns and schedule milestones.
+Online abilities remain deferred. The [handoff](../CODEX_HANDOFF.md) records current branch,
+verification and outstanding work; [AGENTS.md](../AGENTS.md) is the workflow and game-rule
+source of truth.

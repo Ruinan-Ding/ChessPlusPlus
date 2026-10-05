@@ -20,7 +20,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
-from typing import Optional, Any, Dict, NamedTuple, cast, Union
+from typing import Optional, Any, Dict, List, NamedTuple, cast, Union
 from .models import (
     GameRoom,
     GameChallenge,
@@ -58,7 +58,7 @@ from .engine.phases import (
     board_moves_per_turn, is_entry_open,
     is_homecoming_open, is_initialization, is_setup_turn, no_attack_message,
 )
-from .engine.scoring import bank_ended_phases, schedule_ending
+from .engine.scoring import bank_ended_phases, halftime_up_awards, schedule_ending
 
 logger = logging.getLogger('game')
 
@@ -123,6 +123,8 @@ class HandOver(NamedTuple):
     winner: str
     #: '' while the match goes on.
     end_reason: str
+    #: Panel healing records generated at the next stage's boundary.
+    effects: List[Dict[str, Any]]
 
 
 def _settle_hand_over(state, board, history, beaten) -> HandOver:
@@ -171,6 +173,9 @@ def _settle_hand_over(state, board, history, beaten) -> HandOver:
     for at, unit in board_state.items():
         unit['vet'] = panels.unit_veterancy(
             unit.get('uid', f"{unit['color'][0]}{at}"), at, history, next_ply, radius, orientation)
+    effects = panels.promotion_heals(config, board_state, history, next_ply)
+    effects.extend(halftime_up_awards(config, board_state, history, next_ply))
+    history.extend(effects)
     bank = bank_ended_phases(state.phase_bank, config, board_state, history, next_ply)
     if not end_reason:
         ending = schedule_ending(bank, next_ply)
@@ -181,7 +186,7 @@ def _settle_hand_over(state, board, history, beaten) -> HandOver:
     max_turns = config.get('rules', {}).get('maxTurns', 0)
     if not end_reason and max_turns > 0 and state.turn_number >= max_turns:
         end_reason = 'draw_max_turns'
-    return HandOver(board_state, bank, winner, end_reason)
+    return HandOver(board_state, bank, winner, end_reason, effects)
 
 
 def _settle_pass(state) -> HandOver:
@@ -1689,7 +1694,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                         board_state=settled.board_state,
                         current_turn=next_player if not settled.end_reason else state.current_turn,
                         turn_number=state.turn_number + 1,
-                        move_history=list(state.move_history),
+                        move_history=[*state.move_history, *settled.effects],
                         winner=settled.winner,
                         end_reason=settled.end_reason,
                         expected_turn_number=state.turn_number,
@@ -1711,6 +1716,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'turnStartedAt': turn_started_dt.isoformat(),
                     'timedOut': True,
                     'phaseBank': settled.phase_bank,
+                    **({'effects': settled.effects} if settled.effects else {}),
                     'revision': state.revision + 1,
                 })
                 if settled.end_reason:
@@ -2064,7 +2070,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             # handing it to a single postmatch turn would stop a unit that had
             # moved in some earlier turn of a phase it has nothing to do with.
             if is_setup_turn(state.turn_number):
-                if data.get('attack') or data.get('heal'):
+                if data.get('attack') or (data.get('heal') and is_initialization(state.turn_number)):
                     await send_error(
                         self, 'INVALID_MOVE', no_attack_message(state.turn_number))
                     return
@@ -2390,6 +2396,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'turnNumber': next_turn_number,
             'turnStartedAt': turn_started_dt.isoformat(),
             'phaseBank': bank,
+            **({'effects': settled.effects} if settled.effects else {}),
             'revision': state.revision + 1,
         })
 
@@ -2729,9 +2736,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'INVALID_MOVE', 'That unit is not yours')
                 return
 
-            points = economy.points_of(my_color, ply, history, config, state.phase_bank)
+            unit_points = economy.unit_points_of(my_color, history, config)
             targets = panels.panel_move_targets(
-                config, radius, history, dict(state.board_state), from_key, ply, points,
+                config, radius, history, dict(state.board_state), from_key, ply, unit_points,
                 orientation)
             step = targets.get(to_key)
             if not step:
@@ -2815,7 +2822,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 board_state=board_state,
                 current_turn=next_player if not end_reason else state.current_turn,
                 turn_number=next_turn_number,
-                move_history=list(state.move_history),
+                move_history=[*state.move_history, *settled.effects],
                 winner=winner,
                 end_reason=end_reason,
                 expected_turn_number=state.turn_number,
@@ -2838,6 +2845,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'turnNumber': next_turn_number,
                 'turnStartedAt': turn_started_dt.isoformat(),
                 'phaseBank': bank,
+                **({'effects': settled.effects} if settled.effects else {}),
                 'revision': state.revision + 1,
             })
 

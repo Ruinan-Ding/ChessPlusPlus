@@ -26,7 +26,7 @@ export const DEFAULT_GAME_CONFIG = SHIPPED_CONFIG;
  * way, when CP became something a phase's play earns.
  */
 export const COUNTED_RULES = [
-  'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart', 'cpPhaseOffset',
+  'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart', 'cpPhaseOffset', 'upAtStart',
 ] as const;
 export type CountedRule = typeof COUNTED_RULES[number];
 
@@ -82,6 +82,7 @@ const IGNORED_BY: Record<string, string[]> = {
   friendly: ['damage', 'points'],
   enemy: ['heal', 'points'],
   universal: ['mov', 'atk', 'def', 'damage', 'heal', 'turns'],
+  'all-enemies': ['damage', 'heal', 'points'],
 };
 
 const KIND_NAME: Record<string, string> = {
@@ -89,11 +90,12 @@ const KIND_NAME: Record<string, string> = {
   friendly: 'a friendly ability',
   enemy: 'an enemy ability',
   universal: 'a universal ability',
+  'all-enemies': 'an army debuff',
 };
 
 /**
  * The numbers in the ability catalogue, and the shape the panels rely on.
- * Only the client reads abilities, so only the client checks them.
+ * The client checks the full catalogue; the server also validates present target kinds.
  */
 function abilityNumberErrors(abilities: any): string[] {
   const errors: string[] = [];
@@ -123,8 +125,8 @@ function abilityNumberErrors(abilities: any): string[] {
     for (const key of Object.keys(a)) {
       if (!ABILITY_FIELDS.has(key)) errors.push(`${at} has unknown field "${key}"`);
     }
-    if (!['friendly', 'enemy', 'universal'].includes(a.target)) {
-      errors.push(`${at}.target must be friendly, enemy or universal`);
+    if (!['friendly', 'enemy', 'universal', 'all-enemies'].includes(a.target)) {
+      errors.push(`${at}.target must be friendly, enemy, universal or all-enemies`);
     }
     for (const [field, least] of ABILITY_NUMBERS) {
       const v = a[field];
@@ -138,7 +140,7 @@ function abilityNumberErrors(abilities: any): string[] {
         errors.push(`${at}.${field} does nothing on ${KIND_NAME[kind]}`);
       }
     }
-    if (a.turns !== undefined && (kind === 'friendly' || kind === 'enemy')
+    if (a.turns !== undefined && ['friendly', 'enemy', 'all-enemies'].includes(kind)
         && !(a.mov || a.atk || a.def)) {
       errors.push(`${at}.turns does nothing on an ability that changes no stat`);
     }

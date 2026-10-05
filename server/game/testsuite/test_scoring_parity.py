@@ -16,7 +16,7 @@ import os
 
 from django.test import SimpleTestCase
 
-from game.engine import phases, scoring
+from game.engine import economy, phases, scoring
 
 FIXTURES = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), '..', '..', '..',
@@ -55,6 +55,10 @@ class ScoringParityTestCase(SimpleTestCase):
             radius = config['board']['radius']
             ending = scoring.schedule_ending(bank, ply)
             with self.subTest(case=i):
+                self.assertEqual([economy.unit_points_of(side, history, config)
+                                  for side in ('white', 'black')], expect['up'])
+                self.assertEqual(scoring.halftime_up_awards(config, board, history, ply),
+                                 expect['halftimeUp'])
                 self.assertEqual(dict(scoring.capture_claims(board, radius, config)), expect['claims'])
                 self.assertEqual(
                     [scoring.cap_of(board, radius, side, config) for side in ('white', 'black')],

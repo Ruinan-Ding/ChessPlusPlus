@@ -1,40 +1,94 @@
-# Handoff: ChessPlusPlus, 2 Oct 2026
+# Handoff: ChessPlusPlus, 4 Oct 2026
 
-Written by Claude Code for the next agent, whichever it is (Codex works in this repo too).
+Updated by Codex from Claude Code's 2 Oct handoff, for the next agent.
 **AGENTS.md is the source of truth** for how this repo works: architecture, the rules the owner
 has decided, and why. Read it first. This note covers only what AGENTS.md does not: where the
 work stands, how this owner likes to work, the machine, and what is open.
 
-It replaces the note of 23 Sep 2026, a snapshot of `feature/dev18` that had gone out of date.
-That one is in the history: `git show 4d5e99f:CODEX_HANDOFF.md`.
+This replaces the 2 Oct snapshot of `main`. That note is in the history:
+`git show 7658bb3:CODEX_HANDOFF.md`. The older dev18 note is at `4d5e99f`.
 
 ## Where things stand
 
 - **Repo:** https://github.com/Ruinan-Ding/ChessPlusPlus. It is a hex-grid tactics game: a Django
   Channels server in `server/`, an Angular 19 client in `client/`, and the shared config schema in
   `shared/`.
-- **Branch:** `main` is at `de6cb84`. It is pushed, CI is green and nothing is uncommitted.
-  - Every feature branch up to `feature/dev21` is merged, except `feature/dev9`.
-  - `feature/dev9` and `copilot/analyze-game-room-code` were never merged. Leave them alone.
-  - Start new work on a new branch off `main` (`feature/dev22`).
-  - dev19, dev20 and dev21 were merged locally with `--no-ff`, each as a
-    `Merge feature/devN: ...` commit. They did not go through pull requests.
-- **Tests at `de6cb84`:**
-  - 329 server tests and 601 client specs pass.
-  - The production build and `makemigrations --check` are clean.
-  - Live on 2 Oct, against a running server: `match.py` 22/22, `edges.py` 12/12 and
-    `endings.py` 30/30. `panels.py` was not run.
-- **Migrations run to 0012.** The owner's own `server/db.sqlite3` was at 0008 on 2 Oct. They have
-  been told to run `migrate`. Don't run it on their database unasked.
+- **Current branch:** `feature/dev22`, tracking `origin/feature/dev22`.
+  - The prior pushed checkpoint is `4e8413e`. Its [CI run](https://github.com/Ruinan-Ding/ChessPlusPlus/actions/runs/37187378017)
+    passed; the result and commit were rechecked through GitHub's public API on 4 Oct.
+  - The dev22 follow-up recorded with this handoff contains the pre-ability cleanups and
+    test audit, first four ability pairs, Phase 3 full heal, turn swooshes, postmatch
+    permissions, separate UP, review fixes and documentation (PUNCHLIST 6.69, 6.71-6.78).
+    The owner requested committing and pushing this completed work on 4 Oct. Read the
+    branch tip and its CI run for the latest release status; the CI link above is the
+    earlier checkpoint, not the follow-up.
+  - Local `main` and its tracking ref are at `7658bb3` (the 2 Oct handoff). dev22 is not merged.
+  - Every feature branch through dev21 is merged except dev9. Leave dev9 and
+    `copilot/analyze-game-room-code` alone. dev19-dev21 used local `--no-ff` merges.
+- **Verification, with the scopes kept separate:**
+  - Pushed `4e8413e`: 348 server tests, 630 client specs, the production build and the CI
+    migrations check pass. The last complete layout sweep passed all 351 checks.
+  - Current refactor: 635 client specs, application TypeScript checking and the production
+    build pass. Thirty-four real-browser checks cover desktop, tablet and phone: all eight
+    roster profiles, friendly casting before bishop healing, Undo, older saved effects and
+    cooldowns, and veteran withdrawals through commit and reload. Twelve distinct deliberate
+    stubs were caught and restored. No template, stylesheet, backend or config changed, so
+    the full layout sweep and server suite were not rerun for this refactor.
+  - Subsequent comment cleanup: 85 net source lines removed, including repetitive explanations,
+    an unused type export and a redundant assertion. Application and spec TypeScript checks
+    pass; the four cleaned files produce the same executable JavaScript tokens.
+  - Subsequent test audit: two room regression specs cover real storage restore and turn
+    messages for mixed-caster effects, legacy caster fallback, unit cooldowns and a Black
+    seat's slot cooldowns. All 637 client specs pass. Four additional deliberate regression
+    stubs were caught; runtime source was restored byte-for-byte. This follow-up changes
+    tests and documentation only.
+  - First-pool/promotion/announcement work: 649 client specs, 350 server tests and the
+    production build pass. All 351 layout checks pass. Forty-two real-browser checks at
+    desktop, tablet and phone sizes cover all eight ability controls, army debuff scope,
+    reload/Undo, Phase 3 healing and upright full-turn/stage announcements for both seats.
+    Twelve deliberate regressions (nine client, three server) were caught and source restored
+    byte-for-byte, recorded with PUNCHLIST 6.72-6.74.
+  - Postmatch follow-up: 655 client specs, 351 server tests, the production build and
+    migration check pass. Six new client regressions and one live WebSocket consumer test
+    cover both sides of every postmatch, healing, casts on moves and passes, boosted walks,
+    attack rejection and Phase 3 king kills. Forty-eight real-browser checks pass across
+    desktop, tablet and phone, including all eight casts, commit/reload, normal healing
+    and Undo in all six postmatch halves, and Phase 3 regicide for both seats. Five deliberate
+    regressions (four client, one server) were caught and source restored byte-for-byte.
+    No template or stylesheet changed; the earlier 351-check layout sweep remains applicable.
+  - UP/swoosh follow-up: 663 client specs, 353 server tests, a clean production build and
+    migration check pass. Shared config validation includes `upAtStart`; all 372 scoring
+    parity cases include UP and halftime snapshots. Sixty-one real Chrome checks pass:
+    54 economy/announcement cases across desktop, tablet and phone, six four-digit wallet
+    fit checks, and a real mouse selection through the centred notice. The full layout
+    sweep passes all 351 checks. Twelve deliberate regressions (seven client unit, three
+    server and two browser checks) were caught; source was restored byte-for-byte.
+    A browser-discovered double crossing charge at handover is fixed and covered by a spec.
+  - Latest review fixes: all 666 client specs and the clean production build pass.
+    Thirty-seven real Chrome checks cover reserve Sap/Weakening (including combined
+    effects), forecast/staging/Undo/commit/reload, advancing UP snapshots in memory and
+    after reload, and first-turn restore/full-turn announcements for both seats at desktop,
+    tablet and phone sizes. The full layout sweep passes all 351 checks. Six unit-level
+    deliberate regressions and one compiled input-binding regression were caught; source
+    and the development bundle were restored byte-for-byte. Browser runs used a static
+    development build after the spare Vite server crashed on Chrome connection resets.
+    Server code and config are unchanged; the earlier 353-server-test result still applies.
+  - Last complete live script run, 2 Oct: `match.py` 22/22, `edges.py` 12/12 and
+    `endings.py` 30/30. dev22 also has targeted socket checks recorded in PUNCHLIST 6.66.
+    Do not describe those as a new complete e2e script run.
+- **Migrations run to 0012.** The owner's database was last checked at 0008 on 2 Oct;
+  its current migration state has not been rechecked. Don't migrate it unasked.
 
-### What landed since the last note
+### Recent revisions
 
-| Merge | Date | What | Written up in |
+| Revision | Date | What | Written up in |
 |---|---|---|---|
 | `84faa6f` (PR #19, dev18) | 26 Sep | The postmatch, and the points, CP and ending rules | PUNCHLIST 6.24-6.38 |
 | `75a46a1` (dev19) | 30 Sep | The room laid out for every screen: desktop, landscape tablet, phone, touch | PUNCHLIST 6.39-6.55 |
-| `7409799` (dev20) | 1 Oct | Networking that recovers, and names that hold | AGENTS.md only, with no PUNCHLIST row |
+| `7409799` (dev20) | 1 Oct | Networking that recovers, and names that hold | AGENTS.md, historical PUNCHLIST 6.70 |
 | `de6cb84` (dev21) | 2 Oct | Tripcodes, and names held to letters and numbers | PUNCHLIST 6.56, AGENTS.md |
+| `4e8413e` (dev22, pushed) | 4 Oct | Unit panel, roster, healing, phase veterancy, capture permissions and layer scoring; two review fixes | PUNCHLIST 6.57-6.68, AGENTS.md |
+| Dev22 follow-up (this handoff) | 4 Oct | Shared types/calculations, regression coverage, the first four ability pairs, Phase 3 veteran healing, turn announcements, postmatch permissions, UP and review fixes | PUNCHLIST 6.69, 6.71-6.78 |
 
 **dev20 in short.** AGENTS.md has the detail and the reasons.
 
@@ -73,6 +127,65 @@ That one is in the history: `git show 4d5e99f:CODEX_HANDOFF.md`.
 - **Who wrote it.** This code was found uncommitted in the tree on 2 Oct, the work of another
   session. Claude Code reviewed it, ran everything above, wrote the docs and committed it.
 
+### Current role and next work
+
+The owner has supplied the unit stats and capture rules; they are implemented in the shared
+config and both engines. The four requested cleanups are complete in the dev22 follow-up:
+`PieceData`/`BoardState` are shared from `game-state.service.ts`, `SelectedUnit.atk` stays numeric,
+and `ability-rules.ts` owns existing solo stacking, expiry and cooldown calculations. The room
+still owns targeting, staging, animation and persistence. Older saves keep their effect shape
+and caster fallback. These cleanups add no new abilities or gameplay rules.
+
+The first four pairs now use the owner's rules: Warcry/Sap, Bulwark/Weakening, Dash/Mire,
+Mend/Strike. Their amounts, points, cooldowns, scopes and fixed recipient rules are in
+AGENTS.md. Stat changes last until the caster's next turn; HP changes are immediate.
+Warcry arms zero-base attackers, while configured healers keep their normal healing action.
+Older saved rooms keep their catalogues; `legacy-abilities.fixture.json` is test-only.
+New games use the specified pool. Path and unit abilities remain to be specified.
+
+Phase 3 postmatch heals living battlefield/reserve units already at vet 3 before its award;
+a unit newly promoted to three stars keeps its HP. Both engines persist the heal, including
+canonical panel HP records. The board briefly announces each full turn, with larger stage
+names at schedule changes.
+
+**Postmatch permission confirmed:** the owner answered *"abilities and anything can be used
+but units cant attack"*. Every numbered phase's postmatch now permits all ability categories
+and normal bishop healing; ordinary attacks, panel blows and enemy landings remain blocked.
+Initialization still forbids casts and normal healing. Existing movement allowances, prices,
+cooldowns and target rules apply, and online casts remain deferred under 6.15. An ability
+killing a king settles regicide before points or overtime. See PUNCHLIST 6.75.
+
+**Latest economy revision:** each side starts at 10 UP (`rules.upAtStart`). Unit worth,
+battlefield attack/counter kill rewards, homecoming refunds and base-to-reserve wrap prices
+use UP; regular ability points retain scheduled income, phase grants and overtime conversion.
+Halftime turns 9, 20 and 31 add each side's own current phase VP once, as a persisted
+`halftimeUp` history event. Both engines use the existing hand-over/effects path, so there is
+no database migration. Past halftimes in older saves have no snapshot to recover; awards
+are recorded at future eligible boundaries, never inferred from a later board. The idle CP button also displays UP. Staged transactions reconcile
+against the committed history and Undo reverses their UP.
+
+**Latest announcement revision:** 600 ms right-to-left slide, brief centre pause, a 160 ms
+volume/mute-aware swoosh, and no pointer blocking. Reduced motion disables the slide.
+The clock clarification is still pending: the owner said the announcement should not count
+against the timer; the outstanding question asks whether to exclude those 600 ms while
+units remain playable or let the independent clock keep counting. Do not infer an answer;
+no deadline/timer change has been made yet. See 6.76-6.77 for the completed verification.
+
+**Latest review resolved (6.78):** reserve defenders' supplied UIDs now resolve Sap and
+Weakening in staged combat and committed local-engine bonuses. Advancing snapshots discard
+expired staging before UP reconciliation; solo UI saves record their ply so valid same-turn
+reloads and Undo still work. Older UI saves without a ply discard their uncommitted preview,
+retaining committed history and saved ability state. Initialization announces only on a
+fresh `game_started` cue, including when the board first renders at ply 0 before a restored
+ply 1 arrives. Reloads stay quiet; later White full-turn transitions still announce.
+
+For the next ability set, ask for concrete effects, targets, ranges, costs, durations and
+limits in small themed batches before implementing missing behaviour. Keep the
+engine config-driven and update AGENTS.md when a rule is decided. Online ability execution
+remains deferred: the eventual engine must resolve a cast from its configured id and target,
+validate eligibility and costs, and write with the existing revision guard. A client's supplied
+stat bonuses or HP are not authoritative. Do not start that work from this handoff alone.
+
 ## How this owner works
 
 - **Commit, push and merge only when asked.** Put new work on a branch, not straight on `main`.
@@ -108,8 +221,8 @@ That one is in the history: `git show 4d5e99f:CODEX_HANDOFF.md`.
   - `.github/workflows/tests.yml` runs on every push and pull request, on Ubuntu: the server
     tests, the migration check, the client specs and the production build.
   - Specs must not depend on Windows fonts.
-  - `gh` is not on WSL's path. Windows has it (`cmd.exe /c "gh ..."`), but whether it is logged
-    in was never checked. The public API needs neither:
+  - `gh` is not on WSL's path. Windows has it (`cmd.exe /c "gh ..."`), but on 4 Oct it was
+    not authenticated. Read-only public status checks can use GitHub's API without a login:
     `curl -s "https://api.github.com/repos/Ruinan-Ding/ChessPlusPlus/actions/runs?branch=<b>&per_page=1"`.
 - **Line endings.**
   - Most source and doc files are CRLF, while `*.sh` is LF (set by `.gitattributes`), and
@@ -141,9 +254,10 @@ cd client && cmd.exe /c "npx ng build"   # must be clean, with no budget warning
 
 ## Open items
 
-**Nothing since 26 Sep has been seen by the owner.** PUNCHLIST 6.37-6.56 are all WRITTEN, not
-SEEN. None of it has been watched in a running game, and none of it has been tried on a real
-phone. Nothing moves to SEEN except by the owner saying so.
+**Owner acceptance and agent verification are separate.** Recent dev22 work in PUNCHLIST
+6.57-6.69 and 6.71-6.78 remain WRITTEN, not SEEN. Agents have driven running browsers with mouse and emulated
+touch, and the evidence is recorded there; that does not claim a physical-phone playtest or
+owner acceptance. Nothing moves to SEEN except by the owner saying so.
 
 **Deferred by the owner. Do not start these unasked:**
 
@@ -171,10 +285,16 @@ phone. Nothing moves to SEEN except by the owner saying so.
   remembered proof (DEPLOYMENT.md).
 - **There are no accounts.** A plain name is first-come, and the per-browser secret only guards
   rejoining a name you already hold (DEPLOYMENT.md, "Before you hand the link out").
-- **Fixed since the last note:** a late or reloaded client no longer scores a phase late. The
+- **Already fixed:** a late or reloaded client no longer scores a phase late. The
   engines bank each phase themselves (`phase_bank`, migration 0008).
 
-**Housekeeping:**
+**Documentation:**
 
-- The dev20 work has no PUNCHLIST row. Add one if the owner wants the record complete. Ask
-  first.
+- The missing dev20 record is now PUNCHLIST 6.70, dated as a historical entry with its original
+  merge evidence. The owner requested current metafiles, statuses and docs on 4 Oct.
+- README.md describes current play; client/README.md describes the installed client tooling.
+  CONFIG_BLUEPRINT.md remains the match-rule checklist, not a runtime config.
+- IMPLEMENTATION_KICKOFF.md and CORRECTNESS_REPORT.md are historical records. Keep their
+  historical findings and counts; follow AGENTS.md and this handoff for current work.
+- DEPLOYMENT.md is still an untested plan. No deployment, database migration, commit, push or
+  merge was performed by the documentation update.

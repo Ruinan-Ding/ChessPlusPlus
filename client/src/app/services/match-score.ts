@@ -1,6 +1,6 @@
 /**
  * The match's score, and how the schedule ends it. Mirrors
- * server/game/engine/scoring.py - keep the two in step.
+ * server/game/engine/scoring.py and economy.py - keep the engines in step.
  *
  * Three numbered phases each bank a score: what the capture hexes a side holds
  * are worth as the phase's play ends (`ZONE_WORTH`: 3, 2 or 1 a hex, by zone),
@@ -22,10 +22,11 @@
  * row, the browser engine on its game - and hand it out with every hand-over,
  * so the room shows the engine's bank rather than keeping one of its own.
  */
+import { ruleOf } from './config.service';
 import { BASE_PANELS, captureClaims, captureScore } from './hex-rules';
 import {
   OVERTIME_FIRST_PLY, OVERTIME_LAST_TURN, PHASES, SCORING_PHASES, handOversBy, isPostmatch,
-  phaseIndexAt, turnOf, turnPointsBy,
+  phaseIndexAt, phaseStartTurn, PLIES_PER_TURN, turnOf, turnPointsBy,
 } from './phases';
 
 export type Side = 'white' | 'black';
@@ -99,7 +100,7 @@ export function capOf(board: Record<string, any> | null | undefined, radius: num
  * does. A base never strikes back, so a blow into one only ever kills the unit
  * standing in it. Neither pays the killer any points (`points_of`).
  */
-export function deathsOf(config: any, history: any[] | null | undefined, color: Side, phase?: number): number {
+export function deathsOf(config: any, history: readonly any[] | null | undefined, color: Side, phase?: number): number {
   let total = 0;
   for (const move of history ?? []) {
     if (phase !== undefined && phaseIndexAt(move.turn) !== phase) continue;
@@ -214,17 +215,41 @@ export function vpAsPoints(bank: PhaseBank | null | undefined, side: Side, ply: 
   return SCORING_PHASES.reduce((sum, phase) => sum + (bank?.[phase]?.[side] ?? 0), 0);
 }
 
-/**
- * What the schedule has paid `side` in points by `ply`: every turn begun at
- * its rate, each phase's grant (`turnPointsBy`), and the banked victory
- * points once its first overtime turn begins (`vpAsPoints`). The purse is
- * this plus what the record adds and takes away. The room's live award is
- * this at a ply less this at the one before, and `pointsFromHistory` sums it
- * with the record - one sum, so the two cannot drift. Mirrors
- * `scheduled_points` in scoring.py.
- */
+/** Regular ability points from turn income, phase grants and overtime VP conversion. */
 export function scheduledPoints(bank: PhaseBank | null | undefined, side: Side, ply: number): number {
   return turnPointsBy(side, ply) + vpAsPoints(bank, side, ply);
+}
+
+/** UP is independent of ability points. All committed unit transactions live in history. */
+export function unitPoints(config: any, history: readonly any[], side: Side): number {
+  const other = side === 'white' ? 'black' : 'white';
+  let points = ruleOf(config, 'upAtStart');
+  for (const move of history ?? []) {
+    if (!move) continue;
+    if (move.halftimeUp) points += move.halftimeUp[side];
+    if (move.panelEffect || move.entered) continue;
+    if (move.panelMove) {
+      if (move.unit?.color === side) points -= Math.trunc(Number(move.price) || 0);
+    } else if (move.withdrawn) {
+      if (move.color === side) points += unitValue(config, move.unit_id);
+    } else if (!move.intoPanel) {
+      if (move.defender_eliminated && move.color === side) points += unitValue(config, move.captured);
+      if (move.attacker_eliminated && move.color === other) points += unitValue(config, move.unit_id);
+    }
+  }
+  return points;
+}
+
+/** Persist the current phase VP once on the White hand-over into halftime. */
+export function halftimeUpAwards(config: any, board: any, history: readonly any[], ply: number): any[] {
+  const phase = SCORING_PHASES.find(index =>
+    ply === (Math.ceil(phaseStartTurn(index) + PHASES[index].turns / 2) - 1) * PLIES_PER_TURN + 1);
+  if (phase === undefined || history.some(move => move?.halftimeUp?.phase === phase)) return [];
+  const radius = config?.board?.radius ?? 11;
+  const claims = captureClaims(board, radius, config);
+  const score = (side: Side) => phaseTotal(captureScore(claims, side, radius),
+    deathsOf(config, history, side, phase), PHASES[phase].multiplier ?? 1);
+  return [{ turn: ply, halftimeUp: { phase, white: score('white'), black: score('black') } }];
 }
 
 function allBanked(bank: PhaseBank | null | undefined): bank is PhaseBank {

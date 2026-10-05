@@ -32,7 +32,7 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (329 tests, 2 Oct 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (353 tests, 4 Oct 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
@@ -107,7 +107,7 @@ changed in the code changes its line there, and goes under "New since the last r
 Units and abilities are kept out of it on purpose.
 
 The whole-number rules a config may leave out (`panelMoversPerTurn`, `postmatchEntries`,
-`homecomingsPerSetupTurn`, `cpAtStart`, `cpPhaseOffset`) are listed once per side in `COUNTED_RULES`, filled in
+`homecomingsPerSetupTurn`, `cpAtStart`, `cpPhaseOffset`, `upAtStart`) are listed once per side in `COUNTED_RULES`, filled in
 at their defaults by both normalisers, and read through `ruleOf(config, key)` /
 `rule_of(config, key)` - never as a module constant, because one server process plays every
 room and each room may carry its own config. `postmatchEntries` was `phaseInitEntries` until
@@ -120,8 +120,8 @@ say `additionalProperties: false` on `rules`, but nothing loads the schema at ru
 only a ply, and making it per-room means handing them the room's schedule.
 
 **The scoring rules are mirrored too, and a test holds the two copies together.** The capture
-zones, the phase bank, deaths, the endings, the CP award, the points the schedule pays and the
-overtime conversion are written in `match-score.ts` / `hex-rules.ts` / `phases.ts` and again in
+zones, the phase bank, deaths, the endings, the CP award, UP transactions and halftime
+snapshots, the points the schedule pays and the overtime conversion are written in `match-score.ts` / `hex-rules.ts` / `phases.ts` and again in
 `scoring.py` / `phases.py`. Each side's own tests pin their own numbers, so a rule changed on one
 side alone used to pass both. `server/scripts/make_scoring_parity.py` writes fixed cases (a fixed
 seed) with the server's answers to `client/src/app/services/scoring-parity.json` - there because
@@ -218,13 +218,13 @@ apart horizontally, so squaring needs ~1.155× more rows than columns.
 The bounds are guarded with `!onBattlefield`, so tuning them can only ever trim filler. Without
 that guard, narrowing `limitX` silently shaves the hexagon's own left and right vertices.
 
-Filler hexes are the **reserve panels** (see Game spec): tinted per corner
-(`.panel-tl/tr/bl/br`), and each one holds a placeholder squad that can be selected and shuffled
-within its own panel. Confinement is enforced by the `zone` argument to `computeMoveCosts()` /
-`computeAttackZone()`, which replaces the `isInsideBoard` bound, plus a same-panel requirement on
-attack targeting - so a reserve cannot leave its panel and nothing on the battlefield can reach
-into one. Battlefield units still bound themselves with `isInsideBoard`, so movement cannot leak
-off the board either.
+Filler hexes are the **base and reserve panels** (see Game spec), tinted per corner
+(`.panel-tl/tr/bl/br`). The config's setup deals the base squads; the shipped reserves start
+empty. Placeholder squads remain a test fixture behind `PANELS_DEALT`. Ordinary panel walks
+use the `zone` argument to `computeMoveCosts()` instead of the battlefield bound. Explicit
+crossing hooks add the priced wrap, reserve deployment and walks home under their stage gates;
+an ordinary flood never leaks across the boundary. Panel units cannot initiate attacks, but
+battlefield attacks can reach enemy panels, with reserve counters and no base counters.
 
 Serialised coords are `"q,r"` strings (`coord_key` / `parse_coord`). `parse_coord` raises
 `ValueError` on anything malformed so callers catch one exception type.
@@ -289,8 +289,9 @@ Decided so far:
   In solo the clock paces and beeps; ending the turn stays a click.
   Timer choices are `{0, 15, 30, 60, 120, 180, 240, 300}` seconds, 0 meaning unlimited, and the
   allow-list lives in `validators.validate_game_options`.
-- **One unit acts per turn**, alternating plies (confirmed — the existing chess-like turn
-  plumbing stays as-is; move + attack + ability all resolve inside a single player action).
+- **One battlefield unit acts per side's turn**, except the later overtime stages, which
+  allow two and then three (see the schedule below). Plies alternate; a unit's move, attack
+  and ability resolve within that side's turn, alongside the separate panel allowances.
 - **Attack is decoupled from movement.** Units carry `attackRange` in rings of `hex_distance`.
   Implemented — see the Combat section.
 - **Damage is flat and deterministic.** No hit/dodge/crit rolls.
@@ -311,6 +312,12 @@ Decided so far:
   **A red-base unit gains no stars there, but a veteran returning home keeps its earned
   stars.** This replaces the earlier wording that all base units always have zero: newly
   dealt base units start at zero; an experienced unit is not reset by coming home.
+  **At Phase 3 postmatch start, a living battlefield or green-reserve unit that already
+  had vet 3 before the award heals to full HP.** A unit promoted from vet 2 to vet 3 at that
+  boundary gains its star without this heal. Red-base units gain neither the award nor this
+  heal. It happens once at the stage boundary, for both sides together; it never revives a
+  killed unit. The owner: *"for those that made it to phase 3 postmatch with vet 3 already,
+  heal them to full"*.
   - The owner, 3 Oct 2026: *"verterncy is only gained by being in the field or reserve (green
     panel) after a phase end. it gets a star right after a pahse, starting effect in phase
     phase. all units in the base (red panel, has 0 vet) everything in the field has vet 1
@@ -332,11 +339,12 @@ Decided so far:
   the same grid*, filling the hexagon's bounding square so the whole play area is one square of
   hexagons. They are not part of the battlefield: units there are out of play, and
   `get_legal_moves()` never reaches them.
-  - **Left plane** = the player's pool. Completely out of the war: it cannot be attacked or
-    interacted with by the opponent at all. Troops are staged *from* here.
-  - **Right plane** = staged troops. Every couple of phases of the war, units here can be
-    selected and deployed into the player's first row. Unlike the left plane, the right plane
-    **can** be attacked, but only in very specific ways.
+  - **Left plane** = the red base, from the player's perspective. Troops wrap from it
+    into the reserve, or walk home into it for a refund. Battlefield enemies can attack it;
+    its units never counter and mend there at the end of their own side's turn.
+  - **Right plane** = the green reserve. Units can deploy through its three gateways during
+    the opening, each phase's second half and its postmatch. Battlefield enemies can attack
+    it, and surviving reserve units counter when the attacker is in their attack band.
   - **Each side opens with its base squad; both reserves open empty.** The owner, 25 Sep
     2026: *"at the start of game, there will be units in base"*, by the numbers on the board
     (Show Hex), as white: rooks on 518 and 523, knights on 519 and 522, bishops on 520 and 521,
@@ -372,8 +380,8 @@ Decided so far:
     reserve alike, gets its own MOV per turn and no more** - spendable a few steps at a time,
     never an endless shuffle (`panelMoved` in `game-board.component.ts`, keyed by uid).
     **No panel unit attacks**, base or reserve: they walk and nothing else. A **reserve unit
-    still counters when it is hit** - *specified, not built*, because nothing can reach into a
-    panel yet and the engines have no reserve to resolve a counter for. Only **three units of
+    still counters when it is hit**, if it survives and the attacker is in its configured
+    attack band. Both engines resolve those panel blows. Only **three units of
     a panel may be moved in a turn** (`rules.panelMoversPerTurn`, `baseMovers` / `reserveMovers`
     - a set per panel, so one panel's walks are not counted against the other's cap).
     **Both panels carry the cap, all match**: three out of the base and three out of the
@@ -394,9 +402,9 @@ Decided so far:
     Each side greys to **its own grey** - light for white, dark for black - because opacity
     alone made a spent white plate wash out while a spent black one only went mid-grey. Only
     the side whose turn it is greys; the opponent's panels are not the player's to move.
-  - **The wrap costs points.** Crossing costs the unit's **own worth** - its config `value`,
+  - **The wrap costs UP.** Crossing costs the unit's **own worth** - its config `value`,
     the same number a death is scored by, so a rook is 12 - taken off the crossing side's
-    points (`wrapCost()` / `wrapCrossed` in `game-board.component.ts`, spent by
+    UP (`wrapCost()` / `wrapCrossed` in `game-board.component.ts`, spent by
     `onWrapCrossed()` in the room). **A side that cannot pay is not offered the crossing**:
     nothing beyond the tip enters the flood, so there is no hex to click. **The price is still
     drawn on the far tip, greyed and struck through** (`wrapDenied` / `.wrap-denied`) - a gap
@@ -720,7 +728,7 @@ Decided so far:
       `wrapDeniedAt()`, `refundAt()`, `isEntry()`, which pick the driving layer when there is
       one and the looking layer otherwise.
       - **Priced against the purse that would pay** (`pointsOf()`, `theirPoints` bound from the
-        room's `theirMovePoints`). Pricing one of theirs against *your* points would show them
+        room's `theirMovePoints`). Pricing one of theirs against *your* UP would show them
         a crossing they cannot make, or hide one they can.
     - **Reach on a panel is a WASH, not a fill** (`panelWash()`, `.panel-wash`). Every reach
       colour carries `!important`, so laid on a panel hex it wiped the panel's own colour out
@@ -776,7 +784,7 @@ Decided so far:
       - **0 HP means gone**: a unit killed in a panel is simply not dealt again, and is not
         mended back to life.
   - **Coming home pays.** The refund is the unit's **own worth** - the same `value` the wrap
-    charges to send one out, so a unit sent out and brought home again leaves the points where
+    charges to send one out, so a unit sent out and brought home again leaves the UP where
     it found them. Every base hex the walk reaches is marked with a green **`+x`**, against
     the wrap's red `-x`. *The owner left the number open ("x can be whatever you want"); the
     unit's own worth is the one already in play, and is a choice, not a specification.*
@@ -886,9 +894,9 @@ Decided so far:
     makes that move illegal on arrival. The engine rejects it, which clears the staged turn -
     recoverable, since `submittedTurn` is reset on a move error and the turn can be played
     again, but the walk is lost with no explanation.
-  - **Which turns and phases close the way home is undecided.** The owner has said there will
-    be some. Until they are named it is open whenever a unit can reach it, and the gate
-    belongs in `addBaseEntry` beside `entryBind`. Do not invent the schedule.
+  - **The way home opens during setup turns and all of overtime**, and stays shut during
+    the played halves of numbered phases (`isHomecomingOpen` / `is_homecoming_open`).
+    Geometry and the unit's remaining MOV still decide whether it can reach a doorway.
   - **The gap opens in every room** (`entryBind`). The server has a reserve model now,
     `server/game/engine/panels.py`, and answers `enter_board` itself - a crossing is
     deployment, not the turn's board action, so it hands nothing over and answers with a full
@@ -914,17 +922,15 @@ Decided so far:
       (`hand_overs_by`), not the phase schedule. Without it the client previewed a blow from
       the mended HP while the server struck from the recorded one, and the unit dropped further
       than the player was shown - which is why it could not wait for stage 3.
-    - **The toll is not behind this gate** - `tollBind` is, and stays solo until the server
-      takes it.
-  - **Which turns the gap is open is still undecided.** The owner has said it closes during
-    certain phases; until those are named it is open whenever the unit can reach it. Do not
-    invent the schedule.
-  - **Deployment is not built.** Units leave a panel two ways - the priced wrap out of the
-    base and the gap out of the reserve - and come back one, the marks into the base. What is
-    still missing is the **server model** behind any of it and any **roster or
-    army-composition flow**: the panels hold a placeholder squad dealt from the first five
-    non-commander units in config, and nothing chooses it. Do not add staging/deployment UI
-    unprompted.
+    - **The toll has its own gate**, `tollBind`, separate from panel entry. Both engines
+      now take it; the room suppresses its warning for a match already decided on points.
+  - **Reserve deployment opens during setup turns and each numbered phase's second half**,
+    including its postmatch; it stays shut in the played first halves and overtime
+    (`isEntryOpen` / `is_entry_open`).
+  - **Deployment and its server model are built.** Units leave a panel through the priced
+    base-to-reserve wrap or reserve-to-board gateways, and return through their base doorways.
+    The shared setup chooses the starting squads on both engines. A separate roster or
+    army-composition editor remains unbuilt; do not add it unprompted.
   - **Left and right are from each player's own perspective.** The board is drawn white-at-the
     bottom, and a solo game played as Black rotates the whole SVG 180° (`rotateBoard`) so the
     player still faces up the screen; glyphs counter-rotate through `textTransform()`. That is
@@ -944,10 +950,9 @@ Decided so far:
     Left panels are the red pair, right panels the green pair; white gets the bright shades,
     black the dark ones. Wiring the planes up later must follow this mapping — treating
     screen-left as "left plane" would silently give black the wrong two.
-  - Still unspecified: plane capacity (squaring the board yields 236 filler hexes, almost
-    certainly more than the real design wants), how troops enter the left plane, the exact
-    deployment cadence ("a couple of phases"), what a "phase of the war" is, which first-row
-    hexes a deployment can target, and the specific ways the right plane can be attacked.
+  - The shipped radius-11 grid has 144 filler hexes, 36 per panel. Starting squads,
+    crossings, deployment windows and panel attacks are specified above and implemented.
+    A future army-composition flow or additional capacity rule still needs the owner's spec.
 
 - **A carried ability can be swapped out.** The green `+` beside a path's passive offers your
   carried four back: click one that is **not cooling down** and it leaves the loadout, freeing
@@ -1013,7 +1018,7 @@ Decided so far:
   Which of the two is "mine" follows `myColor`, which in a solo game follows `soloColor` - so the
   player's own rows stay the near ones under `rotateBoard`. Cosmetic: no rule reads a home row.
 - **The header score is `cap - death`, and it is called VICTORY POINTS (VP)** - the owner's
-  word for it. Not to be confused with the *points* that buy abilities and wrap crossings,
+  word for it. Not to be confused with the *points* that buy abilities, or UP that buys wrap crossings,
   which are a separate pool entirely. Each side's standing shows beside the turn indicator -
   the opponent's to its left, yours to its right - as flag, what the capture hexes held are
   worth, skull, deaths, total.
@@ -1131,11 +1136,16 @@ Decided so far:
   backfill ground the line has vacated; they do not pour onto an empty board.*
 
 - **A phase's postmatch turn has its own allowances.** One full turn, both sides, and on it:
-  **no ability fires and nobody attacks** (`isSetupTurn()`, shared with the opening -
-  `noAttackMessage()` says which of the two refused, `Nobody attacks in the postmatch` or
-  `Nobody attacks in the opening`, since "the opening" on turn 14 points at a phase that
-  ended a whole phase ago); **five units may be started out of the reserve** rather than the
-  usual three (`rules.postmatchEntries`, and it stands *instead of* the per-panel three,
+  **abilities and normal unit healing are allowed; normal unit attacks are forbidden**.
+  This applies to every numbered phase's postmatch, for both sides. Pool, path and unit casts
+  use the same eligibility, target, cost and cooldown rules as during play; online casts
+  remain deferred under PUNCHLIST 6.15. Healing is the bishop's normal action and still
+  consumes its action. An offensive ability can kill a king and end the game before points
+  or overtime settle it. The owner, 4 Oct 2026: *"abilities and anything can be used but units cant attack"*.
+  This supersedes the former ban on postmatch casts and healing.
+  `isSetupTurn()` still blocks normal attacks, including panel blows and enemy landings;
+  `noAttackMessage()` names the opening or postmatch. **Five units may be started out of the
+  reserve** rather than the usual three (`rules.postmatchEntries`, and it stands *instead of* the per-panel three,
   covering walks inside the reserve as well as crossings out of it - capping the walk at three
   would leave two of the five unable to reach a gateway); and **three units may walk home**
   (`rules.homecomingsPerSetupTurn`, counted by `homecomingsAt()` / `homecomings_at()`). The base
@@ -1159,13 +1169,10 @@ Decided so far:
     own - **but choosing is exactly what the opening is for.** Two gates, and the split
     matters: `canChooseAbilities()` (take a pair up, take a path, hand a pair back through
     Reselect) is open through every setup turn; `canUseAbilities()` is that plus
-    "not `isSetupTurn()`", and everything that spends an ability runs through it. So a
-    numbered phase's postmatch turn shuts casting for the same reason the opening does.
-    The panels say which rule closed them, and name the turn (`abilityBlockedNote`: on turn
-    14, `Unavailable: no abilities during the phase 1 postmatch.`). The
-    offline engine refuses one too (`abilityFault()`): it need not know what a cast is
-    *worth* to know none should have arrived, which is the one ability rule it can keep with
-    the abilities still unsettled.
+    "not `isInitialization()`", and everything that spends an ability runs through it.
+    Every postmatch permits casting. `abilityBlockedNote` names initialization when that
+    closes the panel; the offline engine's `abilityFault()` rejects casts arriving with
+    moves or passes during initialization. Normal unit healing is also shut in the opening.
   - **Three full turns each** - white's hand-over and black's, so six hand-overs (see the
     schedule table: the turns there are full turns).
   - A side may move **three base units and three reserve units a turn, and one battlefield
@@ -1369,7 +1376,7 @@ Decided so far:
     pairs at the 12px font floor; the right desktop column keeps its existing width.
     The compact strip names the available action stat and VET, with each stat kept
     together and tight vertical gaps in unpinned tabbed layouts.
-    A lower attack bound is intended for some units, but none has been assigned yet.
+    Archer's lower attack bound is 3; its supported rings are 3-6, in both engines.
     The desktop height floor stays 1025px, and landscape touch pins Unit from 805px.
   - **The logs scroll, nothing else does.** History and the chats keep to their newest line
     (`scrollChatToBottom`): a line coming in moves one only if it was at its newest, so a
@@ -1974,6 +1981,22 @@ Decided so far:
     used to be written out at every hand-over, five copies across two languages, and the
     browser engine's panel blow had already lost its mutual draw: a blow that left neither side
     a commander went to black by list order.
+- **The board announces each full turn briefly**, once when White starts it. At a new
+  initialization, numbered phase, halftime, postmatch or overtime stage, the announcement
+  shows the stage in larger text with **Turn N** underneath. Ordinary full turns show only
+  Turn N. Each announcement lasts 0.6 seconds: it slides in from the right, pauses briefly
+  in the centre, then exits left, with a short swoosh that respects mute and volume. It stays
+  upright in either board orientation and does not block clicks. Reduced motion skips the slide. A solo
+  reload or network resync does not repeat an announcement just for loading, including ply 1
+  and a board first rendered at ply 0. Only `game_started` supplies the fresh-start cue;
+  subsequent White full-turn transitions still announce normally.
+  The owner also requested that the notice not count towards the clock; whether this means
+  excluding its 0.6 seconds from the deadline or leaving the clock independent is awaiting
+  clarification. No timer rule has been changed for the notice.
+  The owner, 4 Oct 2026: *"at the start of every turn tick (full turn white + black) make a
+  brief text on mmiddle of the board saying the turn. also when a phase or initialization
+  or half time starts or overtime x or whatever, make a larger text saying that phase and
+  the smaller turn x text below it"*.
 - **What a phase otherwise does is not decided.** No phase change fires anything else: no
   deployment opens, nothing is locked
   Do not build phase plumbing unprompted. (This is the same "phase of the war" the reserve
@@ -2085,9 +2108,10 @@ sends that dict straight back on its next mode change.
 
 ## Combat
 
-A unit's turn is "walk, then optionally swing", carried by one `make_move`:
-`{from, to, attack?}` where `to` is where the unit ends up (possibly where it already stood)
-and `attack` names the hex it strikes from there.
+A unit's turn is walk, then optionally attack or heal, carried by one `make_move`:
+`{from, to, attack?, heal?}` where `to` is where the unit ends up (possibly where it already
+stood), and `attack` or `heal` names its target from there. The two actions are exclusive;
+normal healing follows the rules in the Unit stats section above.
 
 - **Losing**: the objective is `regicide` - a side is beaten when it has no unit flagged
   `commander: true` left (the king). `elimination` (no units at all) is the other accepted
@@ -2139,7 +2163,7 @@ and `attack` names the hex it strikes from there.
     schema nor either validator puts an upper bound on the field, so the clamp in
     `strike_damage` / `strikeDamage` is what holds this.
 - **The defender counter-attacks** with the same sum reversed, but only if the attacker is
-  inside *its* reach — a melee unit cannot answer a bishop three rings out. A unit reduced to
+  inside *its* attack band — a melee unit cannot answer an archer three rings out. A unit reduced to
   0 HP never counters.
 - **The attacker holds its ground**, even on a kill. Taking the hex would be free movement, and
   attacking is what ends the unit's movement for the turn.
@@ -2147,46 +2171,37 @@ and `attack` names the hex it strikes from there.
   `attackTiers`) for the board glyphs and the offline engine. Change one, change both — the
   specs compare them against these numbers.
 
-## Points
+## Points and unit points (UP)
 
-Placeholder numbers, but a real economy now, and **derived rather than tallied**. Every source and
-sink of a point is on the move history or the schedule, so both engines add them up from those.
-The owner's rules and their history are under *Two currencies* in the phases section; this is
-the ledger:
+**Owner revision, 4 Oct 2026:** unit worth is UP, separate from ability points. Each side
+starts with **10 UP** (`rules.upAtStart`). Battlefield attack/counter kills pay the dead
+unit's value in UP; ability kills and panel kills pay nothing. Walking home refunds that
+unit's value in UP. A base-to-reserve crossing spends UP equal to its value, confirmed
+by the owner: *"Yes, spend UP for the crossing"*. A pawn is worth 8 UP.
 
-| | |
-|---|---|
-| a side's turn begins | its rate - 1, then 2 from Phase 2's halftime, 3 from Phase 3's, nothing in overtime - and a phase's grant (10, 20, 30) on the side's first turn of it (`turnPointsBy`) |
-| overtime begins | the side's banked victory points, once, on its own first overtime turn (`vpAsPoints`) |
-| a kill on the board | +the dead unit's `value` to the killer; a counter-swing that kills the attacker pays the defender's side its `value` |
-| a kill in a panel | nothing, base or reserve, whoever dies |
-| walking home | +the unit's `value` |
-| the wrap | −the unit's `value` (on the `panelMove` record's `price`) |
-| a pool ability | −its `abilityCosts` entry — solo only, and **not** on the record |
+**At each numbered phase's halftime start (turns 9, 20, 31), both sides add their own
+current phase VP to UP**, confirmed: *"Add it to UP"*. The snapshot uses the displayed
+phase score, including that phase's losses, its multiplier and the zero floor. Store that
+award once at the boundary; later moves, Black's half, reloads and resyncs never recompute it.
+UP appears beside CP, for example `CP: 5 UP: 10`. These unit transactions no longer change
+regular ability points.
 
-The first two rows are `scheduledPoints()` in `match-score.ts` / `scheduled_points()` in
-`scoring.py`; a unit's worth is read by `unitValue()` / `unit_value()` and nowhere else. A cast
-that kills pays nothing; only a turn's own action ever did. A round trip — wrap out, walk home —
-is points-neutral, which is what the refund is for.
+Regular points come from scheduled turn income, phase-start grants and overtime VP
+conversion. Pool abilities spend these points; ability grants also pay this currency.
+UP comes from the unit transactions and halftime snapshots above. CP retains its existing
+path costs and postmatch awards.
 
-- **Server**: `points_of(color, ply, history, config, bank)` in `server/game/engine/economy.py`,
-  *bank* being the state row's `phase_bank`. The wrap is priced against it, so it has to be
-  right.
-- **Client**: `pointsFromHistory(color)` in the room mirrors it. **`reconcilePoints` resets both
-  purses from the record on every `game_started`, `move_made`, `turn_passed` and
-  `game_state_update`, solo and networked alike** — and the live tally still moves in between, so
-  a wrap staged this turn shows its price at once. Nothing else pays a point: not the start of a
-  turn (`beginTurnFor` only ticks cooldowns), not a kill on its way in. So a new way to earn one
-  is one line in the record's sum, and a held move - one of an Overtime 2 or 3 turn's several,
-  which arrives as a `game_state_update` rather than a `move_made` - is paid like any other.
-- **The one thing the record does not hold is abilities**, which are solo only: a pool ability
-  is bought with points, and Rally hands 300 out. `chargeFor()` keeps that apart as
-  `myAbilityPoints` / `opponentAbilityPoints`, persisted with the solo state, and
-  `reconcilePoints` adds it on - so the reset gives back nothing spent. A networked room casts
-  nothing and adds 0. (Solo used to keep a tally alone and pay each source by hand, which is how
-  a held move's kill went unpaid.)
-- Cooldowns still tick at the start of a side's turn and are still client-side; see Ability
-  panels.
+Both engines derive committed balances from history and the schedule. `points_of` /
+`pointsFromHistory` count regular points; `unit_points_of` / `unitPoints` count UP.
+`reconcilePoints` refreshes both sides on starts, moves, passes and state snapshots.
+Staged crossings and homecomings update UP immediately and Undo reverses them. A snapshot
+  at the same ply retains staging and overlays only transactions not already recorded. An
+  advancing snapshot discards the prior turn's staging before reconciling balances. Solo UI
+  saves carry their ply; older UI saves without it discard their uncommitted preview on load
+  rather than applying its refunds to an unknown turn. Committed history is retained.
+Solo ability spending is still held separately in `myAbilityPoints` /
+`opponentAbilityPoints`; online casts remain deferred. Cooldowns still tick at the start
+of each side's turn.
 
 ## The panels, the toll and the opening, on the server
 
@@ -2219,7 +2234,7 @@ no panel table, no points column and no migration.
   crossing was refused when only crossings were sent.
 - **The `panelMove` record**: `from`, `to`, `turn`, `unit` (with `uid`), **`panel` — the panel the
   walk BEGAN in**, which decides whose movers it spends (the wrap starts in the base), `cost` (MOV)
-  and `price` (points). The server derives `cost` and `price`; the client sends them only for the
+  and `price` (UP). The server derives `cost` and `price`; the client sends them only for the
   browser engine.
 - **`panel_allowance`** is what a panel unit may still spend this ply, or `None`: locked out of the
   opening (`locked_units`), or its panel's three movers used up (`panel_movers` — three per base
@@ -2228,7 +2243,7 @@ no panel table, no points column and no migration.
   had already half spent getting to the gateway.
 - **The wrap** (`panel_move_targets`): base units only, into their own reserve, while
   `is_wrap_open(ply)`; one step on top of reaching the base tip, no enemy on the far tip, and the
-  unit's `value` in points against `points_of`. Out of MOV is judged before out of money, as the
+  unit's `value` in UP against `unit_points_of`. Out of MOV is judged before out of money, as the
   client judges it.
 - **The client places recorded units** in `placeRecorded`, after the deal and the walks home —
   skipping any unit this turn has walked and not yet sent, whose staged hex is newer. This is how
@@ -2621,6 +2636,38 @@ wholesale, so a divergence corrects itself on commit rather than persisting.
 
 ## Ability panels
 
+### First pool, specified 4 Oct 2026
+
+The eight abilities are four paired rows, in this order. Costs are points; cooldowns count
+that side's own turns. Stat changes last the casting turn plus the opponent's turn and expire
+at the start of the caster's next turn. Healing and direct damage change HP immediately.
+
+| Pair | Friendly cast | Other cast |
+|---|---|---|
+| 1 | **Warcry:** 3 points, cooldown 3, +8 ATK on a selected friendly unit | **Sap:** 5 points, cooldown 5, -8 ATK on all eligible enemies |
+| 2 | **Bulwark:** 3 points, cooldown 3, +8 DEF on a selected friendly unit | **Weakening:** 5 points, cooldown 5, -8 DEF on all eligible enemies |
+| 3 | **Dash:** 3 points, cooldown 3, +4 MOV on a selected friendly unit | **Mire:** 3 points, cooldown 3, -2 MOV on all eligible enemies |
+| 4 | **Mend:** 3 points, cooldown 1, restore 4 HP to a selected friendly unit, capped at its maximum | **Strike:** 3 points, cooldown 3, deal 4 damage to a selected enemy |
+
+Weakening's DEF reduction supersedes the owner's initial duplicated ATK wording. Sap,
+Weakening and Mire are universal casts: no clicked target, covering the **enemy battlefield
+and green reserve units present when cast**. Red-base units are excluded from that cast.
+**Later arrivals receive no effect; an affected unit returning to the red base keeps it** until
+expiry. Individual casts retain their existing panel targeting rules. A cast's charge,
+cooldown and all recipients undo together, including after a solo reload. Reserve combat
+  resolves those recipients by their supplied unit UID, so staged damage, counter eligibility
+  and the bonuses sent to the local engine agree with the board forecast.
+
+**Warcry can arm a shieldman for attacks and counters at its configured range 1.** Eligibility
+and damage use effective ATK rather than requiring positive base ATK. The existing healer
+rule remains: a unit configured to heal replaces its normal attack with healing.
+
+The owner clarified: *"Weakening reduces DEF by 8"*, universal targets are *"actually all +
+reserve (green panel units)"*, and arrivals/returns: *"it doesnt get it, and those going back
+into red base keeps it"*. These replace the old default pool's example numbers and order.
+Older saved matches retain their own catalogues; the legacy fixture exercises that support.
+Online casts remain deferred while this catalogue is being specified, as in PUNCHLIST 6.15.
+
 Both side boxes render the same six slots. Each is live only on its own side's turn, via
 `canUseAbilities('mine' | 'opponent')`. The opponent's box additionally requires
 `isSinglePlayer`, so in multiplayer it is permanently disabled — you can see your opponent's
@@ -2649,11 +2696,11 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
     universal ability netted its `points` against its CP cost, so Fortress refunded CP and the
     points purse never moved.
   - `validateGameRules()` refuses an unknown field, a number that is not whole or out of range,
-    a `target` that is not one of the three, an odd pool or slot count (picks are pairs), an
-    ability in two slots, and **a number its kind never reads** (`IGNORED_BY`): `damage` or
+    a `target` outside friendly, enemy, universal or all-enemies, an odd pool or slot count
+    (picks are pairs), an ability in two slots, and **a number its kind never reads** (`IGNORED_BY`): `damage` or
     `points` on a friendly ability, `heal` or `points` on an enemy one, stats, `damage`, `heal`
-    or `turns` on a universal one, anything but stats on a passive, `turns` on one that
-    changes no stat. Cleave's `points: 5` used to pay nobody, silently.
+    or `turns` on a points-only universal one, HP or points on an army debuff, anything but
+    stats on a passive, `turns` on one that changes no stat. Cleave's `points: 5` used to pay nobody, silently.
 - **A unit type's own ability** is `units.<id>.ability`, a **friendly** catalogue id cast on
   the unit itself from the Unit panel (both validators refuse any other kind, and a passive).
   It is the unit's: nothing has to be picked for it, its cooldown is per unit
@@ -2676,11 +2723,10 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
   one damages, and clicking the wrong kind cancels. Points and cooldown are spent on landing,
   not on arming. An offensive cast **stages like a move** - it pushes onto `stagedActions`, so
   it shows through a staged step and Undo takes it back.
-- **Rally (slot 7) is the owner's testing lever, not a balanced ability**: it costs **0** and
-  hands out **300 points**, so any priced rule - a wrap crossing, a path, an ultimate - can be
-  exercised without playing thirty turns to afford it. Leave it alone unless the owner asks;
-  it was 2 points for 1 before, and that is what it goes back to when real numbers land.
-- **Two currencies, split by which ability it is** (`isPathSlot()`, asked of `abilityPaths`
+- **Rally remains in the catalogue for older/custom testing configs, outside the shipped pool**: it costs **0** and
+  hands out **300 regular points**, for pool-ability testing. It does not grant CP or UP. Leave it alone unless the owner asks;
+  The specified first pool replaces its old slot with Strike.
+- **Abilities use points or CP; units use UP**, with ability costs split by type (`isPathSlot()`, asked of `abilityPaths`
   rather than of the slot number, so moving a path's slots cannot quietly change what they
   cost):
   - **CP** buys the *special* abilities - the three paths and everything inside them: passive,
@@ -2703,8 +2749,8 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
       same. A late phase still awards.
     - The server has the formula but spends nothing yet - abilities are solo (6.15) - so the
       Python copy is kept in step for when they are not.
-  - **Points** buy the eight-ability pool, and stay the board's currency besides: the wrap
-    crossing charges them and coming home refunds them. A side banks points **at the start of
+  - **Points** buy the eight-ability pool. **UP** pays the wrap and receives homecoming
+    refunds and battlefield attack/counter kill rewards. A side banks regular points **at the start of
     each of its own turns, at a rate that steps up at each phase's halftime**: 1 a turn to
     turn 19, **2 from Phase 2's halftime (turn 20), 3 from Phase 3's (turn 31)**, and
     **nothing in overtime** (`turnPointsBy()`, off `POINT_RATES`, which reads
@@ -2734,18 +2780,11 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
       the server's copy has nothing to price with it yet, since no wrap is open in overtime.
     - **Two places add that point up and both read the one table.** `pointsFromHistory()`
       re-derives the whole purse from the record on every hand-over, solo included;
-      `economy.points_of()` is the server's copy, which the wrap is priced against
+      `economy.points_of()` is the server's regular-points copy
       (`turnPointsBy()` / `turn_points_by()` walk the rates). The scoring parity tests hold the
       two to the same answers.
-    - Besides the turn: **+the dead unit's value for a kill on the board** (and the defender
-      is paid the attacker's value when a counter kills it) - *the owner, 24 Sep 2026:
-      "anytime a unit is killed, i get the amount of regular points which the one i killed is
-      worth"*, where it was 1 - **+the unit's value** when it walks home, **-the price** of a
-      wrap crossing. **A blow into a panel pays nobody**, base or reserve, whoever dies of it:
-      *"in green panel it doesnt award points if the unit in there kills or gets killed for
-      any player."* A cast that kills pays nobody either. `killRewards()` is the one place the
-      room reads a kill's pay, for `pointsFromHistory()`, mirroring `points_of()`. All of it
-      derived from the record, never a stored tally.
+    - Unit kill rewards, homecoming refunds and wrap prices use **UP**, as revised above.
+      Regular points receive none of these unit transactions.
   - Everything goes through `purseFor()` / `chargeFor()` / `purseName()`, so a cost, a grant, a
     hint and an Undo all read the same currency off one place.
   - `cpOf(side)` is **derived** - `cpAtStart` plus `cpAwarded(bank, color, cpPhaseOffset)` off
@@ -2766,8 +2805,7 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
   the moment there is something to press.
   - **Unit panel**, nothing selected: `Total: x` (`liveUnits` - your units still on the
     battlefield, 24 on a fresh board) and `Opponent: y` (`opponentUnits` - theirs).
-  - **Abilities panel**, nothing to do: `Points: x` on the left and `CP: y` on the right - the
-    two currencies, each on the slot that would spend it. With an action available the left
+  - **Abilities panel**, nothing to do: `Points: x` on the left and `CP: y UP: z` on the right. With an action available the left
     slot is that action (`Pick` / `Use`); with somewhere to go back to, the right is `Back`.
     Note that `Dash` and `Focus` and the rest of the *targeted* abilities never show `Use` at
     all - they are armed by clicking the ability and then a unit - which has been mistaken for
@@ -2805,20 +2843,20 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
       within a turn it is exactly "what I have cast".
   - **Picking is open through the initialization** - see the opening's rules; only casting is
     not.
-- **Effects are stat boosts and drains** (`abilityEffects`, the owner's placeholder numbers):
+- **Effects are stat boosts and drains** (`abilityEffects`, read from the configured catalogue):
   MOV, ATK, DEF. They live in `buffs`, keyed by the unit's uid, one entry per cast, and each
   lifts after its ability's `turns` of its own caster's turns (see above). The Unit panel shows
   every entry with the turns it has left, and boosted-over-base (`statAtk` etc.), so
   a +4 on a base 26 reads `30/26`; **+MOV is real steps**, fed to the board as `unitBuffs` and
   into `movesLeft` once a step is staged.
-- **Veterancy is drawn beside the name** in `unitPanelTitle`, using the same rank the
-  hex draws. New units start at zero; phase awards update the heading with earned stars.
+- **Veterancy is drawn in the VET stat cell**, using the same rank the hex draws.
+  New units start at zero; phase awards update the earned stars.
 - **Boosts have to be declared on `make_move`.** Both engines re-derive the turn from where
   the unit started, off the unit's own stats, so a boosted move is rejected as illegal and a
   boosted strike lands base damage unless `endTurn()` says otherwise. It sends `moveBonus` (the
   extra steps) and `bonuses` (`{atk, def, targetAtk, targetDef}` - both units, because the
   counter reads the other side's numbers). `LocalGameService.move()` takes them as whole
-  numbers, extra steps never below 0 (`extraSteps()`) - **and no ceiling**: it capped them at
+  numbers, including signed movement changes (`extraSteps()`) - **and no ceiling**: it capped them at
   10 steps and +/-20, which no config said, so a Surge the owner made 12 was offered on the
   board and refused as illegal. `strikeDamage(..., atkBonus, defBonus)` applies them **after**
   ring falloff, which is where
@@ -2831,8 +2869,10 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
   walk the server rejects as illegal, and the extra damage forecasts a trade it contradicts.
 - **Only a rejected move clears the staged turn** (`MOVE_ERROR_CODES`). A chat or invite error
   must not silently bin a turn the player has been building.
-- ponytail ceiling: buffs are client-side and hex-keyed. A boost follows a *staged* move, not a
-  unit the server moves for us, and a reload drops it.
+- **Ability effects use pure functions** in `ability-rules.ts`: stacking, expiry on each
+  caster's turn, and cooldown arithmetic. The room owns targeting, staging, animation and
+  persistence. Buffs are keyed by uid and restored from solo saves; engine-owned casts, costs
+  and cooldowns are still the deferred boundary for online abilities.
 
 ## Unit identity
 
@@ -2844,13 +2884,18 @@ whole game.
 Per-unit state hangs off that id, never off the hex:
 
 - **Boosts** (`buffs` in the game room) are keyed by `uid`, so a boost survives a staged step,
-  an Undo and the server's own confirmation with no re-keying anywhere.
+  an Undo and a solo reload with no re-keying anywhere. Online casts remain deferred.
 - **Veterancy starts at zero and is earned at the specified phase boundaries** (Game spec).
   Rank is reconstructed from the unit's uid and recorded panel crossings, and carried in
   battlefield cells. Movement and reloads preserve it; returning to base does not reset it.
 
 Anything per-unit added later (cooldowns, XP, statuses) belongs in the cell for the same reason.
 Re-keying per-unit state on every move is a bug waiting for the one caller that forgets.
+
+The client's canonical `PieceData` and `BoardState` live in `game-state.service.ts` and are
+shared by the board, room and local engine. `uid` and `vet` remain optional for older saves
+and fixtures. The board's `SelectedUnit.atk` carries numeric attack tiers; only the display
+formats them, so stat calculations never parse presentation text.
 
 ## The socket
 
@@ -2889,7 +2934,7 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
   optional `attack` field on `make_move` (see Combat). An "attack by moving onto an enemy" click
   does nothing; that path is gone for good.
 - `server/game/tests_disabled/` is **not** disabled. Its 4 tests match Django's `test*.py`
-  discovery pattern and run under a bare `manage.py test` (89 vs 85). They pass. Left as-is.
+  discovery pattern and run under a bare `manage.py test` in addition to `game.testsuite`.
 - `client/src/app/components/setup-config/setup-config.component.html` is still a raw JSON
   `<textarea>` with a "Configuration UI will be added here" placeholder.
   - **Back keeps the way to the room until it goes.** `onBack` saves first if asked, and clears
@@ -2930,7 +2975,7 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
   a whole file to LF. `git diff --stat` will not show it (`core.autocrlf` normalises the
   comparison), so only a byte count does. It has happened twice to the Python test files. Use the
   file-aware editor, or a Python rewrite that opens the file in binary.
-- **Unit roster stats, 4 Oct 2026.** Owner: *"now lets work on the actual stats to the units (which after we implment abilities, it will probably complete the core conept of this game). pawn:: HP:12 MOV:6 ATK:1:6 DEF:6 cost:4. sheildman:: HP:30 MOV:4 DEF:24 cost:8. archer:: HP:6 MOV:6 ATK:3:4.4:3.3:2.4:1 DEF:4 cost:8. rook:: HP:40 MOV:4 ATK:1:12 DEF:16 MOV:4 cost:12. knight:: HP:18 MOV:8 ATK:1:12 DEF:10 cost:14. bishop:: HP:8 MOV:6 HEL:1:4 DEF:4 cost:16. queen:: HP::30 MOV:6 ATK1:18.2:12 DEF:12 cost:20. king::HP60 MOV:6 ATK1:24 DEF:18 cost:24"*. Clarifications: *"Rings 3–6: 3:4 4:3 5:2 6:1"* for archer; *"No attack (ATK —)"* for shieldman. Cost is the existing config `value`, used for unit worth, crossing costs, deaths and homecoming refunds. The shared config alone sets these numbers:
+- **Unit roster stats, 4 Oct 2026.** Owner: *"now lets work on the actual stats to the units (which after we implment abilities, it will probably complete the core conept of this game). pawn:: HP:12 MOV:6 ATK:1:6 DEF:6 cost:4. sheildman:: HP:30 MOV:4 DEF:24 cost:8. archer:: HP:6 MOV:6 ATK:3:4.4:3.3:2.4:1 DEF:4 cost:8. rook:: HP:40 MOV:4 ATK:1:12 DEF:16 MOV:4 cost:12. knight:: HP:18 MOV:8 ATK:1:12 DEF:10 cost:14. bishop:: HP:8 MOV:6 HEL:1:4 DEF:4 cost:16. queen:: HP::30 MOV:6 ATK1:18.2:12 DEF:12 cost:20. king::HP60 MOV:6 ATK1:24 DEF:18 cost:24"*. Clarifications: *"Rings 3–6: 3:4 4:3 5:2 6:1"* for archer; *"No attack (ATK —)"* for shieldman. Cost is the existing config `value`, now unit worth in UP for crossings and refunds, and also the phase loss value. The shared config alone sets these numbers:
 
   | Unit | HP | MOV | ATK (ring:amount) | DEF | HEL (ring:amount) | Cost |
   |---|---|---|---|---|---|---|
@@ -2945,7 +2990,7 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
 
   Later on 4 Oct the owner raised pawn ATK, DEF and cost to 8, and bishop HEL to 8; those newer values are in the table.
 
-  Archer cannot strike or counter at rings 1-2. Shieldman cannot strike or counter. Bishop's healing action retains its targeting, max-HP cap and zero CP cost, now at ring 1 only. ATK is before defence; the existing minimum damage rule still applies. No stat growth or ability effects are implied by this roster.
+  Archer cannot strike or counter at rings 1-2. An unboosted shieldman cannot strike or counter; Warcry gives it range-1 attacks and counters. Bishop's healing action retains its targeting, max-HP cap and zero CP cost, now at ring 1 only. ATK is before defence; the existing minimum damage rule still applies. No stat growth or ability effects are implied by this roster.
 
 - **The roster is the six chess-piece names plus two the owner asked for**: an
   **Archer** (`A`, bow-and-arrow glyph - value 8, hp 6, atk 4/3/2/1 at rings 3-6, def 4, move 6) and a

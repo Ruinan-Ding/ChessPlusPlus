@@ -23,26 +23,17 @@ import {
 import {
   boardMovesPerTurn, overtimeTollAt, overtimeTollOver,
   isEntryOpen, isHomecomingOpen, isInitialization, isOvertime, isPostmatch,
-  isSetupTurn, isWrapOpen, sideOfPly,
+  isSetupTurn, isWrapOpen, sideOfPly, stageAt, turnOf,
 } from '../../services/phases';
 import { ruleOf } from '../../services/config.service';
+import { AudioService } from '../../services/audio.service';
 import { unitVeterancy } from '../../services/history-rules';
+import type { BoardState, PieceData } from '../../services/game-state.service';
 export { panelOfHex } from '../../services/hex-rules';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface PieceData {
-  unit_id: string;
-  color: 'white' | 'black';
-  hp: number;
-  max_hp: number;
-  /** Identity that survives moves - see build_initial_board. */
-  uid?: string;
-}
-
-type BoardState = Record<string, PieceData>;
 
 /** What the game room's Unit panel needs about the selected hex. */
 export interface SelectedUnit {
@@ -55,7 +46,7 @@ export interface SelectedUnit {
   hpMax: number | null;
   /** HP left after the trade currently being hovered, else null. */
   hpAfter: number | null;
-  atk: string;                       // damage per ring, e.g. "26,19"
+  atk: number[];                     // base damage per supported ring, lowest first
   def: number | null;
   mv: number | null;                 // full move budget
   points: number;                    // what the unit is worth (config `value`)
@@ -481,6 +472,13 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="board-container">
+      <div *ngIf="turnAnnouncement as notice" class="turn-announcement-track">
+        <div class="turn-announcement" role="status" aria-live="polite"
+             [attr.data-turn]="notice.turn" [style.animation-duration.ms]="turnAnnouncementMs">
+          <strong *ngIf="notice.stage">{{ notice.stage }}</strong>
+          <span>Turn {{ notice.turn }}</span>
+        </div>
+      </div>
       <!-- Pinch to zoom and drag to pan are listened for outside Angular
            (ngAfterViewInit): they arrive sixty times a second, and each one
            through change detection would re-check every hex on the board. -->
@@ -989,6 +987,45 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
       flex: 1;
       width: 100%;
       min-height: 0;
+    }
+
+    .turn-announcement-track {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 9;
+    }
+
+    .turn-announcement {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      animation: turn-swoosh ease-in-out both;
+      max-width: calc(100% - 24px);
+      padding: 10px 18px;
+      border: 1px solid #e3c77a;
+      border-radius: 8px;
+      background: rgba(8, 13, 24, 0.9);
+      color: #fff3d3;
+      text-align: center;
+      text-shadow: 0 1px 3px #000;
+
+      strong, span { display: block; }
+      strong { font-size: clamp(16px, 3vh, 36px); }
+      span { font-size: clamp(12px, 2vh, 22px); }
+    }
+
+    @keyframes turn-swoosh {
+      from { left: 100%; transform: translate(0, -50%); opacity: 0; }
+      33%, 67% { left: 50%; transform: translate(-50%, -50%); opacity: 1; }
+      to { left: 0; transform: translate(-100%, -50%); opacity: 0; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .turn-announcement { animation-name: none; }
     }
 
     .hex-board {
@@ -1943,6 +1980,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   @Input() currentTurn = '';
   /** Current turn number. */
   @Input() turnNumber = 0;
+  /** Only a fresh game_started event announces the initial binding. */
+  @Input() freshGameStart = false;
   @Input() moveHistory: any[] = [];
   /** This client's username. */
   @Input() username = '';
@@ -2026,14 +2065,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * the unit would be lost between the two pictures. So a crossing treats
    * anything standing on either board as in the way.
    */
-  @Input() committedBoard: Record<string, PieceData> = {};
+  @Input() committedBoard: BoardState = {};
 
   /**
    * Units that walked off the battlefield into a base, keyed by the hex they
    * stopped on. Derived by the room from the record of each withdrawal, so a
    * base rebuilds itself after a reload the way the battlefield does.
    */
-  @Input() withdrawn: Array<{ at: string; unit: Record<string, any> }> = [];
+  @Input() withdrawn: Array<{ at: string; unit: PieceData }> = [];
 
   /**
    * Reserves that have crossed onto the battlefield, by uid. They are struck
@@ -2087,9 +2126,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   /** The unit at movesLeftFor has finished by attacking or healing. */
   @Input() actionSpent = false;
   /**
-   * One-turn stat boosts by hex. Only `mov` matters here - it widens the
-   * flood fill for a unit that has not taken its first step yet, after which
-   * `movesLeft` carries the same bonus.
+   * Stat changes by uid: movement budgets, attack reach and trade previews.
+   * Once a step is staged, `movesLeft` carries the movement change.
    */
   @Input() unitBuffs: Record<string, {
     mov: number; atk?: number; def?: number; up?: boolean; down?: boolean;
@@ -2465,7 +2503,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   lastDamagedHex = '';  // hex that was attacked but unit survived
 
   constructor(private cdr: ChangeDetectorRef, private host: ElementRef<HTMLElement>,
-              private zone: NgZone) {}
+              private zone: NgZone, private audio: AudioService) {}
 
   get isMyTurn(): boolean {
     return this.currentTurn === this.username;
@@ -2483,6 +2521,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   }
 
   ngOnDestroy(): void {
+    clearTimeout(this.turnAnnouncementTimer);
     this.stopPlayback();
     clearTimeout(this.markTimer);
     this.unlistenGestures();
@@ -2711,7 +2750,27 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     });
   }
 
+  readonly turnAnnouncementMs = 600;
+  turnAnnouncement: { turn: number; stage: string } | null = null;
+  private turnAnnouncementTimer: ReturnType<typeof setTimeout> | undefined;
+
   ngOnChanges(changes: SimpleChanges): void {
+    const turn = changes['turnNumber'];
+    if (turn && this.currentTurn && this.turnNumber > 0 && this.turnNumber % 2 === 1
+        && ((!turn.firstChange && turn.previousValue > 0) || (this.turnNumber === 1 && this.freshGameStart))
+        && turn.previousValue !== turn.currentValue) {
+      clearTimeout(this.turnAnnouncementTimer);
+      const stage = stageAt(this.turnNumber);
+      this.turnAnnouncement = {
+        turn: turnOf(this.turnNumber),
+        stage: this.turnNumber === 1 || stage !== stageAt(this.turnNumber - 2) ? stage : '',
+      };
+      this.audio.playSwoosh();
+      this.turnAnnouncementTimer = setTimeout(() => {
+        this.turnAnnouncement = null;
+        this.cdr.markForCheck();
+      }, this.turnAnnouncementMs);
+    }
     // A target armed on one position is not armed on the next - and the room
     // told so once its own check is over, not in the middle of it.
     // And an ability armed for a target: the next tap is its, not a blow's.
@@ -3510,7 +3569,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         // turn reaches this list at all (see stageWithdrawn), a Mend on a
         // withdrawn unit would otherwise owe it a `+1` for mending on top of
         // the `+20` the cast already writes.
-        if (this.mendingTurn && unit['hp'] > (this.reserves[here].hp ?? 0)) {
+        if (this.mendingTurn && unit.uid && unit.hp > (this.reserves[here].hp ?? 0)) {
           this.oweMark(unit['uid'], '+1');
         }
         this.reserves[here] = { ...this.reserves[here], hp: unit['hp'] };
@@ -3871,7 +3930,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
 
   /**
    * Hexes that can only be reached by crossing the wrap, each against what
-   * the crossing costs in points. What the board draws a `-x` on, and what
+   * the crossing costs in UP. What the board draws a `-x` on, and what
    * tells a move it is a crossing and has to be paid for.
    */
   /**
@@ -3899,7 +3958,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   wrapTargets = new Map<string, number>();
 
   /**
-   * The far tip of a crossing the side has not got the points for, against
+   * The far tip of a crossing the side has not got the UP for, against
    * what it would cost. Drawn but never offered: without it the flood simply
    * stops at the base tip and nothing on screen says why.
    */
@@ -4430,7 +4489,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // Either panel's walk comes out of that unit's own MOV for the turn, and
     // a base one additionally spends one of the turn's three movers.
     const moving = this.cellsByKey.get(from);
-    // Crossing the wrap is bought: the room takes the points off. Only a hex
+    // Crossing the wrap is bought: the room takes the UP off. Only a hex
     // on the far side carries a price, so an ordinary shuffle pays nothing.
     const price = this.wrapTargets.get(to) ?? 0;
     if (price) this.wrapCrossed.emit(price);
@@ -5129,12 +5188,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // even answer - so neither is ever offered a target. What the battlefield
     // reaches, though, includes them both: a unit at the edge shows its range
     // running on into the panel beside it.
-    // On any turn given to setting out, nobody attacks at all - the opening
-    // and a phase's postmatch alike, which is what both engines refuse.
-    // Offering a target here would stage a blow they then reject.
-    if (!cell.panel && !this.settingOut) {
-      const unit = this.config?.units?.[cell.piece.unit_id];
-      const heals = (unit?.heal?.length ?? 0) > 0;
+    // The opening and postmatch forbid attacks. Postmatch still permits
+    // healing, within the normal range and action budget.
+    const unit = this.config?.units?.[cell.piece.unit_id];
+    const heals = (unit?.heal?.length ?? 0) > 0;
+    if (!cell.panel && !this.initializing && (heals || !this.settingOut)) {
       const range: number = heals ? unit.heal.length : unit?.attackRange ?? 1;
       for (const other of this.cells) {
         if (!other.piece || other.key === key) continue;
@@ -5150,7 +5208,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         // Offering the blow there would send a message the server has no
         // answer for, and stall the turn on it.
         if (other.panel && !this.entryBind) continue;
-        if (canAttack(unit, hexDistanceKeys(key, other.key))) this.attackTargets.add(other.key);
+        if (canAttack(unit, hexDistanceKeys(key, other.key), this.buffOf(key, 'atk'))) {
+          this.attackTargets.add(other.key);
+        }
       }
     }
     this.refreshForecast();
@@ -5245,9 +5305,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     this.refundTargets = held.refund;
     this.entryTargets = held.entry;
     // The strike layer sits just outside whatever movement is left - and is
-    // not drawn at all for a unit that cannot strike: a panel unit, or
-    // anybody at all on a turn given to setting out.
-    if (cell.panel || this.settingOut) return;
+    // suppressed during the opening and for panels. Postmatch shows healing
+    // reach while leaving ordinary attack reach hidden.
+    if (cell.panel || this.initializing) return;
     // Bounded by what the board DRAWS, not by the battlefield: a unit at the
     // edge reaches into the panel beside it, and the overlay has to say so.
     // Left to its own bound the zone stops dead at the hexagon's rim, which
@@ -5261,8 +5321,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       this.previewHeals = computeAttackZone(
         key, fieldMoves, this.config, cell.piece.unit_id, this.radius, undefined, healRange, 1,
       );
-    } else if (canAttack(this.config?.units?.[cell.piece.unit_id],
-                         this.config?.units?.[cell.piece.unit_id]?.attackMinRange ?? 1)) {
+    } else if (!this.settingOut && canAttack(this.config?.units?.[cell.piece.unit_id],
+                         this.config?.units?.[cell.piece.unit_id]?.attackMinRange ?? 1,
+                         this.buffOf(key, 'atk'))) {
       this.previewAttacks = computeAttackZone(
         key, this.previewMoves, this.config, cell.piece.unit_id, this.radius,
         this.strikeBounds[cell.piece.color],
@@ -5312,7 +5373,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // unit drew a purple number over your own face for a blow that was never
     // coming, and the trade read as worse than it was.
     const answers = !BASE_PANELS.has(this.cellsByKey.get(to)?.panel ?? '');
-    const counter = answers && targetHp > 0 && canAttack(this.config?.units?.[them.unit_id], distance)
+    const counter = answers && targetHp > 0
+      && canAttack(this.config?.units?.[them.unit_id], distance, this.buffOf(to, 'atk'))
       ? strikeDamage(them.unit_id, me.unit_id, distance, this.config,
                      this.buffOf(to, 'atk'), this.buffOf(from, 'def'))
       : 0;
@@ -5466,7 +5528,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       hp: wholeStat(pc.hp),
       hpMax: wholeStat(pc.max_hp ?? def?.hp),
       hpAfter: this.forecastHpAfter(hex.key),
-      atk: attackTiers(pc.unit_id, this.config).map(d => String(wholeStat(d))).join(','),
+      atk: attackTiers(pc.unit_id, this.config).map(d => wholeStat(d)!),
       def: wholeStat(def?.defense),
       mv: wholeStat(def?.move),
       points: def?.value ?? 0,

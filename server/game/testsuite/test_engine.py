@@ -251,7 +251,7 @@ class ConfigLoaderTestCase(TestCase):
         self.assertEqual(
             {k: loaded['rules'][k] for k in COUNTED_RULES},
             {'panelMoversPerTurn': 3, 'postmatchEntries': 5,
-             'homecomingsPerSetupTurn': 3, 'cpAtStart': 5, 'cpPhaseOffset': 5})
+             'homecomingsPerSetupTurn': 3, 'cpAtStart': 5, 'cpPhaseOffset': 5, 'upAtStart': 10})
         for key in COUNTED_RULES:
             for value in (-1, 1.5, True, None):
                 bad = copy.deepcopy(DEFAULT_CONFIG)
@@ -2459,13 +2459,7 @@ class PanelMoveTestCase(DealtPanels, TestCase):
 
 
 class PointsTestCase(TestCase):
-    """
-    Points, added up from the history rather than tallied in each browser.
-
-    Every source and sink of a point is on a record, so the server can price the
-    wrap against the same number both players are shown - and a reload no longer
-    loses them.
-    """
+    """Regular points follow the schedule; UP follows unit transactions."""
 
     def _cfg(self):
         return load_config(None)
@@ -2539,10 +2533,7 @@ class PointsTestCase(TestCase):
         self.assertEqual(economy.points_of('white', 73, [], config, won), 119)
 
     def test_a_kill_pays_the_dead_unit_s_worth_and_a_counter_kill_pays_the_defender(self):
-        """
-        *The owner, 24 Sep 2026: "anytime a unit is killed, i get the amount of
-        regular points which the one i killed is worth"* - it was 1 a kill.
-        """
+        """The 4 Oct revision pays attack/counter rewards in UP, separately from ability points."""
         config = self._cfg()
         history = [
             {'color': 'white', 'unit_id': 'pawn', 'captured': 'queen', 'defender_eliminated': True},
@@ -2551,10 +2542,12 @@ class PointsTestCase(TestCase):
         queen_value = config['units']['queen']['value']
         knight_value = config['units']['knight']['value']
         self.assertEqual(
-            economy.points_of('white', 1, history, config),
-            1 + queen_value + knight_value,
+            economy.unit_points_of('white', history, config),
+            10 + queen_value + knight_value,
         )
         self.assertEqual(economy.points_of('black', 1, history, config), 0)
+        self.assertEqual(economy.points_of('white', 1, history, config), 1)
+        self.assertEqual(economy.unit_points_of('black', history, config), 10)
 
     def test_a_kill_in_a_panel_pays_nobody(self):
         """
@@ -2583,6 +2576,7 @@ class PointsTestCase(TestCase):
         config = self._cfg()
         history = [{'panelEffect': True, 'color': 'white', 'defender_eliminated': True}]
         self.assertEqual(economy.points_of('white', 1, history, config), 1)
+        self.assertEqual(economy.unit_points_of('white', history, config), 10)
 
     def test_a_round_trip_out_over_the_wrap_and_home_again_costs_nothing(self):
         config = self._cfg()
@@ -2591,9 +2585,11 @@ class PointsTestCase(TestCase):
                            cost=1, price=value)
         home = {'withdrawn': True, 'color': 'white', 'unit_id': 'knight',
                 'unit': {'uid': 'rbl3', 'color': 'white'}}
-        base = economy.points_of('white', 21, [], config)
-        self.assertEqual(economy.points_of('white', 21, [wrap], config), base - value)
-        self.assertEqual(economy.points_of('white', 21, [wrap, home], config), base)
+        base = economy.unit_points_of('white', [], config)
+        self.assertEqual(economy.unit_points_of('white', [wrap], config), base - value)
+        self.assertEqual(economy.unit_points_of('white', [wrap, home], config), base)
+        self.assertEqual(economy.points_of('white', 21, [wrap], config),
+                         economy.points_of('white', 21, [], config))
         # And none of it is black's business.
         self.assertEqual(economy.points_of('black', 21, [wrap, home], config),
                          economy.points_of('black', 21, [], config))
@@ -2850,6 +2846,33 @@ class PhaseVeterancyTestCase(SimpleTestCase):
         self.assertEqual(self.rank('0,0', 27, history), 2)
         self.assertEqual(self.rank('-6,12', 7, orientation='edge-up'), 1)
         self.assertEqual(self.rank('-6,12', 7, orientation='vertex-up'), 0)
+
+    def test_phase_three_heals_existing_veterans_only_in_field_and_reserve(self):
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['setup'] = {'white': {'11,1': 'pawn', '12,1': 'pawn', '-12,1': 'pawn'},
+                           'black': {'-11,-1': 'pawn'}}
+        def unit(uid, color='white', hp=1):
+            return dict(uid=uid, color=color, unit_id='pawn', hp=hp, max_hp=12)
+        def wound(uid, at, panel, hp=1):
+            return dict(turn=60, intoPanel=True, panelEffect=True, panel=panel,
+                        unit=unit(uid), attackedHex=at, defenderHp=hp)
+        board = {'0,0': unit('early'), '1,0': unit('black', 'black'),
+                 '2,0': unit('late'), '3,0': unit('dead', hp=0)}
+        history = [dict(turn=8, entered=True, unit=unit('late'),
+                        **{'from': '-12,1', 'to': '2,0'}),
+                   wound('w11,1', '11,1', 'br'), wound('w-12,1', '-12,1', 'bl'),
+                   wound('w12,1', '12,1', 'br', hp=0),
+                   wound('b-11,-1', '-11,-1', 'tl')]
+        self.assertEqual(panels.promotion_heals(config, board, history, 70), [])
+        self.assertEqual(board['0,0']['hp'], 1)
+        effects = panels.promotion_heals(config, board, history, 71)
+        self.assertEqual([board[k]['hp'] for k in board], [12, 12, 1, 0])
+        self.assertEqual({e['unit']['uid'] for e in effects}, {'w11,1', 'b-11,-1'})
+        self.assertTrue(all(e['defenderHp'] == 12 and e['promotionHeal'] for e in effects))
+        standing = panels.panel_occupancy(config, 11, [*history, *effects], ply=71)
+        self.assertEqual(standing['11,1']['hp'], 12)
+        self.assertEqual(standing['-11,-1']['hp'], 12)
+        self.assertEqual(panels.promotion_heals(config, board, [*history, *effects], 72), [])
 
     def test_server_handovers_and_serialization_carry_rank(self):
         from types import SimpleNamespace

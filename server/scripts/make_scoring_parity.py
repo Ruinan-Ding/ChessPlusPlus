@@ -27,7 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.path.dirname(HERE)
 sys.path.insert(0, SERVER)
 
-from game.engine import phases, scoring  # noqa: E402
+from game.engine import economy, phases, scoring  # noqa: E402
 from game.engine.config_loader import DEFAULT_CONFIG  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(SERVER), 'client', 'src', 'app', 'services', 'scoring-parity.json')
@@ -84,6 +84,20 @@ def make_cases(rng):
                     cases.append({'config': {'board': {'radius': 11}, 'units': {uid: {'value': u['value'], 'captureZones': u['captureZones']}
                                                for uid, u in DEFAULT_CONFIG['units'].items()}}, 'board': board, 'history': [],
                                   'bank': {}, 'ply': 27})
+    for phase, ply in ((1, 17), (2, 39), (3, 61)):
+        config = {'board': {'radius': 11}, 'units': UNITS, 'rules': {'upAtStart': 10}}
+        board = {'-3,6': {'unit_id': 'pawn', 'color': 'white'},
+                 '7,0': {'unit_id': 'rook', 'color': 'black'}}
+        history = [{'turn': ply - 1, 'color': 'white', 'unit_id': 'pawn',
+                    'attacker_eliminated': True},
+                   {'turn': ply - 1, 'color': 'black', 'unit_id': 'rook',
+                    'captured': 'pawn', 'defender_eliminated': True},
+                   {'panelMove': True, 'price': 5, 'unit': {'color': 'white'}},
+                   {'withdrawn': True, 'unit_id': 'rook', 'color': 'black'}]
+        for at in (ply - 1, ply, ply + 1):
+            cases.append({'config': config, 'board': board, 'history': history, 'bank': {}, 'ply': at})
+        awards = scoring.halftime_up_awards(config, board, history, ply)
+        cases.append({'config': config, 'board': {}, 'history': history + awards, 'bank': {}, 'ply': ply})
     return cases
 
 
@@ -93,6 +107,8 @@ def answers(case):
     radius = config['board']['radius']
     ending = scoring.schedule_ending(bank, ply)
     return {
+        'up': [economy.unit_points_of(side, history, config) for side in ('white', 'black')],
+        'halftimeUp': scoring.halftime_up_awards(config, board, history, ply),
         'claims': dict(sorted(scoring.capture_claims(board, radius, config).items())),
         'cap': [scoring.cap_of(board, radius, side, config) for side in ('white', 'black')],
         'bank': scoring.bank_ended_phases(bank, config, board, history, ply),

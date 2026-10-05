@@ -55,35 +55,65 @@ export class AudioService {
     frequencies: number[], duration: number,
     { type = 'sine', delay = 0 }: { type?: OscillatorType; delay?: number } = {},
   ): void {
+    this.play(context => {
+      const now = context.currentTime + Math.max(0, delay);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.3 * this.volume, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration * frequencies.length);
+      gain.connect(context.destination);
+      frequencies.forEach((frequency, index) => {
+        const oscillator = context.createOscillator();
+        oscillator.frequency.value = frequency;
+        oscillator.type = type;
+        oscillator.connect(gain);
+        oscillator.start(now + index * duration);
+        oscillator.stop(now + (index + 1) * duration);
+        // A tone per move, per attack and per timer beep adds up: let the
+        // last one take its gain node with it.
+        if (index === frequencies.length - 1) {
+          oscillator.onended = () => gain.disconnect();
+        }
+      });
+    });
+  }
+
+  playSwoosh(): void {
+    this.play(context => {
+      const now = context.currentTime;
+      const duration = 0.16;
+      const buffer = context.createBuffer(1, Math.ceil(context.sampleRate * duration), context.sampleRate);
+      const samples = buffer.getChannelData(0);
+      for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      const filter = context.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(2400, now);
+      filter.frequency.exponentialRampToValueAtTime(500, now + duration);
+      filter.Q.value = 0.7;
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.2 * this.volume, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(context.destination);
+      source.onended = () => { source.disconnect(); filter.disconnect(); gain.disconnect(); };
+      source.start(now);
+      source.stop(now + duration);
+    });
+  }
+
+  private play(sound: (context: AudioContext) => void): void {
     if (this.muted || this.volume <= 0 || typeof AudioContext === 'undefined') return;
     try {
       this.context ??= new AudioContext();
       const context = this.context;
-      const play = (): void => {
-        const now = context.currentTime + Math.max(0, delay);
-        const gain = context.createGain();
-        gain.gain.setValueAtTime(0.0001, now);
-        gain.gain.exponentialRampToValueAtTime(0.3 * this.volume, now + 0.01);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + duration * frequencies.length);
-        gain.connect(context.destination);
-        frequencies.forEach((frequency, index) => {
-          const oscillator = context.createOscillator();
-          oscillator.frequency.value = frequency;
-          oscillator.type = type;
-          oscillator.connect(gain);
-          oscillator.start(now + index * duration);
-          oscillator.stop(now + (index + 1) * duration);
-          // A tone per move, per attack and per timer beep adds up: let the
-          // last one take its gain node with it.
-          if (index === frequencies.length - 1) {
-            oscillator.onended = () => gain.disconnect();
-          }
-        });
-      };
       if (context.state === 'suspended') {
-        void context.resume().then(play);
+        void context.resume().then(() => sound(context), () => {});
       } else {
-        play();
+        sound(context);
       }
     } catch {
       // Audio is optional and may be unavailable in restricted browsers.

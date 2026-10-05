@@ -1,9 +1,10 @@
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { SimpleChange } from '@angular/core';
 import { GameBoardComponent, hexNumberMap } from './game-board.component';
 import { DEFAULT_GAME_CONFIG } from '../../services/config.service';
 import { OVERTIME_FIRST_PLY } from '../../services/phases';
 import { setPanelsDealt } from '../../services/hex-rules';
+import { AudioService } from '../../services/audio.service';
 
 /**
  * The reach preview and the stat glyphs are what the player reads off the
@@ -91,6 +92,35 @@ describe('GameBoardComponent reach preview', () => {
     expect(board.previewAttacks.size).toBe(0);
   });
 
+  it('uses effective ATK for shieldman reach and counters and suppresses attacks drained to zero', () => {
+    board.config = structuredClone(DEFAULT_GAME_CONFIG);
+    board.radius = 11; board.interactive = true;
+    board.controlAllSides = true; board.turnColor = 'white';
+    board.boardState = {
+      '0,0': { unit_id: 'pawn', color: 'white', uid: 'own', hp: 12, max_hp: 12 },
+      '1,0': { unit_id: 'shieldman', color: 'black', uid: 'enemy', hp: 30, max_hp: 30 },
+    };
+    const rebuild = () => board.ngOnChanges({
+      boardState: new SimpleChange(null, board.boardState, false),
+      config: new SimpleChange(null, board.config, false),
+      unitBuffs: new SimpleChange(null, board.unitBuffs, false),
+    });
+    board.unitBuffs = { enemy: { atk: 8, mov: 0 } }; rebuild();
+    board.onHexClick(cell('0,0')); board.onHexHover(cell('1,0'));
+    expect(board.attackTargets.has('1,0')).toBeTrue();
+    expect(board.forecastDamage('0,0')).toBe('-1');
+    expect(cell('1,0').stats!.atk).toBe('8');
+    board.unitBuffs = { own: { atk: -8, mov: -2 } }; rebuild();
+    board.onHexClick(cell('0,0')); board.onHexHover(cell('0,0'));
+    expect(board.attackTargets.size).toBe(0);
+    expect(board.previewAttacks.size).toBe(0);
+    expect((board as any).moveCosts.has('-5,0')).toBeFalse();
+    expect((board as any).moveCosts.has('-4,0')).toBeTrue();
+    board.turnColor = 'black'; board.unitBuffs = { enemy: { atk: 8, mov: 0 } }; rebuild();
+    board.onHexClick(cell('1,0'));
+    expect(board.attackTargets.has('0,0')).toBeTrue();
+  });
+
   it('offers a healer only other friendly battlefield units, previews HP and confirms touch healing', () => {
     board.config = { ...config, units: { ...config.units, medic: {
       name: 'Medic', symbol: 'M', attack: 0, attackRange: 1, heal: [14, 13, 12, 11], move: 1, hp: 22,
@@ -129,7 +159,15 @@ describe('GameBoardComponent reach preview', () => {
     board.turnNumber = 27;
     board.ngOnChanges({ turnNumber: new SimpleChange(20, 27, false) });
     board.onHexClick(cell('0,0'));
+    expect(board.healTargets.has('3,0')).toBeTrue();
+    board.onHexHover(cell('0,0'));
+    expect(board.previewHeals.size).toBeGreaterThan(0);
+    board.turnNumber = 1;
+    board.ngOnChanges({ turnNumber: new SimpleChange(27, 1, false) });
+    board.onHexClick(cell('0,0'));
     expect(board.healTargets.size).toBe(0);
+    board.onHexHover(cell('0,0'));
+    expect(board.previewHeals.size).toBe(0);
   });
 
   it('gives an armed friendly ability the next unit click before normal healing or attacking', () => {
@@ -2947,7 +2985,7 @@ describe('GameBoardComponent setup deal', () => {
       expect(seen.hp).withContext(unitId).toBe(115);
       expect(seen.hpMax).withContext(unitId).toBe(changed.hp);
       expect(seen.mv).withContext(unitId).toBe(changed.move);
-      expect(seen.atk).withContext(unitId).toBe('77,57,38');
+      expect(seen.atk).withContext(unitId).toEqual([77, 57, 38]);
       expect(seen.def).withContext(unitId).toBe(changed.defense);
       expect(seen.points).withContext(unitId).toBe(changed.value);
       expect(hex.stats.hp).withContext(unitId).toBe(99);
@@ -3564,4 +3602,87 @@ describe('GameBoardComponent on a touch screen', () => {
     expect(unscaled).toBeGreaterThan(0);
     expect(scaled / unscaled).toBeCloseTo(2, 3);
   });
+});
+
+
+describe('board turn announcements', () => {
+  let fixture: ComponentFixture<GameBoardComponent>;
+  let board: GameBoardComponent;
+  let swoosh: jasmine.Spy;
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({ imports: [GameBoardComponent] }).compileComponents();
+    fixture = TestBed.createComponent(GameBoardComponent);
+    board = fixture.componentInstance;
+    board.config = DEFAULT_GAME_CONFIG;
+    board.radius = 11;
+    board.currentTurn = 'White';
+    board.myColor = 'black';
+    swoosh = spyOn(TestBed.inject(AudioService), 'playSwoosh');
+  });
+  const arrive = (ply: number, first = false) => {
+    const previous = board.turnNumber;
+    board.turnNumber = ply;
+    board.ngOnChanges({ turnNumber: new SimpleChange(previous, ply, first) });
+    (board as any).cdr.detectChanges();
+  };
+  const notice = () => fixture.nativeElement.querySelector('.turn-announcement') as HTMLElement | null;
+
+  it('announces each full turn once, briefly, and leaves the Black-seat board clickable', fakeAsync(() => {
+    board.freshGameStart = true;
+    arrive(1, true);
+    expect(notice()!.querySelector('strong')!.textContent).toBe('Initialization');
+    expect(notice()!.querySelector('span')!.textContent).toBe('Turn 1');
+    expect(notice()!.closest('.board-container')).not.toBeNull();
+    expect(getComputedStyle(notice()!.parentElement!).overflow).toBe('hidden');
+    expect(getComputedStyle(notice()!).animationDuration).toBe('0.6s');
+    expect(swoosh).toHaveBeenCalledTimes(1);
+    expect(getComputedStyle(notice()!).pointerEvents).toBe('none');
+    tick(600); fixture.detectChanges();
+    expect(notice()).toBeNull();
+    arrive(2);
+    expect(notice()).toBeNull();
+    expect(swoosh).toHaveBeenCalledTimes(1);
+    arrive(3);
+    expect(notice()!.querySelector('strong')).toBeNull();
+    expect(notice()!.querySelector('span')!.textContent).toBe('Turn 2');
+    tick(300); arrive(3);
+    expect(swoosh).toHaveBeenCalledTimes(2);
+    tick(300); fixture.detectChanges();
+    expect(notice()).toBeNull();
+  }));
+
+  it('uses the schedule for every phase, halftime, postmatch and overtime milestone', fakeAsync(() => {
+    const stages: [number, string][] = [
+      [7, 'Phase 1'], [17, 'Phase 1 Halftime'], [27, 'Phase 1 Postmatch'],
+      [29, 'Phase 2'], [39, 'Phase 2 Halftime'], [49, 'Phase 2 Postmatch'],
+      [51, 'Phase 3'], [61, 'Phase 3 Halftime'], [71, 'Phase 3 Postmatch'],
+      [73, 'Overtime 1'], [89, 'Overtime 2'], [99, 'Overtime 3'],
+    ];
+    for (const [ply, stage] of stages) {
+      board.turnNumber = ply - 2;
+      arrive(ply);
+      expect(notice()!.querySelector('strong')!.textContent).withContext(String(ply)).toBe(stage);
+      expect(notice()!.querySelector('span')!.textContent).toBe(`Turn ${Math.ceil(ply / 2)}`);
+    }
+    tick(600);
+  }));
+
+  it('does not replay an ongoing turn on reload or announce after the match ends', fakeAsync(() => {
+    arrive(1, true);
+    expect(notice()).toBeNull();
+    expect(swoosh).not.toHaveBeenCalled();
+    arrive(29, true);
+    expect(notice()).toBeNull();
+    board.turnNumber = 0;
+    arrive(1);
+    expect(notice()).toBeNull();
+    expect(swoosh).not.toHaveBeenCalled();
+    arrive(3);
+    expect(notice()!.querySelector('span')!.textContent).toBe('Turn 2');
+    tick(600); fixture.detectChanges();
+    board.currentTurn = '';
+    arrive(31);
+    expect(notice()).toBeNull();
+    tick(600);
+  }));
 });

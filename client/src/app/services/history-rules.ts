@@ -265,3 +265,48 @@ export function unitVeterancy(
   }
   return vet;
 }
+
+/** Phase 3 postmatch heals units that had already reached vet 3, once. */
+export function promotionHeals(config: any, board: Record<string, any>, history: Move[], ply: number): Move[] {
+  const boundary = (phaseStartTurn(3) + PHASES[3].turns - 1) * PLIES_PER_TURN + 1;
+  if (ply !== boundary) return [];
+  const radius = config?.board?.radius ?? 11;
+  const orientation = config?.board?.orientation ?? 'edge-up';
+  const veteran = (uid: string, at: string) =>
+    unitVeterancy(uid, at, history, ply - 1, radius, orientation) === 3;
+  for (const [at, unit] of Object.entries(board)) {
+    if (unit.hp > 0 && veteran(unit.uid ?? `${unit.color[0]}${at}`, at)) {
+      board[at] = { ...unit, hp: unit.max_hp ?? config?.units?.[unit.unit_id]?.hp ?? unit.hp };
+    }
+  }
+  const panels = new Map<string, { at: string; unit: any; panel: string }>();
+  for (const move of history) {
+    const unit = move?.unit;
+    if (!unit?.uid) continue;
+    if (move.entered) {
+      panels.delete(unit.uid);
+    } else if (move.withdrawn || move.panelMove) {
+      panels.set(unit.uid, { at: move.to, unit: { ...unit }, panel: panelOfHex(move.to, orientation) });
+    } else if (move.intoPanel && Number.isFinite(move.defenderHp)) {
+      const held = panels.get(unit.uid);
+      const at = held?.at || move.attackedHex || '';
+      panels.set(unit.uid, {
+        at, unit: { ...unit, hp: move.defenderHp },
+        panel: held?.panel || move.panel || (at ? panelOfHex(at, orientation) : ''),
+      });
+    }
+  }
+  const heals: Move[] = [];
+  for (const { at, unit, panel } of panels.values()) {
+    const full = unit.max_hp ?? config?.units?.[unit.unit_id]?.hp ?? unit.hp;
+    if (!panel || BASE_PANELS.has(panel) || unit.hp <= 0 || unit.hp >= full
+        || !veteran(unit.uid, at || '0,0')) continue;
+    heals.push({
+      from: '', to: '', unit_id: unit.unit_id, color: unit.color, turn: ply,
+      captured: null, attacked: false, damage_dealt: 0, moved: false,
+      defender_eliminated: false, intoPanel: true, panelEffect: true,
+      promotionHeal: true, unit, defenderHp: full, panel,
+    });
+  }
+  return heals;
+}

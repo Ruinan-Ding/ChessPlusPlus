@@ -2,7 +2,7 @@ import fixtures from './scoring-parity.json';
 import { captureClaims, captureZoneValues } from './hex-rules';
 import {
   PhaseBank, bankEndedPhases, capOf, cpAwarded, decidedOnPoints, deathsOf, phaseTotal, scheduleEnding,
-  scheduledPoints, vpAsPoints,
+  scheduledPoints, vpAsPoints, unitPoints, halftimeUpAwards,
 } from './match-score';
 import { overtimeTollAt, turnPointsBy } from './phases';
 
@@ -48,6 +48,8 @@ describe('scoring parity with the server', () => {
       const ending = scheduleEnding(bank, c.ply);
       const claims = Object.fromEntries([...captureClaims(c.board, c.config.board.radius, c.config)].sort());
       const actual = {
+        up: sides.map(side => unitPoints(c.config, c.history, side)),
+        halftimeUp: halftimeUpAwards(c.config, c.board, c.history, c.ply),
         claims,
         cap: sides.map(side => capOf(c.board, c.config.board.radius, side, c.config)),
         bank: bankEndedPhases(bank, c.config, c.board, c.history, c.ply),

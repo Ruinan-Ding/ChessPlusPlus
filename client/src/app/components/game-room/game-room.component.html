@@ -264,7 +264,7 @@
                     [disabled]="!canGoBack('opponent')"
                     [title]="canGoBack('opponent') ? '' : cpTitle"
                     (click)="goBack('opponent')"
-            >{{ canGoBack('opponent') ? 'Back' : ('CP: ' + cpOf('opponent')) }}</button>
+            >{{ canGoBack('opponent') ? 'Back' : ('CP: ' + cpOf('opponent') + ' UP: ' + upOf('opponent')) }}</button>
           </div>
           <p class="arming-hint">{{ abilityNote('opponent') }}</p>
         </div>
@@ -453,7 +453,7 @@
                     [disabled]="!canGoBack('mine')"
                     [title]="canGoBack('mine') ? '' : cpTitle"
                     (click)="goBack('mine')"
-            >{{ canGoBack('mine') ? 'Back' : ('CP: ' + cpOf('mine')) }}</button>
+            >{{ canGoBack('mine') ? 'Back' : ('CP: ' + cpOf('mine') + ' UP: ' + upOf('mine')) }}</button>
           </div>
           <p class="arming-hint">{{ abilityNote('mine') }}</p>
         </div>
@@ -650,6 +650,7 @@
           [radius]="state.config?.board?.radius ?? 11"
           [currentTurn]="state.currentTurn"
           [turnNumber]="state.turnNumber"
+          [freshGameStart]="freshGameStart"
           [moveHistory]="state.moveHistory"
           [username]="username"
           [myColor]="gameState.myColor(username)"

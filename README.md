@@ -1,7 +1,7 @@
 # ChessPlusPlus
 
 A turn-based tactics game on a hex grid - Fire Emblem's shape of combat rather than chess's,
-though it started from chess and still wears its pieces as placeholders. Django Channels over
+though it started from chess and still uses chess-derived unit names. Django Channels over
 WebSocket on the back, Angular on the front.
 
 The engine contains **no unit-specific code**. Movement, combat and setup are read from one
@@ -34,12 +34,14 @@ opponent's included - knowing what a thing threatens is half the game.
 
 **Movement** is a flood fill bounded by the unit's `MOV`. A unit walks **through its own side's
 units** but may not stop on one; **an enemy blocks** both its hex and the way past it, so going
-round one costs the detour. A unit keeps walking on what is left of its budget until it attacks
-or the turn ends.
+round one costs the detour. A unit keeps walking on what is left of its budget until it attacks,
+heals or the turn ends.
 
-**Attacking** is separate from moving. Each unit has an `attackRange` in rings of hex distance,
-ignoring obstacles - most reach only the six neighbours, some reach two or three rings out for
-less damage each ring (`rules.rangeFalloff`). Damage is flat and deterministic:
+**Attacking** is separate from moving. Reach is a band of hex-distance rings from optional
+`attackMinRange` (default 1) through `attackRange`, ignoring obstacles. Explicit attack lists
+set each ring's amount; scalar attacks use `rules.rangeFalloff`. The shipped archer attacks
+only at rings 3-6, for 4, 3, 2 and 1 before defence, and cannot hit a closer target. Shieldman
+has no base attack; Warcry gives it attacks and counters at ring 1. Damage is flat and deterministic:
 
 ```
 damage = attacker ATK (at that range) - defender DEF
@@ -47,15 +49,29 @@ damage = attacker ATK (at that range) - defender DEF
 ```
 
 **A blow that lands always takes something off.** Armour blunts a hit; it does not turn it
-aside. The floor used to be 0, which left whole matchups unable to hurt each other at all - a
-shieldman (8 ATK) dealt literally nothing to seven of the eight unit types. Set
+aside. The floor used to be 0, which left some matchups unable to hurt each other. Set
 `rules.minStrikeDamage` to 0 for the old behaviour. An attacker with no ATK at all still deals
 nothing: the floor lifts a blow that was blunted, not one that was never thrown.
 
 The defender then counters with the same sum reversed, but only if the attacker is inside *its*
-range - so a two-ring unit striking a melee unit takes nothing back. A unit at 0 HP dies and
-never counters. The attacker holds its ground even on a kill; taking the hex would be free
+range, including its minimum - so an archer striking a melee unit at ring 3 takes nothing
+back. A unit at 0 HP dies and never counters. The attacker holds its ground even on a kill; taking the hex would be free
 movement, and movement is the thing being budgeted.
+
+**Healing** is the bishop's normal action: it may move, then heal one other friendly
+battlefield unit at ring 1 for 8 HP, capped at the target's maximum. Healing spends its attack
+action, costs no CP and can be undone before End Turn. It is available in solo and online play;
+it is separate from the solo ability catalogue. Every postmatch permits abilities and normal
+healing while normal unit attacks remain blocked. Initialization permits neither casts nor
+normal healing.
+
+**Veterancy** starts at zero. Both sides' battlefield and green-reserve units gain a star as
+Phase 1 starts and as each numbered phase's postmatch starts, up to three. Red-base units gain
+none there, but returning veterans keep their stars. Ordinary turns, damage and kills grant
+none. At Phase 3 postmatch start, living battlefield and green-reserve units already at
+vet 3 heal to full; units gaining their third star then keep their current HP.
+The Unit panel shows rows HP/MOV, ATK/DEF and HEL/VET, with each attack or heal amount
+labelled by range.
 
 **Bases and reserves** can be struck from the battlefield. A unit in a reserve strikes back; one
 in a base never does, but it mends an HP at the end of each of its side's turns - and only while
@@ -68,21 +84,44 @@ exactly as it should. Each phase is scored on five capture zones; after Phase 3 
 ahead on points wins, and anything closer goes to overtime, where each king pays a toll every
 turn it plays.
 
+**Capture zones** have cumulative unit permissions: pawn, archer and shieldman can capture
+or neutralize their own 3x zone; bishop, rook and knight can also work the middle 2x and side
+1x zones; king and queen can work every zone. An outer-ring unit scores only the hex it stands
+on, but disrupts adjacent enemy claims. An inner-ring unit also scores adjacent zone hexes.
+A centre unit controls all nineteen hexes only while no eligible enemy is inside that zone;
+otherwise its normal adjacent claims apply. Solid gold outlines mark centres, dashed gold
+outlines the inner ring; black's 3x zone is dark blue and white's is light blue.
+
 **A turn is staged before it is sent.** Steps, attacks and casts pile up on a local stack, so
 the board shows where each unit would end up; Undo pops one action at a time. End Turn sends
 the turn in the order it was played: the panel moves, crossings and walks home first, then one
 message per battlefield move, each but the last marked `more` - and only the last hands the
 turn over. Nothing is committed until then.
 
-**Points and abilities.** Points come in every turn at a rate the phase sets, with a grant as
-each phase starts; a kill pays the killer the dead unit's value, and walking home refunds it.
-Abilities cost points and go on cooldown when used. Using one is click-then-target: press the
-slot, then click who it lands on - a friendly unit for a boost, an enemy for damage. Clicking
+**Points and abilities.** Points accrue at the start of each side's turns until overtime,
+with a grant as each numbered phase starts. Unit points (UP) start at 10 per side. Battlefield
+attack/counter kills and walking home pay unit value in UP; panel and ability kills pay none.
+Crossings spend unit value in UP. Each halftime adds that side's current phase VP snapshot
+to UP once; CP and UP appear together. Pool
+abilities spend points; paths and their abilities spend CP, awarded at postmatch on top of the
+starting CP. Activatable abilities have configured cooldowns. Using one is click-then-target:
+press the slot, then click who it lands on - a friendly unit for a boost, an enemy for damage. Clicking
 the wrong kind of target cancels instead. The effect is a stat change (+MOV, +ATK, +DEF, or
-damage) for as long as the ability says; the Unit panel shows boosted over base, so a +4 on a
-base 26 reads `30/26`, and +MOV is real extra steps, not just a number. **Abilities are solo
-only for now**: a server does not take a client's word for a stat, and boosts have not reached
-its combat yet.
+damage) for as long as the ability says; the Unit panel shows current over base, so a +4 on
+a pawn's base ATK 8 reads `1:12/8`, and +MOV gives real extra steps. Effects follow unit identity
+through moves and solo reloads, and expire on their own caster's turn. An armed friendly
+ability takes priority over the bishop's normal healing. **Abilities are solo only for now**:
+the server has not implemented authoritative casts, costs, cooldowns or combat boosts.
+
+The pool is Warcry/Sap, Bulwark/Weakening, Dash/Mire and Mend/Strike. Stat effects last through
+the caster's turn and the opponent's, expiring at the caster's next turn. Sap, Weakening and
+Mire affect the enemy battlefield and green-reserve units present when cast. Red-base units
+and later arrivals are excluded; affected returnees keep the effect until it expires.
+Costs, cooldowns and amounts are in [AGENTS.md](AGENTS.md#ability-panels).
+
+A 0.6-second announcement slides in from the right, pauses briefly at the centre, then exits
+left with a short swoosh, marking each full turn without blocking clicks. Stage changes show
+the larger stage name above its turn number, including halftimes, postmatches and numbered overtime stages.
 
 **Single player needs no server at all.** A solo game runs entirely in the browser and survives
 a reload; the lobby lets you in with any name - or none - when the server is unreachable. It
@@ -91,9 +130,11 @@ and lobby chat are live while you play alone.
 
 ### Still placeholder
 
-The unit roster (chess pieces), every stat value, the ability effects and costs, and veterancy
-ranks. They are numbers in a config file waiting for the real game design, not mechanics baked
-into the engine.
+The first four ability pairs use the owner's specified effects. The remaining path and unit
+abilities, and third-star bonus previews, still await their rules. Unit HP, MOV, ATK, DEF, HEL and costs are the owner's 4 Oct
+roster in [shared/default-config.json](shared/default-config.json); the full roster table and
+phase-only veterancy rules are in [AGENTS.md](AGENTS.md). Earned stars are live game state;
+the placeholder third-star stat bonuses remain display-only.
 
 ## Running the Application
 
@@ -151,7 +192,7 @@ Then open: http://localhost:4200
 If you notice ghost users in the lobby, run:
 ```bash
 cd server
-python manage.py cleanup_game_state
+DJANGO_DEBUG=true python manage.py cleanup_game_state
 ```
 
 This removes player connections that haven't sent a heartbeat in 10+ minutes, clears

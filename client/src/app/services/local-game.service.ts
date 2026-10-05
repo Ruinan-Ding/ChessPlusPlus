@@ -1,18 +1,19 @@
 import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 import { ConfigService, ruleOf } from './config.service';
+import type { BoardState } from './game-state.service';
 import {
   computeLegalMoves, canAttack, healingAmount, hexDistanceKeys, inHomeRows, isInsideBoard, strikeDamage,
 } from './hex-rules';
 import {
   boardMoveLandings, boardMovesAt, homecomingsAt, lockedPanelUnits, openingMovedHexes,
-  panelMoverAllowed, unitVeterancy,
+  panelMoverAllowed, unitVeterancy, promotionHeals,
 } from './history-rules';
 import {
   boardMovesPerTurn, overtimeTollAt, isEntryOpen,
   isHomecomingOpen, isInitialization, isSetupTurn, isWrapOpen, noAttackMessage,
 } from './phases';
-import { PhaseBank, bankEndedPhases, scheduleEnding } from './match-score';
+import { PhaseBank, bankEndedPhases, halftimeUpAwards, scheduleEnding, unitPoints } from './match-score';
 
 /**
  * What overtime costs a commander at the end of each of its side's turns.
@@ -53,15 +54,14 @@ import { PhaseBank, bankEndedPhases, scheduleEnding } from './match-score';
  * and the mover's colour. Neither needs a panel. So a crossing must land in
  * its own rows and inside the entry window, a walk home must start in them and
  * inside the homecoming window - three a turn while setting out, uncounted in
- * overtime - and no ability fires on a setup turn at all.
+ * overtime - and no ability fires during the opening.
  *
  * It takes on trust what an ability is worth (a boost, a mend, a cast's HP)
  * and everything that wants a panel to work out: which panel a unit stands in,
  * what a walk inside one cost, and **whether a walk is a crossing at all** -
  * so the price of a wrap is derived but the decision that one is owed is not,
- * and a message claiming `price: 0` crosses for nothing. Whether a side can
- * afford it is the room's for a further reason: a solo purse holds what
- * abilities have paid in and out as well as what the record shows. Those are
+ * and a message claiming `price: 0` crosses for nothing. UP affordability is
+ * checked against the committed history. The remaining trust boundaries are
  * 6.15 and 6.17 on the punchlist, and they settle together or not at all.
  */
 
@@ -88,7 +88,7 @@ interface LocalGame {
   username: string;
   hostColor: 'white' | 'black';
   started: boolean;
-  boardState: Record<string, any>;
+  boardState: BoardState;
   currentTurn: string;
   turnNumber: number;
   moveHistory: any[];
@@ -108,12 +108,11 @@ interface LocalGame {
 
 /**
  * The extra steps a message says an ability lent a unit: a whole number, and
- * never below 0 - a drained MOV is the board's to show, and walking fewer
- * steps than offered is always legal. No ceiling: the config decides how far
- * an ability sends a unit, and the board has already offered exactly that.
+ * signed so movement drains constrain committed walks too. No ceiling:
+ * the config decides how far an ability sends a unit.
  */
 function extraSteps(moveBonus: unknown): number {
-  return Math.max(0, Math.trunc(Number(moveBonus) || 0));
+  return Math.trunc(Number(moveBonus) || 0);
 }
 
 @Injectable({ providedIn: 'root' })
@@ -353,13 +352,8 @@ export class LocalGameService {
   /**
    * Whether a message brought an ability onto a turn that forbids one.
    *
-   * **No ability fires on a turn given to setting out** - the owner's rule for
-   * a phase's extra turn (its postmatch now; it was an initialization at the
-   * phase's start when the rule was made), and true of the opening for the
-   * same reason. This is the one ability rule the engine can keep without the
-   * abilities being settled: it does not need to know what a cast is *worth*
-   * to know that none should have arrived. What it is worth stays on trust, as everything about
-   * abilities does.
+   * The opening forbids casts; every postmatch permits them. The engine
+   * checks this window without needing to resolve the solo catalogue.
    *
    * A zero is not a use. The room sends `moveBonus: 0` and an all-zero
    * `bonuses` on ordinary turns, and refusing those would refuse every move.
@@ -368,7 +362,7 @@ export class LocalGameService {
     moveBonus?: number, bonuses?: any, effects?: any[], effectsBefore?: any[],
   ): boolean {
     const g = this.game!;
-    if (!isSetupTurn(g.turnNumber)) return false;
+    if (!isInitialization(g.turnNumber)) return false;
     if (effects?.length || effectsBefore?.length) return true;
     // **Sent at all, and not a zero.** `Number(x) || 0` read as a guard let
     // `moveBonus: 'x'` through as though no ability had come: NaN is falsy, so
@@ -504,14 +498,12 @@ export class LocalGameService {
       this.emit({ type: 'invalid_move', message: 'The wrap is shut' });
       return;
     }
-    // **The amount is derived; the decision is not.** The price is the unit's
-    // own worth from config rather than the number the message put on it - but
-    // whether a price is owed at all is still the message's word, because
-    // telling a crossing from a shuffle inside a base needs the panel geometry
-    // this engine has not got. A message claiming `price: 0` still wraps for
-    // nothing. Whether the side can afford it is the room's for a third
-    // reason: a solo purse holds what abilities have paid in and out too.
+    // Geometry remains the room's; the price and UP affordability are derived here.
     const worth = Math.max(0, Math.trunc(Number(g.config?.units?.[unit.unit_id]?.value) || 0));
+    if (wrap && unitPoints(g.config, g.moveHistory, unit.color) < worth) {
+      this.emit({ type: 'invalid_move', message: 'Not enough UP for the crossing' });
+      return;
+    }
     g.moveHistory = [...g.moveHistory, {
       from, to, unit_id: unit.unit_id, color: unit.color, turn: g.turnNumber,
       captured: null, attacked: false, damage_dealt: 0,
@@ -625,7 +617,7 @@ export class LocalGameService {
       return;
     }
     const distance = hexDistanceKeys(to, attack);
-    if (!canAttack(g.config?.units?.[attacker.unit_id], distance)) {
+    if (!canAttack(g.config?.units?.[attacker.unit_id], distance, bonuses?.atk ?? 0)) {
       this.emit({ type: 'invalid_move', message: 'Out of range' });
       return;
     }
@@ -652,7 +644,7 @@ export class LocalGameService {
       // Whether it answers at all is the panel's rule, and the client owns
       // panels - this engine has no idea which one a unit is standing in. A
       // reserve strikes back; a base never does.
-      if (counters && canAttack(g.config?.units?.[unit.unit_id], distance)) {
+      if (counters && canAttack(g.config?.units?.[unit.unit_id], distance, bonuses?.targetAtk ?? 0)) {
         const counter = strikeDamage(
           unit.unit_id, attacker.unit_id, distance, g.config,
           bonuses?.targetAtk ?? 0, bonuses?.def ?? 0);
@@ -752,7 +744,9 @@ export class LocalGameService {
     this.overtimeToll(board);
     g.boardState = board;
     g.moveHistory = [...g.moveHistory, ...before, record, ...after];
+    const historyLength = g.moveHistory.length;
     const ending = this.settleHandOver(this.defeatedSides(board));
+    after.push(...g.moveHistory.slice(historyLength));
     this.emit({
       // Under `move`, like every other move_made: applyMoveMade reads that
       // key and nothing else. Spread flat, the record went out looking
@@ -864,7 +858,7 @@ export class LocalGameService {
       }
       if (isSetupTurn(g.turnNumber)) {
         const gone = homecomingsAt(g.moveHistory, g.turnNumber, movingColor);
-        if (!gone.has(piece?.uid) && gone.size >= ruleOf(g.config, 'homecomingsPerSetupTurn')) {
+        if (!(piece?.uid && gone.has(piece.uid)) && gone.size >= ruleOf(g.config, 'homecomingsPerSetupTurn')) {
           this.emit({ type: 'invalid_move', message: 'That is all who may walk home this turn' });
           return;
         }
@@ -892,7 +886,8 @@ export class LocalGameService {
     // in some earlier turn of a phase it has nothing to do with.
     if (isSetupTurn(g.turnNumber)) {
       // Landing on an enemy is an attack too, by another road.
-      if (attack || heal || (relocating && start[to] && start[to].color !== movingColor)) {
+      if (attack || (heal && isInitialization(g.turnNumber))
+          || (relocating && start[to] && start[to].color !== movingColor)) {
         this.emit({ type: 'invalid_move', message: noAttackMessage(g.turnNumber) });
         return;
       }
@@ -991,7 +986,7 @@ export class LocalGameService {
       }
       const target = board[attack];
       if (!target || target.color === piece.color
-          || !canAttack(g.config?.units?.[piece.unit_id], hexDistanceKeys(to, attack))) {
+          || !canAttack(g.config?.units?.[piece.unit_id], hexDistanceKeys(to, attack), atkUp)) {
         this.emit({ type: 'invalid_move', message: 'Nothing to attack there' });
         return;
       }
@@ -1013,7 +1008,7 @@ export class LocalGameService {
         board[attack] = hurt;
         record.defender_hp = hurt.hp;
         // The survivor answers, if we are inside its own reach.
-        if (canAttack(g.config?.units?.[target.unit_id], distance)) {
+        if (canAttack(g.config?.units?.[target.unit_id], distance, theirAtkUp)) {
           const counter = strikeDamage(
             target.unit_id, piece.unit_id, distance, g.config, theirAtkUp, defUp);
           record.counter_damage = counter;
@@ -1053,7 +1048,9 @@ export class LocalGameService {
     // Whoever lost their commander loses, whichever side was moving - a
     // counter-attack can take the attacker's king on the attacker's own turn,
     // and can take both commanders at once, which is nobody's win.
+    const historyLength = g.moveHistory.length;
     const ending = this.settleHandOver(this.defeatedSides(board));
+    after.push(...g.moveHistory.slice(historyLength));
     // consumers.py sends `currentTurn: ''` on the move that ends a game -
     // naming the next player starts a clock and sounds a turn for a match
     // that is already over, in the moment before game_over lands.
@@ -1105,6 +1102,8 @@ export class LocalGameService {
     g.turnNumber += 1;
     g.currentTurn = this.other(g.currentTurn);
     g.turnStartedAt = new Date().toISOString();
+    g.moveHistory = [...g.moveHistory, ...promotionHeals(g.config, g.boardState, g.moveHistory, g.turnNumber),
+      ...halftimeUpAwards(g.config, g.boardState, g.moveHistory, g.turnNumber)];
     g.phaseBank = bankEndedPhases(g.phaseBank, g.config, g.boardState, g.moveHistory, g.turnNumber);
     this.persist();
     if (beaten.length === 2) return { winner: '', reason: 'draw_mutual' };
@@ -1199,8 +1198,8 @@ export class LocalGameService {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
     // A pass is the other way a cast reaches the engine, so it is the other
-    // place a setup turn has to refuse one. The blow paths need no guard of
-    // their own: they refuse the whole message on a setup turn already.
+    // place the opening has to refuse one. Postmatch casts can arrive on
+    // a pass or a move, while normal attacks remain forbidden.
     if (this.abilityFault(0, null, undefined, effectsBefore)) {
       this.emit({ type: 'invalid_move', message: 'No ability fires while a side is setting out' });
       return;
@@ -1230,10 +1229,13 @@ export class LocalGameService {
     g.boardState = board;
     if (cast.records.length) g.moveHistory = [...g.moveHistory, ...cast.records];
     // A pass can be the hand-over that closes a phase, or turn 50.
+    const historyLength = g.moveHistory.length;
     const ending = this.settleHandOver(beaten);
+    const promotions = g.moveHistory.slice(historyLength);
     this.emit({
       type: 'turn_passed', passedBy, color, boardState: board,
       ...(cast.records.length ? { effectsBefore: cast.records } : {}),
+      ...(promotions.length ? { effects: promotions } : {}),
       // As above: a pass that runs the turn limit out hands over to nobody.
       currentTurn: ending ? '' : g.currentTurn,
       turnNumber: g.turnNumber, turnStartedAt: g.turnStartedAt,

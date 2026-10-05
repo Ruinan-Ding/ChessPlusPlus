@@ -136,8 +136,9 @@ describe('ConfigService validation, against the server\'s', () => {
     expect(config.rules.homecomingsPerSetupTurn).toBe(3);
     expect(config.rules.cpAtStart).toBe(5);
     expect(config.rules.cpPhaseOffset).toBe(5);
+    expect(config.rules.upAtStart).toBe(10);
 
-    for (const key of ['panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart', 'cpPhaseOffset']) {
+    for (const key of ['panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart', 'cpPhaseOffset', 'upAtStart']) {
       const bad: any = minimal();
       bad.rules[key] = -1;
       expect(service.validateGameRules(bad).valid).withContext(key).toBeFalse();
@@ -290,14 +291,14 @@ describe('ConfigService validation, against the server\'s', () => {
     const cat = config.abilities.catalogue;
     cat.dash.cooldown = 1.5;
     cat.dash.turns = 0;
-    cat.focus.uses = 0;
+    cat.warcry.uses = 0;
     cat.bulwark.target = 'ally';
     cat.mire.dmg = 4;
     expect(service.validateGameRules(config).errors).toEqual([
+      'abilities.catalogue.warcry.uses must be an integer >= 1',
+      'abilities.catalogue.bulwark.target must be friendly, enemy, universal or all-enemies',
       'abilities.catalogue.dash.cooldown must be an integer >= 0',
       'abilities.catalogue.dash.turns must be an integer >= 1',
-      'abilities.catalogue.focus.uses must be an integer >= 1',
-      'abilities.catalogue.bulwark.target must be friendly, enemy or universal',
       'abilities.catalogue.mire has unknown field "dmg"',
     ]);
   });
@@ -311,10 +312,10 @@ describe('ConfigService validation, against the server\'s', () => {
     cat.ruin.atk = 2;
     cat.bastion.cost = 3;
     cat.dash.damage = 4;
-    cat['arc-bolt'].turns = 2;
+    cat.strike.turns = 2;
     expect(service.validateGameRules(config).errors).toEqual([
       'abilities.catalogue.dash.damage does nothing on a friendly ability',
-      'abilities.catalogue.arc-bolt.turns does nothing on an ability that changes no stat',
+      'abilities.catalogue.strike.turns does nothing on an ability that changes no stat',
       'abilities.catalogue.bastion.cost does nothing on a passive',
       'abilities.catalogue.cleave.points does nothing on an enemy ability',
       'abilities.catalogue.ruin.atk does nothing on a universal ability',

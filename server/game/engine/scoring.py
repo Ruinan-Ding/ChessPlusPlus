@@ -41,7 +41,7 @@ from .board import HEX_DIRECTIONS, coord_key, hex_distance, parse_coord
 from .panels import BASE_PANELS
 from .phases import (
     OVERTIME_FIRST_PLY, OVERTIME_LAST_TURN, PHASES, SCORING_PHASES, hand_overs_by, is_postmatch,
-    phase_index_at, turn_of, turn_points_by,
+    phase_index_at, phase_start_turn, PLIES_PER_TURN, turn_of, turn_points_by,
 )
 
 #: How far behind a side may finish the third phase and still force overtime,
@@ -235,7 +235,7 @@ def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
     nothing.** *The owner, 24 Sep 2026: "killing things in base (red panel)
     should not count towards victory points"* - while one killed in a reserve
     (green) still does. Neither pays the killer any points
-    (:func:`economy.points_of`).
+    (:func:`economy.unit_points_of`).
     """
     total = 0
     for move in history or []:
@@ -302,6 +302,22 @@ def bank_ended_phases(bank: Optional[Dict[str, Any]], config: Dict[str, Any],
     return out
 
 
+def halftime_up_awards(config: Dict[str, Any], board_state: Dict[str, Any],
+                       history: List[Dict[str, Any]], ply: int) -> List[Dict[str, Any]]:
+    """Persist each side's current phase VP once as halftime begins."""
+    phase = next((index for index in SCORING_PHASES
+                  if ply == (math.ceil(phase_start_turn(index) + PHASES[index]['turns'] / 2) - 1)
+                  * PLIES_PER_TURN + 1), None)
+    if phase is None or any(move.get('halftimeUp', {}).get('phase') == phase for move in history):
+        return []
+    radius = config.get('board', {}).get('radius', 11)
+    claims = capture_claims(board_state, radius, config)
+    award = {color: phase_total(capture_score(claims, color, radius),
+                               deaths_of(config, history, color, phase), PHASES[phase]['multiplier'])
+             for color in ('white', 'black')}
+    return [{'turn': ply, 'halftimeUp': {'phase': phase, **award}}]
+
+
 def cp_awarded(bank: Optional[Dict[str, Any]], color: str, offset: int) -> int:
     """
     The CP *color* has been awarded so far: one award per phase banked,
@@ -358,7 +374,7 @@ def scheduled_points(bank: Optional[Dict[str, Any]], color: str, ply: int) -> in
     at its rate, each phase's grant (:func:`phases.turn_points_by`), and the
     banked victory points once its first overtime turn begins
     (:func:`vp_as_points`). The purse is this plus what the record adds and
-    takes away (:func:`economy.points_of`). Mirrors ``scheduledPoints`` in
+    takes away (:func:`economy.unit_points_of`). Mirrors ``scheduledPoints`` in
     match-score.ts.
     """
     return turn_points_by(color, ply) + vp_as_points(bank, color, ply)

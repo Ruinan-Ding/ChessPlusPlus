@@ -186,14 +186,14 @@
   "abilities": {
     "slots": 4,
     "pool": [
-      "dash",
-      "focus",
-      "bulwark",
+      "warcry",
       "sap",
-      "arc-bolt",
+      "bulwark",
+      "weakening",
+      "dash",
       "mire",
       "mend",
-      "rally"
+      "strike"
     ],
     "paths": [
       {
@@ -222,6 +222,42 @@
       }
     ],
     "catalogue": {
+      "warcry": {
+        "id": "warcry",
+        "name": "Warcry",
+        "target": "friendly",
+        "cost": 3,
+        "cooldown": 3,
+        "turns": 1,
+        "atk": 8
+      },
+      "sap": {
+        "id": "sap",
+        "name": "Sap",
+        "target": "all-enemies",
+        "cost": 5,
+        "cooldown": 5,
+        "turns": 1,
+        "atk": -8
+      },
+      "bulwark": {
+        "id": "bulwark",
+        "name": "Bulwark",
+        "target": "friendly",
+        "cost": 3,
+        "cooldown": 3,
+        "turns": 1,
+        "def": 8
+      },
+      "weakening": {
+        "id": "weakening",
+        "name": "Weakening",
+        "target": "all-enemies",
+        "cost": 5,
+        "cooldown": 5,
+        "turns": 1,
+        "def": -8
+      },
       "dash": {
         "id": "dash",
         "name": "Dash",
@@ -229,63 +265,32 @@
         "cost": 3,
         "cooldown": 3,
         "turns": 1,
-        "mov": 2
-      },
-      "focus": {
-        "id": "focus",
-        "name": "Focus",
-        "target": "friendly",
-        "cost": 5,
-        "cooldown": 3,
-        "turns": 1,
-        "atk": 2
-      },
-      "bulwark": {
-        "id": "bulwark",
-        "name": "Bulwark",
-        "target": "friendly",
-        "cost": 1,
-        "cooldown": 3,
-        "turns": 1,
-        "def": 3
-      },
-      "sap": {
-        "id": "sap",
-        "name": "Sap",
-        "target": "enemy",
-        "cost": 4,
-        "cooldown": 3,
-        "turns": 1,
-        "mov": -2,
-        "atk": -2,
-        "def": -2,
-        "damage": 6
-      },
-      "arc-bolt": {
-        "id": "arc-bolt",
-        "name": "Arc Bolt",
-        "target": "enemy",
-        "cost": 3,
-        "cooldown": 3,
-        "damage": 8
+        "mov": 4
       },
       "mire": {
         "id": "mire",
         "name": "Mire",
-        "target": "enemy",
-        "cost": 2,
+        "target": "all-enemies",
+        "cost": 3,
         "cooldown": 3,
         "turns": 1,
-        "mov": -3
+        "mov": -2
       },
       "mend": {
         "id": "mend",
         "name": "Mend",
         "target": "friendly",
-        "cost": 0,
+        "cost": 3,
+        "cooldown": 1,
+        "heal": 4
+      },
+      "strike": {
+        "id": "strike",
+        "name": "Strike",
+        "target": "enemy",
+        "cost": 3,
         "cooldown": 3,
-        "heal": 20,
-        "testing": true
+        "damage": 4
       },
       "rally": {
         "id": "rally",
@@ -465,6 +470,7 @@
     "postmatchEntries": 5,
     "homecomingsPerSetupTurn": 3,
     "cpAtStart": 5,
-    "cpPhaseOffset": 5
+    "cpPhaseOffset": 5,
+    "upAtStart": 10
   }
 }

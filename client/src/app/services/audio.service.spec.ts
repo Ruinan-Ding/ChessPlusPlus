@@ -8,17 +8,42 @@ import { AudioService } from './audio.service';
 describe('AudioService', () => {
   let started: Array<{ at: number; type: string; frequency: number }>;
   let realContext: any;
+  let noise: Array<{ at: number; until: number }>;
+  let samples: Float32Array;
+  let cutoffs: number[];
+  let ramps: number[];
 
   beforeEach(() => {
     started = [];
+    noise = []; cutoffs = []; ramps = [];
     realContext = (window as any).AudioContext;
     class FakeContext {
       currentTime = 10;
       state = 'running';
+      sampleRate = 48000;
       destination = {};
+      createBuffer(_channels: number, length: number): any {
+        samples = new Float32Array(length);
+        return { getChannelData: () => samples };
+      }
+      createBufferSource(): any {
+        const item = { at: 0, until: 0 };
+        return { connect: () => {}, disconnect: () => {},
+          start: (at: number) => { item.at = at; noise.push(item); },
+          stop: (until: number) => { item.until = until; },
+        };
+      }
+      createBiquadFilter(): any {
+        return { Q: { value: 0 }, connect: () => {}, disconnect: () => {},
+          frequency: {
+            setValueAtTime: (value: number) => cutoffs.push(value),
+            exponentialRampToValueAtTime: (value: number) => cutoffs.push(value),
+          },
+        };
+      }
       createGain(): any {
         return {
-          gain: { setValueAtTime: () => {}, exponentialRampToValueAtTime: () => {} },
+          gain: { setValueAtTime: () => {}, exponentialRampToValueAtTime: (value: number) => ramps.push(value) },
           connect: () => {}, disconnect: () => {},
         };
       }
@@ -59,10 +84,33 @@ describe('AudioService', () => {
     expect(started[1].at).toBeCloseTo(10.6, 6);
   });
 
+  it('schedules a brief filtered-noise swoosh at the selected volume', () => {
+    const audio = service();
+    audio.volume = 0.25;
+    audio.playSwoosh();
+    expect(noise.length).toBe(1);
+    expect(noise[0].at).toBe(10);
+    expect(noise[0].until - noise[0].at).toBeGreaterThan(0);
+    expect(noise[0].until - noise[0].at).toBeLessThan(0.2);
+    expect(samples.some(value => value !== 0)).toBeTrue();
+    expect(samples.every(value => value >= -1 && value <= 1)).toBeTrue();
+    expect(cutoffs[0]).toBeGreaterThan(cutoffs[1]);
+    const peak = Math.max(...ramps);
+    audio.volume = 0.5;
+    ramps = [];
+    audio.playSwoosh();
+    expect(Math.max(...ramps)).toBeCloseTo(peak * 2);
+    audio.volume = 0;
+    audio.playSwoosh();
+    expect(noise.length).toBe(2);
+  });
+
   it('plays nothing muted', () => {
     const audio = service();
     audio.muted = true;
     audio.playTone([440], 0.1);
+    audio.playSwoosh();
     expect(started).toEqual([]);
+    expect(noise).toEqual([]);
   });
 });

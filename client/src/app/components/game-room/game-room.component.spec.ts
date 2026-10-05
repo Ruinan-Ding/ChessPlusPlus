@@ -4,6 +4,10 @@ import { GameStateService } from '../../services/game-state.service';
 import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
 import { turnHeading } from '../../services/phases';
 import { NavigationStateService } from '../../services/navigation-state.service';
+import legacyAbilities from '../../services/legacy-abilities.fixture.json';
+
+// Earlier saved catalogues keep their targeting, prices and effects.
+const LEGACY_GAME_CONFIG = { ...DEFAULT_GAME_CONFIG, abilities: legacyAbilities };
 
 /** Angular's zone, for a room built by hand: everything runs where it is. */
 const zone = { run: (f: () => unknown) => f(), runOutsideAngular: (f: () => unknown) => f() } as any;
@@ -39,15 +43,16 @@ describe('GameRoomComponent ability panel', () => {
   };
 
   const giveCp = (c: any, cp: number) => {
-    // Turn 5, in Phase 1's play. Any turn of it would do but the postmatch at
-    // its end (turn 14): nothing is cast on a turn given to setting out.
+    // Turn 5, in Phase 1's play, after the opening's casting restriction.
     c.gameState.snapshot.turnNumber = 10;
     fundCp(c, cp);
   };
 
   const room = (): any => {
     const cdr = { markForCheck: () => {}, detectChanges: () => {} } as any;
-    const gameState = { snapshot: { currentTurn: 'me' }, myColor: () => 'white' } as any;
+    const gameState = {
+      snapshot: { currentTurn: 'me', config: LEGACY_GAME_CONFIG }, myColor: () => 'white',
+    } as any;
     // Picking flashes and sounds, and ending a turn talks to the socket.
     const audio = { playTone: () => {} } as any;
     const ws = { sendMessage: () => {} } as any;
@@ -61,6 +66,226 @@ describe('GameRoomComponent ability panel', () => {
     c.myPoints = 10;
     return c;
   };
+
+  describe('the specified first pool', () => {
+    const current = (color = 'white') => {
+      const c = room();
+      c.gameState = new GameStateService();
+      c.gameState.applyGameStarted({
+        config: structuredClone(DEFAULT_GAME_CONFIG), turnNumber: 9,
+        playerWhite: color === 'white' ? 'me' : 'bot',
+        playerBlack: color === 'black' ? 'me' : 'bot', currentTurn: 'me',
+        boardState: {
+          '0,0': { unit_id: 'shieldman', color, hp: 30, max_hp: 30, uid: 'own' },
+          '1,0': { unit_id: 'pawn', color: color === 'white' ? 'black' : 'white', hp: 12, max_hp: 12, uid: 'enemy' },
+        },
+      });
+      c.myPoints = 100; c.opponentPoints = 100;
+      c.playSteps = () => {}; c.playAbilitySound = () => {};
+      return c;
+    };
+    const shown = (c: any, key: string) => {
+      const p = c.gameState.snapshot.boardState[key];
+      return { key, uid: p.uid, unitId: p.unit_id, color: p.color, hp: p.hp, hpMax: p.max_hp, name: p.unit_id, vet: 0, atk: [0] };
+    };
+    const arm = (c: any, id: string) => {
+      const i = c.slotOfAbility(id);
+      c.pickAbility('mine', i);
+      c.selectAbility('mine', i, c.myCooldowns);
+      return i;
+    };
+
+    it('casts every first-pool ability in both halves of every postmatch while Warcry cannot enable normal attacks there', () => {
+      for (const ply of [27, 28, 49, 50, 71, 72]) {
+        const color = ply % 2 ? 'white' : 'black';
+        for (const id of ['warcry', 'sap', 'bulwark', 'weakening', 'dash', 'mire', 'mend', 'strike']) {
+          const c = current(color);
+          c.gameState.snapshot.turnNumber = ply;
+          c.gameState.snapshot.boardState['0,0'].hp = 20;
+          c.persistLocalUiState = () => {};
+          const i = arm(c, id);
+          if (c.abilityTargetMode(i) === 'universal') c.activateFocusedAbility();
+          else c.onHexClicked(shown(c, id === 'strike' ? '1,0' : '0,0'));
+          expect(c.myPoints).withContext(`${ply}: ${id}`).toBe(100 - c.abilityCosts[i]);
+          expect(c.myCooldowns[i]).toBe(c.cooldownOf(i));
+          if (id === 'mend') expect(c.stagedBoard['0,0'].hp).toBe(24);
+          if (id === 'strike') expect(c.stagedBoard['1,0'].hp).toBe(8);
+          if (id === 'warcry') {
+            const actions = c.stagedActions.length;
+            c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '1,0' });
+            expect(c.stagedActions.length).toBe(actions);
+            expect((c.stagedBoard ?? c.gameState.snapshot.boardState)['1,0'].hp).toBe(12);
+          }
+        }
+      }
+    });
+
+    it('offers the four pairs and applies friendly stats with their configured price and cooldown', () => {
+      expect(current().abilityIds.slice(0, 8)).toEqual([
+        'warcry', 'sap', 'bulwark', 'weakening', 'dash', 'mire', 'mend', 'strike',
+      ]);
+      for (const [id, stat] of [['warcry', 'atk'], ['bulwark', 'def'], ['dash', 'mov']]) {
+        const c = current();
+        const target = shown(c, '0,0');
+        const i = arm(c, id);
+        const e = c.abilityEffects[i];
+        c.onHexClicked(shown(c, '1,0'));
+        expect(c.myPoints).toBe(100);
+        expect(c.buffs).toEqual({});
+        c.selectAbility('mine', i, c.myCooldowns);
+        c.onHexClicked(target);
+        expect(c.buffs.own[stat]).toBe(e[stat]);
+        expect(c.myPoints).toBe(100 - c.abilityCosts[i]);
+        expect(c.myCooldowns[i]).toBe(e.cooldown);
+        c.beginTurnFor('black');
+        expect(c.buffs.own[stat]).toBe(e[stat]);
+        c.beginTurnFor('white');
+        expect(c.buffs.own).toBeUndefined();
+      }
+    });
+
+    it('uses Warcry to arm a shieldman in the Unit panel and staged combat', () => {
+      const c = current();
+      c.gameState.snapshot.config.units.pawn.defense = 0;
+      const unit = shown(c, '0,0');
+      const i = arm(c, 'warcry');
+      c.onHexClicked(unit);
+      c.selectedUnit = unit;
+      const attack = c.abilityEffects[i].atk;
+      expect(c.statAtk).toBe(`1:${attack}/0`);
+      c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '1,0' });
+      expect(c.stagedBoard['1,0'].hp).toBe(12 - attack);
+      expect(c.stagedBoard['0,0'].hp).toBe(29);
+      c.undoMove(); c.undoMove();
+      expect(c.statAtk).toBe('—');
+      expect(c.myPoints).toBe(100);
+    });
+
+    it('casts army debuffs once on field and reserve recipients and restores the whole cast after reload and Undo', () => {
+      const key = 'cpp.localGame.ui.v2';
+      const previous = localStorage.getItem(key);
+      try {
+        for (const color of ['white', 'black']) {
+          for (const [id, stat] of [['sap', 'atk'], ['weakening', 'def'], ['mire', 'mov']]) {
+            const c = current(color);
+            c.gameId = 'local';
+            const enemy = color === 'white' ? 'black' : 'white';
+            const reserve = enemy === 'white' ? 'br' : 'tl';
+            const base = enemy === 'white' ? 'bl' : 'tr';
+            c.boardRef = { clearMarks: () => {}, cells: [
+              { key: '11,1', panel: reserve, piece: { unit_id: 'rook', color: enemy, hp: 1, max_hp: 40, uid: 'reserve' } },
+              { key: '12,-1', panel: base, piece: { unit_id: 'rook', color: enemy, hp: 40, max_hp: 40, uid: 'base' } },
+              { key: '-11,-1', panel: reserve, piece: { unit_id: 'pawn', color, hp: 12, max_hp: 12, uid: 'ally' } },
+              { key: '-12,1', panel: reserve, piece: { unit_id: 'pawn', color: enemy, hp: 0, max_hp: 12, uid: 'dead' } },
+            ] };
+            const before = structuredClone(c.buffs);
+            const i = arm(c, id);
+            expect(c.pendingAbility).toBeNull();
+            expect(c.abilityTargetMode(i)).toBe('universal');
+            c.activateFocusedAbility();
+            expect(Object.keys(c.buffs).sort()).toEqual(['enemy', 'reserve']);
+            expect(c.buffs.enemy[stat]).toBe(c.abilityEffects[i][stat]);
+            expect(c.buffs.reserve[stat]).toBe(c.abilityEffects[i][stat]);
+            expect(c.myPoints).toBe(100 - c.abilityCosts[i]);
+            expect(c.myCooldowns[i]).toBe(c.cooldownOf(i));
+            const fresh = current(color);
+            fresh.gameId = 'local'; fresh.boardRef = c.boardRef;
+            fresh.restoreLocalUiState();
+            fresh.undoMove();
+            expect(fresh.buffs).toEqual(before);
+            expect(fresh.myCooldowns[i]).toBe(0);
+            expect(fresh.myPoints).toBe(100);
+            c.boardRef.cells[0].panel = base;
+            c.boardRef.cells[1].panel = reserve;
+            c.beginTurnFor(enemy);
+            expect(c.buffs.reserve[stat]).toBe(c.abilityEffects[i][stat]);
+            expect(c.buffs.base).toBeUndefined();
+            c.beginTurnFor(color);
+            expect(c.buffs).toEqual({});
+          }
+        }
+      } finally {
+        if (previous === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, previous);
+      }
+    });
+
+    it('honours Sap and Weakening on reserve defenders through reload, preview and commit for both seats', () => {
+      const key = 'cpp.localGame.ui.v2';
+      const previous = localStorage.getItem(key);
+      try {
+        for (const color of ['white', 'black']) {
+          for (const ids of [['sap'], ['weakening'], ['sap', 'weakening']]) {
+            const c = current(color); c.gameId = 'local';
+            const enemy = color === 'white' ? 'black' : 'white';
+            const target = { unit_id: 'pawn', color: enemy, hp: 20, max_hp: 20, uid: 'reserve' };
+            c.gameState.snapshot.boardState = {
+              '0,0': { unit_id: 'pawn', color, hp: 20, max_hp: 20, uid: 'own' },
+            };
+            c.boardRef = { cells: [{ key: '1,0', panel: enemy === 'white' ? 'br' : 'tl', piece: target }] };
+            for (const id of ids) { arm(c, id); c.activateFocusedAbility(); }
+            const fresh = current(color); fresh.gameId = 'local'; fresh.boardRef = c.boardRef;
+            fresh.restoreLocalUiState();
+            fresh.handleWebSocketMessage({ type: 'game_state_update', ...c.gameState.snapshot });
+            const sent: any[] = [];
+            fresh.wsService = { sendMessage: (message: any) => sent.push(message) };
+            fresh.playEndTurnSound = () => {};
+            fresh.onPlayerAttack({ from: '0,0', to: '0,0', attack: '1,0', targetUnit: target,
+              panel: enemy === 'white' ? 'br' : 'tl', counters: true });
+            const sap = ids.includes('sap'), weak = ids.includes('weakening');
+            expect(fresh.panelHp.reserve).withContext(`${color}: ${ids}`).toBe(weak ? 12 : 19);
+            expect(fresh.stagedBoard['0,0'].hp).toBe(sap ? 20 : 19);
+            expect(fresh.stagedActions.at(-1).countered).toBe(!sap);
+            fresh.endTurn();
+            expect(sent.find(message => message.type === 'panel_attack')?.bonuses).toEqual({
+              atk: 0, def: 0, targetAtk: sap ? -8 : 0, targetDef: weak ? -8 : 0,
+            });
+          }
+        }
+      } finally {
+        if (previous === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, previous);
+      }
+    });
+
+    it('caps Mend at maximum HP and preserves its instant heal in the commit payload', () => {
+      const c = current();
+      c.gameState.snapshot.boardState['0,0'].hp = 20;
+      const i = arm(c, 'mend');
+      c.onHexClicked(shown(c, '0,0'));
+      expect(c.stagedBoard['0,0'].hp).toBe(24);
+      c.undoMove();
+      expect(c.gameState.snapshot.boardState['0,0'].hp).toBe(20);
+      c.gameState.snapshot.boardState['0,0'].hp = 28;
+      arm(c, 'mend');
+      c.onHexClicked(shown(c, '0,0'));
+      expect(c.stagedBoard['0,0'].hp).toBe(30);
+      expect(c.myPoints).toBe(100 - c.abilityCosts[i]);
+      expect(c.myCooldowns[i]).toBe(1);
+      c.beginTurnFor('black');
+      expect(c.stagedBoard['0,0'].hp).toBe(30);
+      const sent: any[] = [];
+      c.wsService.sendMessage = (m: any) => sent.push(m);
+      c.endTurn();
+      expect(sent[sent.length - 1]).toEqual({
+        type: 'pass_turn', effectsBefore: [{ at: '0,0', uid: 'own', hp: 30 }],
+      });
+    });
+
+    it('deals Strike damage directly, stages a kill and returns HP and its price with Undo', () => {
+      const c = current();
+      c.gameState.snapshot.boardState['1,0'].hp = 3;
+      const i = arm(c, 'strike');
+      c.onHexClicked(shown(c, '1,0'));
+      expect(c.stagedBoard['1,0']).toBeUndefined();
+      expect(c.myPoints).toBe(100 - c.abilityCosts[i]);
+      expect(c.myCooldowns[i]).toBe(c.cooldownOf(i));
+      c.undoMove();
+      expect(c.gameState.snapshot.boardState['1,0'].hp).toBe(3);
+      expect(c.myPoints).toBe(100);
+      expect(c.myCooldowns[i]).toBe(0);
+    });
+  });
 
   it('picks without using: the ability is opened again to arm it', () => {
     const c = room();
@@ -112,7 +337,7 @@ describe('GameRoomComponent ability panel', () => {
         c.reconcilePoints = () => {};
         const snapshot = {
           revision: 4, turnNumber: 7, currentTurn: 'me', playerWhite: 'me', playerBlack: 'them',
-          config: { ...DEFAULT_GAME_CONFIG, rules: { ...DEFAULT_GAME_CONFIG.rules, turnTimeLimit: 0 } },
+          config: { ...LEGACY_GAME_CONFIG, rules: { ...LEGACY_GAME_CONFIG.rules, turnTimeLimit: 0 } },
           boardState: {}, moveHistory: [],
         };
         c.gameState.applyGameStarted(snapshot);
@@ -169,7 +394,7 @@ describe('GameRoomComponent ability panel', () => {
         currentTurn: 'opponent',
         boardState: { '0,0': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20 } },
         moveHistory: [],
-        config: DEFAULT_GAME_CONFIG,
+        config: LEGACY_GAME_CONFIG,
       });
 
       expect(gameState.snapshot.turnNumber).toBe(7);
@@ -229,7 +454,7 @@ describe('GameRoomComponent ability panel', () => {
       c.addSystemMessage = (text: string) => said.push(text);
       const finished = {
         type: 'game_state_update', revision: 9, turnNumber: 30, currentTurn: 'them',
-        boardState: {}, moveHistory: [], config: DEFAULT_GAME_CONFIG,
+        boardState: {}, moveHistory: [], config: LEGACY_GAME_CONFIG,
         winner: 'me', endReason: 'regicide',
       };
 
@@ -332,9 +557,8 @@ describe('GameRoomComponent ability panel', () => {
     expect(history(73, 'white')).toBe(119);
   });
 
-  it('adds up points from the history exactly the way the server does', () => {
-    // The server prices the wrap against this sum (engine/economy.py), so a
-    // purse that disagrees offers a crossing the server then refuses.
+  it('separates unit transactions in UP from regular ability points', () => {
+    // Both engines keep unit transactions in UP and scheduled income in regular points.
     const c = room();
     c.gameState.snapshot.config = { units: { knight: { value: 12 }, queen: { value: 30 }, pawn: { value: 5 } } };
     c.gameState.snapshot.turnNumber = 21;
@@ -347,7 +571,9 @@ describe('GameRoomComponent ability panel', () => {
     const wrap = { panelMove: true, price: 12, unit: { color: 'white' } };
     const home = { withdrawn: true, color: 'white', unit_id: 'knight', unit: {} };
     c.gameState.snapshot.moveHistory = [wrap];
-    expect(c.pointsFromHistory('white')).toBe(9);
+    expect(c.pointsFromHistory('white')).toBe(21);
+    c.reconcilePoints();
+    expect(c.myUnitPoints).toBe(10 - 12);
     // A round trip costs nothing.
     c.gameState.snapshot.moveHistory = [wrap, home];
     expect(c.pointsFromHistory('white')).toBe(21);
@@ -363,8 +589,150 @@ describe('GameRoomComponent ability panel', () => {
       { ...into, panel: 'tr', color: 'white', unit_id: 'pawn', captured: 'queen', defender_eliminated: true },
       { ...into, panel: 'tl', color: 'white', unit_id: 'knight', attacker_eliminated: true },
     ];
-    expect(c.pointsFromHistory('white')).toBe(21 + 30 + 12);
+    expect(c.pointsFromHistory('white')).toBe(21);
+    c.reconcilePoints();
+    expect(c.myUnitPoints).toBe(10 + 30 + 12);
+    expect(c.opponentUnitPoints).toBe(10);
     expect(c.pointsFromHistory('black')).toBe(20);
+  });
+
+  it('prices both seats in UP, keeps ability spending separate, and reverses staged crossings', () => {
+    const c = room();
+    c.username = 'me';
+    c.gameState = new GameStateService();
+    for (const mine of ['white', 'black']) {
+      c.gameState.applyGameStarted({ playerWhite: mine === 'white' ? 'me' : 'bot',
+        playerBlack: mine === 'black' ? 'me' : 'bot', currentTurn: 'me', turnNumber: mine === 'white' ? 9 : 10,
+        config: { rules: { upAtStart: 10 }, units: {} }, boardState: {} });
+      c.myAbilityPoints = 100;
+      c.reconcilePoints();
+      expect(c.movePoints).toBe(10);
+      expect(c.theirMovePoints).toBe(10);
+      c.onWrapCrossed(8);
+      expect(c.myUnitPoints).toBe(2);
+      expect(c.myPoints).toBe(115);
+      c.chargeFor('mine', c.slotOfAbility('warcry'), 3);
+      expect(c.myUnitPoints).toBe(2);
+      const points = c.myPoints;
+      c.boardRef = { lastPanelMove: 1, undoPanelMove: () => 8, clearMarks: () => {} };
+      c.undoMove();
+      expect(c.myUnitPoints).toBe(10);
+      expect(c.myPoints).toBe(points);
+      c.boardRef = undefined;
+    }
+  });
+
+  it('keeps a committed crossing charged once while the board still holds its previous-turn staging', () => {
+    const c = room(); c.username = 'me'; c.gameState = new GameStateService();
+    const config = { units: { pawn: { value: 8 } } };
+    c.gameState.applyGameStarted({ playerWhite: 'me', playerBlack: 'bot', currentTurn: 'me',
+      turnNumber: 7, config, boardState: {} });
+    const step = { type: 'panel_move', from: '-12,6', to: '11,1', price: 8, unit: { color: 'white' } };
+    c.boardRef = { turnNumber: 7, pendingPanelSteps: [step] };
+    c.reconcilePoints(); expect(c.myUnitPoints).toBe(2);
+    const move = { ...step, turn: 7, panelMove: true };
+    c.handleWebSocketMessage({ type: 'game_state_update', turnNumber: 7, currentTurn: 'me',
+      config, boardState: {}, moveHistory: [move] });
+    expect(c.myUnitPoints).toBe(2);
+    c.handleWebSocketMessage({ type: 'turn_passed', color: 'white', turnNumber: 8,
+      currentTurn: 'bot', boardState: {} });
+    expect(c.myUnitPoints).toBe(2); expect(c.opponentUnitPoints).toBe(10);
+  });
+
+  it('restores a staged withdrawal refund and keeps it single when the committed crossing resyncs', () => {
+    const c = room(); c.gameId = 'local'; c.username = 'me';
+    c.gameState = new GameStateService();
+    const snapshot = { playerWhite: 'me', playerBlack: 'bot', currentTurn: 'me', turnNumber: 27,
+      config: { units: { pawn: { move: 6, value: 8 } } },
+      boardState: { '-5,9': { unit_id: 'pawn', color: 'white', hp: 12, max_hp: 12, uid: 'wp' } } };
+    c.gameState.applyGameStarted(snapshot); c.reconcilePoints();
+    c.onPlayerMove({ from: '-5,9', to: '-12,11', cost: 1, refund: 8 });
+    expect(c.myUnitPoints).toBe(18);
+    const fresh = room(); fresh.gameId = 'local'; fresh.username = 'me';
+    fresh.gameState = new GameStateService(); fresh.restoreLocalUiState();
+    fresh.handleWebSocketMessage({ type: 'game_state_update', ...snapshot, moveHistory: [] });
+    expect(fresh.myUnitPoints).toBe(18);
+    fresh.undoMove(); expect(fresh.myUnitPoints).toBe(10);
+    expect(fresh.myPoints).toBe(24);
+    c.handleWebSocketMessage({ type: 'game_state_update', ...snapshot, boardState: {}, moveHistory: [
+      { turn: 27, from: '-5,9', to: '-12,11', unit_id: 'pawn', color: 'white', withdrawn: true },
+    ] });
+    expect(c.myUnitPoints).toBe(18);
+    localStorage.removeItem('cpp.localGame.ui.v2');
+  });
+
+  it('discards withdrawals from an earlier turn before reconciling live and restored snapshots for both seats', () => {
+    const key = 'cpp.localGame.ui.v2';
+    const previous = localStorage.getItem(key);
+    try {
+      for (const color of ['white', 'black']) {
+        const c = room(); c.gameId = 'local'; c.gameState = new GameStateService();
+        const ply = color === 'white' ? 27 : 28;
+        const from = color === 'white' ? '-5,9' : '5,-9';
+        const to = color === 'white' ? '-12,11' : '12,-11';
+        const snapshot = { playerWhite: color === 'white' ? 'me' : 'bot',
+          playerBlack: color === 'black' ? 'me' : 'bot', currentTurn: 'me', turnNumber: ply,
+          config: { units: { pawn: { move: 6, value: 8 } } },
+          boardState: { [from]: { unit_id: 'pawn', color, hp: 12, max_hp: 12, uid: 'veteran' } } };
+        c.gameState.applyGameStarted(snapshot); c.reconcilePoints();
+        c.onPlayerMove({ from, to, cost: 1, refund: 8 });
+        expect(c.myUnitPoints).toBe(18);
+        const saved = localStorage.getItem(key)!;
+        const restored = room(); restored.gameId = 'local'; restored.gameState = new GameStateService();
+        restored.restoreLocalUiState();
+        const moveHistory = [{ turn: ply, from, to, unit_id: 'pawn', color, withdrawn: true }];
+        for (const r of [c, restored]) {
+          for (const advance of [1, 2]) {
+            r.handleWebSocketMessage({ type: 'game_state_update', ...snapshot, boardState: {},
+              turnNumber: ply + advance, currentTurn: advance === 1 ? 'bot' : 'me', moveHistory });
+            expect(r.myUnitPoints).withContext(`${color}, +${advance}`).toBe(18);
+            expect(r.opponentUnitPoints).toBe(10);
+            expect(r.stagedActions).toEqual([]);
+            expect(r.stagedBoard).toBeNull();
+          }
+        }
+        // An older UI save with no turn provenance cannot overlay a loaded match.
+        const oldSave = JSON.parse(saved); delete oldSave.turnNumber;
+        localStorage.setItem(key, JSON.stringify(oldSave));
+        const legacy = room(); legacy.gameId = 'local'; legacy.gameState = new GameStateService();
+        legacy.restoreLocalUiState();
+        legacy.handleWebSocketMessage({ type: 'game_state_update', ...snapshot, moveHistory: [] });
+        expect(legacy.stagedActions).toEqual([]);
+        expect(legacy.myUnitPoints).toBe(10);
+      }
+    } finally {
+      if (previous === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, previous);
+    }
+  });
+
+  it('marks only a game_started message as a fresh start, including at ply one', () => {
+    const c = room(); c.gameState = new GameStateService();
+    c.startTurnClock = () => {}; c.playTurnSoundIfNeeded = () => {};
+    const snapshot = { playerWhite: 'me', playerBlack: 'bot', currentTurn: 'me',
+      turnNumber: 1, config: DEFAULT_GAME_CONFIG, boardState: {} };
+    c.handleWebSocketMessage({ type: 'game_started', ...snapshot });
+    expect(c.freshGameStart).toBeTrue();
+    c.handleWebSocketMessage({ type: 'game_state_update', ...snapshot, moveHistory: [] });
+    expect(c.freshGameStart).toBeFalse();
+    c.handleWebSocketMessage({ type: 'game_started', ...snapshot });
+    expect(c.freshGameStart).toBeTrue();
+  });
+
+  it('reconstructs halftime UP from messages and resyncs without putting awards in the action log', () => {
+    const c = room();
+    c.username = 'me'; c.gameState = new GameStateService();
+    c.gameState.applyGameStarted({ playerWhite: 'bot', playerBlack: 'me', currentTurn: 'me',
+      turnNumber: 16, config: { units: {} }, boardState: {} });
+    const award = { turn: 17, halftimeUp: { phase: 1, white: 38, black: 19 } };
+    c.handleWebSocketMessage({ type: 'turn_passed', color: 'black', currentTurn: 'bot',
+      turnNumber: 17, effects: [award], boardState: {} });
+    expect(c.myUnitPoints).toBe(29); expect(c.opponentUnitPoints).toBe(48);
+    expect(c.turnRecords(17, 'white')).toEqual([]);
+    const snapshot = c.gameState.snapshot;
+    c.handleWebSocketMessage({ type: 'game_state_update', ...snapshot });
+    expect(c.myUnitPoints).toBe(29); expect(c.opponentUnitPoints).toBe(48);
+    expect(c.myPoints).toBe(18);
   });
 
   it('resets both purses from the history, and keeps what abilities did in solo', () => {
@@ -511,6 +879,21 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.withdrawnUnits[0].unit.hp).toBe(settled);
   });
 
+  it('ignores incomplete saved panel effects without a unit ID or an HP result', () => {
+    const c = room();
+    c.gameState.snapshot.turnNumber = 8;
+    c.gameState.snapshot.moveHistory = [{ to: 'b1', turn: 6, withdrawn: true,
+      unit: { uid: 'u1', unit_id: 'rook', color: 'white', hp: 9, max_hp: 40 } }];
+    const units = c.withdrawnUnits;
+    const hp = c.panelHp;
+    for (const action of [{ panelUnit: {}, panelUnitHp: 0 }, { panelUnit: { uid: 'u1' } }]) {
+      c.stagedActions = [action];
+      expect(c.withdrawnUnits).toBe(units);
+      expect(c.panelHp).toBe(hp);
+      expect(Object.keys(c.panelHp)).not.toContain('undefined');
+    }
+  });
+
   it('names the reason it cannot be used, rather than listing all of them', () => {
     const c = room();
     c.selectAbility('mine', TARGETED, c.myCooldowns);
@@ -602,7 +985,7 @@ describe('GameRoomComponent ability panel', () => {
     c.persistLocalUiState = () => {};
     c.playSteps = () => {};
     c.gameState.snapshot.turnNumber = 7;
-    c.gameState.snapshot.config = structuredClone(DEFAULT_GAME_CONFIG);
+    c.gameState.snapshot.config = structuredClone(LEGACY_GAME_CONFIG);
     c.gameState.snapshot.config.units.bishop.heal = [14, 13, 12, 11];
     c.gameState.snapshot.boardState = {
       '0,0': { unit_id: 'bishop', color: 'white', hp: 22, max_hp: 22, uid: 'bishop' },
@@ -633,11 +1016,37 @@ describe('GameRoomComponent ability panel', () => {
       .toContain('healed rook');
   });
 
+  it('stages, undoes and commits normal healing in every postmatch', () => {
+    for (const ply of [27, 28, 49, 50, 71, 72]) {
+      const c = room();
+      const color = ply % 2 ? 'white' : 'black';
+      c.gameState.myColor = () => color;
+      c.gameState.snapshot.turnNumber = ply;
+      c.gameState.snapshot.config = structuredClone(DEFAULT_GAME_CONFIG);
+      c.gameState.snapshot.boardState = {
+        '0,0': { unit_id: 'bishop', color, hp: 8, max_hp: 8, uid: 'bishop' },
+        '1,0': { unit_id: 'rook', color, hp: 5, max_hp: 40, uid: 'rook' },
+      };
+      c.persistLocalUiState = () => {};
+      c.playSteps = () => {};
+      const sent: any[] = [];
+      c.wsService.sendMessage = (m: any) => sent.push(m);
+      const heal = { from: '0,0', to: '0,0', attack: '1,0', heal: true };
+      c.onPlayerAttack(heal);
+      expect(c.stagedBoard['1,0'].hp).withContext(`ply ${ply}`).toBe(13);
+      c.undoMove();
+      expect((c.stagedBoard ?? c.gameState.snapshot.boardState)['1,0'].hp).toBe(5);
+      c.onPlayerAttack(heal);
+      c.endTurn();
+      expect(sent).toEqual([{ type: 'make_move', from: '0,0', to: '0,0', heal: '1,0' }]);
+    }
+  });
+
   it('never plays or deals a counter from a healer, even carrying an ATK boost', () => {
     const c = room();
     c.persistLocalUiState = () => {}; c.playSteps = () => {};
     c.gameState.snapshot.turnNumber = 7;
-    c.gameState.snapshot.config = DEFAULT_GAME_CONFIG;
+    c.gameState.snapshot.config = LEGACY_GAME_CONFIG;
     c.gameState.snapshot.boardState = {
       '0,0': { unit_id: 'pawn', color: 'white', hp: 20, max_hp: 20, uid: 'wp' },
       '1,0': { unit_id: 'bishop', color: 'black', hp: 22, max_hp: 22, uid: 'bb' },
@@ -902,6 +1311,118 @@ describe('GameRoomComponent ability panel', () => {
     expect(fresh.abilityPaths[fresh.myPath!].id).toBe('tempo');
     expect(fresh.myCooldowns[fresh.slotOfAbility('focus')]).toBe(2);
     localStorage.removeItem('cpp.localGame.ui.v2');
+  });
+
+  it('restores mixed-caster effects and unit cooldowns, then ticks them only on incoming turns', () => {
+    const key = 'cpp.localGame.ui.v2';
+    const previous = localStorage.getItem(key);
+    const freshRoom = () => {
+      const c = room();
+      c.gameId = 'local';
+      c.gameState = new GameStateService();
+      c.gameState.applyGameStarted({
+        playerWhite: 'me', playerBlack: 'bot', currentTurn: 'me', turnNumber: 9,
+        config: LEGACY_GAME_CONFIG,
+        boardState: {
+          '0,0': { unit_id: 'pawn', color: 'white', hp: 12, max_hp: 12, uid: 'wp' },
+          '2,0': { unit_id: 'pawn', color: 'black', hp: 12, max_hp: 12, uid: 'bp' },
+          '4,0': { unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'wr' },
+        },
+      });
+      return c;
+    };
+    try {
+      const c = freshRoom();
+      c.buffs = {
+        wp: {
+          mov: 0, atk: -2, def: -2, caster: 'white', label: 'Sap', up: true, down: true,
+          effects: [
+            { name: 'Dash', mov: 2, atk: 0, def: 0, turns: 2, caster: 'white' },
+            { name: 'Sap', mov: -2, atk: -2, def: -2, turns: 1, caster: 'black', hostile: true },
+          ],
+        },
+        wr: {
+          mov: 2, atk: 0, def: 0, caster: 'white', label: 'Dash',
+          effects: [{ name: 'Dash', mov: 2, atk: 0, def: 0, turns: 1 }],
+        },
+      };
+      c.unitCooldowns = { wp: { color: 'white', turns: 2 }, bp: { color: 'black', turns: 1 } };
+      c.persistLocalUiState();
+      const fresh = freshRoom();
+      fresh.restoreLocalUiState();
+      expect(fresh.buffs).toEqual(c.buffs);
+      expect(fresh.unitCooldowns).toEqual(c.unitCooldowns);
+
+      fresh.handleWebSocketMessage({ type: 'game_state_update', ...fresh.gameState.snapshot });
+      expect(fresh.buffs).toEqual(c.buffs);
+      expect(fresh.unitCooldowns).toEqual(c.unitCooldowns);
+      fresh.handleWebSocketMessage({
+        type: 'turn_passed', color: 'white', currentTurn: 'bot', turnNumber: 10,
+      });
+      expect(fresh.buffs.wp.effects.map((e: any) => [e.name, e.turns])).toEqual([['Dash', 2]]);
+      expect([fresh.buffs.wp.mov, fresh.buffs.wp.atk, fresh.buffs.wp.def, fresh.buffs.wp.down])
+        .toEqual([2, 0, 0, false]);
+      expect(fresh.buffs.wr.effects[0].turns).toBe(1);
+      expect(fresh.unitCooldowns).toEqual({ wp: { color: 'white', turns: 2 } });
+
+      const reloaded = freshRoom();
+      reloaded.gameState.applyFullState(fresh.gameState.snapshot);
+      reloaded.restoreLocalUiState();
+      expect(reloaded.buffs).toEqual(fresh.buffs);
+      expect(reloaded.unitCooldowns).toEqual(fresh.unitCooldowns);
+      reloaded.handleWebSocketMessage({
+        type: 'move_made', currentTurn: 'me', turnNumber: 11,
+        move: { color: 'black', unit_id: 'pawn', from: '2,0', to: '2,1', turn: 10, moved: true },
+      });
+      expect(reloaded.buffs.wp.effects[0].turns).toBe(1);
+      expect(reloaded.buffs.wr).toBeUndefined();
+      expect(reloaded.unitCooldowns).toEqual({ wp: { color: 'white', turns: 1 } });
+      reloaded.handleWebSocketMessage({
+        type: 'turn_passed', color: 'white', currentTurn: 'bot', turnNumber: 12,
+      });
+      expect(reloaded.buffs.wp.effects[0].turns).toBe(1);
+      expect(reloaded.unitCooldowns).toEqual({ wp: { color: 'white', turns: 1 } });
+      reloaded.handleWebSocketMessage({
+        type: 'turn_passed', color: 'black', currentTurn: 'me', turnNumber: 13,
+      });
+      expect(reloaded.buffs).toEqual({});
+      expect(reloaded.unitCooldowns).toEqual({});
+    } finally {
+      if (previous === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, previous);
+    }
+  });
+
+  it('ticks the correct slot cooldown row when the local seat is Black', () => {
+    const c = room();
+    c.gameState = new GameStateService();
+    c.gameState.applyGameStarted({
+      playerWhite: 'bot', playerBlack: 'me', currentTurn: 'bot', turnNumber: 9,
+      config: LEGACY_GAME_CONFIG,
+    });
+    const dash = c.slotOfAbility('dash');
+    const sap = c.slotOfAbility('sap');
+    const focus = c.slotOfAbility('focus');
+    c.myCooldowns[dash] = 2;
+    c.myCooldowns[sap] = 1;
+    c.opponentCooldowns[focus] = 2;
+
+    c.handleWebSocketMessage({
+      type: 'move_made', currentTurn: 'me', turnNumber: 10,
+      move: { color: 'white', unit_id: 'pawn', from: '0,0', to: '0,1', turn: 9, moved: true },
+    });
+    expect([c.myCooldowns[dash], c.myCooldowns[sap], c.opponentCooldowns[focus]])
+      .toEqual([1, 0, 2]);
+    c.handleWebSocketMessage({
+      type: 'turn_passed', color: 'black', currentTurn: 'bot', turnNumber: 11,
+    });
+    expect([c.myCooldowns[dash], c.myCooldowns[sap], c.opponentCooldowns[focus]])
+      .toEqual([1, 0, 1]);
+    c.handleWebSocketMessage({
+      type: 'turn_passed', color: 'white', currentTurn: 'me', turnNumber: 12,
+    });
+    expect([c.myCooldowns[dash], c.myCooldowns[sap], c.opponentCooldowns[focus]])
+      .toEqual([0, 0, 1]);
   });
 
   it('forgives a CP spend saved before CP was earned, and keeps one saved since', () => {
@@ -1379,10 +1900,10 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.turnNumber = 8;   // turn 4, Phase 1's first played
     expect(c.canUseAbilities('mine')).toBeTrue();
 
-    // Nor on Phase 1's own postmatch, which is a setup turn too.
+    // Postmatch permits casting as well as choosing.
     c.gameState.snapshot.turnNumber = 27;  // turn 14, Phase 1 Postmatch
     expect(c.canChooseAbilities('mine')).toBeTrue();
-    expect(c.canUseAbilities('mine')).toBeFalse();
+    expect(c.canUseAbilities('mine')).toBeTrue();
 
     c.gameState.snapshot.turnNumber = 29;  // turn 15, Phase 2's first played
     expect(c.canUseAbilities('mine')).toBeTrue();
@@ -1754,13 +2275,13 @@ describe('GameRoomComponent ability panel', () => {
     c.myPoints = 0;
     c.opponentPoints = 0;
 
-    // White takes black's queen on the board: its worth, 30, on top of five
-    // turns and Phase 1's 10. Black is at five turns and the 10.
+    // The queen pays 30 UP; regular points stay at the scheduled income.
     c.handleWebSocketMessage({
       type: 'move_made', turnNumber: 10, currentTurn: 'Opponent', boardState: {},
       move: { color: 'white', unit_id: 'pawn', captured: 'queen', defender_eliminated: true, from: '0,0', to: '0,1' },
     });
-    expect(c.myPoints).toBe(15 + 30);
+    expect(c.myPoints).toBe(15);
+    expect(c.myUnitPoints).toBe(10 + 30);
     expect(c.opponentPoints).toBe(15);
 
     // Black kills a pawn in white's reserve: nobody is paid for it. White's
@@ -1772,7 +2293,8 @@ describe('GameRoomComponent ability panel', () => {
         intoPanel: true, panelAttack: true, panel: 'br',
       },
     });
-    expect(c.myPoints).toBe(16 + 30);
+    expect(c.myPoints).toBe(16);
+    expect(c.myUnitPoints).toBe(10 + 30);
     expect(c.opponentPoints).toBe(15);
   });
 
@@ -1886,7 +2408,7 @@ describe('GameRoomComponent ability panel', () => {
     const c = room();
     expect(c.statHp).toBe('—');
     const unit = { key: '0,0', uid: 'u', unitId: 'pawn', name: 'Pawn', color: 'white', hp: 20, hpMax: 20,
-      hpAfter: null, atk: '14', def: 10, mv: 6, points: 5, vet: 0, drivable: true };
+      hpAfter: null, atk: [14], def: 10, mv: 6, points: 5, vet: 0, drivable: true };
     c.selectedUnit = unit;
     expect(c.statHp).toBe('20/20');
     c.selectedUnit = { ...unit, hpAfter: 16 };
@@ -1897,9 +2419,9 @@ describe('GameRoomComponent ability panel', () => {
 
   it('embeds each range in ATK, keeping the base under buffs', () => {
     const c = room();
-    c.gameState.snapshot.config = structuredClone(DEFAULT_GAME_CONFIG);
+    c.gameState.snapshot.config = structuredClone(LEGACY_GAME_CONFIG);
     c.selectedUnit = { key: '0,0', uid: 'u', unitId: 'archer', name: 'Archer', color: 'white',
-      hp: 6, hpMax: 6, atk: '4,3,2,1', def: 4, mv: 6, points: 8, vet: 0, drivable: true };
+      hp: 6, hpMax: 6, atk: [4, 3, 2, 1], def: 4, mv: 6, points: 8, vet: 0, drivable: true };
     expect(c.statAtk).toBe('3:4/4 4:3/3 5:2/2 6:1/1');
     expect(c.statHel).toBe('—');
     expect(c.statVet).toBe('—');
@@ -1909,9 +2431,9 @@ describe('GameRoomComponent ability panel', () => {
 
   it('shows the bishop’s healing rings and puts earned stars in VET instead of its title', () => {
     const c = room();
-    c.gameState.snapshot.config = structuredClone(DEFAULT_GAME_CONFIG);
+    c.gameState.snapshot.config = structuredClone(LEGACY_GAME_CONFIG);
     c.selectedUnit = { key: '0,0', uid: 'b', unitId: 'bishop', name: 'Bishop', color: 'white',
-      hp: 8, hpMax: 8, atk: '0', def: 4, mv: 6, points: 16, vet: 0, drivable: true };
+      hp: 8, hpMax: 8, atk: [0], def: 4, mv: 6, points: 16, vet: 0, drivable: true };
     expect(c.statAtk).toBe('—');
     expect(c.statHel).toBe('1:8/8');
     for (const [vet, stars] of ['—', '★', '★★', '★★★'].entries()) {
@@ -2015,7 +2537,7 @@ describe('GameRoomComponent ability panel', () => {
       type: 'turn_passed', color: 'black', turnNumber: 10, currentTurn: 'me', boardState: {},
     });
     const lines = logged(c);
-    expect(lines.some((line: string) => line.includes('(wrapped, 5 pts)'))).toBeTrue();
+    expect(lines.some((line: string) => line.includes('(wrapped, 5 UP)'))).toBeTrue();
     expect(lines).toContain('black ended the turn.');
     expect(lines).not.toContain('black passed the turn.');
     // The panels' walks get a line, as ever, but no arrow.
@@ -2046,14 +2568,16 @@ describe('GameRoomComponent ability panel', () => {
       type: 'game_state_update', turnNumber: 89, currentTurn: 'me', config, boardState: {},
       moveHistory: [held],
     });
-    // 119 by turn 36 and nothing since, and the queen's 30.
-    expect(c.myPoints).toBe(119 + 30);
+    // Regular income is 119; the queen's 30 goes to UP.
+    expect(c.myPoints).toBe(119);
+    expect(c.myUnitPoints).toBe(10 + 30);
     // The same state again - a refresh - pays it once, not twice.
     c.handleWebSocketMessage({
       type: 'game_state_update', turnNumber: 89, currentTurn: 'me', config, boardState: {},
       moveHistory: [held],
     });
-    expect(c.myPoints).toBe(119 + 30);
+    expect(c.myPoints).toBe(119);
+    expect(c.myUnitPoints).toBe(10 + 30);
   });
 
   it('keeps the score up and the toll off on the finished position of a points win', () => {
@@ -2235,21 +2759,8 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.canAfford('mine', 0, 0)).toBeFalse();
     expect(c.abilityBlockedNote).toBe('Unavailable: no abilities during the initialization.');
 
-    // A numbered phase's own postmatch shuts them for the same reason, and
-    // says which turn refused rather than naming the opening - which by then
-    // ended eleven turns ago. The header names the same stage.
-    c.gameState.snapshot.turnNumber = 27;   // turn 14, Phase 1 Postmatch
-    expect(c.canUseAbilities('mine')).toBeFalse();
-    expect(c.abilityBlockedNote)
-      .toBe('Unavailable: no abilities during the phase 1 postmatch.');
-    expect(c.stageLabel).toBe('PHASE 1 POSTMATCH');
-    c.gameState.snapshot.turnNumber = 72;   // turn 36, black's half
-    expect(c.abilityBlockedNote)
-      .toBe('Unavailable: no abilities during the phase 3 postmatch.');
-
-    // Off a setup turn they come back, and the note goes back to the turn -
-    // on turn 4 as well, which used to be Phase 1's own setup turn.
-    for (const ply of [7, 10, 29]) {
+    // All postmatches permit casts, for either half of the full turn.
+    for (const ply of [7, 10, 27, 28, 29, 49, 50, 71, 72]) {
       c.gameState.snapshot.turnNumber = ply;
       expect(c.canUseAbilities('mine')).withContext(`ply ${ply}`).toBeTrue();
       expect(c.abilityBlockedNote).withContext(`ply ${ply}`).toBe('Unavailable: not your turn.');
@@ -2937,7 +3448,7 @@ describe('GameRoomComponent ability panel', () => {
     /** The shipped config with `edit` applied, and three units dealt. */
     const tuned = (edit: (config: any) => void = () => {}) => {
       const c = room();
-      const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+      const config: any = structuredClone(LEGACY_GAME_CONFIG);
       edit(config);
       c.gameState.snapshot.config = config;
       c.gameState.snapshot.turnNumber = 20;
@@ -3328,12 +3839,12 @@ describe('GameRoomComponent leaving', () => {
     it('takes one back with its refund, and frees the allowance again', () => {
       const { c } = playing(1, three());
       walkHome(c, '-12,11', 'bl-0');
-      const paid = c.myPoints;
+      const paid = c.myUnitPoints;
       walkHome(c, '-11,11', 'bl-1');
       expect(c.homecomingsSpent).toBe(2);
       c.undoMove();
       expect(c.homecomingsSpent).toBe(1);
-      expect(c.myPoints).toBe(paid);
+      expect(c.myUnitPoints).toBe(paid);
     });
 
     /**

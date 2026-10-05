@@ -1,6 +1,6 @@
 import {
   boardMovesAt, homecomingsAt, lockedPanelUnits,
-  openingMovedHexes, panelMoverAllowed, panelMoversAt, unitVeterancy,
+  openingMovedHexes, panelMoverAllowed, panelMoversAt, unitVeterancy, promotionHeals,
 } from './history-rules';
 import { ruleOf } from './config.service';
 
@@ -301,5 +301,36 @@ describe('phase-only veterancy', () => {
     expect(rank('0,0', 27, history)).toBe(2);
     expect(rank('-6,12', 7, [], 'edge-up')).toBe(1);
     expect(rank('-6,12', 7, [], 'vertex-up')).toBe(0);
+  });
+});
+
+
+describe('Phase 3 promotion healing', () => {
+  const config = { board: { radius: 11, orientation: 'edge-up' }, units: { pawn: { hp: 12 } } };
+  const unit = (uid: string, color = 'white', hp = 1) => ({ uid, color, unit_id: 'pawn', hp, max_hp: 12 });
+  const wound = (uid: string, at: string, panel: string, hp = 1) => ({
+    turn: 60, from: '', to: '', intoPanel: true, panelEffect: true,
+    unit: unit(uid), attackedHex: at, panel, defenderHp: hp,
+  });
+
+  it('fully heals only living field and reserve units already at vet 3 before the award', () => {
+    const board: any = { '0,0': unit('early'), '1,0': unit('black', 'black'),
+      '2,0': unit('late'), '3,0': unit('dead', 'white', 0) };
+    const history: any[] = [{ turn: 8, from: '-12,1', to: '2,0', entered: true, unit: unit('late') },
+      wound('reserve', '11,1', 'br'), wound('base', '-12,1', 'bl'),
+      wound('lost', '11,2', 'br', 0),
+      { turn: 8, from: '-12,2', to: '12,1', panelMove: true, unit: unit('newReserve') },
+      wound('newReserve', '12,1', 'br')];
+    expect(promotionHeals(config, board, history, 70)).toEqual([]);
+    expect(board['0,0'].hp).toBe(1);
+    const effects = promotionHeals(config, board, history, 71);
+    expect(board['0,0'].hp).toBe(12);
+    expect(board['1,0'].hp).toBe(12);
+    expect(board['2,0'].hp).toBe(1);
+    expect(board['3,0'].hp).toBe(0);
+    expect(effects.map(e => e.unit.uid)).toEqual(['reserve']);
+    expect(effects[0].defenderHp).toBe(12);
+    expect(effects[0].promotionHeal).toBeTrue();
+    expect(promotionHeals(config, board, [...history, ...effects], 72)).toEqual([]);
   });
 });
