@@ -1747,6 +1747,8 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         shipped config - so the expected damage is written down, not worked
         out by the same strike_damage the engine calls."""
         config = copy.deepcopy(self._cfg())
+        for unit in config['units'].values():
+            unit.pop('veterancy', None)
         config['units']['pawn'].update(hp=1000, attack=9, defense=2)
         config['units'][defender].update(hp=1000, attack=12, defense=4)
         config['rules']['minStrikeDamage'] = 1
@@ -1805,12 +1807,12 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         self.assertTrue(record['panelAttack'])
         self.assertEqual(record['attackedHex'], self.RESERVE_QUEEN)
         self.assertEqual(record['unit']['uid'], 'rtl0')
-        self.assertEqual(record['unit']['max_hp'], config['units']['queen']['hp'])
+        self.assertEqual(record['unit']['max_hp'], config['units']['queen']['hp'] + 2)
         self.assertEqual(record['turn'], 21)
         # And it is exactly what the derivation reads back.
         self.assertEqual(
             panels.recorded_panel_hp([record]),
-            {'rtl0': config['units']['queen']['hp'] - record['damage_dealt']},
+            {'rtl0': config['units']['queen']['hp'] + 2 - record['damage_dealt']},
         )
 
     def test_a_panel_unit_already_wounded_is_struck_from_its_wounds(self):
@@ -1824,7 +1826,7 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         # caps the unit at nothing - in the client as much as here.
         history = [{
             'intoPanel': True, 'panel': 'tl', 'turn': 20, 'defenderHp': 1,
-            'unit': {'uid': 'rtl0', 'color': 'black', 'max_hp': 30},
+            'unit': {'uid': 'rtl0', 'unit_id': 'queen', 'color': 'black', 'max_hp': 32, 'vet': 1},
         }]
         board = self._board_with_pawn(config, self.BESIDE_RESERVE)
         record = resolve_panel_attack(
@@ -2253,12 +2255,12 @@ class PanelMoveTestCase(DealtPanels, TestCase):
         # once-a-phase lock is a different rule with its own test below.
         config, radius, board, at = self._setup()
         unit = panels.panel_occupancy(config, radius, [], ply=7)[at['rbr4']]
-        self.assertEqual(panels.panel_allowance(config, [], unit, 7), 6)
+        self.assertEqual(panels.panel_allowance(config, [], unit, 7), 8)
         history = [_panel_step('rbr4', 'archer', 'white', at['rbr4'], '7,6', 7, 'br', cost=4)]
         moved = panels.panel_occupancy(config, radius, history, ply=7)['7,6']
-        self.assertEqual(panels.panel_allowance(config, history, moved, 7), 2)
+        self.assertEqual(panels.panel_allowance(config, history, moved, 7), 4)
         # A new turn is a new allowance.
-        self.assertEqual(panels.panel_allowance(config, history, moved, 9), 6)
+        self.assertEqual(panels.panel_allowance(config, history, moved, 9), 8)
 
     def test_three_movers_a_panel_a_turn_and_the_two_panels_count_apart(self):
         config, radius, board, at = self._setup()
@@ -2571,6 +2573,21 @@ class PointsTestCase(TestCase):
         self.assertEqual(economy.points_of('white', 1, history, config), 1)
         self.assertEqual(economy.points_of('black', 1, history, config), 0)
 
+    def test_unit_casts_and_controlled_refunds_use_up_and_ability_deaths_only_charge_attrition(self):
+        from game.engine import scoring
+        config = self._cfg()
+        history = [
+            {'turn': 55, 'unitCast': {'color': 'white', 'cost': 3, 'gain': 8}},
+            {'turn': 55, 'abilityDeath': {'unit_id': 'pawn', 'color': 'white'}},
+            {'turn': 56, 'abilityDeath': {'unit_id': 'king', 'color': 'white'}},
+            {'turn': 57, 'withdrawn': True, 'unit_id': 'pawn', 'color': 'white', 'refundColor': 'black'},
+        ]
+        self.assertEqual(economy.unit_points_of('white', history, config), 15)
+        self.assertEqual(economy.unit_points_of('black', history, config), 10 + config['units']['pawn']['value'])
+        self.assertEqual(scoring.deaths_of(config, history, 'white', 3),
+                         config['units']['pawn']['value'] + config['units']['king']['value'])
+        self.assertEqual(scoring.deaths_of(config, history, 'black', 3), 0)
+
     def test_a_cast_that_kills_pays_nothing(self):
         """Only the turn's own action ever paid for a kill in the client."""
         config = self._cfg()
@@ -2852,7 +2869,7 @@ class PhaseVeterancyTestCase(SimpleTestCase):
         config['setup'] = {'white': {'11,1': 'pawn', '12,1': 'pawn', '-12,1': 'pawn'},
                            'black': {'-11,-1': 'pawn'}}
         def unit(uid, color='white', hp=1):
-            return dict(uid=uid, color=color, unit_id='pawn', hp=hp, max_hp=12)
+            return dict(uid=uid, color=color, unit_id='pawn', hp=hp, max_hp=14, vet=2)
         def wound(uid, at, panel, hp=1):
             return dict(turn=60, intoPanel=True, panelEffect=True, panel=panel,
                         unit=unit(uid), attackedHex=at, defenderHp=hp)
@@ -2866,12 +2883,12 @@ class PhaseVeterancyTestCase(SimpleTestCase):
         self.assertEqual(panels.promotion_heals(config, board, history, 70), [])
         self.assertEqual(board['0,0']['hp'], 1)
         effects = panels.promotion_heals(config, board, history, 71)
-        self.assertEqual([board[k]['hp'] for k in board], [12, 12, 1, 0])
+        self.assertEqual([board[k]['hp'] for k in board], [14, 14, 1, 0])
         self.assertEqual({e['unit']['uid'] for e in effects}, {'w11,1', 'b-11,-1'})
-        self.assertTrue(all(e['defenderHp'] == 12 and e['promotionHeal'] for e in effects))
+        self.assertTrue(all(e['defenderHp'] == 14 and e['promotionHeal'] for e in effects))
         standing = panels.panel_occupancy(config, 11, [*history, *effects], ply=71)
-        self.assertEqual(standing['11,1']['hp'], 12)
-        self.assertEqual(standing['-11,-1']['hp'], 12)
+        self.assertEqual(standing['11,1']['hp'], 14)
+        self.assertEqual(standing['-11,-1']['hp'], 14)
         self.assertEqual(panels.promotion_heals(config, board, [*history, *effects], 72), [])
 
     def test_server_handovers_and_serialization_carry_rank(self):
@@ -2974,3 +2991,80 @@ class CapturePermissionsTestCase(SimpleTestCase):
         self.assertNotIn('1,1', claims)
         self.assertEqual(claims['0,1'], 'black')
         self.assertEqual(scoring.cap_of({'1,0': {'unit_id': 'bishop', 'color': 'white'}}, 11, 'white', DEFAULT_CONFIG), 14)
+
+
+class VeteranStatsTestCase(SimpleTestCase):
+    def test_renamed_units_use_first_star_stats_for_movement_combat_and_healing(self):
+        from game.engine.unit_stats import ranked_unit, unit_stats
+        from game.engine.game_logic import resolve_heal
+        config = {'units': {
+            'renamed': {'hp': 12, 'move': 1, 'attack': 8, 'defense': 8,
+                        'veterancy': {'hp': 2, 'move': 2, 'attack': 2, 'defense': 2}},
+            'enemy': {'hp': 20, 'move': 0, 'attack': 12, 'defense': 4},
+            'healer': {'hp': 8, 'move': 1, 'attack': 0, 'defense': 4, 'heal': [8],
+                       'veterancy': {'heal': [8, 6]}},
+        }}
+        before = copy.deepcopy(config)
+        pawn = dict(unit_id='renamed', color='white', hp=5, max_hp=12, vet=0, uid='v')
+        ranked = ranked_unit(pawn, config, 1)
+        self.assertEqual((ranked['hp'], ranked['max_hp']), (7, 14))
+        self.assertEqual(pawn['hp'], 5)
+        self.assertEqual(ranked_unit(ranked, config, 3)['hp'], 7)
+        self.assertEqual(ranked_unit({**pawn, 'hp': 0}, config, 1)['hp'], 0)
+        board = HexBoard(5)
+        board.set_cell(0, 0, ranked)
+        self.assertIn((3, 0), get_legal_moves(board, (0, 0), config, 'white'))
+        self.assertNotIn((4, 0), get_legal_moves(board, (0, 0), config, 'white'))
+        board.set_cell(1, 0, dict(unit_id='enemy', color='black', hp=20, max_hp=20))
+        result = resolve_combat(board, (0, 0), (1, 0), config)
+        self.assertEqual((result['damage_dealt'], result['counter_damage']), (6, 2))
+        restored = HexBoard.from_dict(5, board.to_dict())
+        self.assertEqual(restored.get(0, 0)['vet'], 1)
+        self.assertEqual(restored.get(0, 0)['max_hp'], 14)
+        restored.set_cell(-2, 0, dict(unit_id='healer', color='white', hp=8, max_hp=8, vet=1))
+        healed = resolve_heal(restored, (-2, 0), (0, 0), config)
+        self.assertEqual(healed['healed_amount'], 6)
+        self.assertEqual(restored.get(0, 0)['hp'], 11)
+        self.assertEqual(unit_stats('king', DEFAULT_CONFIG, 1)['attack'], [24, 20])
+        self.assertEqual(config, before)
+
+    def test_reserve_hp_promotes_once_and_preserves_rank_through_wounds_and_withdrawal(self):
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['setup'] = {'white': {'11,1': 'pawn', '-12,1': 'pawn'}, 'black': {}}
+        reserve = dict(unit_id='pawn', color='white', hp=5, max_hp=12, vet=0, uid='w11,1')
+        base = {**reserve, 'uid': 'w-12,1'}
+        history = [dict(turn=6, intoPanel=True, panelEffect=True, panel=panel,
+                        attackedHex=at, unit=unit, defenderHp=5)
+                   for at, panel, unit in [('11,1', 'br', reserve), ('-12,1', 'bl', base)]]
+        pre = panels.panel_occupancy(config, 11, history, ply=6)
+        self.assertEqual((pre['11,1']['hp'], pre['11,1']['max_hp']), (5, 12))
+        first = panels.panel_occupancy(config, 11, history, ply=7)
+        self.assertEqual((first['11,1']['hp'], first['11,1']['max_hp'], first['11,1']['vet']), (7, 14, 1))
+        self.assertEqual((first['-12,1']['hp'], first['-12,1']['max_hp'], first['-12,1']['vet']), (5, 12, 0))
+        history.append(dict(turn=7, intoPanel=True, panelEffect=True, panel='br',
+                            attackedHex='11,1', unit=first['11,1'], defenderHp=4))
+        after = panels.panel_occupancy(config, 11, json.loads(json.dumps(history)), ply=8)['11,1']
+        self.assertEqual((after['hp'], after['max_hp']), (4, 14))
+        history += [dict(turn=9, entered=True, unit=after, **{'from': '11,1', 'to': '3,8'}),
+                    dict(turn=10, withdrawn=True, unit=after, **{'from': '3,8', 'to': '-12,9'})]
+        home = panels.panel_occupancy(config, 11, history, ply=27)['-12,9']
+        self.assertEqual((home['vet'], home['max_hp']), (1, 14))
+        self.assertLessEqual(home['hp'], 14)
+
+    def test_panel_wounds_apply_in_order_without_repromoting_a_newer_withdrawal(self):
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['setup'] = {'white': {'-12,1': 'pawn'}, 'black': {}}
+        unit = dict(uid='w-12,1', color='white', unit_id='pawn', hp=12, max_hp=12, vet=0)
+        history = [
+            dict(turn=9, intoPanel=True, unit=unit, defenderHp=10, attackedHex='-12,1', panel='bl'),
+            dict(turn=11, panelMove=True, panel='bl', unit={**unit, 'hp': 11}, **{'from': '-12,1', 'to': '11,1'}),
+            dict(turn=27, entered=True, unit={**unit, 'hp': 13, 'max_hp': 14, 'vet': 1},
+                 **{'from': '11,1', 'to': '-10,9'}),
+            dict(turn=73, withdrawn=True, unit={**unit, 'hp': 8, 'max_hp': 14, 'vet': 3},
+                 **{'from': '-10,9', 'to': '-12,11'}),
+        ]
+        home = panels.panel_occupancy(config, 11, json.loads(json.dumps(history)), ply=73)['-12,11']
+        self.assertEqual((home['hp'], home['max_hp'], home['vet']), (8, 14, 3))
+        history.append(dict(turn=73, intoPanel=True, unit=home, defenderHp=5, attackedHex='-12,11', panel='bl'))
+        wounded = panels.panel_occupancy(config, 11, history, ply=73)['-12,11']
+        self.assertEqual((wounded['hp'], wounded['max_hp'], wounded['vet']), (5, 14, 3))

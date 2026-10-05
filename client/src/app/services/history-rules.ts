@@ -14,6 +14,8 @@
  */
 
 import { ruleOf } from './config.service';
+import { rankedUnit, unitPassive } from './unit-stats';
+import { controlledUnit, controlsAt } from './unit-control';
 import { BASE_PANELS, isInsideBoard, panelOfHex } from './hex-rules';
 import {
   PHASES, PLIES_PER_TURN, SCORING_PHASES, phaseStartTurn,
@@ -106,13 +108,16 @@ export function lockedPanelUnits(history: Move[] | undefined, ply: number): Set<
  * spend it on units it was never about.
  */
 export function panelMoversAt(
-  history: Move[] | undefined, ply: number, color: string,
+  history: Move[] | undefined, ply: number, color: string, panel?: string, orientation = 'edge-up',
 ): { base: Set<string>; reserve: Set<string> } {
   const movers = { base: new Set<string>(), reserve: new Set<string>() };
   for (const move of history ?? []) {
     if (!move || move.turn !== ply) continue;
     const unit = move.unit ?? {};
     if (!unit.uid || unit.color !== color) continue;
+    const origin = (move.entered ? panelOfHex(move.from, orientation) : move.panel)
+      || (color === 'white' ? (move.entered ? 'br' : 'bl') : (move.entered ? 'tl' : 'tr'));
+    if (panel && origin !== panel) continue;
     if (move.entered) movers.reserve.add(unit.uid);
     else if (move.panelMove) {
       movers[BASE_PANELS.has(move.panel) ? 'base' : 'reserve'].add(unit.uid);
@@ -140,7 +145,7 @@ export function panelMoverAllowed(
   config?: any,
 ): boolean {
   const base = BASE_PANELS.has(panel ?? '');
-  const movers = panelMoversAt(history, ply, color)[base ? 'base' : 'reserve'];
+  const movers = panelMoversAt(history, ply, color, panel, config?.board?.orientation)[base ? 'base' : 'reserve'];
   const cap = ruleOf(config, !base && isPostmatch(ply)
     ? 'postmatchEntries' : 'panelMoversPerTurn');
   return movers.has(uid) || movers.size < cap;
@@ -274,38 +279,60 @@ export function promotionHeals(config: any, board: Record<string, any>, history:
   const orientation = config?.board?.orientation ?? 'edge-up';
   const veteran = (uid: string, at: string) =>
     unitVeterancy(uid, at, history, ply - 1, radius, orientation) === 3;
+  return healVeterans(config, board, history, ply, (unit, at) => veteran(unit.uid ?? `${unit.color[0]}${at}`, at), 'promotionHeal');
+}
+
+export function regenerationHeals(config: any, board: Record<string, any>, history: Move[], ply: number, color: string): Move[] {
+  return healVeterans(config, board, history, ply, unit => unit.color === color
+    && unitPassive(unit.unit_id, config, unit.vet)?.effect === 'regenerate', 'regenerationHeal');
+}
+
+function healVeterans(config: any, board: Record<string, any>, history: Move[], ply: number,
+  eligible: (unit: any, at: string) => boolean, mark: string): Move[] {
+  const radius = config?.board?.radius ?? 11;
+  const orientation = config?.board?.orientation ?? 'edge-up';
   for (const [at, unit] of Object.entries(board)) {
-    if (unit.hp > 0 && veteran(unit.uid ?? `${unit.color[0]}${at}`, at)) {
+    if (unit.hp > 0 && eligible(unit, at)) {
       board[at] = { ...unit, hp: unit.max_hp ?? config?.units?.[unit.unit_id]?.hp ?? unit.hp };
     }
   }
   const panels = new Map<string, { at: string; unit: any; panel: string }>();
   for (const move of history) {
     const unit = move?.unit;
+    if (move.control?.uid && move.at) {
+      const [q, r] = move.at.split(',').map(Number);
+      if (!isInsideBoard(q, r, radius)) panels.set(move.control.uid, {
+        at: move.at, unit: move.control, panel: panelOfHex(move.at, orientation),
+      });
+    }
     if (!unit?.uid) continue;
     if (move.entered) {
       panels.delete(unit.uid);
     } else if (move.withdrawn || move.panelMove) {
       panels.set(unit.uid, { at: move.to, unit: { ...unit }, panel: panelOfHex(move.to, orientation) });
-    } else if (move.intoPanel && Number.isFinite(move.defenderHp)) {
-      const held = panels.get(unit.uid);
+    }
+    const defender = move.panelDefender ?? unit;
+    if (move.intoPanel && Number.isFinite(move.defenderHp) && defender?.uid) {
+      const held = panels.get(defender.uid);
       const at = held?.at || move.attackedHex || '';
-      panels.set(unit.uid, {
-        at, unit: { ...unit, hp: move.defenderHp },
+      panels.set(defender.uid, {
+        at, unit: { ...defender, hp: move.defenderHp },
         panel: held?.panel || move.panel || (at ? panelOfHex(at, orientation) : ''),
       });
     }
   }
   const heals: Move[] = [];
-  for (const { at, unit, panel } of panels.values()) {
+  for (const { at, unit: snapshot, panel } of panels.values()) {
+    const unit = controlledUnit(rankedUnit(snapshot, config,
+      unitVeterancy(snapshot.uid, at || '0,0', history, ply, radius, orientation)), controlsAt(history, ply), ply);
     const full = unit.max_hp ?? config?.units?.[unit.unit_id]?.hp ?? unit.hp;
     if (!panel || BASE_PANELS.has(panel) || unit.hp <= 0 || unit.hp >= full
-        || !veteran(unit.uid, at || '0,0')) continue;
+        || !eligible(unit, at || '0,0')) continue;
     heals.push({
       from: '', to: '', unit_id: unit.unit_id, color: unit.color, turn: ply,
       captured: null, attacked: false, damage_dealt: 0, moved: false,
       defender_eliminated: false, intoPanel: true, panelEffect: true,
-      promotionHeal: true, unit, defenderHp: full, panel,
+      [mark]: true, unit, defenderHp: full, panel,
     });
   }
   return heals;

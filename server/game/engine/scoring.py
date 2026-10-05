@@ -247,6 +247,8 @@ def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
                 continue
         if move.get('intoPanel') and move.get('panel') in BASE_PANELS:
             continue
+        if (move.get('abilityDeath') or {}).get('color') == color:
+            total += unit_value(config, move['abilityDeath'].get('unit_id'))
         if move.get('defender_eliminated') and move.get('color') != color:
             total += unit_value(config, move.get('captured'))
         if move.get('attacker_eliminated') and move.get('color') == color:

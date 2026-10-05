@@ -885,16 +885,16 @@ class CustomConfigLiveIntegrationTests(TransactionTestCase):
             rejected = await _receive_until(white, 'error')
             self.assertEqual(rejected['code'], 'INVALID_MOVE')
             state = await GameState.objects.aget(game_id=game.game_id)
-            self.assertEqual(state.board_state['0,0']['hp'], 137)
+            self.assertEqual(state.board_state['0,0']['hp'], 139)
             self.assertEqual(state.turn_number, 7)
 
             await white.send_json_to({
                 'type': 'make_move', 'from': '0,0', 'to': '0,0', 'attack': '1,0',
             })
             made = await _receive_until(white, 'move_made')
-            self.assertEqual(made['boardState']['1,0']['hp'], 137 - (13 - 5))
+            self.assertEqual(made['boardState']['1,0']['hp'], 139 - (15 - 7))
             state = await GameState.objects.aget(game_id=game.game_id)
-            self.assertEqual(state.board_state['1,0']['hp'], 137 - (13 - 5))
+            self.assertEqual(state.board_state['1,0']['hp'], 139 - (15 - 7))
             self.assertEqual(state.config_snapshot['units']['pawn']['attack'], 13)
         finally:
             await host_comm.disconnect()
@@ -2604,10 +2604,13 @@ class PanelAttackLiveIntegrationTests(DealtPanels, TransactionTestCase):
 
     async def _stand_pawn(self, game, at):
         state = await GameState.objects.aget(game_id=game.game_id)
+        config = copy.deepcopy(state.config_snapshot)
+        for unit in config['units'].values():
+            unit.pop('veterancy', None)
         board = dict(state.board_state)
         board[at] = {'unit_id': 'pawn', 'color': 'white', 'hp': 20, 'max_hp': 20, 'uid': 'wtest'}
         await GameState.objects.filter(game_id=game.game_id).aupdate(
-            board_state=board, turn_number=self.PAST_OPENING)
+            config_snapshot=config, board_state=board, turn_number=self.PAST_OPENING)
 
     async def test_a_blow_into_a_reserve_is_answered_and_takes_the_turn(self):
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
@@ -3690,7 +3693,7 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
             self.assertTrue(all(v['hp'] == v['max_hp'] for v in passed['boardState'].values()))
             self.assertEqual(len(passed['effects']), 1)
             self.assertEqual(passed['effects'][0]['unit']['uid'], 'w11,1')
-            self.assertEqual(passed['effects'][0]['defenderHp'], 12)
+            self.assertEqual(passed['effects'][0]['defenderHp'], 14)
             stored = await GameState.objects.aget(game_id=game.game_id)
             self.assertEqual(stored.move_history, [*history, *passed['effects']])
             self.assertEqual(stored.board_state, passed['boardState'])

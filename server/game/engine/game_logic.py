@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .board import HexBoard, CellData, Coord, hex_distance
 from .move_validator import get_legal_moves
+from .unit_stats import unit_stats
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +27,11 @@ from .move_validator import get_legal_moves
 def can_attack(unit: Dict[str, Any], distance: int) -> bool:
     """Whether this unit has an attack at this hex distance, counters included."""
     attack = unit.get('attack', 1)
-    armed = any(value > 0 for value in attack) if isinstance(attack, list) else attack > 0
+    if isinstance(attack, list):
+        ring = distance - unit.get('attackMinRange', 1)
+        armed = 0 <= ring < len(attack) and attack[ring] > 0
+    else:
+        armed = attack > 0
     return (armed and not unit.get('heal')
             and unit.get('attackMinRange', 1) <= distance <= unit.get('attackRange', 1))
 
@@ -133,9 +138,8 @@ def resolve_combat(
         }
 
     # -- Occupied by enemy -> combat --------------------------------
-    units = config.get('units', {})
-    attacker_def = units.get(attacker['unit_id'], {})
-    defender_def = units.get(defender['unit_id'], {})
+    attacker_def = unit_stats(attacker['unit_id'], config, attacker.get('vet', 0))
+    defender_def = unit_stats(defender['unit_id'], config, defender.get('vet', 0))
     distance = hex_distance(from_coord, to_coord)
 
     # Damage is what gets past armour: the ring-scaled attack stat minus the
@@ -192,7 +196,7 @@ def resolve_heal(
             or not healer or not target or from_coord == target_coord
             or healer['color'] != target['color']):
         raise ValueError('Healing needs another friendly battlefield unit')
-    unit = config.get('units', {}).get(healer['unit_id'], {})
+    unit = unit_stats(healer['unit_id'], config, healer.get('vet', 0))
     amounts = unit.get('heal', [])
     distance = hex_distance(from_coord, target_coord)
     if not 1 <= distance <= len(amounts):
@@ -274,9 +278,8 @@ def resolve_panel_attack(
     if not defender or defender.get('color') == color:
         return {'error': 'Nothing to attack there'}
 
-    units = config.get('units', {})
-    attacker_def = units.get(attacker['unit_id'], {})
-    defender_def = units.get(defender['unit_id'], {})
+    attacker_def = unit_stats(attacker['unit_id'], config, attacker.get('vet', 0))
+    defender_def = unit_stats(defender['unit_id'], config, defender.get('vet', 0))
     if attacker_def.get('heal'):
         return {'error': 'This unit heals instead of attacking'}
     # Measured from where the unit ENDS UP, not where it started.
@@ -317,6 +320,7 @@ def resolve_panel_attack(
             'hp': defender.get('hp'),
             'max_hp': defender.get('max_hp', defender_def.get('hp')),
             'uid': defender.get('uid'),
+            'vet': defender.get('vet', 0),
         },
         'defenderHp': left,
     }

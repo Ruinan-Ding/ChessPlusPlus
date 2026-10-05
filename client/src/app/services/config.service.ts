@@ -49,7 +49,7 @@ export function ruleOf(config: any, key: CountedRule): number {
  */
 const UNIT_FIELDS = new Set([
   'id', 'name', 'symbol', 'display', 'move', 'value', 'hp', 'attack', 'defense',
-  'commander', 'attackRange', 'attackMinRange', 'ability', 'heal', 'captureZones',
+  'commander', 'attackRange', 'attackMinRange', 'ability', 'passive', 'heal', 'captureZones', 'veterancy',
 ]);
 
 /** The whole numbers every unit type needs besides `defense`, and the least of each. */
@@ -60,13 +60,14 @@ const UNIT_NUMBERS: ReadonlyArray<readonly [string, number]> = [
 /** Every field a catalogue entry may carry. */
 const ABILITY_FIELDS = new Set([
   'id', 'name', 'description', 'target', 'cost', 'cooldown', 'turns', 'uses',
-  'mov', 'atk', 'def', 'damage', 'heal', 'points', 'testing',
+  'mov', 'atk', 'def', 'damage', 'heal', 'points', 'testing', 'effect', 'counterAttack', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef',
 ]);
 
 /** A catalogue entry's whole numbers, and the least of each - null for none. */
 const ABILITY_NUMBERS: ReadonlyArray<readonly [string, number | null]> = [
   ['cost', 0], ['cooldown', 0], ['turns', 1], ['uses', 1],
   ['mov', null], ['atk', null], ['def', null], ['damage', 0], ['heal', 0], ['points', 0],
+  ['up', 0], ['enemyDamage', 0], ['enemyAtk', null], ['enemyDef', null],
 ];
 
 /**
@@ -84,6 +85,29 @@ const IGNORED_BY: Record<string, string[]> = {
   universal: ['mov', 'atk', 'def', 'damage', 'heal', 'turns'],
   'all-enemies': ['damage', 'heal', 'points'],
 };
+
+export const UNIT_EFFECT_FIELDS: Record<string, string[]> = {
+  'counter': ['counterAttack'],
+  'hop': [],
+  'deflect': ['atk'],
+  'on-hit-drain': ['atk', 'def', 'turns'],
+  'regenerate': [],
+  'intimidate': ['atk', 'def', 'mov', 'turns'],
+  'persuade': ['atk', 'def', 'mov', 'turns'],
+  'rapid-movement': [],
+};
+export const UNIT_PASSIVES = Object.keys(UNIT_EFFECT_FIELDS);
+export const UNIT_ACTIVES = ['sacrifice', 'attack-drain', 'taunt', 'cleave', 'charge', 'control', 'nullify', 'call'];
+Object.assign(UNIT_EFFECT_FIELDS, {
+  'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up'],
+  'attack-drain': ['cost', 'cooldown', 'turns', 'mov'],
+  'taunt': ['cost', 'cooldown', 'turns'],
+  'cleave': ['cost', 'cooldown', 'turns'],
+  'charge': ['cost', 'cooldown', 'turns'],
+  'control': ['cost', 'cooldown', 'turns'],
+  'nullify': ['cost', 'cooldown', 'turns'],
+  'call': ['cost', 'cooldown', 'turns', 'heal', 'def', 'enemyDamage', 'enemyAtk', 'enemyDef'],
+});
 
 const KIND_NAME: Record<string, string> = {
   passive: 'a passive',
@@ -134,8 +158,27 @@ function abilityNumberErrors(abilities: any): string[] {
         errors.push(`${at}.${field} must be an integer${least === null ? '' : ` >= ${least}`}`);
       }
     }
-    const kind = passives.has(id) ? 'passive' : a.target;
-    for (const field of IGNORED_BY[kind] ?? []) {
+    if (a.effect !== undefined) {
+      if (!Object.keys(UNIT_EFFECT_FIELDS).includes(a.effect)) errors.push(`${at}.effect is unknown`);
+      for (const field of ABILITY_NUMBERS.map(([field]) => field)) {
+        if (a[field] !== undefined && !(Object.keys(UNIT_EFFECT_FIELDS).includes(a.effect) ? UNIT_EFFECT_FIELDS[a.effect] : []).includes(field)) {
+          errors.push(`${at}.${field} does nothing on ${a.effect}`);
+        }
+      }
+      if (a.target !== (a.effect === 'control' ? 'enemy' : 'friendly')) errors.push(`${at}.target does not match the unit effect`);
+    }
+    if (a.counterAttack !== undefined && (a.effect !== 'counter' || !Array.isArray(a.counterAttack)
+        || a.counterAttack.length < 1 || a.counterAttack.length > 4
+        || a.counterAttack.some((n: any) => !Number.isInteger(n) || n < 0))) {
+      errors.push(`${at}.counterAttack must be 1-4 nonnegative integer entries on Counter`);
+    }
+    if (a.effect === 'counter' && a.counterAttack === undefined) errors.push(`${at}.counterAttack is required`);
+    if (a.effect === 'deflect' && a.atk === undefined) errors.push(`${at}.atk is required`);
+    for (const field of ['up', 'enemyDamage', 'enemyAtk', 'enemyDef']) {
+      if (a[field] !== undefined && a.effect === undefined) errors.push(`${at}.${field} requires a unit effect`);
+    }
+    const kind = a.effect !== undefined ? a.effect : passives.has(id) ? 'passive' : a.target;
+    for (const field of Array.isArray(IGNORED_BY[kind]) ? IGNORED_BY[kind] : []) {
       if (a[field] !== undefined && a[field] !== 0) {
         errors.push(`${at}.${field} does nothing on ${KIND_NAME[kind]}`);
       }
@@ -164,7 +207,7 @@ function unitAbilityErrors(unitId: string, ability: unknown, abilities: any): st
   if (!entry) return [`${at} names unknown ability "${ability}"`];
   const passive = Array.isArray(abilities.paths)
     && abilities.paths.some((path: any) => path?.passive === ability);
-  if (passive || entry.target !== 'friendly') {
+  if (passive || (entry.effect !== undefined ? !UNIT_ACTIVES.includes(entry.effect) : entry.target !== 'friendly')) {
     return [`${at} must be a friendly ability - it is cast on the unit itself`];
   }
   return [];
@@ -316,7 +359,36 @@ export class ConfigService {
         for (const key of Object.keys(unit ?? {})) {
           if (!UNIT_FIELDS.has(key)) errors.push(`units.${unitId} has unknown field "${key}"`);
         }
+        if (unit?.veterancy !== undefined) {
+          const bonus = unit.veterancy;
+          const at = `units.${unitId}.veterancy`;
+          if (!bonus || typeof bonus !== 'object' || Array.isArray(bonus)) {
+            errors.push(`${at} must be an object`);
+          } else {
+            for (const [key, value] of Object.entries<any>(bonus)) {
+              if (!['hp', 'move', 'defense', 'attack', 'attackRange', 'attackMinRange', 'heal'].includes(key)) {
+                errors.push(`${at} has unknown field "${key}"`);
+              } else if (key === 'heal' || (key === 'attack' && Array.isArray(value))) {
+                if (!Array.isArray(value) || value.length < 1 || value.length > 4 ||
+                    value.some(n => !Number.isInteger(n) || n < 0)) errors.push(`${at}.${key} must have 1-4 nonnegative integer entries`);
+              } else if (!Number.isInteger(value) || value < (key.startsWith('attack') && key !== 'attack' ? 1 : 0)
+                  || (key.startsWith('attack') && key !== 'attack' && value > 50)) {
+                errors.push(`${at}.${key} has an invalid integer`);
+              }
+            }
+            const outer = bonus.attackRange !== undefined ? bonus.attackRange : range;
+            const inner = bonus.attackMinRange !== undefined ? bonus.attackMinRange : minimum;
+            const attack = Array.isArray(bonus.attack) ? bonus.attack : unit.attack;
+            if (inner > outer || (Array.isArray(attack) && attack.length !== outer - inner + 1)) {
+              errors.push(`${at} must define a consistent attack profile and range`);
+            }
+          }
+        }
         errors.push(...unitAbilityErrors(unitId, unit?.ability, config.abilities));
+        if (unit?.passive !== undefined && (typeof unit.passive !== 'string'
+            || !UNIT_PASSIVES.includes(config.abilities?.catalogue?.[unit.passive]?.effect))) {
+          errors.push(`units.${unitId}.passive must name a unit passive in the catalogue`);
+        }
       }
     }
 

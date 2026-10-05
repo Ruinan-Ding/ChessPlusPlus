@@ -98,6 +98,16 @@ def make_cases(rng):
             cases.append({'config': config, 'board': board, 'history': history, 'bank': {}, 'ply': at})
         awards = scoring.halftime_up_awards(config, board, history, ply)
         cases.append({'config': config, 'board': {}, 'history': history + awards, 'bank': {}, 'ply': ply})
+    for color in ('white', 'black'):
+        other = 'black' if color == 'white' else 'white'
+        history = [{'turn': 55, 'unitCast': {'color': color, 'cost': 3, 'gain': 8}},
+                   {'turn': 55, 'abilityDeath': {'unit_id': 'pawn', 'color': color}},
+                   {'turn': 56, 'abilityDeath': {'unit_id': 'king', 'color': color}},
+                   {'turn': 57, 'withdrawn': True, 'unit_id': 'pawn', 'color': color, 'refundColor': other},
+                   {'turn': 58, 'withdrawn': True, 'unit_id': 'pawn', 'color': color,
+                    'defender_eliminated': True, 'captured': 'rook', 'refundColor': color}]
+        cases.append({'config': {'board': {'radius': 11}, 'units': UNITS},
+                      'board': {}, 'history': history, 'bank': {}, 'ply': 58})
     return cases
 
 

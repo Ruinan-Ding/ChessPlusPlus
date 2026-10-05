@@ -35,6 +35,8 @@ import math
 import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from .unit_stats import ranked_unit, unit_stats
+
 # The phase schedule's own count of a side's turns. Mending needs it, and it
 # lived here as a private copy until the schedule was ported whole; one copy of
 # a rule is the only kind that cannot drift from itself.
@@ -645,6 +647,7 @@ def withdrawn_units(
             continue
         standing = home.get(uid)
         if standing:
+            standing['unit'] = {**standing['unit'], **unit}
             standing['hp'] = move.get('defenderHp') or 0
             standing['turn'] = move.get('turn')
     # Killed where it stood is killed: not drawn, and not mended back to life.
@@ -708,6 +711,8 @@ def panel_occupancy(
             positions[uid]['at'] = move.get('to')
         elif move.get('entered') and uid:
             positions.pop(uid, None)
+        elif move.get('intoPanel') and uid in positions and move.get('defenderHp') is not None:
+            positions[uid]['unit'].update(unit)
 
     standing: Dict[str, Dict[str, Any]] = {}
     for uid, stood in positions.items():
@@ -732,8 +737,8 @@ def panel_occupancy(
         # Read off where it stands NOW: a unit wrapped out of its base is a
         # reserve unit, and answers blows as one.
         unit['panel'] = panel_of(*axial_to_pixel(aq, ar, orientation))
-        unit['vet'] = unit_veterancy(uid, at, moves, ply or 1, radius, orientation)
-        standing[at] = unit
+        vet = unit_veterancy(uid, at, moves, ply or 1, radius, orientation)
+        standing[at] = ranked_unit(unit, config, vet)
     return standing
 
 
@@ -813,7 +818,7 @@ def move_costs(
     piece = units.get(coord_key(sq, sr))
     if not piece:
         return costs, passable
-    unit_def = (config.get('units') or {}).get(piece.get('unit_id')) or {}
+    unit_def = unit_stats(piece['unit_id'], config, piece.get('vet', 0))
     move_range = unit_def.get('move', 0) if moves_left is None else moves_left
     try:
         move_range = int(move_range)
@@ -888,7 +893,7 @@ def entry_targets(
     if not zone:
         return {}
 
-    unit_def = (config.get('units') or {}).get(unit.get('unit_id')) or {}
+    unit_def = unit_stats(unit['unit_id'], config, unit.get('vet', 0))
     mov = unit_def.get('move', 0) if moves_left is None else moves_left
     try:
         mov = int(mov)
@@ -988,7 +993,7 @@ def homecoming_targets(
     except ValueError:
         return {}
     color = unit.get('color')
-    unit_def = (config.get('units') or {}).get(unit.get('unit_id')) or {}
+    unit_def = unit_stats(unit['unit_id'], config, unit.get('vet', 0))
     if unit_def.get('commander'):
         return {}
     # Only from your own first three rows. The owner's rule, and the same bound
@@ -1210,7 +1215,7 @@ def panel_allowance(
         cap = rule_of(config, 'postmatchEntries')
     if uid not in movers and len(movers) >= cap:
         return None
-    stat = ((config.get('units') or {}).get(unit.get('unit_id')) or {}).get('move', 0)
+    stat = unit_stats(unit['unit_id'], config, unit.get('vet', 0)).get('move', 0)
     try:
         stat = int(stat)
     except (TypeError, ValueError):

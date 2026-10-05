@@ -59,6 +59,7 @@ from .engine.phases import (
     is_homecoming_open, is_initialization, is_setup_turn, no_attack_message,
 )
 from .engine.scoring import bank_ended_phases, halftime_up_awards, schedule_ending
+from .engine.unit_stats import ranked_unit, unit_stats
 
 logger = logging.getLogger('game')
 
@@ -171,8 +172,9 @@ def _settle_hand_over(state, board, history, beaten) -> HandOver:
     radius = config.get('board', {}).get('radius', DEFAULT_CONFIG['board']['radius'])
     orientation = config.get('board', {}).get('orientation', 'edge-up')
     for at, unit in board_state.items():
-        unit['vet'] = panels.unit_veterancy(
+        vet = panels.unit_veterancy(
             unit.get('uid', f"{unit['color'][0]}{at}"), at, history, next_ply, radius, orientation)
+        board_state[at] = ranked_unit(unit, config, vet)
     effects = panels.promotion_heals(config, board_state, history, next_ply)
     effects.extend(halftime_up_awards(config, board_state, history, next_ply))
     history.extend(effects)
@@ -2235,7 +2237,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if not target or target['color'] == my_color:
                     await send_error(self, 'INVALID_MOVE', 'No enemy unit on the attacked hex')
                     return
-                unit_def = config.get('units', {}).get(piece['unit_id'], {})
+                unit_def = unit_stats(piece['unit_id'], config, piece.get('vet', 0))
                 if not can_attack(unit_def, hex_distance((tq, tr), (aq, ar))):
                     await send_error(self, 'INVALID_MOVE', 'That hex is out of attack range')
                     return

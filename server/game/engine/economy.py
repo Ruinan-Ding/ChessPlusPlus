@@ -30,16 +30,17 @@ def unit_points_of(color: str, history: Iterable[Dict[str, Any]], config: Dict[s
             points += move['halftimeUp'][color]
         # A cast into a panel records what it did to a unit, but the client
         # never paid for a kill made that way - only the turn's own action.
-        if move.get('panelEffect') or move.get('entered'):
+        if (move.get('unitCast') or {}).get('color') == color:
+            points += int(move['unitCast'].get('gain') or 0) - int(move['unitCast'].get('cost') or 0)
+        if move.get('panelEffect') or move.get('entered') or move.get('abilityDeath'):
             continue
         if move.get('panelMove'):
             if (move.get('unit') or {}).get('color') == color:
                 points -= int(move.get('price') or 0)
             continue
         if move.get('withdrawn'):
-            if move.get('color') == color:
+            if move.get('refundColor', move.get('color')) == color:
                 points += unit_value(config, move.get('unit_id'))
-            continue
         # A blow into a panel pays nobody, whichever side dies of it.
         if move.get('intoPanel'):
             continue

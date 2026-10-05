@@ -16,6 +16,10 @@ export interface PieceData {
   uid?: string;
   /** Rank derived from phase boundaries; older snapshots may not carry it. */
   vet?: number;
+  /** Solo Cast changes control while retaining the owner for regicide and refunds. */
+  owner?: 'white' | 'black';
+  controlledUntil?: number;
+  controlTurn?: number;
 }
 
 /** Battlefield cells keyed by axial "q,r"; panels are derived separately. */

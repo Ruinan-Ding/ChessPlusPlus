@@ -71,4 +71,16 @@ describe('ability rules', () => {
     expect(advanceUnitCooldowns(onlyBlack, 'white')).toBe(onlyBlack);
     expect([0, 1, 3].map(cooldownAfterTurn)).toEqual([0, 0, 2]);
   });
+
+  it('keeps uncapped Bog stacks for their triggering full turn through serialized restore', () => {
+    const bog = { name: 'Bog', mov: 0, atk: -1, def: -1, turns: 1 };
+    let held = stackEffect(undefined, bog, 'white', true, 33);
+    for (let i = 0; i < 3; i++) held = stackEffect(held, bog, 'white', true, 34);
+    expect([held.atk, held.def, held.effects.length]).toEqual([-4, -4, 4]);
+    const restored = JSON.parse(JSON.stringify({ unit: held }));
+    expect(advanceBuffs(restored, 'white', 32)['unit'].atk).toBe(-4);
+    expect(advanceBuffs(restored, 'white', 33)['unit'].atk).toBe(-3);
+    expect(advanceBuffs(restored, 'black', 34)['unit']).toBeUndefined();
+    expect(restored.unit.atk).toBe(-4);
+  });
 });

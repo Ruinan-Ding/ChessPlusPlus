@@ -151,9 +151,33 @@ def _unit_ability_errors(unit_id: str, ability: Any, abilities: Any) -> List[str
         return [f'{at} names unknown ability "{ability}"']
     paths = abilities.get('paths') if isinstance(abilities.get('paths'), list) else []
     passive = any(isinstance(p, dict) and p.get('passive') == ability for p in paths)
-    if passive or entry.get('target') != 'friendly':
+    if passive or (entry.get('effect') not in UNIT_ACTIVES if 'effect' in entry else entry.get('target') != 'friendly'):
         return [f"{at} must be a friendly ability - it is cast on the unit itself"]
     return []
+
+
+UNIT_EFFECT_FIELDS = {
+    'counter': ['counterAttack'],
+    'hop': [],
+    'deflect': ['atk'],
+    'on-hit-drain': ['atk', 'def', 'turns'],
+    'regenerate': [],
+    'intimidate': ['atk', 'def', 'mov', 'turns'],
+    'persuade': ['atk', 'def', 'mov', 'turns'],
+    'rapid-movement': [],
+}
+UNIT_PASSIVES = tuple(UNIT_EFFECT_FIELDS)
+UNIT_ACTIVES = ('sacrifice', 'attack-drain', 'taunt', 'cleave', 'charge', 'control', 'nullify', 'call')
+UNIT_EFFECT_FIELDS.update({
+    'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up'],
+    'attack-drain': ['cost', 'cooldown', 'turns', 'mov'],
+    'taunt': ['cost', 'cooldown', 'turns'],
+    'cleave': ['cost', 'cooldown', 'turns'],
+    'charge': ['cost', 'cooldown', 'turns'],
+    'control': ['cost', 'cooldown', 'turns'],
+    'nullify': ['cost', 'cooldown', 'turns'],
+    'call': ['cost', 'cooldown', 'turns', 'heal', 'def', 'enemyDamage', 'enemyAtk', 'enemyDef'],
+})
 
 
 def _validate_config(config: Dict[str, Any]) -> List[str]:
@@ -167,9 +191,34 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
     catalogue = abilities.get('catalogue') if isinstance(abilities, dict) else None
     if isinstance(catalogue, dict):
         for ability_id, entry in catalogue.items():
-            if isinstance(entry, dict) and 'target' in entry:
-                if entry['target'] not in ('friendly', 'enemy', 'universal', 'all-enemies'):
-                    errors.append(f"abilities.catalogue.{ability_id}.target is invalid")
+            if not isinstance(entry, dict):
+                continue
+            at = f'abilities.catalogue.{ability_id}'
+            if 'target' in entry and entry['target'] not in ('friendly', 'enemy', 'universal', 'all-enemies'):
+                errors.append(f'{at}.target is invalid')
+            if 'effect' in entry:
+                if not isinstance(entry['effect'], str) or entry['effect'] not in UNIT_EFFECT_FIELDS:
+                    errors.append(f'{at}.effect is unknown')
+                if entry.get('target') != ('enemy' if entry.get('effect') == 'control' else 'friendly'):
+                    errors.append(f'{at}.target must be friendly for a unit passive')
+                for field in ('cost', 'cooldown', 'turns', 'uses', 'mov', 'atk', 'def', 'damage', 'heal', 'points', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef'):
+                    if field in entry:
+                        if field not in (UNIT_EFFECT_FIELDS.get(entry['effect'], ()) if isinstance(entry['effect'], str) else ()):
+                            errors.append(f'{at}.{field} does nothing on a unit passive')
+                        elif type(entry[field]) is not int or (field in ('cost', 'cooldown', 'heal', 'up', 'enemyDamage') and entry[field] < 0) or (field in ('turns', 'uses') and entry[field] < 1):
+                            errors.append(f'{at}.{field} must be an integer')
+            if 'counterAttack' in entry:
+                profile = entry['counterAttack']
+                if (entry.get('effect') != 'counter' or not isinstance(profile, list)
+                        or not 1 <= len(profile) <= 4 or any(type(n) is not int or n < 0 for n in profile)):
+                    errors.append(f'{at}.counterAttack is invalid')
+            elif entry.get('effect') == 'counter':
+                errors.append(f'{at}.counterAttack is required')
+            if entry.get('effect') == 'deflect' and 'atk' not in entry:
+                errors.append(f'{at}.atk is required')
+            for field in ('up', 'enemyDamage', 'enemyAtk', 'enemyDef'):
+                if field in entry and 'effect' not in entry:
+                    errors.append(f'{at}.{field} requires a unit effect')
 
     if 'version' not in config:
         errors.append("Missing 'version'")
@@ -222,6 +271,36 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                 elif not isinstance(value, int) or isinstance(value, bool) or value < least:
                     errors.append(
                         f"units.{unit_id}.{field} must be an integer >= {least}, got {value}")
+            if 'passive' in unit:
+                pid = unit['passive']
+                entry = catalogue.get(pid) if isinstance(catalogue, dict) and isinstance(pid, str) else None
+                if not isinstance(entry, dict) or entry.get('effect') not in UNIT_PASSIVES:
+                    errors.append(f'units.{unit_id}.passive must name a unit passive in the catalogue')
+            if 'veterancy' in unit:
+                bonus = unit['veterancy']
+                at = f"units.{unit_id}.veterancy"
+                if not isinstance(bonus, dict):
+                    errors.append(f"{at} must be an object")
+                else:
+                    valid = True
+                    for key, value in bonus.items():
+                        if key not in ('hp', 'move', 'defense', 'attack', 'attackRange', 'attackMinRange', 'heal'):
+                            errors.append(f'{at} has unknown field "{key}"')
+                        elif key == 'heal' or (key == 'attack' and isinstance(value, list)):
+                            if (not isinstance(value, list) or not 1 <= len(value) <= 4
+                                    or any(type(n) is not int or n < 0 for n in value)):
+                                valid = False
+                                errors.append(f"{at}.{key} must have 1-4 nonnegative integer entries")
+                        elif type(value) is not int or value < (1 if key in ('attackRange', 'attackMinRange') else 0) or (key in ('attackRange', 'attackMinRange') and value > 50):
+                            valid = False
+                            errors.append(f"{at}.{key} has an invalid integer")
+                    if valid:
+                        outer, inner = bonus.get('attackRange', rng), bonus.get('attackMinRange', minimum)
+                        attack = bonus.get('attack') if isinstance(bonus.get('attack'), list) else unit.get('attack')
+                        if (type(inner) is int and type(outer) is int and
+                                (inner > outer or (isinstance(attack, list)
+                                                  and len(attack) != outer - inner + 1))):
+                            errors.append(f"{at} must define a consistent attack profile and range")
             if 'heal' in unit:
                 heal = unit['heal']
                 if not isinstance(heal, list) or not 1 <= len(heal) <= 4 or any(

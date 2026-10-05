@@ -105,6 +105,7 @@ export function deathsOf(config: any, history: readonly any[] | null | undefined
   for (const move of history ?? []) {
     if (phase !== undefined && phaseIndexAt(move.turn) !== phase) continue;
     if (move.intoPanel && BASE_PANELS.has(move.panel)) continue;
+    if (move.abilityDeath?.color === color) total += unitValue(config, move.abilityDeath.unit_id);
     if (move.defender_eliminated && move.color !== color) total += unitValue(config, move.captured);
     if (move.attacker_eliminated && move.color === color) total += unitValue(config, move.unit_id);
   }
@@ -227,12 +228,14 @@ export function unitPoints(config: any, history: readonly any[], side: Side): nu
   for (const move of history ?? []) {
     if (!move) continue;
     if (move.halftimeUp) points += move.halftimeUp[side];
-    if (move.panelEffect || move.entered) continue;
+    if (move.unitCast?.color === side) points += (move.unitCast.gain ?? 0) - move.unitCast.cost;
+    if (move.panelEffect || move.entered || move.abilityDeath) continue;
     if (move.panelMove) {
       if (move.unit?.color === side) points -= Math.trunc(Number(move.price) || 0);
-    } else if (move.withdrawn) {
-      if (move.color === side) points += unitValue(config, move.unit_id);
-    } else if (!move.intoPanel) {
+      continue;
+    }
+    if (move.withdrawn && (move.refundColor ?? move.color) === side) points += unitValue(config, move.unit_id);
+    if (!move.intoPanel) {
       if (move.defender_eliminated && move.color === side) points += unitValue(config, move.captured);
       if (move.attacker_eliminated && move.color === other) points += unitValue(config, move.unit_id);
     }

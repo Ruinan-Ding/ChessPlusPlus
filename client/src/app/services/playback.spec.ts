@@ -104,6 +104,18 @@ describe('buildPlayback', () => {
     ]);
   });
 
+  it('replays a veteran attack before its remaining walk without repeating the attack', () => {
+    expect(buildPlayback([
+      step('0,0', '1,0'), step('0,0', '1,0', '2,0', { countered: true }),
+      step('0,0', '-1,0', '2,0', { afterAttackWalk: true, countered: true }),
+    ], true)).toEqual([
+      { kind: 'move', from: '0,0', to: '1,0' },
+      { kind: 'attack', from: '1,0', to: '2,0' },
+      { kind: 'counter', from: '2,0', to: '1,0' },
+      { kind: 'move', from: '1,0', to: '-1,0' },
+    ]);
+  });
+
   it('collapses a committed walk into the line it amounted to', () => {
     const walk = [step('0,0', '1,0'), step('0,0', '2,0'), step('0,0', '2,-1')];
     expect(buildPlayback(walk, true)).toEqual([

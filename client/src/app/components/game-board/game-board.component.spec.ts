@@ -110,7 +110,7 @@ describe('GameBoardComponent reach preview', () => {
     expect(board.attackTargets.has('1,0')).toBeTrue();
     expect(board.forecastDamage('0,0')).toBe('-1');
     expect(cell('1,0').stats!.atk).toBe('8');
-    board.unitBuffs = { own: { atk: -8, mov: -2 } }; rebuild();
+    board.unitBuffs = { own: { atk: -10, mov: -2 } }; rebuild();
     board.onHexClick(cell('0,0')); board.onHexHover(cell('0,0'));
     expect(board.attackTargets.size).toBe(0);
     expect(board.previewAttacks.size).toBe(0);
@@ -119,6 +119,39 @@ describe('GameBoardComponent reach preview', () => {
     board.turnColor = 'black'; board.unitBuffs = { enemy: { atk: 8, mov: 0 } }; rebuild();
     board.onHexClick(cell('1,0'));
     expect(board.attackTargets.has('0,0')).toBeTrue();
+  });
+
+  it('uses earned first-star profiles for Unit inspection, reach, forecasts and wounded reserves', () => {
+    setPanelsDealt(false);
+    board.config = structuredClone(DEFAULT_GAME_CONFIG);
+    board.config.setup.white['11,1'] = 'pawn';
+    board.radius = 11; board.turnNumber = 7;
+    board.controlAllSides = true; board.turnColor = 'white'; board.myColor = 'white';
+    board.boardState = {
+      '0,0': { unit_id: 'king', color: 'white', uid: 'king', hp: 60, max_hp: 60, vet: 1 },
+      '2,0': { unit_id: 'pawn', color: 'black', uid: 'enemy', hp: 14, max_hp: 14, vet: 1 },
+      '-3,0': { unit_id: 'bishop', color: 'white', uid: 'healer', hp: 8, max_hp: 8, vet: 1 },
+      '-1,0': { unit_id: 'pawn', color: 'white', uid: 'ally', hp: 3, max_hp: 14, vet: 1 },
+    };
+    board.panelHp = { 'w11,1': 7 };
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false),
+      config: new SimpleChange(null, board.config, false), radius: new SimpleChange(4, 11, false),
+      turnNumber: new SimpleChange(20, 7, false) });
+    const selected = jasmine.createSpy('selected'); board.hexSelected.subscribe(selected);
+    board.onHexClick(cell('0,0'));
+    expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ atk: [24, 20], mv: 8, vet: 1 }));
+    expect(cell('0,0').stats!.rangeHigh).toBe(2);
+    expect(board.attackTargets.has('2,0')).toBeTrue();
+    board.onHexHover(cell('2,0'));
+    expect(board.forecastDamage('2,0')).toBe('-10');
+    expect(board.forecastDamage('0,0')).toBeNull();
+    board.onHexClick(cell('-3,0'));
+    expect([...board.healTargets]).toEqual(['-1,0']);
+    board.onHexHover(cell('-1,0'));
+    expect(board.forecastDamage('-1,0')).toBe('+6');
+    expect(cell('11,1').piece).toEqual(jasmine.objectContaining({ hp: 7, max_hp: 14, vet: 1 }));
+    board.onHexClick(cell('11,1'));
+    expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ hp: 7, hpMax: 14, atk: [10], def: 10, vet: 1 }));
   });
 
   it('offers a healer only other friendly battlefield units, previews HP and confirms touch healing', () => {
@@ -1435,7 +1468,7 @@ describe('GameBoardComponent reach preview', () => {
 
       // And a unit that never moved greys too once the turn's three are used.
       anyBoard().panelMoved.clear();
-      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('bl').add(uid));
       expect(board.isPanelSpent(cell)).toBeTrue();
       // Three is rules.panelMoversPerTurn, not the board's own number.
       board.config = { ...config, rules: { ...(config as any).rules, panelMoversPerTurn: 4 } };
@@ -1501,7 +1534,7 @@ describe('GameBoardComponent reach preview', () => {
       // The three-mover cap is the base's alone: a reserve unit is not held
       // back by base units having used the turn's allowance.
       anyBoard().panelMoved.clear();
-      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('bl').add(uid));
       expect(board.isPanelSpent(cell)).toBeFalse();
     });
 
@@ -2410,7 +2443,7 @@ describe('GameBoardComponent reach preview', () => {
       expect(anyBoard().reserves[from]).toBeTruthy();
       expect(anyBoard().reserves[to]).toBeUndefined();
       expect(anyBoard().panelMoved.has(uid)).toBeFalse();
-      expect(anyBoard().baseMovers.has(uid)).toBeFalse();
+      expect(anyBoard().moversIn('bl').has(uid)).toBeFalse();
       expect(board.lastPanelMove).toBe(0);
       expect(board.hasWalked(anyBoard().cellsByKey.get(from))).toBeFalse();
     });
@@ -2444,7 +2477,7 @@ describe('GameBoardComponent reach preview', () => {
     it('lets three move a turn, then no more until the next', () => {
       const cell = baseCell();
       // Three others have already been walked this turn, and this is a fourth.
-      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('bl').add(uid));
       board.onHexClick(cell);
       expect(board.legalTargets.size).toBe(0);
 
@@ -2652,21 +2685,21 @@ describe('GameBoardComponent reach preview', () => {
 
     it('caps the reserve at three movers a turn, the way the base is', () => {
       const res = reserveCell();
-      ['a', 'b', 'c'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('br').add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBe(0);
 
       // And outside the opening too. The reserve used to shuffle freely once
       // the opening was over; it carries the allowance all match now.
       enterTurn(1, 20);
-      ['a', 'b', 'c'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('br').add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBe(0);
 
       // The two panels' allowances are separate: a base full of movers does
       // not spend the reserve's, and a fourth in the reserve is still refused.
       enterTurn(20, 21);
-      ['d', 'e', 'f'].forEach(uid => anyBoard().baseMovers.add(uid));
+      ['d', 'e', 'f'].forEach(uid => anyBoard().moversIn('bl').add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBeGreaterThan(0);
     });
@@ -2689,24 +2722,34 @@ describe('GameBoardComponent reach preview', () => {
       expect(board.attackTargets.has('1,0')).toBeTrue();
     });
 
+    it('keeps movement caps separate when Cast gives control of another physical reserve', () => {
+      enterTurn(1, 55);
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('br').add(uid));
+      const controlled = { ...reserveCell(), panel: 'tl', piece: { ...reserveCell().piece, uid: 'controlled', color: 'white' } };
+      expect(anyBoard().panelCanMove(controlled)).toBeTrue();
+      ['x', 'y', 'z'].forEach(uid => anyBoard().moversIn('tl').add(uid));
+      expect(anyBoard().panelCanMove(controlled)).toBeFalse();
+      expect(anyBoard().panelCanMove(reserveCell())).toBeFalse();
+    });
+
     it('lets five out of the reserve on a postmatch', () => {
       // The engines raise the reserve's allowance to five there. The board
       // kept its own copy of the three and never heard about it, so the fourth
       // and fifth were refused by the only thing the player can click.
       enterTurn(1, 27);
       const res = reserveCell();
-      ['a', 'b', 'c'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('br').add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBeGreaterThan(0);
 
       // The base keeps its three, though: nothing in that allowance was
       // about the base.
-      ['d', 'e', 'f'].forEach(uid => anyBoard().baseMovers.add(uid));
+      ['d', 'e', 'f'].forEach(uid => anyBoard().moversIn('bl').add(uid));
       board.onHexClick(baseCell());
       expect(board.legalTargets.size).toBe(0);
 
       // And five is still a cap.
-      ['d', 'e'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      ['d', 'e'].forEach(uid => anyBoard().moversIn('br').add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBe(0);
 
@@ -2727,10 +2770,10 @@ describe('GameBoardComponent reach preview', () => {
         enterTurn(1, ply);
         // Two started leaves one to go, so the cell has somewhere to walk -
         // without that, the nought below would prove nothing about the cap.
-        ['a', 'b'].forEach(uid => anyBoard().reserveMovers.add(uid));
+        ['a', 'b'].forEach(uid => anyBoard().moversIn('br').add(uid));
         board.onHexClick(reserveCell());
         expect(board.legalTargets.size).withContext(`ply ${ply}, two started`).toBeGreaterThan(0);
-        anyBoard().reserveMovers.add('c');
+        anyBoard().moversIn('br').add('c');
         board.selectedHex = null;
         board.onHexClick(reserveCell());
         expect(board.legalTargets.size).withContext(`ply ${ply}`).toBe(0);
@@ -2946,7 +2989,7 @@ describe('GameBoardComponent setup deal', () => {
     expect(reserves['-17,11']).toEqual({
       unit_id: 'rook', color: 'white',
       hp: DEFAULT_GAME_CONFIG.units.rook.hp, max_hp: DEFAULT_GAME_CONFIG.units.rook.hp,
-      uid: 'w-17,11',
+      uid: 'w-17,11', vet: 0,
     });
   });
 

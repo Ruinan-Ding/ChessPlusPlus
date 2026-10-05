@@ -1,0 +1,253 @@
+[
+  {
+    "unit": {
+      "attack": [
+        0,
+        8
+      ],
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 0,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": [
+        0,
+        8
+      ],
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 1,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": [
+        0,
+        8
+      ],
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 2,
+    "canAttack": true
+  },
+  {
+    "unit": {
+      "attack": [
+        0,
+        8
+      ],
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 3,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": [
+        8,
+        0
+      ],
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 0,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": [
+        8,
+        0
+      ],
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 1,
+    "canAttack": true
+  },
+  {
+    "unit": {
+      "attack": [
+        8,
+        0
+      ],
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 2,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": [
+        8,
+        0
+      ],
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 3,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": [
+        0,
+        8
+      ],
+      "attackMinRange": 3,
+      "attackRange": 4
+    },
+    "distance": 0,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": [
+        0,
+        8
+      ],
+      "attackMinRange": 3,
+      "attackRange": 4
+    },
+    "distance": 1,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": [
+        0,
+        8
+      ],
+      "attackMinRange": 3,
+      "attackRange": 4
+    },
+    "distance": 2,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": [
+        0,
+        8
+      ],
+      "attackMinRange": 3,
+      "attackRange": 4
+    },
+    "distance": 3,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": [
+        0,
+        8
+      ],
+      "attackMinRange": 3,
+      "attackRange": 4
+    },
+    "distance": 4,
+    "canAttack": true
+  },
+  {
+    "unit": {
+      "attack": [
+        0,
+        8
+      ],
+      "attackMinRange": 3,
+      "attackRange": 4
+    },
+    "distance": 5,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": 0,
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 0,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": 0,
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 1,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": 0,
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 2,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": 0,
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 3,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": 8,
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 0,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": 8,
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 1,
+    "canAttack": true
+  },
+  {
+    "unit": {
+      "attack": 8,
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 2,
+    "canAttack": true
+  },
+  {
+    "unit": {
+      "attack": 8,
+      "attackMinRange": 1,
+      "attackRange": 2
+    },
+    "distance": 3,
+    "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": 8,
+      "attackRange": 1,
+      "heal": [
+        8
+      ]
+    },
+    "distance": 1,
+    "canAttack": false
+  }
+]

@@ -130,11 +130,13 @@ and lobby chat are live while you play alone.
 
 ### Still placeholder
 
-The first four ability pairs use the owner's specified effects. The remaining path and unit
-abilities, and third-star bonus previews, still await their rules. Unit HP, MOV, ATK, DEF, HEL and costs are the owner's 4 Oct
-roster in [shared/default-config.json](shared/default-config.json); the full roster table and
-phase-only veterancy rules are in [AGENTS.md](AGENTS.md). Earned stars are live game state;
-the placeholder third-star stat bonuses remain display-only.
+The first four ability pairs and all eight unit veterancy kits are implemented.
+Vet 1 changes movement, combat, healing and current/max HP in both engines, including after
+reload; red-base units gain no rank there. The owner's 4 Oct roster and first-star numbers
+are in [shared/default-config.json](shared/default-config.json), with the earned-star schedule
+and specified kits in [AGENTS.md](AGENTS.md). Vet 2 passives and Vet 3 UP abilities run in
+solo, with Undo, cooldowns and reload support. Online ability execution remains deferred;
+CP path effects await their rules.
 
 ## Running the Application
 

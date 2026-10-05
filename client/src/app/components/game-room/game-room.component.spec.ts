@@ -1,13 +1,16 @@
 import { BehaviorSubject, Subject, of } from 'rxjs';
 import { GameRoomComponent } from './game-room.component';
 import { GameStateService } from '../../services/game-state.service';
-import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
+import { LocalGameService } from '../../services/local-game.service';
+import { DEFAULT_GAME_CONFIG, ConfigService, ruleOf } from '../../services/config.service';
 import { turnHeading } from '../../services/phases';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import legacyAbilities from '../../services/legacy-abilities.fixture.json';
 
 // Earlier saved catalogues keep their targeting, prices and effects.
-const LEGACY_GAME_CONFIG = { ...DEFAULT_GAME_CONFIG, abilities: legacyAbilities };
+const LEGACY_GAME_CONFIG = { ...DEFAULT_GAME_CONFIG,
+  units: Object.fromEntries(Object.entries(DEFAULT_GAME_CONFIG.units).map(([id, unit]) => [id, { ...unit, ability: 'dash' }])),
+  abilities: legacyAbilities };
 
 /** Angular's zone, for a room built by hand: everything runs where it is. */
 const zone = { run: (f: () => unknown) => f(), runOutsideAngular: (f: () => unknown) => f() } as any;
@@ -94,6 +97,309 @@ describe('GameRoomComponent ability panel', () => {
       c.selectAbility('mine', i, c.myCooldowns);
       return i;
     };
+
+    const veteran = (c: any, id: string, key = '0,0', color = 'white', hp?: number) => {
+      const u = c.gameState.snapshot.config.units[id];
+      const full = u.hp + (u.veterancy?.hp ?? 0);
+      c.gameState.snapshot.boardState[key] = { unit_id: id, color, uid: id + key, hp: hp ?? full, max_hp: full, vet: 3 };
+      return { ...shown(c, key), vet: 3, hp: hp ?? full, hpMax: full };
+    };
+    const useUnit = (c: any, u: any) => { c.hoveredUnit = null; c.selectedUnit = u; c.unitAbilityFocus = { index: c.unitAbilityIndex(u) }; c.activateUnitAbility(); };
+    const kitRoom = () => { const c = current(); c.gameState.snapshot.turnNumber = 55;
+      c.gameState.snapshot.config.rules.upAtStart = 100; c.myUnitPoints = 100; c.opponentUnitPoints = 100; return c; };
+
+    it('ends a returned Cast unit’s postmatch withdrawal as deployment and pass for either seat', async () => {
+      for (const color of ['white', 'black']) {
+        const c = current(color), s = c.gameState.snapshot;
+        const sign = color === 'white' ? 1 : -1;
+        s.turnNumber = color === 'white' ? 71 : 72;
+        const at = `${-10 * sign},${9 * sign}`, home = `${-12 * sign},${10 * sign}`;
+        veteran(c, 'king', '-8,0', 'white'); veteran(c, 'king', '8,0', 'black');
+        const returned = veteran(c, 'pawn', at, color);
+        s.boardState[at].owner = color;
+        const sent: any[] = []; c.wsService.sendMessage = (m: any) => sent.push(m);
+        c.persistLocalUiState = () => {}; c.playEndTurnSound = () => {};
+        c.onPlayerMove({ from: at, to: home, cost: 3, refund: 8 });
+        expect(c.stagedActions[0].homecoming).toBeTrue();
+        c.endTurn();
+        expect(sent.map(m => m.type)).toEqual(['make_move', 'pass_turn']);
+        localStorage.removeItem('cpp.localGame.v1');
+        const engine = new LocalGameService(new ConfigService());
+        engine.send({ type: 'create_single_player_game', username: 'me' });
+        engine.send({ type: 'start_game', hostColor: color });
+        Object.assign((engine as any).game, { boardState: structuredClone(s.boardState), config: s.config,
+          turnNumber: s.turnNumber, currentTurn: 'me', moveHistory: [] });
+        const seen: any[] = []; engine.messages$.subscribe(m => seen.push(m));
+        sent.forEach(m => engine.send(m)); await new Promise(r => setTimeout(r, 0));
+        expect((engine as any).game.turnNumber).toBe(s.turnNumber + 1);
+        expect(seen.find(m => m.type === 'invalid_move')).toBeUndefined();
+        expect((engine as any).game.moveHistory.find((m: any) => m.withdrawn).unit.uid).toBe(returned.uid);
+        localStorage.removeItem('cpp.localGame.v1');
+      }
+    });
+
+    it('commits an intervening Strike before Rapid Movement enters its vacated hex, then lands a later Mend', async () => {
+      const c = kitRoom(), s = c.gameState.snapshot;
+      veteran(c, 'king', '-8,0', 'white'); veteran(c, 'king', '8,0', 'black');
+      const pawn = veteran(c, 'pawn'), enemy = veteran(c, 'rook', '1,0', 'black', 2);
+      const sent: any[] = []; c.wsService.sendMessage = (m: any) => sent.push(m);
+      c.persistLocalUiState = () => {}; c.playEndTurnSound = () => {};
+      c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '1,0' });
+      arm(c, 'strike'); c.onHexClicked({ ...enemy, hp: 1 });
+      expect(c.stagedBoard['1,0']).toBeUndefined();
+      c.onPlayerMove({ from: '0,0', to: '1,0', cost: 1 });
+      arm(c, 'mend'); c.onHexClicked({ ...pawn, key: '1,0', hp: 10 });
+      expect(c.stagedBoard['1,0'].hp).toBe(14);
+      c.endTurn();
+      expect(sent[0].effectsAfterAttack).toContain(jasmine.objectContaining({ uid: enemy.uid, hp: 0 }));
+      expect(sent[0].effects).toContain(jasmine.objectContaining({ uid: pawn.uid, hp: 14 }));
+      localStorage.removeItem('cpp.localGame.v1');
+      const engine = new LocalGameService(new ConfigService());
+      engine.send({ type: 'create_single_player_game', username: 'me' });
+      engine.send({ type: 'start_game', hostColor: 'white' });
+      Object.assign((engine as any).game, { boardState: structuredClone(s.boardState), config: s.config,
+        turnNumber: 55, currentTurn: 'me', moveHistory: [] });
+      const seen: any[] = []; engine.messages$.subscribe(m => seen.push(m));
+      sent.forEach(m => engine.send(m)); await new Promise(r => setTimeout(r, 0));
+      expect(seen.find(m => m.type === 'invalid_move')).toBeUndefined();
+      expect((engine as any).game.turnNumber).toBe(56);
+      expect((engine as any).game.boardState['1,0']).toEqual(jasmine.objectContaining({ uid: pawn.uid, hp: 14 }));
+      const restored = new LocalGameService(new ConfigService());
+      expect((restored as any).game.boardState['1,0']).toEqual((engine as any).game.boardState['1,0']);
+      expect((restored as any).game.moveHistory.some((m: any) => m.abilityDeath?.unit_id === 'rook')).toBeTrue();
+      localStorage.removeItem('cpp.localGame.v1');
+    });
+
+    it('keeps configured three-turn Archer and Rook Bog recipients through two caster returns and reload', () => {
+      for (const color of ['white', 'black']) {
+        for (const id of ['archer', 'rook']) {
+          const c = current(color), s = c.gameState.snapshot, ply = color === 'white' ? 55 : 56;
+          s.turnNumber = ply;
+          s.config.abilities.catalogue[id === 'archer' ? 'archer-bog' : 'rook-bog'].turns = 3;
+          const source = veteran(c, id, '0,0', color);
+          const enemy = veteran(c, 'pawn', id === 'archer' ? '3,0' : '1,0', color === 'white' ? 'black' : 'white');
+          if (id === 'archer') useUnit(c, source);
+          c.onPlayerAttack({ from: '0,0', to: '0,0', attack: enemy.key });
+          expect(c.buffs[enemy.uid].effects[0].expiresAt).toBe(ply + 6);
+          s.boardState = c.stagedBoard; c.stagedActions = [];
+          for (const offset of [2, 4]) {
+            c.buffs = JSON.parse(JSON.stringify(c.buffs));
+            s.turnNumber = ply + offset; c.beginTurnFor(color);
+            expect(c.buffs[enemy.uid]).withContext(`${id} ${color} +${offset}`).toBeDefined();
+          }
+          s.turnNumber = ply + 6; c.beginTurnFor(color);
+          expect(c.buffs[enemy.uid]).toBeUndefined();
+        }
+      }
+    });
+
+    it('honors configured durations for adjacent auras and Cast too', () => {
+      for (const id of ['queen', 'king', 'bishop']) {
+        const c = kitRoom(), s = c.gameState.snapshot;
+        const source = veteran(c, id);
+        const target = veteran(c, 'pawn', '1,0', id === 'king' ? 'white' : 'black');
+        const ability = id === 'bishop' ? 'bishop-cast' : id === 'king' ? 'persuade' : 'intimidate';
+        s.config.abilities.catalogue[ability].turns = 3;
+        if (id === 'bishop') {
+          useUnit(c, source); c.onHexClicked(target);
+          expect(c.stagedBoard['1,0'].controlledUntil).toBe(61);
+        } else {
+          c.beginTurnFor('white');
+          expect(c.buffs[target.uid].effects[0].expiresAt).toBe(61);
+          s.turnNumber = 57; c.beginTurnFor('black');
+          expect(c.buffs[target.uid]).toBeDefined();
+          s.boardState = {}; s.turnNumber = 61; c.beginTurnFor('white');
+          expect(c.buffs[target.uid]).toBeUndefined();
+        }
+      }
+    });
+
+    it('gates all eight UP abilities at Vet 3 and keeps their per-unit prices separate from points and CP', () => {
+      for (const [id, cost] of [['pawn', 3], ['archer', 3], ['shieldman', 1], ['rook', 5], ['knight', 5], ['bishop', 10], ['queen', 3], ['king', 5]] as const) {
+        const c = kitRoom(), u = veteran(c, id); c.selectedUnit = { ...u, vet: 2 };
+        c.unitAbilityFocus = { index: c.unitAbilityIndex(u) };
+        expect(c.unitAbilityCanActivate()).withContext(id).toBeFalse();
+        c.selectedUnit = u; expect(c.unitAbilityCanActivate()).withContext(id).toBeTrue();
+        expect(c.purseName(c.unitAbilityIndex(u), cost)).toBe('UP');
+        expect(c.abilityCosts[c.unitAbilityIndex(u)]).toBe(cost);
+      }
+    });
+
+    it('stages Sacrifice atomically across battlefield and green reserve, with exact UP and Undo', () => {
+      const c = kitRoom(), u = veteran(c, 'pawn'), ally = veteran(c, 'pawn', '-2,0', 'white', 9);
+      c.boardRef = { cells: [{ key: '11,1', panel: 'br', piece: { unit_id: 'pawn', color: 'white', uid: 'green', hp: 4, max_hp: 14, vet: 3 } },
+        { key: '-12,11', panel: 'bl', piece: { unit_id: 'pawn', color: 'white', uid: 'base', hp: 4, max_hp: 14, vet: 3 } }], clearMarks: () => {} };
+      useUnit(c, u);
+      expect([c.myUnitPoints, c.myPoints, c.myCpSpent]).toEqual([105, 100, 0]);
+      expect(c.stagedBoard['0,0']).toBeUndefined(); expect(c.stagedBoard['-2,0'].hp).toBe(10);
+      expect([c.buffs[ally.uid].atk, c.buffs.green.def, c.buffs.green.mov, c.panelHp.green]).toEqual([1, 1, 1, 5]);
+      expect(c.buffs.base).toBeUndefined(); expect(c.unitCooldownOf(u.uid)).toBe(5);
+      c.reconcilePoints(); expect(c.myUnitPoints).toBe(105);
+      c.undoMove(); expect(c.myUnitPoints).toBe(100); expect(c.stagedBoard).toBeNull(); expect(c.buffs).toEqual({});
+      expect(c.unitCooldownOf(u.uid)).toBe(0);
+    });
+
+    it('applies Call to fixed battlefield and green recipients, with immediate damage and full-turn drains', () => {
+      const c = kitRoom(), king = veteran(c, 'king', '0,0', 'white', 50);
+      veteran(c, 'pawn', '1,0', 'black', 1);
+      c.boardRef = { cells: [{ key: '-11,-1', panel: 'tl', piece: { unit_id: 'pawn', color: 'black', uid: 'green', hp: 4, max_hp: 14, vet: 3 } }], clearMarks: () => {} };
+      useUnit(c, king);
+      expect(c.stagedBoard['0,0'].hp).toBe(52); expect(c.stagedBoard['1,0']).toBeUndefined();
+      expect([c.buffs[king.uid].def, c.buffs.green.def, c.buffs.green.atk, c.panelHp.green]).toEqual([2, -2, -1, 3]);
+      expect(c.myUnitPoints).toBe(95);
+      c.gameState.snapshot.turnNumber = 56; c.beginTurnFor('black'); expect(c.buffs.green.atk).toBe(-1);
+      c.gameState.snapshot.boardState = c.stagedBoard; c.stagedActions = []; c.gameState.snapshot.turnNumber = 57;
+      c.beginTurnFor('white'); expect(c.buffs.green).toBeUndefined();
+    });
+
+    it('restricts attacks under Taunt while preserving the normal ability and movement choices', () => {
+      const c = kitRoom(), shield = veteran(c, 'shieldman'); useUnit(c, shield);
+      c.gameState.snapshot.boardState = c.stagedBoard; c.stagedActions = []; c.gameState.snapshot.turnNumber = 56; c.gameState.snapshot.currentTurn = 'bot';
+      veteran(c, 'pawn', '1,0', 'black'); veteran(c, 'pawn', '0,1', 'white');
+      c.onPlayerAttack({ from: '1,0', to: '1,0', attack: '0,1' }); expect(c.stagedActions.length).toBe(0);
+      c.onPlayerMove({ from: '1,0', to: '2,0', cost: 1 }); expect(c.stagedBoard['2,0']).toBeDefined();
+      c.undoMove(); c.onPlayerAttack({ from: '1,0', to: '1,0', attack: '0,0' }); expect(c.boardMoves[0].attack).toBe('0,0');
+    });
+
+    it('Cleave hits adjacent enemies only, gives them no counter, and keeps its effects after the exchange', () => {
+      const c = kitRoom(), rook = veteran(c, 'rook'); veteran(c, 'pawn', '1,0', 'black');
+      veteran(c, 'pawn', '0,1', 'black'); veteran(c, 'pawn', '-1,0', 'white');
+      useUnit(c, rook); c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '1,0' });
+      expect([c.stagedBoard['1,0'].hp, c.stagedBoard['0,1'].hp, c.stagedBoard['-1,0'].hp, c.stagedBoard['0,0'].hp]).toEqual([10, 10, 14, 39]);
+      const sent: any[] = []; c.wsService.sendMessage = (m: any) => sent.push(m); c.endTurn();
+      expect(sent[0].effectsBefore[0].unitCast.cost).toBe(5); expect(sent[0].effects[0].at).toBe('0,1');
+    });
+
+    it('Archer Bog drains only its attack target and undoes with the exchange', () => {
+      const c = kitRoom(), archer = veteran(c, 'archer'); const enemy = veteran(c, 'pawn', '3,0', 'black');
+      useUnit(c, archer); c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '3,0' });
+      expect(c.buffs[enemy.uid].mov).toBe(-4); expect(c.stagedBoard['3,0'].hp).toBe(13);
+      c.undoMove(); expect(c.buffs[enemy.uid]).toBeUndefined(); expect(c.buffs[archer.uid].effects[0].effect).toBe('attack-drain');
+    });
+
+    it('arms Cast without charging, then ends the bishop action and grants only the controlled unit an extra action', () => {
+      const c = kitRoom(), bishop = veteran(c, 'bishop'), target = veteran(c, 'pawn', '1,0', 'black');
+      useUnit(c, bishop); expect(c.myUnitPoints).toBe(100); expect(c.activeBoardAbilityMode()).toBe('enemy');
+      c.onHexClicked(target); expect(c.myUnitPoints).toBe(90);
+      expect([c.stagedBoard['1,0'].color, c.stagedBoard['1,0'].owner]).toEqual(['white', 'black']);
+      expect(c.extraActionUids).toEqual([target.uid]); expect(c.ordinaryBoardMoves.length).toBe(1);
+      expect(c.unitActionSpent).toBeTrue();
+      c.onPlayerMove({ from: '1,0', to: '2,0', cost: 1 }); expect(c.boardMoves.length).toBe(2);
+      const sent: any[] = []; c.wsService.sendMessage = (m: any) => sent.push(m); c.endTurn();
+      expect(sent.length).toBe(2); expect(sent[0].unitAction).toBeTrue(); expect(sent[0].more).toBeTrue();
+      expect(sent[0].effectsBefore.some((e: any) => e.control?.uid === target.uid)).toBeTrue(); expect(sent[1].from).toBe('1,0');
+    });
+
+    it('applies one Bog stack after each exchange, preserves combat pricing, and restores Undo', () => {
+      const c = current(); const s = c.gameState.snapshot;
+      s.turnNumber = 31;
+      s.boardState = {
+        '0,0': { unit_id: 'rook', color: 'white', hp: 40, max_hp: 40, uid: 'wr', vet: 2 },
+        '1,0': { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'br', vet: 2 },
+      };
+      c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '1,0' });
+      expect([c.buffs.wr.atk, c.buffs.br.atk]).toEqual([-1, -1]);
+      expect(c.stagedBoard['0,0'].hp).toBe(39);
+      expect(c.stagedActions[0].combatBonuses).toEqual({ atk: 0, def: 0, targetAtk: 0, targetDef: 0 });
+      c.undoMove();
+      expect(c.buffs).toEqual({});
+      expect(c.stagedBoard).toBeNull();
+      c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '1,0' });
+      s.boardState = c.stagedBoard; c.stagedActions = []; s.turnNumber = 32; s.currentTurn = 'bot';
+      c.beginTurnFor('black');
+      c.onPlayerAttack({ from: '1,0', to: '1,0', attack: '0,0' });
+      expect([c.buffs.wr.atk, c.buffs.br.atk]).toEqual([-2, -2]);
+      c.buffs = JSON.parse(JSON.stringify(c.buffs));
+      s.turnNumber = 33; c.beginTurnFor('white');
+      expect([c.buffs.wr.atk, c.buffs.br.atk]).toEqual([-1, -1]);
+      s.turnNumber = 34; c.beginTurnFor('black');
+      expect(c.buffs).toEqual({});
+    });
+
+    it('takes fixed adjacent aura recipients at the owner turn start and unlocks the unit passive at Vet 2', () => {
+      const c = current(); const s = c.gameState.snapshot;
+      s.turnNumber = 31;
+      s.boardState = {
+        '0,0': { unit_id: 'king', color: 'white', hp: 60, max_hp: 60, uid: 'wk', vet: 2 },
+        '1,0': { unit_id: 'pawn', color: 'white', hp: 14, max_hp: 14, uid: 'wp', vet: 2 },
+        '3,0': { unit_id: 'queen', color: 'white', hp: 32, max_hp: 32, uid: 'wq', vet: 2 },
+        '2,0': { unit_id: 'pawn', color: 'black', hp: 14, max_hp: 14, uid: 'bp', vet: 2 },
+      };
+      c.beginTurnFor('white');
+      expect([c.buffs.wp.atk, c.buffs.wp.def, c.buffs.wp.mov]).toEqual([1, 1, 1]);
+      expect([c.buffs.bp.atk, c.buffs.bp.def, c.buffs.bp.mov]).toEqual([-1, -1, -1]);
+      expect(c.buffs.wk).toBeUndefined();
+      s.boardState['6,0'] = s.boardState['2,0']; delete s.boardState['2,0'];
+      s.turnNumber = 32; c.beginTurnFor('black');
+      expect(c.buffs.bp.atk).toBe(-1);
+      s.turnNumber = 33; c.beginTurnFor('white');
+      expect(c.buffs.bp).toBeUndefined();
+      c.selectedUnit = { ...shown(c, '0,0'), vet: 1 };
+      expect(c.displayUnitPassive).toBe(c.slotOfAbility('persuade'));
+      expect(c.vetUnlocked(c.displayUnitPassive)).toBeFalse();
+      c.selectedUnit.vet = 2;
+      expect(c.vetUnlocked(c.displayUnitPassive)).toBeTrue();
+    });
+
+    it('preserves a pawn attack through a later cast and remaining walk, without permitting a second attack', () => {
+      const c = current(); const s = c.gameState.snapshot;
+      s.turnNumber = 31;
+      s.boardState = {
+        '0,0': { unit_id: 'pawn', color: 'white', hp: 14, max_hp: 14, uid: 'wp', vet: 2 },
+        '1,0': { unit_id: 'rook', color: 'black', hp: 40, max_hp: 40, uid: 'br', vet: 2 },
+      };
+      c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '1,0' });
+      expect(c.movesLeft).toBe(6);
+      const heal = c.slotOfAbility('mend');
+      const spend = c.spendOf('wp', 'mine', 'mine', heal, '0,0');
+      c.stageSpend(spend);
+      c.onPlayerMove({ from: '0,0', to: '-2,0', cost: 2 });
+      expect(c.boardMoves.length).toBe(1);
+      expect(c.boardMoves[0].attack).toBe('1,0');
+      expect(c.boardMoves[0].attackFrom).toBe('0,0');
+      expect(c.movesLeft).toBe(4);
+      expect(c.attackedUnitHexes).toEqual(['-2,0']);
+      const staged = c.stagedActions.length;
+      c.onPlayerAttack({ from: '-2,0', to: '-2,0', attack: '1,0' });
+      expect(c.stagedActions.length).toBe(staged);
+      const sent: any[] = []; c.wsService.sendMessage = (message: any) => sent.push(message);
+      c.playEndTurnSound = () => {}; c.endTurn();
+      expect(sent[0].to).toBe('0,0');
+      expect(sent[0].afterAttackTo).toBe('-2,0');
+      expect(sent[0].bonuses).toBeUndefined();
+    });
+
+    it('promotes wounded green units once, excludes red bases, and preserves promoted HP records on reload', () => {
+      for (const color of ['white', 'black']) {
+        const c = current(color);
+        const green = color === 'white' ? '11,1' : '-11,-1';
+        const base = color === 'white' ? '-12,1' : '12,-1';
+        const uid = `${color[0]}${green}`;
+        const snapshot = c.gameState.snapshot;
+        snapshot.config.setup[color] = { [green]: 'pawn', [base]: 'pawn' };
+        snapshot.turnNumber = 6;
+        snapshot.moveHistory = [[green, color === 'white' ? 'br' : 'tl'], [base, color === 'white' ? 'bl' : 'tr']].map(([at, panel]) => ({
+          turn: 6, intoPanel: true, panelEffect: true, panel, attackedHex: at, defenderHp: 5,
+          unit: { unit_id: 'pawn', color, hp: 5, max_hp: 12, vet: 0, uid: `${color[0]}${at}` },
+        }));
+        expect(c.panelHp[uid]).toBe(5);
+        snapshot.turnNumber = 7;
+        expect(c.panelHp[uid]).toBe(7);
+        expect(c.panelHp[`${color[0]}${base}`]).toBe(5);
+        snapshot.moveHistory = [...snapshot.moveHistory, {
+          turn: 7, intoPanel: true, panelEffect: true, panel: color === 'white' ? 'br' : 'tl',
+          attackedHex: green, defenderHp: 4,
+          unit: { unit_id: 'pawn', color, hp: 7, max_hp: 14, vet: 1, uid },
+        }];
+        snapshot.turnNumber = 9;
+        expect(c.panelHp[uid]).toBe(4);
+        const restored = current(color);
+        restored.gameState.snapshot.config = snapshot.config;
+        restored.gameState.snapshot.turnNumber = 9;
+        restored.gameState.snapshot.moveHistory = JSON.parse(JSON.stringify(snapshot.moveHistory));
+        expect(restored.panelHp[uid]).toBe(4);
+      }
+    });
 
     it('casts every first-pool ability in both halves of every postmatch while Warcry cannot enable normal attacks there', () => {
       for (const ply of [27, 28, 49, 50, 71, 72]) {
@@ -2441,7 +2747,7 @@ describe('GameRoomComponent ability panel', () => {
       expect(c.statVet).toBe(stars);
       expect(c.unitPanelTitle).toBe('Bishop - 16 pts');
     }
-    expect(c.statParts('hel').map((p: any) => p.ring)).toEqual([1]);
+    expect(c.statParts('hel').map((p: any) => p.ring)).toEqual([1, 2]);
   });
 
   it('says "Tap again to strike" in the Unit strip, wherever there is one', () => {

@@ -6,6 +6,8 @@ export interface PlayableAction {
   to: string;
   attack: string | null;
   heal?: string;
+  afterAttackWalk?: boolean;
+  secondStrike?: boolean;
   killed?: string;
   /** Who was killed there, when something was. */
   killedUnit?: { color: 'white' | 'black' };
@@ -83,7 +85,7 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
       if (action.from && action.to) standing.set(action.from, action.to);
       continue;
     }
-    if (action.attack) {
+    if (action.attack && !action.afterAttackWalk) {
       steps.push({ kind: 'attack', from: action.to, to: action.attack });
       owners.push(owner);
       // Only if it answered. `killed` alone used to stand in for that, which
@@ -95,6 +97,7 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
         steps.push({ kind: 'counter', from: action.attack, to: action.to });
         owners.push(owner);
       }
+      if (action.secondStrike) { steps.push({ kind: 'attack', from: action.to, to: action.attack }); owners.push(owner); }
       if (action.from && action.to) standing.set(action.from, action.to);
       continue;
     }
@@ -113,10 +116,12 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
   // finished position. A cast played on a hex the unit has since left pops an
   // empty hex, and the walk after it reads as the unit teleporting back to
   // start again. The units themselves go in the order they acted.
+  const rapid = new Set(actions.filter(action => action.afterAttackWalk).map(action => action.from));
   const recap: AnimStep[] = [];
   const walked = new Set<string>();
   steps.forEach((step, i) => {
     const owner = owners[i];
+    if (owner !== null && rapid.has(owner)) { recap.push(step); return; }
     if (owner !== null && !walked.has(owner)) {
       walked.add(owner);
       if (at(owner) !== owner) recap.push({ kind: 'move', from: owner, to: at(owner) });

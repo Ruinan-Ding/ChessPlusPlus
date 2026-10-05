@@ -547,22 +547,17 @@
               >Opponent: {{ opponentUnits }}</button>
             </div>
             <div class="unit-ability-row" *ngIf="displayUnit">
-              <!-- Passive on the left, the unit's own ability on the right,
-                   and the passive slot is always drawn: without a path there
-                   is none to name yet, but the slot is still where it goes. -->
-              <ng-container *ngIf="pathChoice('mine') as path; else noPassive">
+              <ng-container *ngIf="displayUnitPassive !== null; else noPassive">
                 <button class="passive-row"
-                        [title]="abilityHint(path.passive)"
-                        [style.font-size]="abilityFontSize(path.passive, 0)"
-                        [class.locked]="displayUnit.vet < 1"
-                        [class.picked-recent]="isRecentPick('mine', path.passive)"
-                        [disabled]="!!displayUnit.panel"
-                        (click)="selectUnitAbility(path.passive)"
-                >{{ abilityLabel(path.passive, 0) }}</button>
+                        [title]="abilityHint(displayUnitPassive)"
+                        [style.font-size]="abilityFontSize(displayUnitPassive, 0)"
+                        [class.locked]="!vetUnlocked(displayUnitPassive)"
+                        (click)="selectUnitAbility(displayUnitPassive)"
+                >{{ abilityLabel(displayUnitPassive, 0) }}</button>
               </ng-container>
               <ng-template #noPassive>
                 <button class="passive-row locked" type="button" disabled
-                        title="Take a path to gain its passive."
+                        title="This unit has no passive."
                 >Passive</button>
               </ng-template>
               <!-- The unit type's own ability (`units.<id>.ability`), with its
@@ -589,6 +584,7 @@
             </div>
           </div></ng-template>
           <p class="arming-hint" *ngIf="pendingAbility">Click the selected target.</p>
+          <p class="arming-hint" *ngIf="pendingUnitCast">Choose an adjacent enemy on the battlefield or in green reserve.</p>
 
           <!-- What is riding on this unit, and for how long. Scrolls: a unit
                can carry more than the panel is tall. -->
@@ -680,7 +676,10 @@
           [movesLeft]="movesLeft"
           [movesLeftFor]="pendingMove?.to ?? null"
           [actionSpent]="unitActionSpent"
-          [boardMovesSpent]="boardMoves.length"
+          [attackedHexes]="attackedUnitHexes"
+          [boardMovesSpent]="ordinaryBoardMoves.length"
+          [extraActionUids]="extraActionUids"
+          [unitControls]="unitControls"
           [movedHexes]="movedUnitHexes"
           [unitBuffs]="boardBuffs"
           [unitActed]="abilityUsed"

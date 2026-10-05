@@ -1,3 +1,6 @@
+import { controlsAt } from '../../services/unit-control';
+import { UNIT_ACTIVES } from '../../services/config.service';
+import { carries, combatExchange, tauntAllows, CombatBonuses } from '../../services/unit-combat';
 import {
   AfterViewChecked, Component, DoCheck, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef,
   HostListener, NgZone, ViewChild,
@@ -29,8 +32,9 @@ import {
 } from '../../services/match-score';
 import { buildPlayback } from '../../services/playback';
 import { fitHeader } from './banner-fit';
-import { DEFAULT_GAME_CONFIG, ruleOf } from '../../services/config.service';
-import { homecomingsAt, openingMovedHexes } from '../../services/history-rules';
+import { DEFAULT_GAME_CONFIG, ruleOf, UNIT_PASSIVES } from '../../services/config.service';
+import { combatStats, rankedUnit, unitPassive, unitStats } from '../../services/unit-stats';
+import { homecomingsAt, openingMovedHexes, unitVeterancy } from '../../services/history-rules';
 import {
   OVERTIME_FIRST_TURN, PHASES, SCORING_PHASES, boardMovesPerTurn, handOversBy,
   isInitialization, isOvertime, isPostmatch, isSetupTurn, phaseIndexAt,
@@ -67,6 +71,8 @@ interface AbilityEntry {
   damage?: number; heal?: number; points?: number;
   /** The owner's bench rather than a balanced ability - kept out of networked play. */
   testing?: boolean;
+  effect?: string;
+  up?: number; enemyDamage?: number; enemyAtk?: number; enemyDef?: number;
 }
 
 /**
@@ -108,6 +114,8 @@ interface AbilityEffect {
   /** Casts a match allows - per side, or per unit for a unit's own - or null for no limit. */
   uses: number | null;
   testing?: boolean;
+  effect?: string;
+  up?: number; enemyDamage?: number; enemyAtk?: number; enemyDef?: number;
 }
 
 /**
@@ -264,6 +272,16 @@ interface StagedAction {
   attack: string | null;
   /** Friendly battlefield hex healed instead of attacking. No ability spend. */
   heal?: string;
+  priorBuffs?: Record<string, UnitBuff>;
+  combatBonuses?: CombatBonuses;
+  effects?: any[];
+  extraDeaths?: FallenUnit[];
+  endsAction?: boolean;
+  secondStrike?: boolean;
+  refundColor?: string;
+  unitUid?: string;
+  attackFrom?: string;
+  afterAttackWalk?: boolean;
   /** When it was staged, so Undo can tell it from a panel walk. */
   at?: number;
   /** What walking home into the base paid back, for Undo to take away again. */
@@ -346,6 +364,7 @@ interface AbilitySpend {
   priorUltimate?: boolean;
   priorBuff: UnitBuff | null;
   priorUsed: boolean;
+  up?: boolean;
   /** The recipients captured by a universal debuff, for atomic Undo and reload. */
   targets?: Array<{ uid: string; priorBuff: UnitBuff | null; priorUsed: boolean }>;
 }
@@ -1069,6 +1088,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         this.pathFocus = null;
         this.unitAbilityFocus = null;
         this.pendingAbility = null;
+    this.pendingUnitCast = null;
         this.beginTurnFor('white');
         this.reconcilePoints();
         this.playTurnSoundIfNeeded(null);
@@ -1873,12 +1893,17 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     }));
 
     const unit = this.displayUnit;
-    if (unit && unit.vet >= 3) {
-      const bonus = this.vetBonus[unit.unitId];
+    if (unit && unit.vet >= 1) {
+      const bonus = this.gameState.snapshot.config?.units?.[unit.unitId]?.veterancy;
       if (bonus) {
         rows.push({
           name: 'Veteran',
-          detail: this.effectSummary({ mov: bonus.mov ?? 0, atk: bonus.atk ?? 0, def: bonus.def ?? 0 }),
+          detail: [
+            this.effectSummary({ mov: bonus.move ?? 0, atk: typeof bonus.attack === 'number' ? bonus.attack : 0, def: bonus.defense ?? 0 }),
+            bonus.hp ? `+${bonus.hp} HP` : '',
+            Array.isArray(bonus.attack) ? `ATK ${bonus.attack.map((n: number, i: number) => `${(bonus.attackMinRange ?? 1) + i}:${n}`).join(' ')}` : '',
+            bonus.heal ? `HEL ${bonus.heal.map((n: number, i: number) => `${i + 1}:${n}`).join(' ')}` : '',
+          ].filter(Boolean).join(', '),
           life: 'always',
         });
       }
@@ -2063,7 +2088,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    */
   private mendedInBase(
     color: 'white' | 'black', since: number, inBase: boolean,
-    stays: Array<[number, boolean]>, now: number,
+    stays: Array<[number, boolean]>, now: number, unit?: PieceData,
   ): number {
     const segments: Array<[number, boolean]> = [[since, inBase], ...stays];
     let total = 0;
@@ -2074,7 +2099,14 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       // leave the later one standing, and the earlier stretch empty.
       const lo = Math.max(since, start - 1);
       const hi = k + 1 === segments.length ? now - 1 : Math.min(now - 1, segments[k + 1][0] - 1);
-      if (hi > lo) total += handOversBy(color, hi) - handOversBy(color, lo);
+      if (hi > lo) {
+        if (!unit?.owner) total += handOversBy(color, hi) - handOversBy(color, lo);
+        else for (let ply = lo + 1; ply <= hi; ply++) {
+          const active = ply % 2 === 1 ? 'white' : 'black';
+          const control = unit.uid ? controlsAt(this.gameState.snapshot.moveHistory, ply)[unit.uid] : undefined;
+          if ((control?.color ?? unit.owner) === active) total++;
+        }
+      }
     });
     return total * BASE_HEAL_PER_TURN;
   }
@@ -2106,14 +2138,15 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         base.set(record.unit.uid ?? record.to, {
           at: record.to, unit: record.unit, hp: record.unit.hp ?? 0, turn: record.turn, index,
         });
-        return;
       }
       // Something that set a panel unit's HP while it stood in the base - a
       // blow, or an ability. Reserves are not in here: they are dealt from the
       // roster and read `panelHp` instead.
-      if (!record.intoPanel || !record.unit?.uid || record.defenderHp === undefined) return;
-      const standing = base.get(record.unit.uid);
+      const defender = record.panelDefender ?? record.unit;
+      if (!record.intoPanel || !defender?.uid || record.defenderHp === undefined) return;
+      const standing = base.get(defender.uid);
       if (standing) {
+        standing.unit = { ...standing.unit, ...defender };
         standing.hp = record.defenderHp ?? 0;
         standing.turn = record.turn;
       }
@@ -2130,8 +2163,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       const full = stood.unit.max_hp ?? stood.unit.hp ?? 0;
       const stays = this.inBaseAfter(records, stood.index, stood.unit.uid);
       const mended = stood.hp
-        + this.mendedInBase(stood.unit.color, stood.turn, true, stays, turn);
-      units.push({ at: stood.at, unit: { ...stood.unit, hp: Math.min(full, mended) } });
+        + this.mendedInBase(stood.unit.color, stood.turn, true, stays, turn, stood.unit);
+      const vet = unitVeterancy(stood.unit.uid, stood.at, records, turn,
+        snapshot.config?.board?.radius ?? 11, snapshot.config?.board?.orientation ?? 'edge-up');
+      units.push({ at: stood.at, unit: rankedUnit({ ...stood.unit, hp: Math.min(full, mended) }, snapshot.config, vet) });
     }
     this.withdrawnCache = { history, turn, units };
     return this.stageWithdrawn(units);
@@ -2142,10 +2177,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * without changing history or ply.
    */
   private stageWithdrawn(units: WithdrawnUnit[]): WithdrawnUnit[] {
-    const staged = this.stagedActions.filter(a => a.panelUnit);
+    const staged = this.stagedActions.filter(a => a.panelUnit || a.effects?.some(e => e.unit));
     if (!staged.length) return units;
     const hp = new Map<string, number>();
     for (const action of staged) {
+      for (const e of action.effects ?? []) if (e.unit?.uid && e.hp !== undefined) hp.set(e.unit.uid, e.hp);
       // Older saves can carry a staged panel unit without an ID or HP result.
       if (action.panelUnitHp === undefined || !action.panelUnit?.uid) continue;
       hp.set(action.panelUnit['uid'], action.panelUnitHp);
@@ -2261,20 +2297,27 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       // Each unit's last word on its own HP, and the turn it was said.
       const wounds = new Map<string, {
         left: number; turn: number; full: number; index: number;
-        color: 'white' | 'black'; mends: boolean;
+        color: 'white' | 'black'; mends: boolean; unit: PieceData;
       }>();
       const records = (history ?? []) as any[];
       records.forEach((move, index) => {
         // A blow or an ability - anything that wrote down what a panel unit
         // has left. Both are the unit's last word on its own HP.
-        if (!move?.intoPanel || !move.unit?.uid || move.defenderHp === undefined) return;
-        wounds.set(move.unit.uid, {
-          left: move.defenderHp ?? 0,
+        const defender = move?.panelDefender ?? move?.unit;
+        if (!move?.intoPanel || !defender?.uid || move.defenderHp === undefined) return;
+        const config = this.gameState.snapshot.config;
+        const radius = config?.board?.radius ?? 11;
+        const at = move.attackedHex ?? (BASE_PANELS.has(move.panel)
+          ? (defender.color === 'white' ? `${-radius - 1},${radius}` : `${radius + 1},${-radius}`) : '0,0');
+        const vet = unitVeterancy(defender.uid, at, records, turn, radius, config?.board?.orientation ?? 'edge-up');
+        const ranked = rankedUnit({ ...defender, hp: move.defenderHp ?? 0 }, config, vet);
+        wounds.set(defender.uid, {
+          left: ranked.hp,
           turn: move.turn,
-          full: move.unit.max_hp ?? move.unit.hp ?? 0,
+          full: ranked.max_hp,
           index,
-          color: move.unit.color as 'white' | 'black',
-          mends: BASE_PANELS.has(move.panel),
+          color: defender.color as 'white' | 'black',
+          mends: BASE_PANELS.has(move.panel), unit: defender,
         });
       });
       const hp: Record<string, number> = {};
@@ -2283,7 +2326,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         hp[uid] = wound.left <= 0 ? 0 : Math.min(wound.full, wound.left
           + this.mendedInBase(
             wound.color, wound.turn, wound.mends,
-            this.inBaseAfter(records, wound.index, uid), turn));
+            this.inBaseAfter(records, wound.index, uid), turn, wound.unit));
       }
       this.panelHpCache = { history, turn, hp };
     }
@@ -2301,6 +2344,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const staged: Array<[string, number]> = [];
     let key = '';
     for (const action of this.stagedActions) {
+      for (const e of action.effects ?? []) {
+        if (e.unit?.uid && e.hp !== undefined) { staged.push([e.unit.uid, e.hp]); key += `${e.unit.uid}:${e.hp}|`; }
+      }
       if (!action.panelUnit?.uid || action.panelUnitHp === undefined) continue;
       staged.push([action.panelUnit['uid'], action.panelUnitHp]);
       key += `${action.panelUnit['uid']}:${action.panelUnitHp}|`;
@@ -2366,6 +2412,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
 
   /** What a side has to spend on that slot, in whichever currency buys it. */
   private purseFor(side: 'mine' | 'opponent', index: number): number {
+    if (UNIT_ACTIVES.includes(this.abilityEffects[index]?.effect ?? '')) return this.upOf(side);
     if (this.isPathSlot(index)) return this.cpOf(side);
     return side === 'mine' ? this.myPoints : this.opponentPoints;
   }
@@ -2376,6 +2423,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * record holds them, and the purse is re-summed from the record.
    */
   private chargeFor(side: 'mine' | 'opponent', index: number, amount: number): void {
+    if (UNIT_ACTIVES.includes(this.abilityEffects[index]?.effect ?? '')) {
+      this.awardUnitPoints(this.casterColor(side), -amount); return;
+    }
     if (this.isPathSlot(index)) { this.spendCp(side, amount); return; }
     if (side === 'mine') {
       this.myPoints -= amount;
@@ -2404,6 +2454,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
 
   /** What buys that slot, named for a hint - and counted, so "1 point" reads. */
   private purseName(index: number, cost: number): string {
+    if (UNIT_ACTIVES.includes(this.abilityEffects[index]?.effect ?? '')) return 'UP';
     if (this.isPathSlot(index)) return 'CP';
     return cost === 1 ? 'point' : 'points';
   }
@@ -2510,6 +2561,14 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
 
   /** A deliberate pick - and so the target an armed ability was waiting for. */
   onHexClicked(unit: SelectedUnit | null): void {
+    if (this.pendingUnitCast) {
+      const armed = this.pendingUnitCast;
+      if (unit && unit.color !== armed.unit.color && !BASE_PANELS.has(unit.panel ?? '')
+          && hexDistanceKeys(armed.unit.key, unit.key) === 1) this.stageUnitCast(armed.unit, armed.index, unit);
+      this.pendingUnitCast = null;
+      this.cdr.markForCheck();
+      return;
+    }
     if (!this.pendingAbility) {
       this.cdr.markForCheck();
       return;
@@ -2568,7 +2627,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         // unit survives, so a name for it is not enough.
         panelUnit: {
           unit_id: unit.unitId, color: unit.color, uid: unit.uid,
-          hp: unit.hp ?? 0, max_hp: full,
+          hp: unit.hp ?? 0, max_hp: full, vet: unit.vet,
         },
         ...(left <= 0
           ? { killed: unit.key, killedUnit: { unit_id: unit.unitId, color: unit.color } }
@@ -2650,6 +2709,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     this.spendUse(armed.side, armed.index);
     this.markUsed(armed.side, armed.index);
     this.pendingAbility = null;
+    this.pendingUnitCast = null;
     this.clearAbilityFocus();
     this.persistLocalUiState();
     this.addSystemMessage(`${effect.name} hit ${unit.unitId} for ${effect.damage ?? 0} damage.`);
@@ -2695,7 +2755,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   isPassive(index: number): boolean {
-    return this.abilityPaths.some(path => path.passive === index);
+    return UNIT_PASSIVES.includes(this.abilityEffects[index]?.effect ?? '')
+      || this.abilityPaths.some(path => path.passive === index);
   }
 
   isUltimate(index: number): boolean {
@@ -3003,13 +3064,12 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   /**
-   * Which veterancy rank unlocks a slot: the passive comes first at one star,
-   * the unit's active skill at two. Three is not a slot at all - it is the
-   * stat bonus in `vetBonus`.
-   * ponytail: a flat table, not per-unit - the roster does not exist yet.
+   * Legacy catalogue rank gates, until the unit passives and Vet 3 skills
+   * replace the placeholder unit Dash. CP paths retain their existing gates.
    */
   private vetNeeded(index: number): number {
-    return this.isPassive(index) ? 1 : 2;
+    return UNIT_ACTIVES.includes(this.abilityEffects[index]?.effect ?? '') ? 3
+      : UNIT_PASSIVES.includes(this.abilityEffects[index]?.effect ?? '') ? 2 : this.isPassive(index) ? 1 : 2;
   }
 
   /** True when the displayed unit has earned that slot. */
@@ -3064,6 +3124,12 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   /** The displayed unit's own ability, for the template - 0 is a slot, not "none". */
+  get displayUnitPassive(): number | null {
+    const id = this.gameState.snapshot.config?.units?.[this.displayUnit?.unitId ?? '']?.passive;
+    const index = typeof id === 'string' ? this.slotOfAbility(id) : -1;
+    return index < 0 ? null : index;
+  }
+
   get displayUnitAbility(): number | null {
     return this.unitAbilityIndex(this.displayUnit);
   }
@@ -3107,6 +3173,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   abilityHint(index: number, forOwnUnit = false): string {
     const e = this.abilityEffects[index];
     if (!e) return '';
+    if (e.effect) return this.abilityConfig.catalogue?.[e.id]?.description ?? e.name;
     const stats: string[] = [];
     if (e.mov) stats.push(`${this.signed(e.mov)} MOV`);
     if (e.atk) stats.push(`${this.signed(e.atk)} ATK`);
@@ -3162,20 +3229,22 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   activeBoardAbilityMode(): 'friendly' | 'enemy' | null {
+    if (this.pendingUnitCast) return 'enemy';
     if (!this.pendingAbility) return null;
     const mode = this.abilityTargetMode(this.pendingAbility.index);
     return mode === 'universal' ? null : mode;
   }
 
   activeBoardAbilityCasterColor(): 'white' | 'black' | '' {
-    return this.pendingAbility ? this.casterColor(this.pendingAbility.side) as 'white' | 'black' : '';
+    return this.pendingUnitCast ? this.pendingUnitCast.unit.color : this.pendingAbility ? this.casterColor(this.pendingAbility.side) as 'white' | 'black' : '';
   }
 
   abilityFocus: { side: 'mine' | 'opponent'; index: number; cooldowns: number[] } | null = null;
   unitAbilityFocus: { index: number } | null = null;
+  pendingUnitCast: { unit: SelectedUnit; index: number } | null = null;
 
   selectUnitAbility(index: number): void {
-    if (!this.displayUnit || this.displayUnit.panel) return;
+    if (!this.displayUnit || (this.displayUnit.panel && !this.isPassive(index))) return;
     if (this.unitAbilityFocus?.index === index) {
       this.unitAbilityFocus = null;
     } else {
@@ -3201,7 +3270,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     if (this.isPassive(focus.index) || focus.index !== this.unitAbilityIndex(unit)) return false;
     // Cast on the unit itself, so only a friendly ability can be one; the
     // validators refuse any other (`units.<id>.ability`).
-    if (this.abilityTargetMode(focus.index) !== 'friendly') return false;
+    if (this.abilityTargetMode(focus.index) !== 'friendly' && this.abilityEffects[focus.index]?.effect !== 'control') return false;
+    if (this.abilityEffects[focus.index]?.effect === 'control' && !this.canTakeBoardAction(unit.key)) return false;
     return this.vetUnlocked(focus.index) && this.canAfford(
       this.sideOfUnit(unit), focus.index, this.unitCooldownOf(unit.uid), unit.uid);
   }
@@ -3212,6 +3282,14 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     if (!this.isSinglePlayer || !focus || !unit || !this.unitAbilityCanActivate()) return;
     const side = this.sideOfUnit(unit);
     const effect = this.abilityEffects[focus.index];
+    if (UNIT_ACTIVES.includes(effect.effect ?? '')) {
+      if (effect.effect === 'control') {
+        this.pendingUnitCast = { unit: { ...unit }, index: focus.index };
+        this.unitAbilityFocus = null;
+        this.cdr.markForCheck();
+      } else this.stageUnitCast(unit, focus.index);
+      return;
+    }
     const cost = this.abilityCosts[focus.index] ?? 0;
     const spend = this.spendOf(unit.uid, side, 'unit', focus.index, unit.key);
     this.chargeFor(side, focus.index, cost);
@@ -3239,6 +3317,68 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     this.addSystemMessage(`${effect.name} applied to ${unit.name}.`);
     this.persistLocalUiState();
     this.unitAbilityFocus = null;
+    this.cdr.markForCheck();
+  }
+
+  private stageUnitCast(unit: SelectedUnit, index: number, target?: SelectedUnit): void {
+    const effect = this.abilityEffects[index];
+    const side = this.sideOfUnit(unit);
+    if (!this.isSinglePlayer || unit.vet < 3 || !this.canAfford(side, index, this.unitCooldownOf(unit.uid), unit.uid)) return;
+    const standing = (this.stagedBoard ?? this.gameState.snapshot.boardState)[unit.key];
+    if (!standing || standing.uid !== unit.uid || standing.hp <= 0) return;
+    const chosen = target ? (target.panel ? this.boardRef?.cells.find(cell => cell.key === target.key)?.piece
+      : (this.stagedBoard ?? this.gameState.snapshot.boardState)[target.key]) : undefined;
+    if (effect.effect === 'control' && (!chosen || chosen.hp <= 0 || chosen.color === standing.color
+        || !this.canTakeBoardAction(unit.key))) return;
+    const priorBuffs = this.buffs;
+    const spend = this.spendOf(unit.uid, side, 'unit', index, unit.key);
+    const board = { ...(this.stagedBoard ?? this.gameState.snapshot.boardState) };
+    const castId = `${unit.uid}|${this.gameState.snapshot.turnNumber}|${Date.now()}|${this.stagedActions.length}`;
+    const extraDeaths: FallenUnit[] = [];
+    const effects: any[] = [{ castId, unitCast: { uid: unit.uid, id: effect.id, color: unit.color,
+      cost: spend.cost, gain: effect.up ?? 0 } }];
+    this.chargeFor(side, index, spend.cost);
+    this.awardUnitPoints(unit.color, effect.up ?? 0);
+    this.unitCooldowns = { ...this.unitCooldowns, [unit.uid]: { turns: this.cooldownOf(index), color: unit.color } };
+    this.spendUse(unit.uid, index);
+    const recipients = [
+      ...Object.entries(board).filter(([key]) => !this.offBoard(key)).map(([key, piece]) => ({ key, piece, panel: '' })),
+      ...(this.boardRef?.cells ?? []).filter(cell => cell.panel && !BASE_PANELS.has(cell.panel)),
+    ].filter(cell => cell.piece && cell.piece.hp > 0);
+    if (effect.effect === 'sacrifice' || effect.effect === 'call') {
+      for (const cell of recipients) {
+        const piece = cell.piece!;
+        if (effect.effect === 'sacrifice' && (piece.color !== unit.color || piece.uid === unit.uid)) continue;
+        const friendly = piece.color === unit.color;
+        const hp = Math.max(0, Math.min(piece.max_hp, piece.hp + (friendly ? effect.heal ?? 0 : -(effect.enemyDamage ?? 0))));
+        effects.push(cell.panel ? { unit: piece, panel: cell.panel, hp, at: cell.key }
+          : { at: cell.key, uid: piece.uid, hp });
+        if (hp <= 0) extraDeaths.push({ key: cell.key, unit_id: piece.unit_id, color: piece.color });
+        if (!cell.panel) { if (hp > 0) board[cell.key] = { ...piece, hp }; else delete board[cell.key]; }
+        this.buffs = { ...this.buffs, [piece.uid!]: stackEffect(this.buffs[piece.uid!],
+          { name: effect.name, effect: effect.effect, turns: effect.turns,
+            mov: friendly ? effect.mov : 0, atk: friendly ? effect.atk : effect.enemyAtk ?? 0,
+            def: friendly ? effect.def : effect.enemyDef ?? 0 }, unit.color, !friendly) };
+      }
+      if (effect.effect === 'sacrifice') { extraDeaths.push({ key: unit.key, unit_id: unit.unitId, color: unit.color }); effects.push({ at: unit.key, uid: unit.uid, hp: 0 }); delete board[unit.key]; }
+    } else if (effect.effect === 'control' && target) {
+      const piece = chosen!;
+      const controlled = { ...piece, owner: piece.owner ?? piece.color, color: unit.color,
+        controlledUntil: this.gameState.snapshot.turnNumber + 2 * (effect.turns ?? 1), controlTurn: this.gameState.snapshot.turnNumber };
+      effects.push({ control: controlled, controlSource: unit.uid, at: target.key });
+      if (!target.panel) board[target.key] = controlled;
+    } else {
+      this.buffs = { ...this.buffs, [unit.uid]: stackEffect(this.buffs[unit.uid], effect, unit.color) };
+    }
+    const prev = [...this.boardMoves].reverse().find(step => step.to === unit.key);
+    this.stagedActions.push({ at: Date.now(), board, from: effect.effect === 'control' ? prev?.from ?? unit.key : this.lastBoardAction?.from ?? '', to: effect.effect === 'control' ? unit.key : this.lastBoardAction?.to ?? '',
+      used: prev?.used ?? 0, attack: null, spend, priorBuffs, effects, extraDeaths, unitUid: unit.uid,
+      ...(effect.effect === 'control' ? { endsAction: true } : {}) });
+    this.abilityUsed = { ...this.abilityUsed, [unit.uid]: true };
+    this.markUsed(side, index);
+    this.playSteps([{ kind: 'ability', from: unit.key, to: target?.key ?? unit.key, uid: target?.uid ?? unit.uid }]);
+    this.unitAbilityFocus = null;
+    this.persistLocalUiState();
     this.cdr.markForCheck();
   }
 
@@ -3396,12 +3536,12 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     else this.clearPathFocus();
   }
 
-  /** The same line for the unit's own ability, which needs no target. */
+  /** The selected unit's ability availability. */
   get unitAbilityNote(): string {
     const focus = this.unitAbilityFocus;
     if (!focus) return '';
     if (this.unitAbilityIsPassive()) {
-      return 'Always on at ★.';
+      return `Always on at ${'★'.repeat(this.vetNeeded(focus.index))}.`;
     }
     if (this.unitAbilityCanActivate()) return 'Ready - press Use.';
     const unit = this.displayUnit;
@@ -3523,6 +3663,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   clearAbilityFocus(): void {
     this.abilityFocus = null;
     this.pendingAbility = null;
+    this.pendingUnitCast = null;
     // Leaving an ability leaves the path that was open behind it too: a path
     // read but not taken is not somewhere to come back to, and landing on it
     // again after backing out of one of its abilities reads as a stuck screen.
@@ -3661,6 +3802,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       }]);
     }
     this.pendingAbility = null;
+    this.pendingUnitCast = null;
     this.clearAbilityFocus();
   }
 
@@ -3791,10 +3933,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const add = stat === 'hel' ? 0 : this.displayBuff?.[stat] ?? 0;
     if (stat === 'atk' || stat === 'hel') {
       const tiers: number[] = stat === 'atk' ? u.atk
-        : this.gameState.snapshot.config?.units?.[u.unitId]?.heal ?? [];
+        : unitStats(u.unitId, this.gameState.snapshot.config, u.vet).heal ?? [];
       if (!tiers.some(amount => amount + add > 0) && !tiers.some(amount => amount > 0)) return [];
       const minimum = stat === 'atk'
-        ? this.gameState.snapshot.config?.units?.[u.unitId]?.attackMinRange ?? 1 : 1;
+        ? unitStats(u.unitId, this.gameState.snapshot.config, u.vet).attackMinRange ?? 1 : 1;
       return tiers.map((base, i) => ({ ring: i + minimum, now: String(base + add), base: String(base) }));
     }
     const base = (stat === 'def' ? u.def : u.mv) ?? 0;
@@ -4022,9 +4164,14 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       move.turn === snapshot.turnNumber && move.from === from && move.to === to);
     const color = this.gameState.myColor(snapshot.currentTurn);
     for (const step of this.stagedActions) {
-      if (step.refund && !committed(step.from, step.to)) this.awardUnitPoints(color, step.refund);
+      if (step.refund && !committed(step.from, step.to)) this.awardUnitPoints(step.refundColor ?? color, step.refund);
+      for (const e of step.effects ?? []) {
+        if (e.unitCast && !snapshot.moveHistory.some(move => (move as any).castId === e.castId)) {
+          this.awardUnitPoints(e.unitCast.color, (e.unitCast.gain ?? 0) - e.unitCast.cost);
+        }
+      }
     }
-    for (const step of this.boardRef?.turnNumber === snapshot.turnNumber
+    for (const step of this.boardRef && this.boardRef.turnNumber === snapshot.turnNumber
       ? this.boardRef.pendingPanelSteps : []) {
       if (step.type === 'panel_move' && step.price && !committed(step.from, step.to)) {
         this.awardUnitPoints(step.unit?.color ?? color, -step.price);
@@ -4046,7 +4193,29 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   /** Ticks the incoming side; reconcilePoints handles its turn income separately. */
   private beginTurnFor(color: string): void {
     if (!color) return;
-    this.buffs = advanceBuffs(this.buffs, color);
+    this.buffs = advanceBuffs(this.buffs, color, this.gameState.snapshot.turnNumber);
+    if (this.isSinglePlayer && !isInitialization(this.gameState.snapshot.turnNumber)) {
+      const { config, boardState: board, turnNumber: ply } = this.gameState.snapshot;
+      for (const [at, unit] of Object.entries(board ?? {})) {
+        if (unit.color !== color) continue;
+        const passive = unitPassive(unit.unit_id, config, unit.vet);
+        if (!['intimidate', 'persuade'].includes(passive?.effect)) continue;
+        for (const [to, target] of Object.entries(board ?? {})) {
+          if (hexDistanceKeys(at, to) !== 1 || !target.uid
+              || (passive.effect === 'persuade') !== (target.color === color)) continue;
+          this.buffs = { ...this.buffs, [target.uid]: stackEffect(this.buffs[target.uid],
+            { name: passive.name, mov: passive.mov ?? 0, atk: passive.atk ?? 0, def: passive.def ?? 0, turns: passive.turns },
+            color, passive.effect === 'intimidate', ply + 2 * (passive.turns ?? 1)) };
+        }
+      }
+    }
+    if (this.isSinglePlayer) {
+      const units = [...Object.values(this.gameState.snapshot.boardState ?? {}), ...(this.boardRef?.cells ?? []).map(cell => cell.piece).filter(Boolean)];
+      this.unitCooldowns = Object.fromEntries(Object.entries(this.unitCooldowns).map(([uid, cd]) => {
+        const unit = units.find(piece => piece?.uid === uid);
+        return [uid, unit ? { ...cd, color: this.unitControls[uid]?.color ?? unit.owner ?? unit.color } : cd];
+      }));
+    }
     this.unitCooldowns = advanceUnitCooldowns(this.unitCooldowns, color);
     this.abilityUsed = {};
     this.pickedThisTurn = [];
@@ -4338,11 +4507,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     // A unit's own ability needs a slot of its own too, even when neither the
     // pool nor a path names it. After the rest, so the panels' slots - which
     // are what they draw - stay where they were.
+    const entries = config?.catalogue ?? {};
     const ownOnly = Object.values(units ?? {})
-      .map(unit => unit?.ability)
+      .flatMap(unit => [unit?.ability, ...(entries[unit?.passive]?.effect ? [unit.passive] : [])])
       .filter((id): id is string => typeof id === 'string' && !inPanels.includes(id));
     const ids = [...inPanels, ...new Set(ownOnly)];
-    const entries = config?.catalogue ?? {};
     const ultimates = new Set((config?.paths ?? []).map(path => path.ultimate));
     const effects: AbilityEffect[] = ids.map(id => {
       const a = entries[id] ?? ({ id, name: id } as AbilityEntry);
@@ -4361,6 +4530,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         // A path's ultimate is once a match unless the config says otherwise.
         uses: a.uses ?? (ultimates.has(id) ? 1 : null),
         ...(a.testing ? { testing: true } : {}),
+        ...(a.effect ? { effect: a.effect } : {}),
+        ...Object.fromEntries(['up', 'enemyDamage', 'enemyAtk', 'enemyDef'].filter(key => (a as any)[key] !== undefined).map(key => [key, (a as any)[key]])),
       };
     });
     const slotOf = (id: string) => ids.indexOf(id);
@@ -4424,23 +4595,6 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   /** Which path each side took, or null while the choice is still open. */
   myPath: number | null = null;
   opponentPath: number | null = null;
-
-  /**
-   * What a third star is worth, per unit. Placeholder numbers, and shown in
-   * the unit panel only.
-   * ponytail: display-only - these bonus numbers are still placeholders,
-   * and neither engine applies them to combat, so feeding these
-   * into combat would put the two sides' maths out of step. Wire it through
-   * hex-rules and the server together, or not at all.
-   */
-  readonly vetBonus: Record<string, { mov?: number; atk?: number; def?: number }> = {
-    king:   { def: 2 },
-    queen:  { atk: 2 },
-    rook:   { def: 2, atk: 1 },
-    bishop: { atk: 2 },
-    knight: { mov: 1, atk: 1 },
-    pawn:   { atk: 1, def: 1 },
-  };
 
   /**
    * Indices of the pool a side picks from, and how many it may hold. Picked
@@ -4656,7 +4810,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     // A panel defender is on no board: its record carries it, and its hex has
     // no number drawn - the panel is named instead.
     const defender = move.captured
-      ?? (move.intoPanel ? move.unit?.unit_id : undefined)
+      ?? (move.intoPanel ? (move.panelDefender ?? move.unit)?.unit_id : undefined)
       ?? this.gameState.snapshot.boardState[struck]?.unit_id ?? 'unit';
     const target = move.intoPanel
       ? `in its ${move.panel ? (BASE_PANELS.has(move.panel) ? 'base' : 'reserve') : 'panel'}`
@@ -4692,7 +4846,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   get killMarkers(): FallenUnit[] {
-    return this.stagedActions.flatMap(action => fallen(action.killed, action.killedUnit));
+    return this.stagedActions.flatMap(action => [...fallen(action.killed, action.killedUnit), ...(action.extraDeaths ?? [])]);
   }
 
   /**
@@ -4728,10 +4882,45 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * in Overtime 3 - which is the whole reason this exists rather than
    * `pendingMove` alone, that being only ever the last of them.
    */
+  private controlCache: { history: any; ply: number; count: number; last: any; value: Record<string, PieceData> } | null = null;
+  get unitControls(): Record<string, PieceData> {
+    const { moveHistory: history, turnNumber: ply } = this.gameState.snapshot;
+    const count = this.stagedActions.length, last = this.stagedActions[count - 1];
+    const cached = this.controlCache;
+    if (cached && cached.history === history && cached.ply === ply && cached.count === count && cached.last === last) return cached.value;
+    const value = controlsAt([...(history ?? []), ...this.stagedActions.flatMap(step => step.effects ?? [])], ply);
+    this.controlCache = { history, ply, count, last, value };
+    return value;
+  }
+
+  get extraActionUids(): string[] {
+    const color = this.gameState.myColor(this.gameState.snapshot.currentTurn);
+    return Object.values(this.unitControls).filter(unit => unit.color === color
+      && unit.controlTurn === this.gameState.snapshot.turnNumber).map(unit => unit.uid!);
+  }
+
+  private uidOfAction(step: StagedAction): string | undefined {
+    return step.unitUid ?? this.gameState.snapshot.boardState?.[step.from]?.uid ?? step.board?.[step.to]?.uid;
+  }
+
+  get ordinaryBoardMoves(): StagedAction[] {
+    return this.boardMoves.filter(step => !this.extraActionUids.includes(this.uidOfAction(step) ?? ''));
+  }
+
+  private canTakeBoardAction(key: string): boolean {
+    const unit = (this.stagedBoard ?? this.gameState.snapshot.boardState)?.[key];
+    if (!unit) return false;
+    const mine = this.boardMoves.find(step => this.uidOfAction(step) === unit.uid);
+    if (mine) return mine === this.boardMoves[this.boardMoves.length - 1] && !mine.endsAction
+      && !mine.heal && (!mine.attack || this.canContinueAfterAttack(mine));
+    return this.extraActionUids.includes(unit.uid ?? '')
+      || this.ordinaryBoardMoves.length < boardMovesPerTurn(this.gameState.snapshot.turnNumber);
+  }
+
   get boardMoves(): StagedAction[] {
     const out: StagedAction[] = [];
     for (const step of this.stagedActions) {
-      if (step.spend || step.homecoming || !step.from) continue;
+      if ((step.spend && !step.endsAction) || step.homecoming || !step.from) continue;
       const last = out[out.length - 1];
       if (last && last.from === step.from) out[out.length - 1] = step;
       else out.push(step);
@@ -4751,7 +4940,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    */
   get movedUnitHexes(): string[] {
     const moves = this.boardMoves;
-    return moves.filter((step, i) => i < moves.length - 1 || step.attack || step.heal).map(step => step.to);
+    return moves.filter((step, i) => i < moves.length - 1 || step.heal || step.endsAction
+      || (step.attack && !this.canContinueAfterAttack(step))).map(step => step.to);
   }
 
   get pendingMove(): { from: string; to: string; used: number } | null {
@@ -4771,11 +4961,12 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    */
   get canMoveOnBoard(): boolean {
     const moves = this.boardMoves;
-    if (moves.length < boardMovesPerTurn(this.gameState.snapshot.turnNumber)) return true;
+    if (this.ordinaryBoardMoves.length < boardMovesPerTurn(this.gameState.snapshot.turnNumber)
+        || this.extraActionUids.some(uid => !moves.some(step => this.uidOfAction(step) === uid))) return true;
     // Every move spoken for: only the unit mid-move may keep walking, and only
     // while it has not already struck.
     const last = moves[moves.length - 1];
-    return !last?.attack && !last?.heal;
+    return !last?.endsAction && !last?.heal && (!last?.attack || this.canContinueAfterAttack(last));
   }
 
   /**
@@ -4790,8 +4981,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   private canSwingFrom(hex: string): boolean {
     const moves = this.boardMoves;
     const mine = moves.find(m => m.to === hex);
-    if (mine) return !mine.attack && !mine.heal;
-    return moves.length < boardMovesPerTurn(this.gameState.snapshot.turnNumber);
+    if (mine) return !mine.endsAction && !mine.attack && !mine.heal;
+    return this.canTakeBoardAction(hex);
   }
   /** Which side the host takes in a solo game; the placeholder gets the other. */
   soloColor: 'white' | 'black' = 'white';
@@ -4861,14 +5052,14 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * committing and ending the turn are one and the same message.
    */
   onPlayerMove(event: { from: string; to: string; cost: number; refund?: number }): void {
-    if (!this.canMoveOnBoard) return;
+    if (!this.canMoveOnBoard || !this.canTakeBoardAction(event.from)) return;
     // A unit gets one of the turn's moves, not two - see `movedUnitHexes`.
     if (this.movedUnitHexes.includes(event.from)) return;
     // Walking home into the base pays the unit's worth back to whoever
     // brought it in - the same number the wrap charged to send one out.
-    if (event.refund) {
-      this.awardUnitPoints(this.gameState.myColor(this.gameState.snapshot.currentTurn), event.refund);
-    }
+    const moving = (this.stagedBoard ?? this.gameState.snapshot.boardState)[event.from];
+    const refundColor = moving?.owner ?? moving?.color ?? this.gameState.myColor(this.gameState.snapshot.currentTurn);
+    if (event.refund) this.awardUnitPoints(refundColor, event.refund);
     const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
     const next: Record<string, any> = { ...board };
     next[event.to] = next[event.from];
@@ -4878,7 +5069,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     // though - now that a walk home no longer locks the board, the action
     // before this one may belong to somebody else entirely, and inheriting its
     // origin would send the engine a move from a hex this unit never stood on.
-    const prev = this.pendingMove;
+    const moves = this.boardMoves;
+    const prev = moves[moves.length - 1];
     const chain = prev && prev.to === event.from ? prev : null;
     // A walk home while setting out is a deployment, not the turn's board
     // action: three may go in one turn, so none of them is the move that ends
@@ -4890,7 +5082,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     // turn's move reaching the base, and it has to go out as that move, from
     // the hex the engine still has the unit on.
     const homecoming = !!event.refund && !chain
-      && isSetupTurn(this.gameState.snapshot.turnNumber);
+      && isSetupTurn(this.gameState.snapshot.turnNumber) && !this.extraActionUids.includes(moving?.uid ?? '');
     this.stagedActions.push({
       at: Date.now(),
       board: next,
@@ -4898,8 +5090,14 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       to: event.to,
       // The board charges the walk it actually plotted, detours included.
       used: (chain?.used ?? 0) + event.cost,
-      attack: null,
-      ...(event.refund ? { refund: event.refund } : {}),
+      attack: chain?.attack ?? null,
+      ...(chain?.attack ? {
+        attackFrom: chain.attackFrom ?? chain.to, afterAttackWalk: true, countered: chain.countered,
+        combatBonuses: chain.combatBonuses, effects: chain.effects, extraDeaths: chain.extraDeaths, secondStrike: chain.secondStrike, panelUnit: chain.panelUnit,
+        panelUnitHp: chain.panelUnitHp, intoPanel: chain.intoPanel, panelName: chain.panelName, counters: chain.counters,
+      } : {}),
+      unitUid: moving?.uid,
+      ...(event.refund ? { refund: event.refund, refundColor } : {}),
       ...(homecoming ? { homecoming: true } : {}),
     });
     // Each step plays as it is staged, and never blocks the next one.
@@ -4934,11 +5132,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
 
     const distance = hexDistanceKeys(event.to, event.attack);
     if (event.heal) {
-      const range = config?.units?.[attacker.unit_id]?.heal?.length ?? 0;
+      const range = unitStats(attacker.unit_id, config, attacker.vet)?.heal?.length ?? 0;
       if (isInitialization(this.gameState.snapshot.turnNumber) || intoPanel
           || this.offBoard(event.to) || this.offBoard(event.attack)
           || target.color !== attacker.color || distance < 1 || distance > range) return;
-      const amount = healingAmount(attacker.unit_id, target, distance, config);
+      const amount = healingAmount(attacker.unit_id, target, distance, config, attacker.vet);
       board[event.attack] = { ...target, hp: target.hp + amount };
       const last = this.pendingMove;
       const prev = last && last.to === event.from ? last : null;
@@ -4953,50 +5151,57 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       return;
     }
     if (isSetupTurn(this.gameState.snapshot.turnNumber)
-        || !canAttack(config?.units?.[attacker.unit_id], distance, this.bonusFor(event.to, 'atk'))) return;
-    // An ATK or DEF boost is real damage, not just a number in the panel.
-    const dealt = strikeDamage(
-      attacker.unit_id, target.unit_id, distance, config,
-      this.bonusFor(event.to, 'atk'), this.bonusFor(event.attack, 'def', target));
-    const hurt = { ...target, hp: target.hp - dealt };
-
-    // At most one of the two dies: a defender that falls never counters.
+        || !canAttack(combatStats(attacker.unit_id, config, attacker.vet, false, this.isSinglePlayer), distance, this.bonusFor(event.to, 'atk'))) return;
+    if (!tauntAllows({ ...Object.fromEntries((this.boardRef?.cells ?? []).filter(cell => cell.piece).map(cell => [cell.key, cell.piece!])), ...board, [event.attack]: target }, event.to, event.attack, config, this.buffs, this.isSinglePlayer)) return;
+    const priorBuffs = this.buffs;
+    const combatBonuses: CombatBonuses = {
+      atk: this.bonusFor(event.to, 'atk'), def: this.bonusFor(event.to, 'def'),
+      targetAtk: this.bonusFor(event.attack, 'atk', target), targetDef: this.bonusFor(event.attack, 'def', target),
+      ...(this.isSinglePlayer && carries(this.buffs[attacker.uid!], 'charge') ? { charge: true } : {}),
+      ...(this.isSinglePlayer && carries(this.buffs[attacker.uid!], 'nullify') ? { nullify: true } : {}),
+    };
+    const exchange = combatExchange(attacker, target, distance, config, combatBonuses,
+      !intoPanel || !!event.counters, this.isSinglePlayer);
+    const hurt = { ...target, hp: exchange.targetHp };
     let killed: string | undefined;
     let killedUnit: { unit_id: string; color: 'white' | 'black' } | undefined;
-    // Whether it answered at all, which is three separate refusals: it died,
-    // it is in a base, or we struck it from outside its own reach. Recorded
-    // rather than re-guessed, because every replay of this turn needs it.
-    let answered = false;
+    const answered = exchange.countered;
+    if (exchange.targetHp <= 0) {
+      if (intoPanel) panelUnitHp = 0; else delete board[event.attack];
+      killed = event.attack; killedUnit = { unit_id: target.unit_id, color: target.color };
+    } else if (intoPanel) panelUnitHp = exchange.targetHp; else board[event.attack] = hurt;
+    if (exchange.attackerHp <= 0) {
+      delete board[event.to]; killed = event.to; killedUnit = { unit_id: attacker.unit_id, color: attacker.color };
+    } else board[event.to] = { ...attacker, hp: exchange.attackerHp };
+    const effects: any[] = [];
+    const extraDeaths: FallenUnit[] = [];
+    if (this.isSinglePlayer && carries(this.buffs[attacker.uid!], 'cleave')) {
+      for (const [at, piece] of Object.entries({ ...Object.fromEntries((this.boardRef?.cells ?? []).filter(cell => cell.piece).map(cell => [cell.key, cell.piece!])), ...board })) {
+        if (at === event.attack || !piece || piece.color === attacker.color || hexDistanceKeys(event.to, at) !== 1) continue;
+        const hp = Math.max(0, piece.hp - strikeDamage(attacker.unit_id, piece.unit_id, 1, config,
+          combatBonuses.atk, this.bonusFor(at, 'def', piece), attacker.vet, piece.vet));
+        const panel = this.boardRef?.cells.find(cell => cell.key === at)?.panel;
+        effects.push(panel ? { unit: piece, panel, at, hp } : { at, uid: piece.uid, hp });
+        if (hp <= 0) extraDeaths.push({ key: at, unit_id: piece.unit_id, color: piece.color });
+        if (!panel) { if (hp > 0) board[at] = { ...piece, hp }; else delete board[at]; }
+      }
+    }
+    if (this.isSinglePlayer && exchange.targetHp > 0 && carries(this.buffs[attacker.uid!], 'attack-drain')) {
+      const ownId = config.units[attacker.unit_id]?.ability;
+      const active = config.abilities.catalogue[ownId];
+      this.buffs = { ...this.buffs, [target.uid!]: stackEffect(this.buffs[target.uid!],
+        { name: active.name, mov: active.mov ?? 0, atk: 0, def: 0, turns: active.turns }, attacker.color,
+        true, this.gameState.snapshot.turnNumber + 2 * (active.turns ?? 1)) };
+    }
 
-    if (hurt.hp <= 0) {
-      // A panel unit that falls is simply not dealt again - 0 is what says
-      // so - and nothing on the board changes where it stood.
-      if (intoPanel) panelUnitHp = 0;
-      else delete board[event.attack];
-      killed = event.attack;
-      killedUnit = { unit_id: target.unit_id, color: target.color };
-    } else {
-      if (intoPanel) panelUnitHp = hurt.hp;
-      else board[event.attack] = hurt;
-      // A panel answers only if it is a reserve: the base is struck and says
-      // nothing. The preview has to agree with the engine on that, or a base
-      // blow shows a counter it never takes.
-      if ((!intoPanel || event.counters)
-          && canAttack(config?.units?.[target.unit_id], distance, this.bonusFor(event.attack, 'atk', target))) {
-        answered = true;
-        const counter = strikeDamage(
-          target.unit_id, attacker.unit_id, distance, config,
-          this.bonusFor(event.attack, 'atk', target), this.bonusFor(event.to, 'def'));
-        const mine = { ...attacker, hp: attacker.hp - counter };
-        if (mine.hp <= 0) {
-          delete board[event.to];
-          // Our own unit dying to the counter is still a death: without this
-          // it simply vanished from the preview, no skull, no ghost.
-          killed = event.to;
-          killedUnit = { unit_id: attacker.unit_id, color: attacker.color };
-        } else {
-          board[event.to] = mine;
-        }
+    if (this.isSinglePlayer) {
+      for (const [source, recipient, alive] of [[attacker, target, hurt.hp > 0],
+          [target, attacker, !!board[event.to]]] as const) {
+        const passive = unitPassive(source.unit_id, config, source.vet);
+        if (passive?.effect !== 'on-hit-drain' || !alive || !recipient.uid) continue;
+        this.buffs = { ...this.buffs, [recipient.uid]: stackEffect(this.buffs[recipient.uid],
+          { name: passive.name, mov: passive.mov ?? 0, atk: passive.atk ?? 0, def: passive.def ?? 0, turns: passive.turns },
+          source.color, true, this.gameState.snapshot.turnNumber + 2 * (passive.turns ?? 1)) };
       }
     }
 
@@ -5016,7 +5221,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       attack: event.attack,
       killed,
       killedUnit,
-      countered: answered,
+      unitUid: attacker.uid, countered: answered, combatBonuses, effects, extraDeaths, secondStrike: exchange.secondDamage > 0,
+      ...(this.buffs !== priorBuffs ? { priorBuffs } : {}),
       // Set only for a swing out of a panel - what tells the commit to send
       // it as its own message rather than folding it into the turn's move.
       ...(intoPanel
@@ -5034,6 +5240,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       ? [
           { kind: 'attack', from: event.to, to: event.attack },
           { kind: 'counter', from: event.attack, to: event.to },
+          ...(exchange.secondDamage > 0 ? [{ kind: 'attack' as const, from: event.to, to: event.attack }] : []),
         ]
       : [{ kind: 'attack', from: event.to, to: event.attack }]);
     this.persistLocalUiState();
@@ -5048,18 +5255,28 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * and 3 a side may strike with one unit and then walk the next, and asking
    * the whole turn left that second unit with 0 MOV after its first hop.
    */
+  private canContinueAfterAttack(step: StagedAction): boolean {
+    const unit = (this.stagedBoard ?? this.gameState.snapshot.boardState)[step.to];
+    return this.isSinglePlayer && !!unit && unitPassive(unit.unit_id, this.gameState.snapshot.config, unit.vet)?.effect === 'rapid-movement';
+  }
+
+  get attackedUnitHexes(): string[] {
+    return this.boardMoves.filter(step => step.attack || step.heal).map(step => step.to);
+  }
+
   get unitActionSpent(): boolean {
     const last = this.lastBoardAction;
-    return !!(last?.attack || last?.heal);
+    const move = this.boardMoves[this.boardMoves.length - 1];
+    return !!move?.endsAction || !!move?.heal || !!move?.attack && !this.canContinueAfterAttack(move);
   }
 
   get movesLeft(): number | null {
     const pending = this.pendingMove;
     if (!pending) return null;
     const action = this.boardMoves.find(move => move.from === pending.from);
-    if (action?.attack || action?.heal) return 0;
+    if (action?.heal || (action?.attack && !this.canContinueAfterAttack(action))) return 0;
     const unit = this.stagedBoard?.[pending.to];
-    const base = this.gameState.snapshot.config?.units?.[unit?.unit_id]?.move ?? 0;
+    const base = unitStats(unit?.unit_id ?? '', this.gameState.snapshot.config, unit?.vet).move ?? 0;
     // A +MOV boost is real steps, not just a number in the panel.
     const total = base + this.moveBonusFor(pending.to);
     return Math.max(0, total - pending.used);
@@ -5408,12 +5625,13 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const undone = this.stagedActions.pop();
     // A withdrawal paid UP on the way in; taking it back takes the UP too.
     if (undone?.refund) {
-      this.awardUnitPoints(this.gameState.myColor(this.gameState.snapshot.currentTurn), -undone.refund);
+      this.awardUnitPoints(undone.refundColor ?? this.gameState.myColor(this.gameState.snapshot.currentTurn), -undone.refund);
     }
     // A cast took points, a cooldown, a mark and a stat stack. Popping the
     // board back without those left the ability half-spent for the rest of
     // the game.
     if (undone?.spend) this.refund(undone.spend);
+    if (undone?.priorBuffs) this.buffs = undone.priorBuffs;
     // The detail may still be open on what that gave back. Opened while it was
     // cooling down, nothing was armed - and the note, which reads the cooldown
     // live, said "Ready" over a click that did nothing. Arm it the way opening
@@ -5495,6 +5713,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       priorUses: this.abilityUses[this.useKey(holder, index)] ?? 0,
       priorBuff: this.buffs[uid] ?? null,
       priorUsed: !!this.abilityUsed[uid],
+      ...(UNIT_ACTIVES.includes(effect?.effect ?? '') ? { up: true, gain: effect.up ?? 0 } : {}),
     };
   }
 
@@ -5506,7 +5725,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     // The cost goes back into whichever currency bought it, and the grant
     // comes back out of points - as `activateFocusedAbility` paid them.
     this.chargeFor(spend.side, spend.index, -spend.cost);
-    this.grantPoints(spend.side, -(spend.gain ?? 0));
+    if (spend.up) this.awardUnitPoints(this.casterColor(spend.side), -(spend.gain ?? 0));
+    else this.grantPoints(spend.side, -(spend.gain ?? 0));
     // A stack saved before `uses` has no holder; there is nothing to give back.
     if (spend.holder !== undefined) {
       const key = this.useKey(spend.holder, spend.index);
@@ -5589,6 +5809,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     this.abilityFocus = null;
     this.pathFocus = null;
     this.pendingAbility = null;
+    this.pendingUnitCast = null;
     this.unitAbilityFocus = null;
     this.cdr.markForCheck();
     // The panels' moves are their own thing: several may happen in a turn and
@@ -5629,12 +5850,28 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     // two units' moves landed before the first unit's blow, and that blow's
     // counter then came off the mended figure a second time.
     const moves = this.boardMoves;
-    // Where each move's last step sits in the stack: a cast staged before it
-    // happened before that move finished.
+    // Rapid Movement can put a cast between the exchange and the remaining
+    // walk. Resolve it there so a killed defender vacates the landing hex;
+    // casts after the final walk still land after that walk.
     const ends = moves.map(step => this.stagedActions.indexOf(step));
+    const attacks = moves.map(step => step.afterAttackWalk
+      ? this.stagedActions.findIndex(action => action.from === step.from && action.attack && !action.afterAttackWalk)
+      : -1);
     const before: any[][] = moves.map(() => []);
+    const afterAttack: any[][] = moves.map(() => []);
     const after: any[] = [];
     this.stagedActions.forEach((step, i) => {
+      const owner = ends.findIndex(end => step.endsAction ? end >= i : end > i);
+      const list = owner < 0 ? after : attacks[owner] >= 0 && i > attacks[owner]
+        ? afterAttack[owner] : before[owner];
+      if (step.effects?.length && !step.afterAttackWalk) {
+        const attackIndex = moves.findIndex(move => move.from === step.from && move.attack === step.attack);
+        if (step.attack && attackIndex >= 0) {
+          const next = attackIndex + 1;
+          (attacks[attackIndex] >= 0 ? afterAttack[attackIndex]
+            : next < moves.length ? before[next] : after).push(...step.effects);
+        } else list.push(...step.effects);
+      }
       if (step.attack !== null) return;
       const effect = step.panelUnit
         ? { unit: step.panelUnit, hp: step.panelUnitHp, panel: step.panelName }
@@ -5645,8 +5882,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
           ? { at: step.hexKey, uid: step.hexUid, hp: step.hexHp }
           : null;
       if (!effect) return;
-      const owner = ends.findIndex(end => end > i);
-      (owner < 0 ? after : before[owner]).push(effect);
+      list.push(effect);
     });
     if (!moves.length) {
       // Doing nothing is a legal turn - and every cast came before it.
@@ -5671,7 +5907,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       // the same reason it ignores moveBonus - abilities live on the client,
       // so taking the client's word for a stat would be a free upgrade. Move
       // abilities into the engine and both sides can read them off the board.
-      const bonuses = {
+      const bonuses = step.combatBonuses ?? {
         atk: this.bonusFor(step.to, 'atk'),
         def: this.bonusFor(step.to, 'def'),
         targetAtk: swing ? this.bonusFor(swing, 'atk', step.panelUnit) : 0,
@@ -5679,8 +5915,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       };
       const boosted = Object.values(bonuses).some(v => v !== 0);
       const casts = {
+        ...(step.attackFrom && step.attackFrom !== step.to ? { afterAttackTo: step.to } : {}),
         ...(i < moves.length - 1 ? { more: true } : {}),
         ...(before[i].length ? { effectsBefore: before[i] } : {}),
+        ...(afterAttack[i].length ? { effectsAfterAttack: afterAttack[i] } : {}),
         ...(i === moves.length - 1 && after.length ? { effects: after } : {}),
       };
       if (swing && step.panelUnit) {
@@ -5690,7 +5928,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         // and left it there, which read as being teleported back.
         this.wsService.sendMessage({
           type: 'panel_attack',
-          from: step.from, to: step.to, attack: swing, unit: step.panelUnit,
+          from: step.from, to: step.attackFrom ?? step.to, attack: swing, unit: step.panelUnit,
           // Which panel took the blow. The engine keeps it on the record and
           // nothing else: it is what tells the mending a base from a reserve
           // after a reload, when the board that knew is long gone.
@@ -5711,9 +5949,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       this.wsService.sendMessage({
         type: 'make_move',
         from: step.from,
-        to: step.to,
+        to: step.attackFrom ?? step.to,
         ...(swing ? { attack: swing } : {}),
         ...(step.heal ? { heal: step.heal } : {}),
+        ...(step.endsAction ? { unitAction: true } : {}),
         ...(moveBonus ? { moveBonus } : {}),
         ...(boosted ? { bonuses } : {}),
         // Walking off the board into a base. Both engines answer it: the

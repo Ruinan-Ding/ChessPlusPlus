@@ -25,6 +25,8 @@ interface UnitEffect {
   caster?: string;
   /** Marks a hostile cast even when it changes no stats. */
   hostile?: boolean;
+  expiresAt?: number;
+  effect?: string;
 }
 
 export interface UnitCooldown {
@@ -50,33 +52,36 @@ function summed(effects: UnitEffect[]): UnitBuff {
 
 export function stackEffect(
   held: UnitBuff | undefined,
-  effect: { name: string; mov: number; atk: number; def: number; turns?: number },
+  effect: { name: string; mov: number; atk: number; def: number; turns?: number; effect?: string },
   caster: string,
   hostile = false,
+  expiresAt?: number,
 ): UnitBuff {
   return summed([
     ...effectsOf(held),
     {
       name: effect.name, mov: effect.mov, atk: effect.atk, def: effect.def,
       turns: Math.max(1, effect.turns ?? 1), caster, hostile,
+      ...(effect.effect ? { effect: effect.effect } : {}),
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
     },
   ]);
 }
 
 /** Count down only the effects cast by the side whose turn starts; remove each at zero. */
-export function advanceBuffs(buffs: Record<string, UnitBuff>, color: string): Record<string, UnitBuff> {
+export function advanceBuffs(buffs: Record<string, UnitBuff>, color: string, ply?: number): Record<string, UnitBuff> {
   let changed = false;
   const next: Record<string, UnitBuff> = {};
   for (const [uid, buff] of Object.entries(buffs)) {
     const effects = effectsOf(buff);
-    if (!effects.some(e => e.caster === color)) {
+    if (!effects.some(e => e.expiresAt !== undefined ? ply !== undefined && ply >= e.expiresAt : e.caster === color)) {
       next[uid] = buff;
       continue;
     }
     changed = true;
     const left = effects
-      .map(e => (e.caster === color ? { ...e, turns: e.turns - 1 } : e))
-      .filter(e => e.turns > 0);
+      .map(e => (e.expiresAt === undefined && e.caster === color ? { ...e, turns: e.turns - 1 } : e))
+      .filter(e => e.expiresAt !== undefined ? ply === undefined || ply < e.expiresAt : e.turns > 0);
     if (left.length) next[uid] = summed(left);
   }
   return changed ? next : buffs;

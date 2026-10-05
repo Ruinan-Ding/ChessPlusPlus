@@ -1,4 +1,4 @@
-# Handoff: ChessPlusPlus, 4 Oct 2026
+# Handoff: ChessPlusPlus, 5 Oct 2026
 
 Updated by Codex from Claude Code's 2 Oct handoff, for the next agent.
 **AGENTS.md is the source of truth** for how this repo works: architecture, the rules the owner
@@ -14,14 +14,19 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
   Channels server in `server/`, an Angular 19 client in `client/`, and the shared config schema in
   `shared/`.
 - **Current branch:** `feature/dev22`, tracking `origin/feature/dev22`.
-  - The prior pushed checkpoint is `4e8413e`. Its [CI run](https://github.com/Ruinan-Ding/ChessPlusPlus/actions/runs/37187378017)
-    passed; the result and commit were rechecked through GitHub's public API on 4 Oct.
-  - The dev22 follow-up recorded with this handoff contains the pre-ability cleanups and
-    test audit, first four ability pairs, Phase 3 full heal, turn swooshes, postmatch
-    permissions, separate UP, review fixes and documentation (PUNCHLIST 6.69, 6.71-6.78).
-    The owner requested committing and pushing this completed work on 4 Oct. Read the
-    branch tip and its CI run for the latest release status; the CI link above is the
-    earlier checkpoint, not the follow-up.
+  - The current unit-kit checkpoint is "Implement all eight unit veterancy kits and
+    resolve review regressions" (6.79-6.80). The owner authorized commit and push on
+    5 Oct. Use `git log -1` for its SHA; its CI result is not recorded in this commit.
+  - The previous pushed checkpoint is `53a846c`: "Implement the first ability pairs and
+    separate unit points". Its [CI run](https://github.com/Ruinan-Ding/ChessPlusPlus/actions/runs/37249563064)
+    completed successfully for both server and client at this exact SHA on 4 Oct.
+  - That follow-up contains the pre-ability cleanups and test audit, first four ability
+    pairs, Phase 3 full heal, turn swooshes, postmatch permissions, separate UP, review
+    fixes and documentation (PUNCHLIST 6.69, 6.71-6.78).
+  - The earlier checkpoint `4e8413e` also passed [CI](https://github.com/Ruinan-Ding/ChessPlusPlus/actions/runs/37187378017).
+    Unit-kit work and review fixes (6.79-6.80) follow that checkpoint.
+    All eight kits are implemented: Vet 1 stats in both engines,
+    Vet 2 passives and Vet 3 UP abilities in solo. Online ability execution remains deferred.
   - Local `main` and its tracking ref are at `7658bb3` (the 2 Oct handoff). dev22 is not merged.
   - Every feature branch through dev21 is merged except dev9. Leave dev9 and
     `copilot/analyze-game-room-code` alone. dev19-dev21 used local `--no-ff` merges.
@@ -73,6 +78,45 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
     and the development bundle were restored byte-for-byte. Browser runs used a static
     development build after the spare Vite server crashed on Chrome connection resets.
     Server code and config are unchanged; the earlier 353-server-test result still applies.
+  - First-star unit stats (6.79): 355 server tests, 673 client specs, the clean production
+    build and migration check pass. All eight profiles use one shared config field in both
+    engines. Forty-seven new malformed-config cases are refused on both sides; omission
+    remains compatible with old configs. Seventy-eight real Chrome checks cover both seats
+    at desktop, tablet and phone sizes: eight Unit profiles, wounded reserve promotion,
+    base exclusions, reloads and actual range-2 king attacks through forecast/commit/reload.
+    Sixteen deliberate regressions (ten client, six server) were caught and source restored
+    byte-for-byte. No template or stylesheet changed; the earlier full layout sweep still
+    applies. That earlier run covered Vet 1 only; the follow-up below covers Vet 2/3.
+  - Completed unit kits (6.79), 5 Oct: 702 client specs, 356 server tests, the clean
+    production build and migration consistency check pass. Config parity now contains
+    160 malformed cases and 15 omission cases; scoring parity has 374 fixed cases.
+    Vet 2: 120 real Chrome checks across both seats on desktop/tablet/phone and ten
+    deliberate stubs. Vet 3: 240 Chrome checks on those same six combinations, plus
+    32 final edge checks on desktop/phone for both seats. These cover all eight casts,
+    UP pricing, scopes, forecasts, commit/reload, Taunt and Cast control/action/expiry,
+    original-owner refunds, movement after control returns in a foreign red base,
+    controlled reserve Regenerate, and Rapid Movement withdrawals. Fourteen Vet 3
+    stubs fail real assertions; all mutated source is restored byte-for-byte. Together
+    with Vet 1's sixteen, forty distinct rule regressions were caught. Both complete
+    layout sweeps after the Unit template updates pass all 351 checks. Browser checks
+    use isolated headless Chrome profiles and a static development build on spare 4201.
+    These are solo checks, not a new complete live network e2e run. The owner authorized
+    this checkpoint for commit and push on 5 Oct; 6.79 is WRITTEN, not owner-SEEN.
+  - Unit-kit review fixes (6.80), 5 Oct: 708 client specs and 358 server tests pass,
+    with six new client regressions, two new server checks and 23 shared combat-ring
+    eligibility cases. Returned Cast veterans withdraw as normal postmatch deployments;
+    casts between combat and Rapid Movement resolve before the remaining walk; earlier
+    panel wounds cannot re-promote later withdrawals. Bog, adjacent auras and Cast honor
+    configured durations. Nine deliberate regressions fail real assertions; source is
+    restored byte-for-byte. The production build is clean; migration consistency reports
+    no changes. Sixty-eight focused Chrome assertions pass: 34 desktop and 34 touch-screen
+    checks, both seats, covering staging, commit/reload, returned Cast withdrawals, Rapid
+    Movement with intervening Strike and later Mend, configured three-turn Bog expiry,
+    and zero-tier attack eligibility. The spare preview and isolated Chrome profiles are
+    stopped. These are solo checks. No template or stylesheet changed in this review
+    follow-up; the earlier 351-check layout run applies.
+    Included in the unit-kit checkpoint authorized for push on 5 Oct; 6.80 remains
+    WRITTEN, not owner-SEEN.
   - Last complete live script run, 2 Oct: `match.py` 22/22, `edges.py` 12/12 and
     `endings.py` 30/30. dev22 also has targeted socket checks recorded in PUNCHLIST 6.66.
     Do not describe those as a new complete e2e script run.
@@ -88,7 +132,7 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
 | `7409799` (dev20) | 1 Oct | Networking that recovers, and names that hold | AGENTS.md, historical PUNCHLIST 6.70 |
 | `de6cb84` (dev21) | 2 Oct | Tripcodes, and names held to letters and numbers | PUNCHLIST 6.56, AGENTS.md |
 | `4e8413e` (dev22, pushed) | 4 Oct | Unit panel, roster, healing, phase veterancy, capture permissions and layer scoring; two review fixes | PUNCHLIST 6.57-6.68, AGENTS.md |
-| Dev22 follow-up (this handoff) | 4 Oct | Shared types/calculations, regression coverage, the first four ability pairs, Phase 3 veteran healing, turn announcements, postmatch permissions, UP and review fixes | PUNCHLIST 6.69, 6.71-6.78 |
+| `53a846c` (dev22, pushed) | 4 Oct | Shared types/calculations, regression coverage, the first four ability pairs, Phase 3 veteran healing, turn announcements, postmatch permissions, UP and review fixes | PUNCHLIST 6.69, 6.71-6.78 |
 
 **dev20 in short.** AGENTS.md has the detail and the reasons.
 
@@ -141,7 +185,55 @@ Mend/Strike. Their amounts, points, cooldowns, scopes and fixed recipient rules 
 AGENTS.md. Stat changes last until the caster's next turn; HP changes are immediate.
 Warcry arms zero-base attackers, while configured healers keep their normal healing action.
 Older saved rooms keep their catalogues; `legacy-abilities.fixture.json` is test-only.
-New games use the specified pool. Path and unit abilities remain to be specified.
+New games use the specified pool. Path abilities remain to be specified.
+
+**Current task complete: eight unit veterancy kits (6.79), awaiting owner inspection.** The owner supplied
+Vet 1 stats, Vet 2 passives and Vet 3 UP abilities for pawn, archer, shieldman, rook, knight,
+bishop, queen and king. AGENTS.md records the confirmed amounts and semantics. Cast is
+confirmed to grant an immediate extra move/attack, hold control through the opponent's next
+turn and return it at the caster's next turn; it may target kings. Preserve original
+ownership separately from current control: controlling a king alone does not win; killing
+it defeats its original owner, confirmed by the owner. The bishop finishes its action when casting. The controlled
+unit may be buffed by the caster and attacked/debuffed by its original side. The owner
+confirmed that its death is an attrition loss against the caster. It captures and
+neutralizes for the caster within its normal zone permissions. It may target battlefield
+and green-reserve units, excluding red bases. A controlled unit may withdraw into the
+caster's red base through an open normal door. The refund goes to its original owner,
+confirmed on 5 Oct. It remains there under Cast for the full turn; when Cast expires,
+its original owner controls it again. The owner said it otherwise functions normally.
+
+Vet 1 HP increases current and max HP together. Archer's Vet 3 active is Bog, triggered
+by its attack. Taunt costs 1 UP/CD 1; Call costs 5 UP/CD 5. Counter/Deflect are ATK before
+DEF. Cleave hits adjacent enemies around the rook with normal ATK/DEF. Charge requires an
+actual counter and has no second counter. Sacrifice buffs friendly battlefield/green
+units for one full turn and heals 1 immediately. Rook Bog stacks without a cap for one full turn. Queen/King auras start on their owner's turn, covering adjacent
+battlefield enemies/allies respectively. Regenerate heals living battlefield/green
+bishops on their owner's end turn, even without acting. Hop crosses multiple enemies and
+open panel gateways. Call covers battlefield/green, with both 1 immediate enemy HP damage
+and -1 ATK for the full turn. Warcry permits shieldman counters; Deflect alone does not.
+Rook Bog includes counters and applies after the exchange. All required unit-kit questions are answered.
+
+Vet 1 config and runtime edits are implemented. The new shared `veterancy` field
+contains first-star additive stats and replacement attack/healing profiles; both validators
+reject malformed present values and permit omission in old configs. `unit-stats.ts` and
+`unit_stats.py` resolve those numbers without unit-id branches. HP promotion uses the
+recorded rank to raise current/max once; reserve HP projection and wound records carry
+the same rank. All eight passives and Vet 3 actives are implemented in solo. The Unit
+panel shows the actual unit passive and active instead of placeholder Dash/path slots.
+`unit-combat.ts` shares exchange and Taunt rules across the board, room and local engine;
+`unit-control.ts` reconstructs temporary control without losing original ownership.
+Cast recipient actions and ordinary actions have separate allowances. Panel movement
+caps stay per physical panel; Rapid Movement supports post-attack withdrawals while
+retaining both combatants' HP and the normal UP awards. Config-sync and Ponytail full
+were applied to this task. The owner answered the five outstanding
+questions: Cast deaths count against the caster and eligible capture follows control;
+any reachable taunting shieldman may be chosen; rook Bog applies once after each exchange;
+ATK buffs/drains modify archer Counter. The owner confirmed Bog has no stack cap.
+The owner clarified "bog only lasts 1 full turn", superseding the earlier next-two-enemy-turns
+duration. Each exchange adds one stack after damage and counters; later exchanges may stack again.
+The implementation retains fixed recipients, caster expiry, staged actions, Undo, reload
+and history-derived UP. Do not begin the deferred server ability system or CP path work from
+this request.
 
 Phase 3 postmatch heals living battlefield/reserve units already at vet 3 before its award;
 a unit newly promoted to three stars keeps its HP. Both engines persist the heal, including
@@ -255,7 +347,7 @@ cd client && cmd.exe /c "npx ng build"   # must be clean, with no budget warning
 ## Open items
 
 **Owner acceptance and agent verification are separate.** Recent dev22 work in PUNCHLIST
-6.57-6.69 and 6.71-6.78 remain WRITTEN, not SEEN. Agents have driven running browsers with mouse and emulated
+6.57-6.69 and 6.71-6.80 remain WRITTEN, not SEEN. Agents have driven running browsers with mouse and emulated
 touch, and the evidence is recorded there; that does not claim a physical-phone playtest or
 owner acceptance. Nothing moves to SEEN except by the owner saying so.
 

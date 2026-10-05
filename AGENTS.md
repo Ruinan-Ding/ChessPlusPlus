@@ -119,6 +119,11 @@ say `additionalProperties: false` on `rules`, but nothing loads the schema at ru
 `phases.ts` / `phases.py`) is still code, for that reason: it is read by functions that take
 only a ply, and making it per-room means handing them the room's schedule.
 
+**Combat ring eligibility is mirrored.** `canAttack` / `can_attack` checks the attack
+at the requested ring, so a positive tier elsewhere cannot arm a zero tier. Both suites
+consume the hand-written `combat-parity.json` cases, including minimum-range blind spots,
+scalar attacks and healing profiles.
+
 **The scoring rules are mirrored too, and a test holds the two copies together.** The capture
 zones, the phase bank, deaths, the endings, the CP award, UP transactions and halftime
 snapshots, the points the schedule pays and the overtime conversion are written in `match-score.ts` / `hex-rules.ts` / `phases.ts` and again in
@@ -332,9 +337,104 @@ Decided so far:
     the unit's committed battlefield location until its crossing is recorded, so its earned
     stars stay visible before End Turn as well as after it. Both engines carry `vet`
     in battlefield cells; panel occupancy derives it from the same record. No XP tally or
-    random placeholder ranks. Existing ability rank gates read these earned stars; the
-    placeholder third-star bonus numbers remain display-only, and server abilities stay
+    random placeholder ranks. First-star stat changes are applied by `unitStats` /
+    `unit_stats` from the shared config; the old display-only third-star bonus table is
+    removed. Unit passives and Vet 3 abilities run in solo; online abilities remain
     deferred (PUNCHLIST 6.15).
+- **Unit veterancy kits, specified 4 Oct and implemented 5 Oct 2026 (PUNCHLIST 6.79).** The
+  owner: *"vet1 unlocks a stat boost. vet 2 unlocks the passive, vet 3 unlocks the unit ability
+  which uses UP"*. These unlocks add to the earned-star schedule above; they do not replace
+  it or grant stars for actions. "Pond" means the existing pawn. First-star stat changes
+  are implemented in both engines, movement, combat, healing, forecasts and the Unit panel.
+  Wounded units gain current/max HP once, and panel wound records retain the promoted rank.
+  Panel metadata replays in history order: an earlier wound cannot overwrite a later
+  withdrawal’s rank or maximum HP, while damage recorded after withdrawal still applies.
+  All eight Vet 2 passives and Vet 3 UP abilities are implemented in solo. New games use
+  their own configured kits; older saved catalogues retain their legacy abilities.
+  Server ability execution remains deferred under 6.15.
+
+  | Unit | Vet 1 stat change | Vet 2 passive | Vet 3 unit ability |
+  |---|---|---|---|
+  | Pawn | +2 HP, +2 ATK, +2 DEF | **Rapid Movement:** use remaining MOV after attacking | **Sacrifice:** remove the pawn, +1 ATK/DEF/MOV for one full turn and immediately heal 1 HP to friendly battlefield and green-reserve units, gain 8 UP, count the pawn's death against its side; cost 3 UP, cooldown 5 |
+  | Archer | +2 MOV | **Counter:** counter only at range 1 for 2 damage or range 2 for 1 damage | **Bog:** its attack applies -4 MOV to the enemy; cost 3 UP, cooldown 3 (supersedes the duplicated Vet 2 Counter wording) |
+  | Shieldman | +2 DEF, +2 HP | **Deflect:** attack for 4 ATK before DEF; Deflect alone cannot counter, but Warcry still permits counters | **Taunt:** attacking stays optional, but an attack must target a reachable taunting shieldman; cost 1 UP, cooldown 1 |
+  | Rook | +2 DEF, +2 ATK | **Bog:** after an exchange in which an enemy attacks the rook or the rook attacks/counters, reduce that enemy's ATK and DEF by 1 for one full turn; stacks on subsequent exchanges without a cap | **Cleave:** when attacking, damage every adjacent enemy around the rook with its normal ATK against each DEF; only the directly attacked unit counters; cost 5 UP, cooldown 5 |
+  | Knight | +2 ATK, +2 HP | **Hop:** pass through multiple consecutive enemies, paying one MOV per hex, ending on an empty hex; an open panel crossing may also be traversed despite enemy blockers | **Charge:** a second strike only after an actual counter, if the knight survived; no counter to the second strike; cost 5 UP, cooldown 5 |
+  | Bishop | Heal 6 at range 2 | **Regenerate:** every living Vet 2+ bishop on the battlefield or green reserve fully heals at the end of its owner's turn, even if it did not act | **Cast:** control a selected adjacent enemy, immediately end the bishop's action and grant the controlled unit an extra move/attack; cost 10 UP, cooldown 5 |
+  | Queen | +1 MOV, +2 HP | **Intimidate:** adjacent battlefield enemies lose 1 ATK, 1 DEF and 1 MOV at the owner's turn start, until that owner's next turn | **Nullify:** disable the attacked enemy's counter; cost 3 UP, cooldown 1 |
+  | King | Deal 20 damage at range 2, +2 MOV | **Persuade:** adjacent battlefield allies gain 1 MOV, 1 DEF and 1 ATK at the owner's turn start, until that owner's next turn | **Call:** heal friendly battlefield/green-reserve units by 2 and give them +2 DEF; enemy battlefield/green-reserve units take 1 immediate HP damage and -2 DEF/-1 ATK for the full turn; cost 5 UP, cooldown 5 |
+
+  **Cast clarifications confirmed:** the owner answered *"Yes, it acts immediately as an
+  extra unit"*, *"Through the opponent's next turn; returns at my next turn"*, and
+  *"Yes, kings can be controlled"*. Cast is an explicit exception to the usual battlefield
+  action allowance. The controlled unit can receive the caster's buffs. Its original side
+  cannot drive it during its next turn but may attack or debuff it. A controlled unit's
+  death counts as an attrition loss against the caster, confirmed by *"1 costs at the
+  caster"*. It captures and neutralizes for the caster if its normal zone permissions
+  allow it. Cast targets may be on the battlefield or green reserve; red-base
+  targets are excluded, confirmed by *"battlefiend and reserve green panel"*. A controlled
+  unit may withdraw into the caster's red base when the normal door is open, confirmed by
+  *"Allow it to walk into the caster's base"*. The owner clarified: *"it refunds to opponent
+  if the door is open. they still cant move it as its under control for one whole turn.
+  then its theirs to move. it functions just as it does in any other way"*. The normal
+  UP refund goes to the unit's original owner. It stays where it withdrew and remains
+  controlled until the caster's next turn starts, then its original owner may move it.
+  After control expires, a postmatch withdrawal follows normal deployment plus pass
+  behavior. The retained original-owner marker does not grant an extra action or hold
+  the turn open; only an active Cast recipient’s immediate extra action does.
+  **Controlling a king alone does not win; if it dies, its
+  original owner loses.** The owner: *"Yes, its original owner still loses when it dies"*.
+  Keep ownership separate from control so commander detection and death attribution follow
+  those rules; changing a cell's colour alone is insufficient.
+
+  **HP and combat clarifications:** Vet 1 HP raises current and maximum together: the owner
+  chose *"Increase current and max HP: 7/14"* for a wounded pawn at 5/12. Archer Counter and
+  Shieldman Deflect amounts are *"ATK before DEF, using normal damage rules"*. The owner
+  named archer's active: *"vet 2 passive was called counter and vet 3 ability is called bog,
+  and only when it attacks"*. Taunt/Call prices: *"1UP 1CD for shieldman, 5UP 5CD for call"*.
+  Sacrifice lasts *"1 turn, green as well"*, clarified as friendly battlefield/green
+  recipients and an immediate +1 HP heal; red bases are excluded. Cleave hits *"Adjacent
+  enemies around the rook"* with *"the same atk that rook does"*. Charge is *"Second strike
+  only after an actual counter; no second counter"*. Bog lasts one full turn, replacing
+  the earlier next-two-enemy-turns answer. Intimidate/Persuade use their owner's turn start and battlefield
+  scope. Regenerate includes green reserve. Hop: *"if panel is open it can cross it, and it
+  hops multiple enemies"*. Call's enemy effects: *"deal 1h imeediately bf and green, also
+  -1 atk ful turn"*, both immediate damage and a temporary ATK reduction.
+
+  Shieldman counter clarification: *"Warcry still permits counters; its unbuffed Deflect
+  attack cannot counter"*. Rook Bog: *"Both normal attacks and counters; apply after the
+  exchange"*. On 5 Oct the owner confirmed: an attacker may choose any reachable taunting
+  shieldman, with reach checked after moving; Bog applies one stack per exchange, after
+  its damage and counter resolve, and a later exchange can add another stack; ATK buffs
+  and drains modify archer Counter's range-1/range-2 profile. The owner then confirmed
+  *"there should be no cap"*: every later qualifying exchange can add another stack.
+  Attacks and counters qualify, but one exchange still adds only one stack after its
+  damage resolves. The owner clarified *"bog only lasts 1 full turn"*, replacing
+  the earlier duration: each stack lasts the triggering turn plus the following
+  opponent turn and expires at the next turn of the side whose action triggered it.
+  **Implementation:** `unit-stats.ts` resolves rank-gated passive profiles; `unit-combat.ts`
+  shares Charge, Nullify and Taunt rules between forecasts, staging and local commits.
+  Fixed recipients, per-uid cooldowns, whole-cast Undo and solo reload retain the existing
+  ability history model. `unit-control.ts` separates current control from original ownership,
+  including king defeat, control expiry and original-owner withdrawal refunds. Cast ends
+  the bishop's action and grants only its recipient an extra action. Movement caps remain
+  per physical panel when control gives a side units in another panel. Rapid Movement folds
+  its remaining walk into the attack record, including a walk home with post-counter HP;
+  `panelDefender` retains the defender separately if that attack landed in a panel.
+  Intervening casts resolve after combat and before the remaining walk, so Strike can
+  free its destination. The action and all its casts commit atomically; a refused walk
+  keeps none. The solo message carries this middle list as `effectsAfterAttack`.
+  Both scoring mirrors retain the UP cast/refund and ability-death records; this adds no
+  server casting route. Vet 1 stats run in both engines; Vet 2/3 effects run only in solo.
+  Initial kit verification: all 702 client specs, 356 server tests, 374 scoring parity
+  cases, production build and
+  migration consistency check pass. Real Chrome checks: 78 for Vet 1, 120 for Vet 2,
+  240 for Vet 3 and 32 final control/withdrawal cases, across both seats and desktop,
+  tablet or phone as recorded in CODEX_HANDOFF.md. All 351 layout checks pass. Forty
+  deliberate rule regressions were caught and restored byte-for-byte. Review follow-up
+  (6.80): 708 client specs, 358 server tests, 23 shared combat-ring cases, clean production
+  build and migration check; 68 additional desktop/touch Chrome assertions and nine
+  deliberate regressions. No new template or stylesheet changes. Not yet SEEN.
 - **Four reserve planes flank the battlefield** — two per player. They are drawn as *hexes in
   the same grid*, filling the hexagon's bounding square so the whole play area is one square of
   hexagons. They are not part of the battlefield: units there are out of play, and
@@ -2686,7 +2786,8 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
     **with its own caster**, and `beginTurnFor()` counts each down on its own caster's turn and
     re-sums what is left (`summed()`). It used to drop the unit's whole list on whichever side
     had cast *first*, so a unit carrying one side's boost and the other's drain lost both at
-    the wrong time.
+    the wrong time. Rank-gated Bog, adjacent auras and Cast derive absolute expiry
+    from this configured duration too; one caster turn is two plies.
   - `uses` - casts a match allows (`usesLeft()`, `spendUse()`, `abilityUses`), counted per
     side for a panel's ability and per unit for a unit's own; no limit when unset, except a
     path's ultimate, which is once. It replaced `myUltimateUsed`, which only the universal cast
@@ -2701,22 +2802,18 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
     `points` on a friendly ability, `heal` or `points` on an enemy one, stats, `damage`, `heal`
     or `turns` on a points-only universal one, HP or points on an army debuff, anything but
     stats on a passive, `turns` on one that changes no stat. Cleave's `points: 5` used to pay nobody, silently.
-- **A unit type's own ability** is `units.<id>.ability`, a **friendly** catalogue id cast on
-  the unit itself from the Unit panel (both validators refuse any other kind, and a passive).
-  It is the unit's: nothing has to be picked for it, its cooldown is per unit
-  (`unitCooldowns` by uid, ticked on its own side's turns) and so are its `uses`, and in a
-  solo game either side's units use theirs on that side's turn, from that side's purse
-  (`sideOfUnit()`). A unit type with none shows **No ability**. It used to be the pool's first
-  slot for every unit, usable only by the seat's own side, only once that pair was picked, on
-  a cooldown every unit shared. The shipped config gives every unit Dash - what that first
-  slot was - for the owner to replace.
+- **A unit type's own ability** is `units.<id>.ability`, a catalogue id used from the
+  Unit panel. Shipped unit actives unlock at Vet 3 and spend UP; their cooldown is per
+  uid and follows the current controller's turns. Cast arms an adjacent enemy target;
+  the other seven activate on their caster. Unit passives are separate `units.<id>.passive`
+  references and unlock at Vet 2. Older saved unit Dash entries remain compatible.
 - **Six slots**: four actives, then the passive (`isPassive()` — index 4) and the ultimate
   (`isUltimate()` — index 5) on their own bottom row. The passive is always on, never cast, no
   cost and no cooldown; the ultimate costs more and is once per game unless its `uses` says
   otherwise.
-- **The passive is earned**: ★2 (`vetNeeded()`), read off the displayed unit's veterancy. The
-  actives are not gated - `vetNeeded()` returns 0 for them, and `abilityHint()` leaves the
-  requirement clause out entirely rather than printing an empty one.
+- **Rank gates:** specified unit passives unlock at Vet 2 and UP actives at Vet 3.
+  Older unit Dash entries keep their legacy Vet 2 gate; CP path passives keep their
+  legacy Vet 1 gate. Pool casts have no rank requirement. Server effects remain deferred.
 - **Casting is click-then-target.** `selectAbility()` arms the slot rather than firing it; the
   next unit clicked on the board receives it, before normal healing or attacking can take
   that click. A friendly-target ability buffs, an enemy-target
@@ -2726,7 +2823,7 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
 - **Rally remains in the catalogue for older/custom testing configs, outside the shipped pool**: it costs **0** and
   hands out **300 regular points**, for pool-ability testing. It does not grant CP or UP. Leave it alone unless the owner asks;
   The specified first pool replaces its old slot with Strike.
-- **Abilities use points or CP; units use UP**, with ability costs split by type (`isPathSlot()`, asked of `abilityPaths`
+- **Pool abilities use points, paths use CP, and unit actives use UP**, with ability costs split by type (`isPathSlot()`, asked of `abilityPaths`
   rather than of the slot number, so moving a path's slots cannot quietly change what they
   cost):
   - **CP** buys the *special* abilities - the three paths and everything inside them: passive,
@@ -2749,8 +2846,8 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
       same. A late phase still awards.
     - The server has the formula but spends nothing yet - abilities are solo (6.15) - so the
       Python copy is kept in step for when they are not.
-  - **Points** buy the eight-ability pool. **UP** pays the wrap and receives homecoming
-    refunds and battlefield attack/counter kill rewards. A side banks regular points **at the start of
+  - **Points** buy the eight-ability pool. **UP** pays unit actives and the wrap, and receives homecoming
+    refunds, Sacrifice income and battlefield attack/counter kill rewards. A side banks regular points **at the start of
     each of its own turns, at a rate that steps up at each phase's halftime**: 1 a turn to
     turn 19, **2 from Phase 2's halftime (turn 20), 3 from Phase 3's (turn 31)**, and
     **nothing in overtime** (`turnPointsBy()`, off `POINT_RATES`, which reads
@@ -2990,7 +3087,7 @@ formats them, so stat calculations never parse presentation text.
 
   Later on 4 Oct the owner raised pawn ATK, DEF and cost to 8, and bishop HEL to 8; those newer values are in the table.
 
-  Archer cannot strike or counter at rings 1-2. An unboosted shieldman cannot strike or counter; Warcry gives it range-1 attacks and counters. Bishop's healing action retains its targeting, max-HP cap and zero CP cost, now at ring 1 only. ATK is before defence; the existing minimum damage rule still applies. No stat growth or ability effects are implied by this roster.
+  Archer normal attacks start at ring 3; its Vet 2 Counter covers rings 1-2 in solo. Before Vet 2, an unboosted shieldman cannot strike or counter; Warcry gives it range-1 attacks and counters. Bishop's base healing action retains its targeting, max-HP cap and zero CP cost at ring 1; Vet 1 adds healing 6 at ring 2. ATK is before defence; the existing minimum damage rule still applies. First-star growth is listed in the unit veterancy kits above; higher-rank passives and actives are implemented in solo as described there.
 
 - **The roster is the six chess-piece names plus two the owner asked for**: an
   **Archer** (`A`, bow-and-arrow glyph - value 8, hp 6, atk 4/3/2/1 at rings 3-6, def 4, move 6) and a

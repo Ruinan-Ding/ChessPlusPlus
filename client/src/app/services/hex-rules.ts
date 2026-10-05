@@ -13,7 +13,9 @@
  * will disagree with the server about what a unit may do.
  */
 
-export type BoardLike = Record<string, { unit_id: string; color: string } | undefined>;
+import { combatStats, unitPassive, unitStats } from './unit-stats';
+
+export type BoardLike = Record<string, { unit_id: string; color: string; vet?: number } | undefined>;
 
 export const HEX_DIRS: [number, number][] = [
   [+1, 0], [-1, 0], [+1, -1], [0, -1], [0, 1], [-1, 1],
@@ -118,11 +120,13 @@ export function computeMoveCosts(
    *  on - a unit's own. The crossings need these: a friend standing on a
    *  gateway or a wrap tip is walked past, not walked into. */
   passable?: Map<string, number>,
+  kits = true,
 ): Map<string, number> {
   const costs = new Map<string, number>();
   const piece = boardState[`${sq},${sr}`];
   if (!piece) return costs;
-  const unitDef = config?.units?.[piece.unit_id];
+  const unitDef = unitStats(piece.unit_id, config, piece.vet);
+  const hop = kits && unitPassive(piece.unit_id, config, piece.vet)?.effect === 'hop';
   const moveRange: number = movesLeft ?? unitDef?.move ?? 0;
   if (moveRange <= 0) return costs;
 
@@ -142,7 +146,7 @@ export function computeMoveCosts(
         // not somewhere to stop, so it never limits the reach beyond it. An
         // enemy still blocks both the hex and the way past it.
         const blocker = boardState[key];
-        if (blocker && blocker.color !== piece.color) continue;
+        if (blocker && blocker.color !== piece.color && !hop) continue;
         if (blocker) passable?.set(key, step);
         else costs.set(key, step);
         nextFrontier.push([nq, nr]);
@@ -214,8 +218,7 @@ export function computeAttackZone(
 /** Whether a unit has an attack at this distance, counters included. */
 export function canAttack(unit: any, distance: number, atkBonus = 0): boolean {
   const attack = unit?.attack ?? 1;
-  const armed = Array.isArray(attack)
-    ? attack.some(value => value + atkBonus > 0) : attack + atkBonus > 0;
+  const armed = (Array.isArray(attack) ? attack[distance - (unit?.attackMinRange ?? 1)] ?? 0 : attack) + atkBonus > 0;
   return armed && !unit?.heal?.length
     && distance >= (unit?.attackMinRange ?? 1) && distance <= (unit?.attackRange ?? 1);
 }
@@ -232,16 +235,16 @@ export function rangedDamage(attack: number | number[], distance: number, config
 
 /** Exact healing at this ring, capped to missing HP; mirrors resolve_heal. */
 export function healingAmount(unitId: string, target: { unit_id: string; hp: number; max_hp?: number },
-                              distance: number, config: any): number {
-  const amount = config?.units?.[unitId]?.heal?.[distance - 1] ?? 0;
+                              distance: number, config: any, vet = 0): number {
+  const amount = unitStats(unitId, config, vet).heal?.[distance - 1] ?? 0;
   const max = target.max_hp ?? config?.units?.[target.unit_id]?.hp ?? 0;
   return Math.max(0, Math.min(amount, max - target.hp));
 }
 
 /** Attack amounts from attackMinRange through attackRange, in ring order. */
-export function attackTiers(unitId: string, config: any): number[] {
-  const unit = config?.units?.[unitId];
-  if (!unit) return [];
+export function attackTiers(unitId: string, config: any, vet = 0, kits = true): number[] {
+  const unit = combatStats(unitId, config, vet, false, kits);
+  if (!config?.units?.[unitId]) return [];
   const attack: number | number[] = unit.attack ?? 0;
   const range: number = Math.max(1, unit.attackRange ?? 1);
   const tiers: number[] = [];
@@ -445,11 +448,11 @@ export const MIN_STRIKE_DAMAGE = 1;
  */
 export function strikeDamage(
   attackerId: string, defenderId: string, distance: number, config: any,
-  atkBonus = 0, defBonus = 0,
+  atkBonus = 0, defBonus = 0, attackerVet = 0, defenderVet = 0, counter = false, kits = true,
 ): number {
-  const attacker = config?.units?.[attackerId] ?? {};
+  const attacker = combatStats(attackerId, config, attackerVet, counter, kits);
   if (!canAttack(attacker, distance, atkBonus)) return 0;
-  const defender = config?.units?.[defenderId] ?? {};
+  const defender = unitStats(defenderId, config, defenderVet);
   const base = rangedDamage(attacker.attack ?? 1, distance, config, attacker.attackMinRange ?? 1);
   const attack = base + atkBonus;
   if (attack <= 0) return 0;

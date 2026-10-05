@@ -157,6 +157,69 @@
               ]
             },
             "description": "Zones this unit can capture or neutralize: home is its own 3x zone, enemy the opposing 3x zone, middle the 2x zone, side either 1x zone. Empty means none; omitted means unrestricted for older configs. Permissions also determine which enemies can prevent full-zone control from the centre."
+          },
+          "veterancy": {
+            "type": "object",
+            "description": "Permanent stats unlocked at vet 1. hp, move, defense and scalar attack are additive; an attack list replaces the base profile. attackRange, attackMinRange and heal replace the corresponding base field. Current and maximum HP each rise by hp once, without reviving dead units. Omitted means no first-star stat change.",
+            "properties": {
+              "hp": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "move": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "defense": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "attack": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                ],
+                "description": "Scalar adds to every attack tier; a list replaces the profile at vet 1."
+              },
+              "attackRange": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "description": "Outermost ring this unit can strike, by hex distance and ignoring obstacles. Scalar attack falls off by rules.rangeFalloff per ring beyond 1; a list gives each supported ring its own attack. Omitted means 1."
+              },
+              "attackMinRange": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "description": "Innermost ring this unit can strike or counterattack. Must not exceed attackRange. Omitted means 1. An attack list starts at this ring."
+              },
+              "heal": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "description": "Healing amount at distances 1 through the number of entries. Replaces this unit’s attack action: heal one other friendly battlefield unit, optionally after moving, capped at its max HP, with no CP cost. At most four adjacent hex rings. Omitted means this unit has no healing action."
+              }
+            },
+            "additionalProperties": false
+          },
+          "passive": {
+            "type": "string",
+            "description": "Catalogue id of the unit passive unlocked at Vet 2. Omitted means none. Unit passives currently execute in solo play."
           }
         },
         "additionalProperties": false
@@ -251,7 +314,7 @@
               "cost": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "What a cast costs: points for a pool or a unit's ability, CP for a path's."
+                "description": "Cast cost: points for the pool and legacy unit abilities, UP for Vet 3 unit effects, CP for paths."
               },
               "cooldown": {
                 "type": "integer",
@@ -295,9 +358,95 @@
               "testing": {
                 "type": "boolean",
                 "description": "A testing lever, not a balanced ability. Kept out of networked play: Rally hands out 300 points, which would break the wrap's price."
+              },
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "counter",
+                  "hop",
+                  "deflect",
+                  "on-hit-drain",
+                  "regenerate",
+                  "intimidate",
+                  "persuade",
+                  "rapid-movement",
+                  "sacrifice",
+                  "attack-drain",
+                  "taunt",
+                  "cleave",
+                  "charge",
+                  "control",
+                  "nullify",
+                  "call"
+                ],
+                "description": "Hardcoded unit passive or Vet 3 active. Omitted keeps existing pool and path behavior. Unit effects currently execute in solo play."
+              },
+              "counterAttack": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "description": "Counter ATK by distance, starting at ring 1, before DEF and ability modifiers."
+              },
+              "up": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "UP granted by Sacrifice, independently of its UP cost."
+              },
+              "enemyDamage": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Immediate enemy HP damage from Call."
+              },
+              "enemyAtk": {
+                "type": "integer",
+                "description": "Enemy ATK change from Call for one full turn."
+              },
+              "enemyDef": {
+                "type": "integer",
+                "description": "Enemy DEF change from Call for one full turn."
               }
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "effect"
+                  ],
+                  "properties": {
+                    "effect": {
+                      "const": "counter"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "counterAttack"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "effect"
+                  ],
+                  "properties": {
+                    "effect": {
+                      "const": "deflect"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "atk"
+                  ]
+                }
+              }
+            ]
           }
         }
       },

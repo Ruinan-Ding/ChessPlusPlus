@@ -1,11 +1,18 @@
 import {
-  ZONE_WORTH, attackTiers, captureClaims, captureScore, captureZoneHexes, captureZoneValues,
+  ZONE_WORTH, canAttack, attackTiers, captureClaims, captureScore, captureZoneHexes, captureZoneValues,
   computeAttackZone, computeLegalMoves, computeMoveCosts, inHomeRows, strikeDamage, HOME_ROWS,
   MIN_STRIKE_DAMAGE,
 } from './hex-rules';
 import { DEFAULT_GAME_CONFIG } from './config.service';
+import combatParity from './combat-parity.json';
 
 describe('configured unit stats', () => {
+  it('agrees with the server on attack eligibility at every ring, including zero tiers and blind spots', () => {
+    for (const test of combatParity) {
+      expect(canAttack(test.unit, test.distance)).withContext(JSON.stringify(test)).toBe(test.canAttack);
+    }
+  });
+
   const config: any = DEFAULT_GAME_CONFIG;
   const radius = config.board.radius;
   const distance = (q: number, r: number) => Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
