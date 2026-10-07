@@ -1,4 +1,4 @@
-import { parseUsernameInput } from './username';
+import { parseUsernameInput, randomUsername } from './username';
 
 describe('parseUsernameInput', () => {
   it('accepts a single #key after an ASCII name, with independent limits', () => {
@@ -15,5 +15,19 @@ describe('parseUsernameInput', () => {
       expect(parseUsernameInput(`${name}#${key}`)).toEqual({ username: name, tripcodeKey: key });
     }
     expect(parseUsernameInput(`${name}#${'😀'.repeat(129)}`)).toBeNull();
+  });
+});
+
+describe('randomUsername', () => {
+  it('skips occupied candidates regardless of case and stays within the name rules', () => {
+    let attempt = 0;
+    const random = spyOn(crypto, 'getRandomValues').and.callFake(((values: Uint32Array) => {
+      values.set([0, attempt++]);
+      return values;
+    }) as any);
+    const name = randomUsername(['PLAYER0000000000000000']);
+    expect(name).toBe('Player0000000000000001');
+    expect(random).toHaveBeenCalledTimes(2);
+    expect(parseUsernameInput(name)).toEqual({ username: name, tripcodeKey: '' });
   });
 });

@@ -1,6 +1,6 @@
 import {
   boardMovesAt, homecomingsAt, lockedPanelUnits,
-  openingMovedHexes, panelMoverAllowed, panelMoversAt,
+  openingMovedHexes, panelMoverAllowed, panelMoversAt, unitVeterancy, promotionHeals,
 } from './history-rules';
 import { ruleOf } from './config.service';
 
@@ -249,5 +249,97 @@ describe('boardMovesAt', () => {
     // Ply 27 is turn 14, Phase 1’s postmatch.
     const setup = [move({ withdrawn: true, turn: 27 })] as any[];
     expect(boardMovesAt(setup, 27, 'white')).toBe(0);
+  });
+});
+
+
+describe('phase awards and Strengthen veterancy', () => {
+  const rank = (at: string, ply: number, history: any[] = [], orientation = 'edge-up') =>
+    unitVeterancy('v', at, history, ply, 11, orientation);
+  const step = (turn: number, from: string, to: string, flags: any = {}) => ({
+    turn, from, to, unit: { uid: 'v' }, panelMove: true, ...flags,
+  });
+
+  it('retains Strengthen stars across reload and future awards without awarding a second star for the same boundary', () => {
+    const history: any[] = [{ turn: 9, promotion: { uid: 'v', vet: 2 } }];
+    expect(rank('0,0', 8, history)).toBe(1);
+    expect(rank('0,0', 9, history)).toBe(2);
+    expect(rank('0,0', 27, JSON.parse(JSON.stringify(history)))).toBe(3);
+    expect(rank('0,0', 71, history)).toBe(3);
+    expect(rank('-12,1', 71, history)).toBe(2);
+  });
+
+  it('awards both sides only at Phase 1 and postmatch starts, capped at three', () => {
+    for (const at of ['0,0', '11,1', '-11,-1']) {
+      for (const [ply, vet] of [[1, 0], [6, 0], [7, 1], [8, 1], [17, 1], [26, 1],
+        [27, 2], [28, 2], [29, 2], [48, 2], [49, 3], [50, 3], [51, 3], [71, 3], [73, 3], [99, 3]]) {
+        expect(rank(at, ply)).withContext(`${at} at ${ply}`).toBe(vet);
+      }
+    }
+    for (const at of ['-12,1', '12,-1']) expect(rank(at, 99)).toBe(0);
+  });
+
+  it('counts location at the award, not current location or the source panel label', () => {
+    const history = [step(8, '-12,1', '11,1', { panel: 'bl' }),
+      step(27, '11,1', '3,8', { panelMove: false, entered: true })];
+    expect(rank('3,8', 27, history)).toBe(1);
+    expect(rank('3,8', 28, history)).toBe(1); // black's half grants nothing extra
+    expect(rank('0,0', 49, history)).toBe(2); // ordinary board walks keep stars
+    expect(rank('0,0', 71, JSON.parse(JSON.stringify(history)))).toBe(3);
+  });
+
+  it('awards before deployments made during the boundary ply', () => {
+    const history = [step(7, '-12,1', '11,1')];
+    expect(rank('11,1', 7, history)).toBe(0);
+    expect(rank('11,1', 8, history)).toBe(0);
+    expect(rank('11,1', 27, history)).toBe(1);
+  });
+
+  it('keeps earned stars in a base, earns none there, and resumes in reserve', () => {
+    const history = [step(28, '3,8', '-12,9', { panelMove: false, withdrawn: true }),
+      step(50, '-12,9', '11,1')];
+    expect(rank('-12,9', 49, history.slice(0, 1))).toBe(2);
+    expect(rank('11,1', 50, history)).toBe(2);
+    expect(rank('11,1', 71, history)).toBe(3);
+  });
+
+  it('ignores combat and other units, and respects either board orientation', () => {
+    const history = [{ turn: 6, attacked: true, damage_dealt: 99, captured: 'pawn' },
+      step(6, '11,1', '-12,1', { unit: { uid: 'other' } })];
+    expect(rank('0,0', 6, history)).toBe(0);
+    expect(rank('0,0', 27, history)).toBe(2);
+    expect(rank('-6,12', 7, [], 'edge-up')).toBe(1);
+    expect(rank('-6,12', 7, [], 'vertex-up')).toBe(0);
+  });
+});
+
+
+describe('Phase 3 promotion healing', () => {
+  const config = { board: { radius: 11, orientation: 'edge-up' }, units: { pawn: { hp: 12 } } };
+  const unit = (uid: string, color = 'white', hp = 1) => ({ uid, color, unit_id: 'pawn', hp, max_hp: 12 });
+  const wound = (uid: string, at: string, panel: string, hp = 1) => ({
+    turn: 60, from: '', to: '', intoPanel: true, panelEffect: true,
+    unit: unit(uid), attackedHex: at, panel, defenderHp: hp,
+  });
+
+  it('fully heals only living field and reserve units already at vet 3 before the award', () => {
+    const board: any = { '0,0': unit('early'), '1,0': unit('black', 'black'),
+      '2,0': unit('late'), '3,0': unit('dead', 'white', 0) };
+    const history: any[] = [{ turn: 8, from: '-12,1', to: '2,0', entered: true, unit: unit('late') },
+      wound('reserve', '11,1', 'br'), wound('base', '-12,1', 'bl'),
+      wound('lost', '11,2', 'br', 0),
+      { turn: 8, from: '-12,2', to: '12,1', panelMove: true, unit: unit('newReserve') },
+      wound('newReserve', '12,1', 'br')];
+    expect(promotionHeals(config, board, history, 70)).toEqual([]);
+    expect(board['0,0'].hp).toBe(1);
+    const effects = promotionHeals(config, board, history, 71);
+    expect(board['0,0'].hp).toBe(12);
+    expect(board['1,0'].hp).toBe(12);
+    expect(board['2,0'].hp).toBe(1);
+    expect(board['3,0'].hp).toBe(0);
+    expect(effects.map(e => e.unit.uid)).toEqual(['reserve']);
+    expect(effects[0].defenderHp).toBe(12);
+    expect(effects[0].promotionHeal).toBeTrue();
+    expect(promotionHeals(config, board, [...history, ...effects], 72)).toEqual([]);
   });
 });

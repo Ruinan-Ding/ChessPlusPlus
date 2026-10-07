@@ -1,22 +1,22 @@
-"""The schedule's two endings, played out between real sockets against a running server.
+"""Schedule endings between real sockets against a running server.
 
     DJANGO_DEBUG=true venv/Scripts/daphne.exe core.asgi:application     # from server/
     venv/Scripts/python.exe scripts/e2e/endings.py                       # in a second shell
 
-The unit tests reach turn 50 by winding a stored game forward. Here every one of
-the hundred plies is played: two matches, start to finish.
+The ASGI integration tests also play complete matches. These four matches use
+real network sockets, starting with the shipped setup:
 
-* **Turn 50.** Both sides pass every turn. Each phase banks 0-0 on the
-  hand-over into its postmatch - the deal claims no capture hex - so Phase 3
-  settles nothing and the match runs into overtime, where the toll takes 28
-  off each king (8 x 1, 5 x 3, 1 x 5) and leaves both standing: black's.
-  A player drops and rejoins partway, and gets the bank back with the state.
-* **Points.** White steps one unit into a capture zone on the first turn and
-  both sides pass the rest. It holds 5 hexes of the zone in white's own half,
-  3 a hex, as each phase banks, which the phase's number multiplies - 15, 30,
-  45 - so 90 clear when Phase 3 does, more than the 10 white needs. Phase 3's
-  postmatch is still played, and the match ends as it does, on the hand-over
-  into turn 37.
+* **Turn 50.** Both sides occupy a home-zone outer hex, worth 3 per phase,
+  then pass. Their tied tallies survive the early endings and Phase 3;
+  overtime takes 28 HP from each king and leaves both standing: Black wins.
+  A player rejoins partway and receives the frozen bank.
+* **Points.** White holds a home outer hex worth 3; Black holds a side outer
+  hex worth 1. Phase multipliers make the final lead 12, enough for White.
+  Both Phase 3 postmatch halves still finish before the result.
+* **Phase 1.** White occupies no eligible capture hex at tally. Black wins
+  after both postmatch halves; a reconnect preserves the pending loss.
+* **Phase 2.** White occupies an eligible capture hex, so Phase 1 continues.
+  Black tallies zero VP in Phase 2 and loses after the full postmatch.
 
 Exits non-zero if any check fails.
 """
@@ -35,12 +35,10 @@ BANKS_AT = {27: '1', 49: '2', 71: '3'}
 # each at 25 in 10 seconds.
 PLY_PACE = 0.2
 OVERTIME_PLY = 73
-KING_HP = 45
-# (-4,9) is a white unit on the deal; one step up puts it on the edge of the
-# capture zone round (-3,6), where it holds its own hex and the four zone hexes
-# beside it: (-3,8), (-5,8), (-4,7), (-3,7). That zone is in white's own half,
-# 3 a hex (ZONE_WORTH in scoring.py), so the five are worth 15.
-INTO_ZONE, HOLDS = ('-4,9', '-4,8'), 5 * 3
+# (-4,9) is a white pawn on the deal. One step up puts it on the outer
+# ring of its home capture zone, centred on (-3,6). Outer-ring units score
+# only their occupied hex, worth 3; adjacent hexes can only be neutralized.
+INTO_ZONE, HOLDS = ('-4,9', '-4,8'), 3
 
 
 def seat(label):
@@ -103,12 +101,12 @@ def hand_over(m, ply, send):
     return got, over
 
 
-def play_out(m, first_move=None, rejoin_at=None):
+def play_out(m, first_move=None, second_move=None, rejoin_at=None):
     """Every ply from 1 until the match ends. Returns what each hand-over said."""
     said, over = {}, None
     for ply in range(1, 120):
         time.sleep(PLY_PACE)
-        got, over = hand_over(m, ply, first_move if ply == 1 else None)
+        got, over = hand_over(m, ply, first_move if ply == 1 else second_move if ply == 2 else None)
         if got:
             said[ply + 1] = got
         if over:
@@ -146,28 +144,30 @@ def banks_where_expected(label, said, last, entry_for):
 print(f'\n[turn 50]  E2EFiftyA{tag} / E2EFiftyB{tag}')
 def fifty():
     m = seat('Fifty')
-    said, over, last = play_out(m, rejoin_at=40)
+    king_start_hp = {color: king_hp(m['start']['boardState'], color) for color in ('white', 'black')}
+    said, over, last = play_out(m, first_move={'type': 'make_move', 'from': '-4,9', 'to': '-4,8'},
+                                 second_move={'type': 'make_move', 'from': '4,-9', 'to': '4,-8'}, rejoin_at=40)
     ctx['fifty'] = m
     check('turn 50: the match runs until black passes the last ply, 100', last == 100, last)
-    zero = {'white': 0, 'black': 0}
-    banks_where_expected('turn 50', said, last, lambda phase: zero)
+    tied = {'white': 3, 'black': 3}
+    banks_where_expected('turn 50', said, last, lambda phase: {'white': 3 * phase, 'black': 3 * phase})
     check("turn 50: a close Phase 3 settles nothing - its postmatch hands on to turn 37",
           said.get(73, {}).get('currentTurn') == m['start']['playerWhite'], said.get(73, {}).get('currentTurn'))
     resync = m.get('resync', {})
     check('turn 50: a player who rejoins mid-match gets the bank with the state',
-          resync.get('phaseBank') == {'1': zero} and resync.get('turnNumber') == 41,
+          resync.get('phaseBank') == {'1': tied} and resync.get('turnNumber') == 41,
           {k: resync.get(k) for k in ('phaseBank', 'turnNumber')})
     before_ot = said[OVERTIME_PLY]['boardState']
     check('turn 50: nothing is tolled before overtime',
-          king_hp(before_ot, 'white') == king_hp(before_ot, 'black') == KING_HP,
+          all(king_hp(before_ot, color) == king_start_hp[color] for color in king_start_hp),
           (king_hp(before_ot, 'white'), king_hp(before_ot, 'black')))
     first = said[OVERTIME_PLY + 1]['boardState']
     check("turn 50: overtime's first turn takes 1 off white's king",
-          king_hp(first, 'white') == KING_HP - 1 and king_hp(first, 'black') == KING_HP,
+          king_hp(first, 'white') == king_start_hp['white'] - 1 and king_hp(first, 'black') == king_start_hp['black'],
           (king_hp(first, 'white'), king_hp(first, 'black')))
     last_board = said[100]['boardState']
     check('turn 50: the toll has taken 28 off white and 23 off black before the last ply',
-          king_hp(last_board, 'white') == KING_HP - 28 and king_hp(last_board, 'black') == KING_HP - 23,
+          king_hp(last_board, 'white') == king_start_hp['white'] - 28 and king_hp(last_board, 'black') == king_start_hp['black'] - 23,
           (king_hp(last_board, 'white'), king_hp(last_board, 'black')))
     check('turn 50: both kings standing at the end is black\'s, on overtime',
           over.get('endReason') == 'overtime' and over.get('winner') == m['start']['playerBlack'], over)
@@ -186,26 +186,49 @@ print(f'\n[points]  E2EPointsA{tag} / E2EPointsB{tag}')
 def points():
     m = seat('Points')
     frm, to = INTO_ZONE
-    said, over, last = play_out(m, first_move={'type': 'make_move', 'from': frm, 'to': to})
+    said, over, last = play_out(m, first_move={'type': 'make_move', 'from': frm, 'to': to},
+                                 second_move={'type': 'make_move', 'from': '8,-10', 'to': '7,-2'})
     ctx['points'] = m
     check('points: white steps into the capture zone on the first turn',
           said.get(2, {}).get('type') == 'move_made' and said[2]['boardState'].get(to), said.get(2, {}).get('type'))
     check("points: Phase 3's postmatch is still played",
           said.get(72, {}).get('currentTurn') == m['start']['playerBlack'], said.get(72, {}).get('currentTurn'))
     check('points: the match ends as the postmatch does, on the hand-over into turn 37', last == 72, last)
-    banks_where_expected('points', said, last, lambda phase: {'white': HOLDS * phase, 'black': 0})
-    check(f'points: white, {HOLDS * 6} clear, takes it on points',
+    banks_where_expected('points', said, last, lambda phase: {'white': HOLDS * phase, 'black': phase})
+    check(f'points: white, {(HOLDS - 1) * 6} clear, takes it on points',
           over.get('endReason') == 'points' and over.get('winner') == m['start']['playerWhite'], over)
     m['black'].send({'type': 'request_game_state', 'gameId': m['game']})
     st = m['black'].until(lambda x: x.get('type') in ('game_state_update', 'game_state'), 'game state')
     bank = st.get('phaseBank', {})
     check('points: the finished state holds Phase 3 banked as it ended, none of it late',
-          bank.get('3') == {'white': HOLDS * 3, 'black': 0} and not any(e.get('late') for e in bank.values()),
+          bank.get('3') == {'white': HOLDS * 3, 'black': 3} and not any(e.get('late') for e in bank.values()),
           bank)
 step('points', points)
 
 
-for m in (ctx.get('fifty'), ctx.get('points')):
+for phase, last, loser in [(1, 28, 'white'), (2, 50, 'black')]:
+    def early(phase=phase, last=last, loser=loser):
+        label = f'Phase{phase}'
+        m = seat(label); ctx[label] = m
+        first = {'type': 'make_move', 'from': '-4,9', 'to': '-4,8'} if phase == 2 else None
+        said, over, ended = play_out(m, first_move=first, rejoin_at=last - 1)
+        bank = said[last].get('phaseBank', {}).get(str(phase), {})
+        check(f'{label}: tally freezes the pending loser', bank.get('pendingLoss') == loser, bank)
+        check(f'{label}: first postmatch half hands over to Black',
+              said[last].get('currentTurn') == m['start']['playerBlack'], said[last].get('currentTurn'))
+        check(f'{label}: reconnect preserves the pending result',
+              m.get('resync', {}).get('phaseBank', {}).get(str(phase)) == bank, m.get('resync', {}).get('phaseBank'))
+        check(f'{label}: both postmatch halves finish before the loss', ended == last, ended)
+        check(f'{label}: the other side wins on the phase result',
+              over.get('endReason') == 'phase_result' and over.get('winner') == m['start']['playerBlack' if loser == 'white' else 'playerWhite'], over)
+        m['white'].send({'type': 'request_game_state', 'gameId': m['game']})
+        state = m['white'].type('game_state_update')
+        check(f'{label}: final snapshot retains result and frozen bank',
+              state.get('endReason') == 'phase_result' and state.get('phaseBank', {}).get(str(phase)) == bank, state.get('phaseBank'))
+    step(f'Phase {phase} early ending', early)
+
+
+for m in ctx.values():
     for w in (m or {}).get('lobby', ()) + tuple(m[k] for k in ('white', 'black') if m and k in m):
         w.close()
 print(f'\n{sum(results)}/{len(results)} checks passed')

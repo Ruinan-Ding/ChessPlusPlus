@@ -161,6 +161,7 @@ class GameState(models.Model):
         ('regicide', 'Commander killed'),
         ('elimination', 'All enemy units eliminated'),
         ('points', 'Won on points after Phase 3'),
+        ('phase_result', 'Phase tally loss'),
         ('overtime', 'Overtime ran out; black wins'),
         ('resign', 'Resignation'),
         ('timeout', 'Timeout'),
@@ -239,5 +240,16 @@ class GameDisconnect(models.Model):
         indexes = [
             models.Index(fields=['deadline'], name='game_gamedis_deadline_idx'),
         ]
+
+    objects: Any = models.Manager()
+
+
+class TurnDraft(models.Model):
+    """The current player's uncommitted commands; the server revalidates at commit."""
+    game = models.OneToOneField(GameState, on_delete=models.CASCADE, primary_key=True, related_name='turn_draft')
+    username = models.CharField(max_length=MAX_USERNAME_LENGTH)
+    turn_number = models.PositiveIntegerField()
+    sequence = models.PositiveBigIntegerField()
+    commands = models.JSONField(default=list)
 
     objects: Any = models.Manager()

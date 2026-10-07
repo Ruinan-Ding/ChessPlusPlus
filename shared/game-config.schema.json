@@ -84,7 +84,8 @@
           },
           "value": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Unit worth in UP, also used for phase loss scoring."
           },
           "hp": {
             "type": "integer",
@@ -92,9 +93,22 @@
             "description": "Maximum hit points for this unit type."
           },
           "attack": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Attack damage dealt when this unit initiates combat."
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            ],
+            "description": "Attack before defense. An integer uses rules.rangeFalloff beyond the first ring. A list supplies exact attack for rings attackMinRange through attackRange, ignoring rangeFalloff; it must have one entry per supported ring, at most four."
           },
           "commander": {
             "type": "boolean",
@@ -104,7 +118,13 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 50,
-            "description": "How many rings of adjacency this unit can strike, by hex distance and ignoring obstacles. 1 = the six neighbouring hexes. Beyond the first ring damage falls off by rules.rangeFalloff per extra ring. Omitted means 1."
+            "description": "Outermost ring this unit can strike, by hex distance and ignoring obstacles. Scalar attack falls off by rules.rangeFalloff per ring beyond 1; a list gives each supported ring its own attack. Omitted means 1."
+          },
+          "attackMinRange": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Innermost ring this unit can strike or counterattack. Must not exceed attackRange. Omitted means 1. An attack list starts at this ring."
           },
           "defense": {
             "type": "integer",
@@ -114,6 +134,92 @@
           "ability": {
             "type": "string",
             "description": "Catalogue id of this unit type's own ability, cast from the Unit panel onto the unit itself - so it must be a 'friendly' one. Paid from its side's purse like the same ability anywhere else; its cooldown and uses are the unit's own. Omitted means the unit has none."
+          },
+          "heal": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Healing amount at distances 1 through the number of entries. Replaces this unit’s attack action: heal one other friendly battlefield unit, optionally after moving, capped at its max HP, with no CP cost. At most four adjacent hex rings. Omitted means this unit has no healing action."
+          },
+          "captureZones": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "home",
+                "middle",
+                "side",
+                "enemy"
+              ]
+            },
+            "description": "Zones this unit can capture or neutralize: home is its own 3x zone, enemy the opposing 3x zone, middle the 2x zone, side either 1x zone. Empty means none; omitted means unrestricted for older configs. Permissions also determine which enemies can prevent full-zone control from the centre."
+          },
+          "veterancy": {
+            "type": "object",
+            "description": "Permanent stats unlocked at vet 1. hp, move, defense and scalar attack are additive; an attack list replaces the base profile. attackRange, attackMinRange and heal replace the corresponding base field. Current and maximum HP each rise by hp once, without reviving dead units. Omitted means no first-star stat change.",
+            "properties": {
+              "hp": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "move": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "defense": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "attack": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                ],
+                "description": "Scalar adds to every attack tier; a list replaces the profile at vet 1."
+              },
+              "attackRange": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "description": "Outermost ring this unit can strike, by hex distance and ignoring obstacles. Scalar attack falls off by rules.rangeFalloff per ring beyond 1; a list gives each supported ring its own attack. Omitted means 1."
+              },
+              "attackMinRange": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "description": "Innermost ring this unit can strike or counterattack. Must not exceed attackRange. Omitted means 1. An attack list starts at this ring."
+              },
+              "heal": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "description": "Healing amount at distances 1 through the number of entries. Replaces this unit’s attack action: heal one other friendly battlefield unit, optionally after moving, capped at its max HP, with no CP cost. At most four adjacent hex rings. Omitted means this unit has no healing action."
+              }
+            },
+            "additionalProperties": false
+          },
+          "passive": {
+            "type": "string",
+            "description": "Catalogue id of the unit passive unlocked at Vet 2. Omitted means none. Unit passives currently execute in solo play."
           }
         },
         "additionalProperties": false
@@ -171,6 +277,10 @@
               "ultimate": {
                 "type": "string",
                 "description": "Catalogue id. Once a match unless its catalogue entry sets `uses`."
+              },
+              "utility": {
+                "type": "string",
+                "description": "Catalogue id for the path action replacing Reselect. Omitted preserves the legacy pair swap."
               }
             },
             "additionalProperties": false
@@ -200,14 +310,17 @@
                 "enum": [
                   "friendly",
                   "enemy",
-                  "universal"
+                  "universal",
+                  "all-enemies",
+                  "hex",
+                  "pair"
                 ],
-                "description": "What a cast is aimed at; 'universal' needs no target."
+                "description": "What a cast is aimed at. 'universal' needs no target and grants points. 'all-enemies' needs no target and changes stats on the enemy battlefield and green reserve units present when cast. Red base units and later arrivals are excluded; affected units keep the effect when returning to base. 'hex' selects any rendered hex, including empty and panel hexes; recipients are captured at casting. 'pair' selects a carried pool pair."
               },
               "cost": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "What a cast costs: points for a pool or a unit's ability, CP for a path's."
+                "description": "Cast cost: points for the pool and legacy unit abilities, UP for Vet 3 unit effects, CP for paths."
               },
               "cooldown": {
                 "type": "integer",
@@ -217,12 +330,12 @@
               "turns": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "How many of its caster's turns a mov/atk/def change lasts: it lifts as the caster's turn begins, this many times over. Omitted means 1. Damage, healing and points happen once, on the cast."
+                "description": "How many caster turns a temporary stat or status effect lasts. It expires at that caster's turn start after this many full turns. Omitted means 1. Damage, healing, promotion, recharge and points happen immediately."
               },
               "uses": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "How many times it can be cast in a match - by a side, or by each unit for a unit's own ability. Omitted means no limit, except a path's ultimate, which is once."
+                "description": "Maximum casts per match, or per phase with usesScope phase; per side for panel abilities and per unit for unit abilities. Omitted means unlimited, except a path ultimate defaults to one."
               },
               "mov": {
                 "type": "integer"
@@ -251,9 +364,202 @@
               "testing": {
                 "type": "boolean",
                 "description": "A testing lever, not a balanced ability. Kept out of networked play: Rally hands out 300 points, which would break the wrap's price."
+              },
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "counter",
+                  "hop",
+                  "deflect",
+                  "on-hit-drain",
+                  "regenerate",
+                  "intimidate",
+                  "persuade",
+                  "rapid-movement",
+                  "sacrifice",
+                  "attack-drain",
+                  "taunt",
+                  "cleave",
+                  "charge",
+                  "control",
+                  "nullify",
+                  "call",
+                  "defensive-armor",
+                  "promote",
+                  "recharge",
+                  "hex-sap",
+                  "hex-cleave",
+                  "hex-trap",
+                  "fortress",
+                  "ruin",
+                  "blitz"
+                ],
+                "description": "Configured unit or CP path behavior. Effects execute in solo; online casting remains deferred."
+              },
+              "counterAttack": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "description": "Counter ATK by distance, starting at ring 1, before DEF and ability modifiers."
+              },
+              "up": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "UP granted by Sacrifice, independently of its UP cost."
+              },
+              "enemyDamage": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Immediate enemy HP damage from Call."
+              },
+              "enemyAtk": {
+                "type": "integer",
+                "description": "Enemy ATK change from Call for one full turn."
+              },
+              "enemyDef": {
+                "type": "integer",
+                "description": "Enemy DEF change from Call for one full turn."
+              },
+              "minVet": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Minimum rank for a path passive. Omitted preserves the legacy first-star gate.",
+                "maximum": 3
+              },
+              "stars": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Immediate stars granted by Strengthen, capped at vet 3."
+              },
+              "recharge": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Cooldown removed from each half of a carried pair. Positive cooldowns stop at 1; already-ready abilities stay at 0."
+              },
+              "splashDamage": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Direct HP damage to occupants of the six hexes adjacent to the chosen hex."
+              },
+              "splashAtk": {
+                "type": "integer",
+                "description": "ATK modifier for adjacent hex recipients."
+              },
+              "splashMov": {
+                "type": "integer",
+                "description": "MOV modifier for adjacent hex recipients."
+              },
+              "setAtk": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Set the existing stat to this value; subsequent modifiers apply after the latest setting. Does not grant an absent attack/healing profile."
+              },
+              "enemyDefSet": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Absolute DEF assigned to enemy recipients, overriding temporary DEF modifiers."
+              },
+              "scope": {
+                "enum": [
+                  "field-reserve",
+                  "all"
+                ],
+                "description": "Path recipient zones. field-reserve excludes red bases. Passives also apply to later eligible arrivals; temporary casts capture only current recipients."
+              },
+              "hel": {
+                "type": "integer",
+                "description": "Temporary modifier to each ring of an existing normal healing profile."
+              },
+              "setHel": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Set the existing stat to this value; subsequent modifiers apply after the latest setting. Does not grant an absent attack/healing profile."
+              },
+              "splashHel": {
+                "type": "integer",
+                "description": "Healing modifier for adjacent hex recipients."
+              },
+              "usesScope": {
+                "type": "string",
+                "enum": [
+                  "match",
+                  "phase"
+                ],
+                "description": "Scope of the uses budget. Omitted means match. Phase means initialization, each numbered phase including halftime/postmatch, or all overtime stages together; requires uses."
               }
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "target": {
+                      "const": "hex"
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "effect"
+                  ],
+                  "properties": {
+                    "effect": {
+                      "enum": [
+                        "hex-sap",
+                        "hex-cleave",
+                        "hex-trap"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "target": {
+                      "const": "pair"
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "effect"
+                  ],
+                  "properties": {
+                    "effect": {
+                      "const": "recharge"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "usesScope"
+                  ],
+                  "properties": {
+                    "usesScope": {
+                      "const": "phase"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "uses"
+                  ]
+                }
+              }
+            ]
           }
         }
       },
@@ -349,6 +655,11 @@
           "type": "integer",
           "minimum": 0,
           "description": "The base of the CP each side is awarded at the start of a phase's postmatch: Phase N's award is N times this (5, 10 and 15 at the default), plus both sides' scores for the phase, plus the gap between them for the side that scored less. Default 5."
+        },
+        "upAtStart": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unit points each side starts with; omitted means 10. UP pays unit crossings and receives unit kill rewards, homecoming refunds and halftime VP snapshots."
         }
       },
       "additionalProperties": false

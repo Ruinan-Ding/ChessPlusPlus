@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { BehaviorSubject, Observable } from 'rxjs';
+import { BehaviorSubject } from 'rxjs';
 import SHIPPED_CONFIG from '../../../../shared/default-config.json';
 
 /**
@@ -26,7 +26,7 @@ export const DEFAULT_GAME_CONFIG = SHIPPED_CONFIG;
  * way, when CP became something a phase's play earns.
  */
 export const COUNTED_RULES = [
-  'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart', 'cpPhaseOffset',
+  'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart', 'cpPhaseOffset', 'upAtStart',
 ] as const;
 export type CountedRule = typeof COUNTED_RULES[number];
 
@@ -49,7 +49,7 @@ export function ruleOf(config: any, key: CountedRule): number {
  */
 const UNIT_FIELDS = new Set([
   'id', 'name', 'symbol', 'display', 'move', 'value', 'hp', 'attack', 'defense',
-  'commander', 'attackRange', 'ability',
+  'commander', 'attackRange', 'attackMinRange', 'ability', 'passive', 'heal', 'captureZones', 'veterancy',
 ]);
 
 /** The whole numbers every unit type needs besides `defense`, and the least of each. */
@@ -59,14 +59,18 @@ const UNIT_NUMBERS: ReadonlyArray<readonly [string, number]> = [
 
 /** Every field a catalogue entry may carry. */
 const ABILITY_FIELDS = new Set([
-  'id', 'name', 'description', 'target', 'cost', 'cooldown', 'turns', 'uses',
-  'mov', 'atk', 'def', 'damage', 'heal', 'points', 'testing',
+  'id', 'name', 'description', 'target', 'cost', 'cooldown', 'turns', 'uses', 'usesScope',
+  'mov', 'atk', 'def', 'damage', 'heal', 'points', 'testing', 'effect', 'counterAttack', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef',
+  'minVet', 'stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'hel', 'setHel', 'splashHel',
 ]);
 
 /** A catalogue entry's whole numbers, and the least of each - null for none. */
 const ABILITY_NUMBERS: ReadonlyArray<readonly [string, number | null]> = [
   ['cost', 0], ['cooldown', 0], ['turns', 1], ['uses', 1],
   ['mov', null], ['atk', null], ['def', null], ['damage', 0], ['heal', 0], ['points', 0],
+  ['up', 0], ['enemyDamage', 0], ['enemyAtk', null], ['enemyDef', null],
+  ['minVet', 0], ['stars', 1], ['recharge', 0], ['splashDamage', 0],
+  ['splashAtk', null], ['splashMov', null], ['setAtk', 0], ['enemyDefSet', 0], ['hel', null], ['setHel', 0], ['splashHel', null],
 ];
 
 /**
@@ -78,10 +82,52 @@ const ABILITY_NUMBERS: ReadonlyArray<readonly [string, number | null]> = [
  * `points` paid nobody, and a universal ultimate's `atk` boosted nothing.
  */
 const IGNORED_BY: Record<string, string[]> = {
-  passive: ['cost', 'cooldown', 'turns', 'uses', 'damage', 'heal', 'points'],
+  passive: ['cost', 'cooldown', 'turns', 'uses', 'usesScope', 'damage', 'heal', 'points'],
   friendly: ['damage', 'points'],
   enemy: ['heal', 'points'],
   universal: ['mov', 'atk', 'def', 'damage', 'heal', 'turns'],
+  'all-enemies': ['damage', 'heal', 'points'],
+};
+
+export const UNIT_EFFECT_FIELDS: Record<string, string[]> = {
+  'counter': ['counterAttack'],
+  'hop': [],
+  'deflect': ['atk'],
+  'on-hit-drain': ['atk', 'def', 'turns'],
+  'regenerate': [],
+  'intimidate': ['atk', 'def', 'mov', 'turns'],
+  'persuade': ['atk', 'def', 'mov', 'turns'],
+  'rapid-movement': [],
+};
+export const UNIT_PASSIVES = Object.keys(UNIT_EFFECT_FIELDS);
+export const UNIT_ACTIVES = ['sacrifice', 'attack-drain', 'taunt', 'cleave', 'charge', 'control', 'nullify', 'call'];
+Object.assign(UNIT_EFFECT_FIELDS, {
+  'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up'],
+  'attack-drain': ['cost', 'cooldown', 'turns', 'mov'],
+  'taunt': ['cost', 'cooldown', 'turns'],
+  'cleave': ['cost', 'cooldown', 'turns'],
+  'charge': ['cost', 'cooldown', 'turns'],
+  'control': ['cost', 'cooldown', 'turns'],
+  'nullify': ['cost', 'cooldown', 'turns'],
+  'call': ['cost', 'cooldown', 'turns', 'heal', 'def', 'enemyDamage', 'enemyAtk', 'enemyDef'],
+});
+
+const PATH_EFFECT_FIELDS: Record<string, string[]> = {
+  'defensive-armor': ['def', 'minVet'],
+  'promote': ['cost', 'cooldown', 'uses', 'stars'],
+  'recharge': ['cost', 'cooldown', 'uses', 'recharge'],
+  'hex-sap': ['cost', 'cooldown', 'uses', 'turns', 'setAtk', 'splashAtk', 'setHel', 'splashHel'],
+  'hex-cleave': ['cost', 'cooldown', 'uses', 'damage', 'splashDamage'],
+  'hex-trap': ['cost', 'cooldown', 'uses', 'turns', 'splashMov'],
+  'fortress': ['cost', 'cooldown', 'uses', 'turns', 'enemyDefSet'],
+  'ruin': ['cost', 'cooldown', 'uses', 'damage', 'heal'],
+  'blitz': ['cost', 'cooldown', 'uses', 'turns', 'mov', 'atk', 'def', 'hel'],
+};
+const EFFECT_FIELDS = { ...UNIT_EFFECT_FIELDS, ...PATH_EFFECT_FIELDS };
+const PATH_TARGETS: Record<string, string> = {
+  'defensive-armor': 'friendly', 'promote': 'friendly', 'recharge': 'pair',
+  'hex-sap': 'hex', 'hex-cleave': 'hex', 'hex-trap': 'hex',
+  'fortress': 'universal', 'ruin': 'universal', 'blitz': 'universal',
 };
 
 const KIND_NAME: Record<string, string> = {
@@ -89,11 +135,12 @@ const KIND_NAME: Record<string, string> = {
   friendly: 'a friendly ability',
   enemy: 'an enemy ability',
   universal: 'a universal ability',
+  'all-enemies': 'an army debuff',
 };
 
 /**
  * The numbers in the ability catalogue, and the shape the panels rely on.
- * Only the client reads abilities, so only the client checks them.
+ * The client checks the full catalogue; the server also validates present target kinds.
  */
 function abilityNumberErrors(abilities: any): string[] {
   const errors: string[] = [];
@@ -113,7 +160,7 @@ function abilityNumberErrors(abilities: any): string[] {
     errors.push('"abilities.slots" must be an even whole number - picks come in pairs');
   }
   // One slot each: the room finds an ability by the first slot naming it.
-  const named = [...pool, ...paths.flatMap(path => [path?.passive, path?.skill, path?.ultimate])];
+  const named = [...pool, ...paths.flatMap(path => [path?.passive, path?.skill, path?.ultimate, ...(path?.utility !== undefined ? [path.utility] : [])])];
   for (const id of new Set(named.filter((id, i) => named.indexOf(id) !== i))) {
     errors.push(`"abilities" names "${id}" in more than one slot`);
   }
@@ -123,8 +170,8 @@ function abilityNumberErrors(abilities: any): string[] {
     for (const key of Object.keys(a)) {
       if (!ABILITY_FIELDS.has(key)) errors.push(`${at} has unknown field "${key}"`);
     }
-    if (!['friendly', 'enemy', 'universal'].includes(a.target)) {
-      errors.push(`${at}.target must be friendly, enemy or universal`);
+    if (!['friendly', 'enemy', 'universal', 'all-enemies', 'hex', 'pair'].includes(a.target)) {
+      errors.push(`${at}.target must be friendly, enemy, universal or all-enemies`);
     }
     for (const [field, least] of ABILITY_NUMBERS) {
       const v = a[field];
@@ -132,13 +179,41 @@ function abilityNumberErrors(abilities: any): string[] {
         errors.push(`${at}.${field} must be an integer${least === null ? '' : ` >= ${least}`}`);
       }
     }
-    const kind = passives.has(id) ? 'passive' : a.target;
-    for (const field of IGNORED_BY[kind] ?? []) {
+    if (a.usesScope !== undefined && !['match', 'phase'].includes(a.usesScope)) errors.push(`${at}.usesScope is invalid`);
+    if (a.usesScope === 'phase' && (!Number.isInteger(a.uses) || a.uses < 1)) errors.push(`${at}.usesScope phase requires uses`);
+    if (['hex', 'pair'].includes(a.target) && !PATH_EFFECT_FIELDS[a.effect]) errors.push(`${at}.target requires a path effect`);
+    if (a.effect !== undefined) {
+      if (!Object.keys(EFFECT_FIELDS).includes(a.effect)) errors.push(`${at}.effect is unknown`);
+      for (const field of ABILITY_NUMBERS.map(([field]) => field)) {
+        if (a[field] !== undefined && !(Object.keys(EFFECT_FIELDS).includes(a.effect) ? EFFECT_FIELDS[a.effect] : []).includes(field)) {
+          errors.push(`${at}.${field} does nothing on ${a.effect}`);
+        }
+      }
+      if (a.target !== (PATH_TARGETS[a.effect] ?? (a.effect === 'control' ? 'enemy' : 'friendly'))) errors.push(`${at}.target does not match the configured effect`);
+    }
+    if (a.scope !== undefined && (!['field-reserve', 'all'].includes(a.scope)
+        || a.effect === 'recharge' || !(passives.has(id) || PATH_EFFECT_FIELDS[a.effect]))) errors.push(`${at}.scope is invalid`);
+    if (a.minVet !== undefined && (!passives.has(id) || a.minVet > 3)) errors.push(`${at}.minVet requires a path passive and must be at most 3`);
+    for (const field of ['stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'setHel', 'splashHel', 'hel']) {
+      if (a[field] !== undefined && !PATH_EFFECT_FIELDS[a.effect]) errors.push(`${at}.${field} requires a path effect`);
+    }
+    if (a.counterAttack !== undefined && (a.effect !== 'counter' || !Array.isArray(a.counterAttack)
+        || a.counterAttack.length < 1 || a.counterAttack.length > 4
+        || a.counterAttack.some((n: any) => !Number.isInteger(n) || n < 0))) {
+      errors.push(`${at}.counterAttack must be 1-4 nonnegative integer entries on Counter`);
+    }
+    if (a.effect === 'counter' && a.counterAttack === undefined) errors.push(`${at}.counterAttack is required`);
+    if (a.effect === 'deflect' && a.atk === undefined) errors.push(`${at}.atk is required`);
+    for (const field of ['up', 'enemyDamage', 'enemyAtk', 'enemyDef']) {
+      if (a[field] !== undefined && a.effect === undefined) errors.push(`${at}.${field} requires a unit effect`);
+    }
+    const kind = a.effect !== undefined ? a.effect : passives.has(id) ? 'passive' : a.target;
+    for (const field of Array.isArray(IGNORED_BY[kind]) ? IGNORED_BY[kind] : []) {
       if (a[field] !== undefined && a[field] !== 0) {
         errors.push(`${at}.${field} does nothing on ${KIND_NAME[kind]}`);
       }
     }
-    if (a.turns !== undefined && (kind === 'friendly' || kind === 'enemy')
+    if (a.turns !== undefined && ['friendly', 'enemy', 'all-enemies'].includes(kind)
         && !(a.mov || a.atk || a.def)) {
       errors.push(`${at}.turns does nothing on an ability that changes no stat`);
     }
@@ -159,10 +234,10 @@ function unitAbilityErrors(unitId: string, ability: unknown, abilities: any): st
   // A config with no catalogue plays the shipped one, which is checked on its own.
   if (!catalogue || typeof catalogue !== 'object') return [];
   const entry = catalogue[ability];
-  if (!entry) return [`${at} names unknown ability "${ability}"`];
+  if (!Object.hasOwn(catalogue, ability) || !entry) return [`${at} names unknown ability "${ability}"`];
   const passive = Array.isArray(abilities.paths)
     && abilities.paths.some((path: any) => path?.passive === ability);
-  if (passive || entry.target !== 'friendly') {
+  if (passive || (entry.effect !== undefined ? !UNIT_ACTIVES.includes(entry.effect) : entry.target !== 'friendly')) {
     return [`${at} must be a friendly ability - it is cast on the unit itself`];
   }
   return [];
@@ -246,6 +321,19 @@ export class ConfigService {
    */
   validateGameRules(config: any): { valid: boolean; errors?: string[] } {
     const errors: string[] = [];
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      return { valid: false, errors: ['Config must be an object'] };
+    }
+    for (const key of ['board', 'units', 'setup']) {
+      if (key in config && (!config[key] || typeof config[key] !== 'object' || Array.isArray(config[key]))) {
+        errors.push(`${key} must be an object`);
+      }
+    }
+    if (errors.length) return { valid: false, errors };
+    for (const [id, unit] of Object.entries(config.units ?? {})) {
+      if (!unit || typeof unit !== 'object' || Array.isArray(unit)) errors.push(`units.${id} must be an object`);
+    }
+    if (errors.length) return { valid: false, errors };
     this.normaliseConfig(config);
 
     if (!config.version) {
@@ -274,6 +362,12 @@ export class ConfigService {
         if (!Number.isInteger(range) || range < 1 || range > 50) {
           errors.push(`units.${unitId}.attackRange must be an integer 1-50`);
         }
+        const minimum = unit?.attackMinRange === undefined ? 1 : unit.attackMinRange;
+        if (!Number.isInteger(minimum) || minimum < 1 || minimum > 50) {
+          errors.push(`units.${unitId}.attackMinRange must be an integer 1-50`);
+        } else if (Number.isInteger(range) && minimum > range) {
+          errors.push(`units.${unitId}.attackMinRange must not exceed attackRange`);
+        }
         // The schema requires defence and combat reads it. A unit without one
         // loads as armour 0 and fights with silently wrong numbers.
         if (!Number.isInteger(unit?.defense) || unit.defense < 0) {
@@ -283,16 +377,61 @@ export class ConfigService {
         // on the hex and struck for 1; a move of "5" was a TypeError on the
         // server.
         for (const [field, least] of UNIT_NUMBERS) {
-          if (!Number.isInteger(unit?.[field]) || unit[field] < least) {
+          const value = unit?.[field];
+          if (field === 'attack' && Array.isArray(value)) {
+            if (value.length < 1 || value.length > 4 || value.length !== range - minimum + 1 ||
+                value.some(damage => !Number.isInteger(damage) || damage < 0)) {
+              errors.push(`units.${unitId}.attack must have 1-4 nonnegative integer entries, one per ring from attackMinRange to attackRange`);
+            }
+          } else if (!Number.isInteger(value) || value < least) {
             errors.push(`units.${unitId}.${field} must be an integer >= ${least}`);
           }
+        }
+        if (unit?.heal !== undefined && (!Array.isArray(unit.heal) ||
+            unit.heal.length < 1 || unit.heal.length > 4 ||
+            unit.heal.some((amount: any) => !Number.isInteger(amount) || amount < 0))) {
+          errors.push(`units.${unitId}.heal must have 1-4 nonnegative integer entries`);
+        }
+        if (unit?.captureZones !== undefined && (!Array.isArray(unit.captureZones) ||
+            unit.captureZones.some((zone: any) => !['home', 'middle', 'side', 'enemy'].includes(zone)) ||
+            new Set(unit.captureZones).size !== unit.captureZones.length)) {
+          errors.push(`units.${unitId}.captureZones must be a unique list of home, middle, side, enemy`);
         }
         // A misspelt field is not an extra - it is a stat left unset:
         // `"atack": 20` loaded, and the unit fought with no attack at all.
         for (const key of Object.keys(unit ?? {})) {
           if (!UNIT_FIELDS.has(key)) errors.push(`units.${unitId} has unknown field "${key}"`);
         }
+        if (unit?.veterancy !== undefined) {
+          const bonus = unit.veterancy;
+          const at = `units.${unitId}.veterancy`;
+          if (!bonus || typeof bonus !== 'object' || Array.isArray(bonus)) {
+            errors.push(`${at} must be an object`);
+          } else {
+            for (const [key, value] of Object.entries<any>(bonus)) {
+              if (!['hp', 'move', 'defense', 'attack', 'attackRange', 'attackMinRange', 'heal'].includes(key)) {
+                errors.push(`${at} has unknown field "${key}"`);
+              } else if (key === 'heal' || (key === 'attack' && Array.isArray(value))) {
+                if (!Array.isArray(value) || value.length < 1 || value.length > 4 ||
+                    value.some(n => !Number.isInteger(n) || n < 0)) errors.push(`${at}.${key} must have 1-4 nonnegative integer entries`);
+              } else if (!Number.isInteger(value) || value < (key.startsWith('attack') && key !== 'attack' ? 1 : 0)
+                  || (key.startsWith('attack') && key !== 'attack' && value > 50)) {
+                errors.push(`${at}.${key} has an invalid integer`);
+              }
+            }
+            const outer = bonus.attackRange !== undefined ? bonus.attackRange : range;
+            const inner = bonus.attackMinRange !== undefined ? bonus.attackMinRange : minimum;
+            const attack = Array.isArray(bonus.attack) ? bonus.attack : unit.attack;
+            if (inner > outer || (Array.isArray(attack) && attack.length !== outer - inner + 1)) {
+              errors.push(`${at} must define a consistent attack profile and range`);
+            }
+          }
+        }
         errors.push(...unitAbilityErrors(unitId, unit?.ability, config.abilities));
+        if (unit?.passive !== undefined && (typeof unit.passive !== 'string'
+            || !UNIT_PASSIVES.includes(config.abilities?.catalogue?.[unit.passive]?.effect))) {
+          errors.push(`units.${unitId}.passive must name a unit passive in the catalogue`);
+        }
       }
     }
 
@@ -310,7 +449,7 @@ export class ConfigService {
       const placed = new Map<string, string>();
       for (const side of ['white', 'black'] as const) {
         const placement = config.setup[side];
-        if (!placement || typeof placement !== 'object') {
+        if (!placement || typeof placement !== 'object' || Array.isArray(placement)) {
           errors.push(`Missing or invalid "setup.${side}"`);
           continue;
         }
@@ -318,7 +457,7 @@ export class ConfigService {
           if (!coordPattern.test(coord)) {
             errors.push(`Invalid coordinate "${coord}" in setup.${side}`);
           }
-          if (config.units && !(unitId as string in config.units)) {
+          if (typeof unitId !== 'string' || (config.units && !Object.hasOwn(config.units, unitId))) {
             errors.push(`Unknown unit "${unitId}" at ${coord} in setup.${side}`);
           }
           if (coordPattern.test(coord)) {
@@ -438,7 +577,7 @@ export class ConfigService {
       } else {
         const abilities = config.abilities;
         const catalogue = abilities.catalogue ?? {};
-        const known = (id: unknown) => typeof id === 'string' && !!catalogue[id];
+        const known = (id: unknown) => typeof id === 'string' && Object.hasOwn(catalogue, id);
         if (abilities.pool !== undefined && !Array.isArray(abilities.pool)) {
           errors.push('"abilities.pool" must be an array of catalogue ids');
         } else {
@@ -450,7 +589,7 @@ export class ConfigService {
           errors.push('"abilities.paths" must be an array');
         } else {
           for (const path of abilities.paths ?? []) {
-            for (const slot of ['passive', 'skill', 'ultimate'] as const) {
+            for (const slot of ['passive', 'skill', 'ultimate', ...(path?.utility !== undefined ? ['utility'] : [])]) {
               if (!known(path?.[slot])) {
                 errors.push(
                   `"abilities.paths" entry "${path?.id}" names unknown ${slot} "${path?.[slot]}"`);

@@ -53,7 +53,7 @@ class Command(BaseCommand):
             closed_threshold = now - closed_delta
             closed_qs = GameRoom.objects.filter(status='closed', closed_at__lt=closed_threshold)
             deleted_info = closed_qs.delete()
-            closed_count = deleted_info[0] if isinstance(deleted_info, tuple) else int(deleted_info)
+            closed_count = deleted_info[1].get(GameRoom._meta.label, 0)
             self.stdout.write(f'Deleted {closed_count} old closed game rooms')
             logger.info(f'Deleted {closed_count} old closed game rooms')
 

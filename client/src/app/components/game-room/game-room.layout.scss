@@ -72,7 +72,7 @@
       margin: 0;
     }
 
-    // The Unit panel in two lines - the unit, then its four numbers - where
+    // The Unit strip names the unit, then its four stats (up to two rows), where
     // the panel is a tab (.unit-pinned off). Pressed, it opens the panel.
     .unit-strip {
       grid-area: strip;
@@ -121,9 +121,12 @@
         display: flex;
         flex-wrap: wrap;
         gap: 0 u(0.75);
+        > span { white-space: nowrap; }
       }
       .hp strong { color: #15803d; }
       .atk strong { color: #b91c1c; }
+      .hel strong { color: #4ade80; }
+      .vet strong { color: #facc15; }
       .def strong { color: #1d4ed8; }
       .mov strong { color: #8b6800; }   // the panel's dark gold (4.5:1)
 
@@ -152,12 +155,12 @@
     //
     // The height is the tallest tab under everything that is always there -
     // the two-row header included (fitHeader stacks it here from the start) -
-    // measured unit by unit, 28 Sep 2026, at 800 and 1000px wide alike: with
-    // the Unit panel pinned 685px at 12px, 752 at 14, 836 at 16; without it
-    // 497, 542, 602. Two straight lines each, as with the columns, with 4px
-    // to spare. Without it the Unit panel's strip stands in its place - two
-    // lines and a gap, three units and 2px more.
-    --u: clamp(12px, min(calc((100dvh - 266px) / 35.3), calc((100dvh - 120px) / 45),
+    // measured in headless Chrome at 1000px wide, 3 Oct 2026: with Unit
+    // pinned, its three attack rings, HEL/RNG and ability detail need 799px
+    // at 12px, 878 at 14 and 972 at 16. Two lines leave a few pixels spare.
+    // Without it, the earlier measurements still hold: 497, 542 and 602;
+    // the Unit strip stands in its place, three units and 2px more.
+    --u: clamp(12px, min(calc((100dvh - 324px) / 40), calc((100dvh - 230px) / 47),
       calc((100vw - 119.4dvh) / 16.1)), 16px);
 
     &:not(.unit-pinned) {
@@ -167,7 +170,7 @@
 
     main {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) max(248px, #{u(20)});
+      grid-template-columns: minmax(0, 1fr) max(300px, #{u(20)});
       grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
       grid-template-areas:
         "board turn"
@@ -180,8 +183,11 @@
     }
 
     // Short of height for it, the Unit panel is a tab like the rest, and its
-    // two-line strip (.unit-strip) stands where the panel stood.
+    // compact strip (.unit-strip) stands where the panel stood.
     &:not(.unit-pinned) main {
+      // Four ATK pairs give the compact strip two stat rows. Keep space for
+      // the panel below it by tightening gaps, rather than its text.
+      row-gap: u(0.25);
       grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
       grid-template-areas:
         "board turn"
@@ -198,7 +204,7 @@
     // they do on a phone upright.
     &.short {
       main {
-        grid-template-columns: minmax(0, 1fr) repeat(2, max(124px, #{u(10)}));
+        grid-template-columns: minmax(0, 1fr) repeat(2, max(150px, #{u(10)}));
         grid-template-rows: auto auto auto minmax(0, 1fr) auto;
         grid-template-areas:
           "board turn view"

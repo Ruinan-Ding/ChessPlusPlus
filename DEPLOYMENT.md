@@ -1,10 +1,11 @@
 # Deploying ChessPlusPlus
 
-> **Status (26 Sep 2026): a plan, not a tested deployment.** Nothing here has been run end to
-> end, and the source changes it asks for are not in the code yet: `server/core/settings.py`
-> still keeps the database at `server/db.sqlite3` (no `DJANGO_DB_PATH`), and the client's socket
-> config has no `BACKEND_HOST`. Make those changes as the steps below describe, and treat the
-> rest as untried until it has been.
+> **Status checked 7 Oct 2026: a plan, not a tested deployment.** The split-host changes
+> below are still unimplemented: settings have no `DJANGO_DB_PATH`, the socket config has no
+> `BACKEND_HOST`, and this repo has no Dockerfile or Pages deployment workflow. The client now
+> uses the page's origin outside its configured dev port, which supports a same-origin server;
+> the GitHub Pages/Fly split below still needs an explicit backend host. No deployment has been
+> performed. Prices and service details below belong to the original 26 Sep plan.
 
 
 Step by step, assuming you have never used any of this before. Follow it top to bottom.
@@ -23,10 +24,10 @@ Two pieces, split on purpose.
 | `client/` | Angular. Compiles to plain HTML/JS/CSS - no server needed to run it. | GitHub Pages | free |
 | `server/` | Django + daphne, holding WebSockets | Fly.io | ~$0-3/month |
 
-**Solo play never touches the server.** `local-game.service.ts` is the engine for it, and the
-login screen offers "Play Offline" when nothing answers. So the site works with the backend
-asleep, stopped, or never deployed at all. The server exists for PvP: the lobby, challenges,
-and the game state two browsers share.
+**Solo gameplay needs no server.** `local-game.service.ts` is its engine, and the login
+screen offers "Play Offline" when nothing answers. If a server is reachable, solo play keeps
+its lobby connection for online users and chat. The site still plays solo with the backend
+asleep, stopped or never deployed; PvP uses the server for rooms and shared game state.
 
 That is why the split is worth it. A CDN never sleeps and costs nothing, so single player is
 always instant; the backend can be a small machine that sleeps when nobody is playing against
@@ -52,13 +53,15 @@ constraints travel together.
 
 ## Part 0 - four changes the code needs first
 
-None of this is Fly-specific. Any host needs it.
+The split-host socket change is specific to serving client and backend on different origins.
+The remaining database and container steps apply to this proposed Fly deployment.
 
-### 0.1 The socket URL is hardcoded to the dev layout
+### 0.1 A split deployment needs an explicit backend host
 
-`client/src/app/services/websocket.service.ts` builds the URL from the page's own hostname plus
-port 8000, which is true in dev - `ng serve` on 4200, daphne on 8000 - and wrong everywhere
-else. From GitHub Pages it would dial `wss://yourname.github.io:8000`, which is nothing.
+`client/src/app/services/websocket.service.ts` uses the page's own origin, except on
+`WEBSOCKET_CONFIG.DEV_SERVER_PORT` (4200), where it uses `BACKEND_PORT` (8000). That works for
+a same-origin deployment. From GitHub Pages it would dial the Pages host itself, which has no
+WebSocket server, so this split deployment needs the separate Fly hostname.
 
 In `client/src/app/services/websocket.config.ts`, add a host:
 
@@ -67,11 +70,10 @@ export const WEBSOCKET_CONFIG = {
   HEARTBEAT_INTERVAL_MS: 15000,
   RECONNECT_INTERVAL_MS: 3000,
   MAX_RECONNECT_ATTEMPTS: 5,
-  DEFAULT_ROOM: 'default',
+  DEV_SERVER_PORT: '4200',
   BACKEND_PORT: 8000,
-  // Empty means "the host that served this page, on BACKEND_PORT" - the dev
-  // layout. A deployed client names its backend here, and the port is unused
-  // because a deployed backend is on 443 behind TLS.
+  // Empty preserves the current same-origin/dev-port choice. A split-host
+  // deployment names its TLS backend here.
   BACKEND_HOST: '',
 };
 ```
@@ -79,12 +81,14 @@ export const WEBSOCKET_CONFIG = {
 Then in `websocket.service.ts`, where `wsUrl` is built:
 
 ```ts
-const { protocol, hostname } = window.location;
+const { protocol, hostname, port, host } = window.location;
 const wsProtocol = protocol === 'https:' ? 'wss' : 'ws';
-const backendPort = WEBSOCKET_CONFIG.BACKEND_PORT;
+const wsHost = port === WEBSOCKET_CONFIG.DEV_SERVER_PORT
+  ? `${hostname}:${WEBSOCKET_CONFIG.BACKEND_PORT}`
+  : host;
 const wsUrl = WEBSOCKET_CONFIG.BACKEND_HOST
   ? `wss://${WEBSOCKET_CONFIG.BACKEND_HOST}/ws/game/${roomName}/`
-  : `${wsProtocol}://${hostname}:${backendPort}/ws/game/${roomName}/`;
+  : `${wsProtocol}://${wsHost}/ws/game/${roomName}/`;
 ```
 
 Leaving `BACKEND_HOST` empty keeps `./start.sh` working exactly as it does now. You fill it in
@@ -162,8 +166,9 @@ CMD ["sh", "-c", "python manage.py migrate --noinput && daphne -b 0.0.0.0 -p 800
 ```
 
 Two things to notice. `daphne`, not gunicorn - gunicorn is WSGI and cannot hold a WebSocket,
-and every Django deployment guide on the internet will tell you to use it. And Python 3.12,
-matching what you develop on; Django 6 needs 3.12 or newer.
+and every Django deployment guide on the internet will tell you to use it. The example uses Python 3.12,
+Django 6's minimum; the current local environment and CI use Python 3.14. Match and test the
+production interpreter when implementing this plan.
 
 ---
 
@@ -510,7 +515,10 @@ move history, the frozen config snapshot, ready status.
 **The timer tasks do not survive**: `_pending_turn_timers` and
 `_pending_disconnect_timers` in `consumers.py` are in-process `asyncio` tasks, so a deploy or
 restart drops them. Their deadlines do survive: turn clocks are reconstructed from the
-persisted `turn_started_at`, and disconnect grace deadlines are stored in the database. The
+persisted `turn_started_at`, and disconnect grace deadlines are stored in the database.
+Validated private turn drafts also persist in `TurnDraft` (migration 0013); the restored
+timeout commits the saved moves, including during disconnect grace. A finished game
+still wins over the timer. Apply migrations before running the updated backend. The
 next successful room join re-arms the timers; an expired deadline is handled then. Until a
 player rejoins, no timer task is running.
 
@@ -523,9 +531,10 @@ with a game on it stays awake.
 
 There are no accounts. A username is claimed first-come, and the per-browser secret in
 `PlayerConnection` only guards *rejoining* a connection you already hold - it is not a password
-and there is no recovery. Once you disconnect, the name is free for anyone. That is a deliberate
+and there is no recovery. A dropped connection keeps its name through the server's grace
+period; a released name can be claimed by anyone. That is a deliberate
 choice for now, not an oversight, but it is worth knowing before the URL goes anywhere public:
-anyone who has it can join the lobby as anyone who is not currently connected.
+anyone who has it can claim a name that is neither connected nor held through its grace period.
 
 A tripcode is the one thing a name can carry that others cannot copy: `Name#key` is shown as
 `Name!CODE`, and only that key - or the proof the server hands back to the browser that typed

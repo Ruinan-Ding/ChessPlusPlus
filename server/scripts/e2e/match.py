@@ -37,6 +37,17 @@ def lobby():
     check('lobby chat reaches the other player', m.get('content') == 'hello from ' + A, m)
 step('lobby', lobby)
 
+print('\n[invalid envelopes]')
+def invalid_envelopes():
+    socket = ctx['la']
+    for packet in ([], None, 'message', {'type': []}, {'type': {}}):
+        socket.send(packet)
+        error = socket.type('error')
+        check(f'malformed envelope {packet!r} is refused', error.get('code') == 'INVALID_MESSAGE', error)
+    socket.send({'type': 'heartbeat'})
+    check('valid traffic still works after malformed envelopes', socket.type('heartbeat_ack')['type'] == 'heartbeat_ack')
+step('invalid envelopes', invalid_envelopes)
+
 print('\n[invite]')
 def invite():
     la, lb = ctx['la'], ctx['lb']

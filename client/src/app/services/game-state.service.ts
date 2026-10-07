@@ -12,15 +12,20 @@ export interface PieceData {
   color: 'white' | 'black';
   hp: number;
   max_hp: number;
+  /** Identity follows the unit through moves; optional for older saves and fixtures. */
+  uid?: string;
+  /** Rank derived from phase boundaries; older snapshots may not carry it. */
+  vet?: number;
+  /** Solo Cast changes control while retaining the owner for regicide and refunds. */
+  owner?: 'white' | 'black';
+  controlledUntil?: number;
+  controlTurn?: number;
 }
 
-/**
- * Board state as received from the server.
- * Keys are `"q,r"` strings, values are PieceData.
- */
+/** Battlefield cells keyed by axial "q,r"; panels are derived separately. */
 export type BoardState = Record<string, PieceData>;
 
-/** A single move record from the server. */
+/** Committed action history from either engine. */
 export interface MoveRecord {
   from: string;
   to: string;
@@ -33,21 +38,17 @@ export interface MoveRecord {
   defender_eliminated: boolean;
   moved: boolean;
   defender_hp?: number;
+  healedHex?: string;
+  healed_amount?: number;
+  healed_hp?: number;
+  healed_unit?: string;
   /** Only present on a move that attacked - see move_record in consumers.py. */
   attacker_eliminated?: boolean;
-  /**
-   * A unit walking in from a panel rather than moving on the board. Client
-   * only for now: the browser engine writes it and no server does, because
-   * no server has a reserve to walk anything out of.
-   */
+  /** Panel entry; the unit record retains its identity and HP. */
   entered?: boolean;
-  /**
-   * A unit walking off the battlefield into its base, and the unit itself -
-   * the record is the only place it survives, so it is what the base is
-   * rebuilt from. Client only, for the same reason `entered` is.
-   */
+  /** Withdrawal; the unit record rebuilds its base presence after reload. */
   withdrawn?: boolean;
-  unit?: Record<string, any>;
+  unit?: PieceData;
 }
 
 /** Full snapshot of the client-side game state. */
@@ -172,8 +173,7 @@ export class GameStateService {
       boardState: msg.boardState ?? prev.boardState,
       currentTurn: msg.currentTurn ?? prev.currentTurn,
       turnNumber: msg.turnNumber ?? prev.turnNumber,
-      // And the turn's casts on either side of it, where they happened. The
-      // browser engine's alone; a server sends none.
+      // Casts retain their order around the move; boundary heals follow it.
       moveHistory: [...prev.moveHistory, ...(msg.effectsBefore ?? []), move, ...(msg.effects ?? [])],
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
@@ -195,8 +195,9 @@ export class GameStateService {
       boardState: msg.boardState ?? prev.boardState,
       currentTurn: msg.currentTurn ?? prev.currentTurn,
       turnNumber: msg.turnNumber ?? prev.turnNumber,
-      // What a passed turn cast into the panels. Browser engine only.
-      moveHistory: msg.effectsBefore ? [...prev.moveHistory, ...msg.effectsBefore] : prev.moveHistory,
+      // Panel casts and boundary heals share the same persistent record.
+      moveHistory: msg.effectsBefore || msg.effects
+        ? [...prev.moveHistory, ...(msg.effectsBefore ?? []), ...(msg.effects ?? [])] : prev.moveHistory,
       turnStartedAt: msg.turnStartedAt ?? new Date().toISOString(),
       drawOfferedBy: '',
       revision: msg.revision ?? prev.revision,

@@ -23,6 +23,8 @@ import { takeUntil } from 'rxjs/operators';
     </div>
   `,
   styles: [`
+    :host { display: inline-flex; flex: 0 0 auto; }
+
     .connection-status {
       /* Sits in headers that have to stay one line, so it takes the font size
          it is given and never wraps - "Disconnected from Game Server" is long
@@ -75,6 +77,10 @@ import { takeUntil } from 'rxjs/operators';
       display: none;
     }
 
+    @media (max-width: 720px) {
+      :host-context(app-lobby) .disconnected .status-rest { display: none; }
+    }
+
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
@@ -99,7 +105,6 @@ export class ConnectionStatusComponent implements OnInit, OnDestroy {
     });
     this.subscription = this.wsService.connectionStatus$.pipe(takeUntil(this.destroy$)).subscribe(
       (status: boolean) => {
-        console.log('Connection status updated:', status);
         this.isConnected = status;
         this.cdr.markForCheck();
       }

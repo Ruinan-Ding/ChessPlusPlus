@@ -1,8 +1,7 @@
 import { Component, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { WebsocketService } from '../../services/websocket.service';
-import { AuthService } from '../../services/auth.service';
-import { Subscription, Subject } from 'rxjs';
+import { Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { Router } from '@angular/router';
 
@@ -19,12 +18,10 @@ export class ConnectionDialogComponent implements OnInit, OnDestroy {
   maxAttempts = 5;
   connectionFailed = false;
   
-  private subscriptions: Subscription[] = [];
   private destroy$ = new Subject<void>();
   
   constructor(
     private wsService: WebsocketService,
-    private authService: AuthService,
     private router: Router
   ) {}
   

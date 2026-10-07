@@ -104,6 +104,18 @@ describe('buildPlayback', () => {
     ]);
   });
 
+  it('replays a veteran attack before its remaining walk without repeating the attack', () => {
+    expect(buildPlayback([
+      step('0,0', '1,0'), step('0,0', '1,0', '2,0', { countered: true }),
+      step('0,0', '-1,0', '2,0', { afterAttackWalk: true, countered: true }),
+    ], true)).toEqual([
+      { kind: 'move', from: '0,0', to: '1,0' },
+      { kind: 'attack', from: '1,0', to: '2,0' },
+      { kind: 'counter', from: '2,0', to: '1,0' },
+      { kind: 'move', from: '1,0', to: '-1,0' },
+    ]);
+  });
+
   it('collapses a committed walk into the line it amounted to', () => {
     const walk = [step('0,0', '1,0'), step('0,0', '2,0'), step('0,0', '2,-1')];
     expect(buildPlayback(walk, true)).toEqual([
@@ -162,6 +174,18 @@ describe('buildPlayback', () => {
     ]);
   });
 
+  it('replays healing as an HP pulse with no attack or counter, following a target that later moves', () => {
+    expect(buildPlayback([
+      step('0,0', '1,0'),
+      step('0,0', '1,0', null, { heal: '3,0', mark: '+13' }),
+      step('3,0', '4,0'),
+    ], true)).toEqual([
+      { kind: 'move', from: '0,0', to: '1,0' },
+      { kind: 'move', from: '3,0', to: '4,0' },
+      { kind: 'heal', from: '4,0', to: '4,0', mark: '+13', brief: true },
+    ]);
+  });
+
   it('lands a cast on one unit where that unit ended, not where another did', () => {
     // A mend on A, then B walks. The cast followed "the" acting unit, which
     // after B's walk was B - so A's mend popped over B.
@@ -184,6 +208,26 @@ describe('buildPlayback', () => {
       { kind: 'move', from: '5,0', to: '6,0' },
       { kind: 'ability', from: '6,0', to: '6,0', index: 6, side: 'mine', brief: true },
     ]);
+  });
+
+  it('keeps a multi-recipient cast in one beat and follows each recipient through collapsed moves', () => {
+    const visuals = [
+      { kind: 'ability' as const, from: '0,0', to: '0,0', uid: 'one', mark: '+4' },
+      { kind: 'ability' as const, from: '2,0', to: '2,0', uid: 'two', mark: '-3', hostile: true },
+    ];
+    const actions = [step('', '', null, { spend: { index: 5, side: 'mine', visuals } }),
+      step('0,0', '1,0'), step('2,0', '3,0')];
+    const staged = buildPlayback(actions);
+    expect(staged[0].targets).toEqual(visuals);
+    const recap = buildPlayback(actions, true);
+    expect(recap.map(beat => beat.kind)).toEqual(['move', 'move', 'ability']);
+    expect(recap[2]).toEqual(jasmine.objectContaining({ index: 5, side: 'mine', brief: true }));
+    expect(recap[2].targets).toEqual([
+      { ...visuals[0], from: '1,0', to: '1,0' }, { ...visuals[1], from: '3,0', to: '3,0' },
+    ]);
+    expect(visuals[0].to).toBe('0,0');
+    expect(visuals[1].to).toBe('2,0');
+    expect(buildPlayback([actions[0], actions[0]], true).length).toBe(2);
   });
 
   it('has nothing to play for a turn that staged nothing', () => {

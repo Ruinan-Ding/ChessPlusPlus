@@ -41,7 +41,7 @@ from .board import HEX_DIRECTIONS, coord_key, hex_distance, parse_coord
 from .panels import BASE_PANELS
 from .phases import (
     OVERTIME_FIRST_PLY, OVERTIME_LAST_TURN, PHASES, SCORING_PHASES, hand_overs_by, is_postmatch,
-    phase_index_at, turn_of, turn_points_by,
+    phase_index_at, phase_start_turn, PLIES_PER_TURN, turn_of, turn_points_by,
 )
 
 #: How far behind a side may finish the third phase and still force overtime,
@@ -74,37 +74,46 @@ def _js_round(x: float) -> int:
     return math.floor(x + 0.5)
 
 
-_zone_cache: Dict[int, Dict[str, int]] = {}
+_zones_cache: Dict[int, List[Dict[str, Any]]] = {}
 
 
-def capture_zone_values(radius: int) -> Dict[str, int]:
-    """
-    The five capture zones, as what each of their hexes is worth: ``"q,r"`` ->
-    points a hex (:data:`ZONE_WORTH`). A patch in the middle and four around
-    it, the same size and the same distance out. On a board small enough for
-    two patches to overlap, a hex in both is worth the higher. Depends on
-    nothing but the radius, so it is worked out once per radius.
-    """
-    cached = _zone_cache.get(radius)
-    if cached is not None:
-        return cached
+def capture_zones(radius: int) -> List[Dict[str, Any]]:
+    """The five regions, including their centre and the owner of each base zone."""
+    if radius in _zones_cache:
+        return _zones_cache[radius]
     cols = max(ZONE_SPREAD + 1, _js_round(radius * ZONE_COLS))
     pairs = max(1, _js_round((radius * ZONE_ROWS) / 2))
     centres = [
-        (0, 0, ZONE_WORTH['middle']),
-        (cols, 0, ZONE_WORTH['side']), (-cols, 0, ZONE_WORTH['side']),
-        (pairs, -2 * pairs, ZONE_WORTH['base']), (-pairs, 2 * pairs, ZONE_WORTH['base']),
+        (0, 0, 'middle', ''), (cols, 0, 'side', ''), (-cols, 0, 'side', ''),
+        (pairs, -2 * pairs, 'base', 'black'), (-pairs, 2 * pairs, 'base', 'white'),
     ]
-    out: Dict[str, int] = {}
-    for cq, cr, worth in centres:
+    zones = []
+    for cq, cr, kind, owner in centres:
+        hexes = set()
         for dq in range(-ZONE_SPREAD, ZONE_SPREAD + 1):
             lo = max(-ZONE_SPREAD, -dq - ZONE_SPREAD)
             hi = min(ZONE_SPREAD, -dq + ZONE_SPREAD)
             for dr in range(lo, hi + 1):
                 q, r = cq + dq, cr + dr
                 if hex_distance((q, r), (0, 0)) <= radius:
-                    key = coord_key(q, r)
-                    out[key] = max(worth, out.get(key, 0))
+                    hexes.add(coord_key(q, r))
+        zones.append({'center': coord_key(cq, cr), 'kind': kind, 'owner': owner,
+                      'worth': ZONE_WORTH[kind], 'hexes': hexes})
+    _zones_cache[radius] = zones
+    return zones
+
+
+_zone_cache: Dict[int, Dict[str, int]] = {}
+
+
+def capture_zone_values(radius: int) -> Dict[str, int]:
+    """Each capture hex's worth; overlapping regions use the higher value."""
+    if radius in _zone_cache:
+        return _zone_cache[radius]
+    out: Dict[str, int] = {}
+    for zone in capture_zones(radius):
+        for key in zone['hexes']:
+            out[key] = max(zone['worth'], out.get(key, 0))
     _zone_cache[radius] = out
     return out
 
@@ -114,13 +123,24 @@ def capture_zone_hexes(radius: int) -> frozenset:
     return frozenset(capture_zone_values(radius))
 
 
-def capture_claims(board_state: Dict[str, Any], radius: int) -> Dict[str, str]:
+def capture_eligible(piece: dict, zone: dict, config: Optional[dict] = None) -> bool:
+    permissions = (config or {}).get('units', {}).get(piece['unit_id'], {}).get('captureZones')
+    kind = ('home' if zone['owner'] == piece.get('color') else 'enemy') if zone['kind'] == 'base' else zone['kind']
+    return permissions is None or kind in permissions
+
+
+def capture_claims(board_state: Dict[str, Any], radius: int, config: Optional[dict] = None) -> Dict[str, str]:
+    """Outer units score their hex; inner units also score neighbours.
+
+    Every eligible unit disrupts adjacent opposing claims. An unopposed
+    centre holds the whole zone.
+
+    Any eligible enemy inside that zone removes the centre bonus. Ineligible
+    units cannot capture, neutralize or block it. Opposing adjacent claims cancel.
     """
-    Who holds each capture hex. A unit standing in a zone takes the hex under
-    it and the zone hexes beside it; a hex both sides reach is held by neither.
-    Only decided hexes are returned.
-    """
-    zone = capture_zone_values(radius)
+    zones = capture_zones(radius)
+
+    disruption = {'white': set(), 'black': set()}
     claimed: Dict[str, str] = {}
 
     def claim(key: str, color: str) -> None:
@@ -131,16 +151,36 @@ def capture_claims(board_state: Dict[str, Any], radius: int) -> Dict[str, str]:
             claimed[key] = 'contested'
 
     for key, piece in (board_state or {}).items():
-        if not piece or key not in zone:
+        if not piece:
+            continue
+        allowed = set().union(*(zone['hexes'] for zone in zones if capture_eligible(piece, zone, config)))
+        if key not in allowed:
             continue
         color = 'black' if piece.get('color') == 'black' else 'white'
         claim(key, color)
+        disruption[color].add(key)
+        expanded = any(capture_eligible(piece, zone, config) and hex_distance(parse_coord(key), parse_coord(zone['center'])) < ZONE_SPREAD
+                       for zone in zones)
         q, r = parse_coord(key)
         for dq, dr in HEX_DIRECTIONS.values():
             neighbour = coord_key(q + dq, r + dr)
-            if neighbour in zone:
+            if neighbour not in allowed:
+                continue
+            disruption[color].add(neighbour)
+            if expanded:
                 claim(neighbour, color)
-    return {key: color for key, color in claimed.items() if color != 'contested'}
+    for zone in zones:
+        center = (board_state or {}).get(zone['center'])
+        if not center or not capture_eligible(center, zone, config):
+            continue
+        enemy_present = any(
+            piece and piece.get('color') != center.get('color') and key in zone['hexes'] and capture_eligible(piece, zone, config)
+            for key, piece in (board_state or {}).items())
+        if not enemy_present:
+            for key in zone['hexes']:
+                claim(key, 'black' if center.get('color') == 'black' else 'white')
+    return {key: color for key, color in claimed.items()
+            if color != 'contested' and key not in disruption['black' if color == 'white' else 'white']}
 
 
 def capture_score(claims: Dict[str, str], color: str, radius: int) -> int:
@@ -178,9 +218,9 @@ def phase_total(cap: int, deaths: int, multiplier: int) -> int:
     return max(0, cap - deaths) * multiplier
 
 
-def cap_of(board_state: Dict[str, Any], radius: int, color: str) -> int:
+def cap_of(board_state: Dict[str, Any], radius: int, color: str, config: Optional[dict] = None) -> int:
     """What *color* is holding on *board_state*, right now."""
-    return capture_score(capture_claims(board_state, radius), color, radius)
+    return capture_score(capture_claims(board_state, radius, config), color, radius)
 
 
 def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
@@ -196,7 +236,7 @@ def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
     nothing.** *The owner, 24 Sep 2026: "killing things in base (red panel)
     should not count towards victory points"* - while one killed in a reserve
     (green) still does. Neither pays the killer any points
-    (:func:`economy.points_of`).
+    (:func:`economy.unit_points_of`).
     """
     total = 0
     for move in history or []:
@@ -208,6 +248,8 @@ def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
                 continue
         if move.get('intoPanel') and move.get('panel') in BASE_PANELS:
             continue
+        if (move.get('abilityDeath') or {}).get('color') == color:
+            total += unit_value(config, move['abilityDeath'].get('unit_id'))
         if move.get('defender_eliminated') and move.get('color') != color:
             total += unit_value(config, move.get('captured'))
         if move.get('attacker_eliminated') and move.get('color') == color:
@@ -249,7 +291,7 @@ def bank_ended_phases(bank: Optional[Dict[str, Any]], config: Dict[str, Any],
         if str(phase) in out or not phase_over(phase, ply):
             continue
         if claims is None:
-            claims = capture_claims(board_state, radius)
+            claims = capture_claims(board_state, radius, config)
         entry: Dict[str, Any] = {
             color: phase_total(capture_score(claims, color, radius),
                                deaths_of(config, history, color, phase),
@@ -259,8 +301,32 @@ def bank_ended_phases(bank: Optional[Dict[str, Any]], config: Dict[str, Any],
         # Already over before this hand-over: its moment has passed.
         if phase_over(phase, ply - 1):
             entry['late'] = True
+        if not entry.get('late'):
+            if phase == 1 and not any(piece and piece.get('color') == 'white' and piece.get('hp', 1) > 0
+                                      and any(key in zone['hexes'] and capture_eligible(piece, zone, config)
+                                              for zone in capture_zones(radius))
+                                      for key, piece in board_state.items()):
+                entry['pendingLoss'] = 'white'
+            if phase == 2 and entry['black'] == 0:
+                entry['pendingLoss'] = 'black'
         out[str(phase)] = entry
     return out
+
+
+def halftime_up_awards(config: Dict[str, Any], board_state: Dict[str, Any],
+                       history: List[Dict[str, Any]], ply: int) -> List[Dict[str, Any]]:
+    """Persist each side's current phase VP once as halftime begins."""
+    phase = next((index for index in SCORING_PHASES
+                  if ply == (math.ceil(phase_start_turn(index) + PHASES[index]['turns'] / 2) - 1)
+                  * PLIES_PER_TURN + 1), None)
+    if phase is None or any(move.get('halftimeUp', {}).get('phase') == phase for move in history):
+        return []
+    radius = config.get('board', {}).get('radius', 11)
+    claims = capture_claims(board_state, radius, config)
+    award = {color: phase_total(capture_score(claims, color, radius),
+                               deaths_of(config, history, color, phase), PHASES[phase]['multiplier'])
+             for color in ('white', 'black')}
+    return [{'turn': ply, 'halftimeUp': {'phase': phase, **award}}]
 
 
 def cp_awarded(bank: Optional[Dict[str, Any]], color: str, offset: int) -> int:
@@ -319,7 +385,7 @@ def scheduled_points(bank: Optional[Dict[str, Any]], color: str, ply: int) -> in
     at its rate, each phase's grant (:func:`phases.turn_points_by`), and the
     banked victory points once its first overtime turn begins
     (:func:`vp_as_points`). The purse is this plus what the record adds and
-    takes away (:func:`economy.points_of`). Mirrors ``scheduledPoints`` in
+    takes away (:func:`economy.unit_points_of`). Mirrors ``scheduledPoints`` in
     match-score.ts.
     """
     return turn_points_by(color, ply) + vp_as_points(bank, color, ply)
@@ -352,6 +418,7 @@ def schedule_ending(bank: Optional[Dict[str, Any]], ply: int) -> Optional[Tuple[
     on the board ended the match first: a king killed on the turn Phase 3
     banks, or on turn 50, has already decided it.
 
+    * ``'phase_result'``: a frozen Phase 1/2 loss, after both postmatch halves.
     * ``'points'``: all three phases are in, none of them late, and one side is
       past the other's margin - **once Phase 3's postmatch has been played**,
       on the hand-over into turn 37 (``OVERTIME_FIRST_PLY``). The result is
@@ -361,6 +428,10 @@ def schedule_ending(bank: Optional[Dict[str, Any]], ply: int) -> Optional[Tuple[
     * ``'overtime'``: turn 50 has been played out - the hand-over is into
       turn 51 - with both kings standing. Black's.
     """
+    for phase in (1, 2):
+        entry = (bank or {}).get(str(phase), {})
+        if entry.get('pendingLoss') and not entry.get('late') and ply >= (phase_start_turn(phase + 1) - 1) * PLIES_PER_TURN + 1:
+            return ('black' if entry['pendingLoss'] == 'white' else 'white'), 'phase_result'
     points = decided_on_points(bank) if ply >= OVERTIME_FIRST_PLY else None
     if points:
         return points, 'points'

@@ -11,12 +11,44 @@ rule that is right. Where one is wrong, change the number or write a note under 
 - **A plan, not a config file.** Nothing reads this document. Units and abilities are kept
   separate and are not in it.
 
-Last updated 26 Sep 2026.
+Last updated 7 Oct 2026.
 
 ---
 
 ## New since the last review
 
+- [ ] **Early phase losses freeze at tally and resolve after both postmatch turns:**
+  Phase 1 checks White's eligible capture-zone occupancy; Phase 2 checks Black's zero
+  phase VP. Regicide takes priority. Live, 7 Oct 2026.
+
+- [ ] **Initialization permits CP utilities only**; other casts and ordinary healing
+  remain blocked. Owner phase-use revision, 7 Oct 2026. Online casts remain deferred.
+
+- [ ] **Timed solo turns automatically commit all staged work at expiry**, or pass if
+  empty. Five final-second warnings and a hard expiry beep. Online, the server commits
+  the latest validated saved draft, including during disconnect grace; a timer/browser
+  race commits once. Owner confirmed, 7 Oct 2026.
+
+- [ ] **UP is separate from ability points:** start with **10**, spend unit value on the
+  base-to-reserve crossing, receive battlefield attack/counter kill value and homecoming
+  refunds. Ability and panel kills pay none. Each halftime adds a persisted snapshot of
+  each side's own current phase VP to its UP. Owner confirmed, 4 Oct 2026.
+
+- [ ] **Every postmatch permits abilities and normal unit healing; normal attacks remain
+  forbidden.** This includes both sides' turns and all ability categories, with their usual
+  costs, cooldowns and target rules. Online casts remain deferred. Live, 4 Oct 2026.
+
+- [ ] **Capture and neutralization use each unit's cumulative zone permissions.** Permissions
+  are in the shared unit config: home 3x, middle 2x, sides 1x and enemy 3x. Live, 4 Oct 2026.
+- [ ] **Outer-ring units score only their occupied hex; inner-ring units also score adjacent
+  hexes.** All eligible units still neutralize adjacent enemy claims. Live, 4 Oct 2026.
+- [ ] **An unopposed centre holds all nineteen zone hexes.** Any enemy inside that zone that
+  is eligible to capture or neutralize it removes the bonus; normal adjacent claims then
+  apply. Ineligible enemies do not block it. Live, 4 Oct 2026.
+
+- [ ] **Explicit attack values per ring skip percentage falloff.** Otherwise the
+  existing 0.25 per extra ring still applies. Live, 3 Oct 2026. Unit values remain in
+  the shared config. (See [Combat](#9-combat).)
 - [ ] **Capture zones are worth 3, 2 or 1 a hex.** The zone in each side's half is 3, the
   middle one 2, and the two at the sides 1. A zone is worth the same to whichever side holds
   it - white holding the ×3 zone by black's base gets 3 a hex too (**confirmed by the owner,
@@ -26,8 +58,14 @@ Last updated 26 Sep 2026.
 - [ ] **CP: one award number per phase** (5, 10, 15) instead of 5 times the phase number.
   Planned; the numbers come out the same today.
 
-Screen only, not rules: a dark line now marks where the bases and reserves meet the
-battlefield, and there are sounds for overtime's toll on a king and for a base healing. When
+Screen only, not rules: a blue line marks where the bases and reserves meet the
+battlefield; black's 3x zone is dark blue, white's light blue, and each capture centre
+has a gold inset outline, with dashed outlines on the six inner-ring hexes. A gold outline
+traces the outer hex edges of the complete grid, including panels; both sides' base/reserve hex edges have stronger
+contrast. After replay, each side's turn announcement shows Turn N and White/Black in a matching
+box. It lasts 0.9s, including about 0.5s at centre. Closed-arrow crosses use lighter red. Unlimited ability labels show remaining/total cooldown and cost; CP utilities show
+remaining phase uses, CP skills and ultimates show remaining match uses; path labels separate names and CP costs with a dash. Unit details close on
+a different unit selection. Multi-recipient effects animate in one shared beat; exhausted ability buttons stay grey and open their descriptions. There are sounds for overtime's toll on a king and for a base healing. When
 both happen in the same turn, the toll plays first and the heal after it.
 
 Fixed to match the rules below (the rules did not change): a unit wrapped out of its base
@@ -100,20 +138,20 @@ White's, by hex. Black's is the mirror. `setup`
 
 `stageRules`
 
-- [ ] **Opening (1-3):** no attacks, no abilities, no wrap. Up to **3** units out of the
+- [ ] **Opening (1-3):** CP utilities only; no attacks, other casts or normal healing; no wrap. Up to **3** units out of the
   reserve and **3** walks home a turn.
 - [ ] **First half (4-8, 15-19, 26-30):** attacks, abilities and **the wrap**. Nothing out of
   the reserve and no walking home.
 - [ ] **Second half (9-13, 20-24, 31-35):** attacks and abilities. Up to **3** units out of
   the reserve a turn. No wrap and no walking home.
-- [ ] **Postmatch (14, 25, 36):** no attacks, no abilities, no wrap. Up to **5** units out of
+- [ ] **Postmatch (14, 25, 36):** abilities and normal healing, no normal attacks, no wrap. Up to **5** units out of
   the reserve and **3** walks home.
 - [ ] **Overtime (37-50):** attacks and abilities. **Walking home is allowed**, within the
   turn's battlefield moves. Nothing out of the reserve and no wrap.
 
 ## 5. Points
 
-What abilities and crossings are paid with.
+What pool abilities are paid with. Unit transactions use UP below.
 
 - [ ] **1** point a turn in the opening. `match.opening.pointsPerTurn`
 - [ ] **1, 2 and 3** points a turn in Phases 1, 2 and 3, each new rate starting at the phase's
@@ -123,17 +161,28 @@ What abilities and crossings are paid with.
 - [ ] **0** points a turn in overtime. `match.overtime.pointsPerTurn`
 - [ ] When overtime starts, **all** of a side's banked victory points become points.
   `match.overtime.vpToPoints`
-- [ ] A kill pays the killer **the dead unit's value**. `economy.killPay`
-- [ ] A kill made by a counter-attack pays **the defender**. `economy.counterKillPays`
-- [ ] A kill in a base or a reserve pays **nothing**. `economy.panelKillsPay`
-- [ ] Walking home **refunds the unit's value**. `economy.walkHomeRefund`
-- [ ] The wrap **costs the unit's value**. `economy.wrapPrice`
+### Unit points (UP)
+
+- [ ] Each side starts with **10 UP**. `rules.upAtStart` is already shared config.
+- [ ] Each halftime start adds **that side's current phase VP snapshot once**, including
+  losses, the zero floor and the phase multiplier. The award is retained after board changes.
+- [ ] A battlefield attack/counter kill pays **the dead unit's value in UP**. `economy.killPay`
+  A counter kill pays **the defender**. `economy.counterKillPays`
+- [ ] Ability kills and kills in either panel pay **no UP**. `economy.panelKillsPay`
+- [ ] Walking home **refunds the unit's value in UP**. `economy.walkHomeRefund`
+- [ ] The base-to-reserve wrap **costs the unit's value in UP**. `economy.wrapPrice`
 
 ## 6. Victory points
 
 The score. `scoring`
 
 - [ ] **Five capture zones** of **19** hexes each (a centre and 2 rings). `scoring.zones`
+- [ ] Capture and neutralization respect **per-unit cumulative zone permissions** in the
+  shared config. Omitted permissions retain unrestricted older configs. `units[].captureZones`
+- [ ] A unit on the **centre holds all 19 hexes** while **no eligible enemy is inside the
+  zone**. Otherwise normal adjacent claims apply. Ineligible enemies cannot neutralize it.
+  `scoring.centerControl`
+
 - [ ] **What a hex is worth to the side holding it** (new, live): `scoring.zones[].worth`
 
   | Zone | Centre | Worth a hex | Hexes |
@@ -144,7 +193,9 @@ The score. `scoring`
   | Left side | 264 | **1** | 216-218, 239-242, 262-266, 286-289, 310-312 |
   | Right side | 278 | **1** | 230-232, 253-256, 276-280, 300-303, 324-326 |
 
-- [ ] A unit in a zone holds **its own hex and the zone hexes next to it**.
+- [ ] An **outer-ring unit scores only its occupied hex**; an **inner-ring unit also scores
+  adjacent zone hexes**. All eligible units **neutralize opposing claims on their own and
+  adjacent hexes**, including outer-ring units. An opposed centre uses immediate neighbours.
   `scoring.claimReach`
 - [ ] A hex **both sides reach counts for neither**. `scoring.contestedIsNeutral`
 - [ ] A death costs its side **the dead unit's value**, in the phase it happened.
@@ -170,6 +221,13 @@ The score. `scoring`
 
 ## 8. How a match ends
 
+- [ ] **Phase 1: White loses if no eligible White unit occupies a capture-zone hex at tally.**
+  Contested occupancy still qualifies; zero VP alone does not decide this phase. *fixed*
+- [ ] **Phase 2: Black loses if its phase VP tallies to 0.** Eligible occupancy alone does
+  not prevent this loss. *fixed*
+- [ ] **Both postmatch turns finish before either pending phase loss resolves.** Freeze
+  the loser at tally; a king kill during postmatch takes priority. *fixed*
+
 - [ ] A side **loses when its king dies**. `match.objective` (regicide)
 - [ ] After Phase 3, **white wins on points if more than 10 ahead**, **black if more than 5
   ahead**. Anything closer goes to overtime. `match.leadToWin`
@@ -186,8 +244,8 @@ The score. `scoring`
 
 `combat`
 
-- [ ] A ranged attack loses **0.25** of its attack for each ring past the first.
-  `combat.rangeFalloff`
+- [ ] An attack without explicit per-ring values loses **0.25** of its attack for each
+  ring past the first. `combat.rangeFalloff`
 - [ ] A blow that lands deals **at least 1** after defence. `combat.minStrikeDamage`
 - [ ] A ranged hit is **at least 1** before defence. `combat.minRangedDamage`
 - [ ] A defender **strikes back** if the attacker is within its range.

@@ -1,9 +1,11 @@
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { stackEffect } from '../../services/ability-rules';
+import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { SimpleChange } from '@angular/core';
 import { GameBoardComponent, hexNumberMap } from './game-board.component';
 import { DEFAULT_GAME_CONFIG } from '../../services/config.service';
 import { OVERTIME_FIRST_PLY } from '../../services/phases';
 import { setPanelsDealt } from '../../services/hex-rules';
+import { AudioService } from '../../services/audio.service';
 
 /**
  * The reach preview and the stat glyphs are what the player reads off the
@@ -60,6 +62,385 @@ describe('GameBoardComponent reach preview', () => {
   afterEach(() => { delete (config.units as any).archer.commander; });
 
   const cell = (key: string) => board.cells.find(c => c.key === key)!;
+
+  it('animates mixed cast recipients and HP marks simultaneously with one shared duration', fakeAsync(() => {
+    const pop = spyOn<any>(board, 'popUnit');
+    let finished = false;
+    (board as any).playStep({ kind: 'ability', from: '', to: '', brief: true, targets: [
+      { kind: 'ability', from: '0,0', to: '0,0', mark: '+4' },
+      { kind: 'ability', from: '3,0', to: '3,0', mark: '-3', hostile: true },
+    ] }).then(() => finished = true);
+    expect(pop.calls.count()).toBe(2);
+    const duration = Number(pop.calls.first().args[2]);
+    expect(pop.calls.allArgs()).toEqual([['0,0', false, duration], ['3,0', true, duration]]);
+    expect(board.glowTargets).toEqual(new Set(['0,0', '3,0']));
+    expect(board.markOf(cell('0,0'))).toBe('+4');
+    expect(board.markOf(cell('3,0'))).toBe('-3');
+    tick(duration - 1); expect(finished).toBeFalse();
+    tick(1); expect(finished).toBeTrue(); expect(board.glowTargets.size).toBe(0);
+    tick(5000);
+  }));
+
+  it('follows cast recipients by UID after moving and does not animate a replacement unit', fakeAsync(() => {
+    board.boardState = { '1,0': { ...boardState['0,0'], uid: 'recipient' },
+      '0,0': { ...boardState['0,0'], uid: 'replacement' } };
+    board.ngOnChanges({ boardState: new SimpleChange(boardState, board.boardState, false) });
+    const pop = spyOn<any>(board, 'popUnit');
+    (board as any).playStep({ kind: 'ability', from: '', to: '', targets: [
+      { kind: 'ability', from: '', to: '0,0', uid: 'recipient' },
+      { kind: 'ability', from: '', to: '0,0', uid: 'removed' },
+    ] });
+    expect(pop.calls.count()).toBe(1);
+    expect(pop.calls.first().args[0]).toBe('1,0');
+    expect(board.glowTargets).toEqual(new Set(['1,0']));
+    tick(5000);
+  }));
+
+  it('stops unit animations immediately when playback is cancelled', () => {
+    const group = fixture.nativeElement.querySelector('[data-pop="0,0"]') as SVGGElement;
+    (board as any).popUnit('0,0', false, 400);
+    expect(group.getAnimations().length).toBe(1);
+    (board as any).stopPlayback();
+    expect(group.getAnimations().length).toBe(0);
+  });
+
+  it('lands every splash hit together before a counter beat begins', fakeAsync(() => {
+    spyOn<any>(board, 'slide').and.returnValue(Promise.resolve());
+    const pop = spyOn<any>(board, 'popUnit');
+    const played: string[] = [];
+    board.playbackStep.subscribe(beat => played.push(beat.kind));
+    (board as any).runPlayback([
+      { kind: 'attack', from: '0,0', to: '3,0', targets: [
+        { kind: 'ability', from: '3,0', to: '3,0', mark: '-4', hostile: true },
+        { kind: 'ability', from: '-3,0', to: '-3,0', mark: '-2', hostile: true },
+      ] }, { kind: 'counter', from: '3,0', to: '0,0' },
+    ]);
+    tick(0);
+    expect(pop.calls.count()).toBe(2);
+    expect(played).toEqual(['attack']);
+    expect(board.markOf(cell('3,0'))).toBe('-4');
+    expect(board.markOf(cell('-3,0'))).toBe('-2');
+    tick(Number(pop.calls.first().args[2]) - 1);
+    expect(played).toEqual(['attack']);
+    tick(5000);
+    expect(played).toEqual(['attack', 'counter']);
+  }));
+
+  it('cancels the whole cast without clearing a replacement cast’s highlights', fakeAsync(() => {
+    const beat = (key: string) => ({ kind: 'ability', from: '', to: '', targets: [
+      { kind: 'ability', from: key, to: key },
+    ] });
+    (board as any).playStep(beat('0,0'));
+    (board as any).stopPlayback();
+    (board as any).playStep(beat('3,0'));
+    tick(0);
+    expect(board.glowTargets).toEqual(new Set(['3,0']));
+    tick(5000); expect(board.glowTargets.size).toBe(0);
+  }));
+
+  it('targets an empty hex for CP casts before ordinary selection and suppresses locked reach previews', () => {
+    board.controlAllSides = true; board.myColor = 'white'; board.turnColor = 'white';
+    const target = jasmine.createSpy('target'); board.abilityHexClicked.subscribe(target);
+    board.abilityMode = 'hex'; board.onHexClick(cell('1,0'));
+    expect(target).toHaveBeenCalledWith('1,0'); expect(board.selectedHex).toBeNull();
+    board.abilityMode = null;
+    board.unitBuffs = { 'w0,0': stackEffect(undefined, { name: 'Trap', effect: 'action-lock', mov: 0, atk: 0, def: 0 }, 'black', true) };
+    board.boardState = { ...boardState, '0,0': { ...boardState['0,0'], uid: 'w0,0' } };
+    board.ngOnChanges({ unitBuffs: new SimpleChange(null, board.unitBuffs, false), boardState: new SimpleChange(null, board.boardState, false) });
+    board.onHexHover(cell('0,0'));
+    expect(board.previewMoves.size).toBe(0); expect(board.previewAttacks.size).toBe(0); expect(board.previewHeals.size).toBe(0);
+  });
+
+  it('reverts staged reserve promotion metadata on Undo and preserves later wounds', () => {
+    setPanelsDealt(false); board.config = structuredClone(DEFAULT_GAME_CONFIG); board.radius = 11; board.turnNumber = 1;
+    board.config.setup = { white: {}, black: {} };
+    board.ngOnChanges({ config: new SimpleChange(null, board.config, false), radius: new SimpleChange(4, 11, false) });
+    const green = board.cells.find(c => c.panel === 'br')!.key;
+    board.config.setup.white[green] = 'pawn';
+    const uid = 'w' + green;
+    board.panelHp = { [uid]: 5 };
+    board.ngOnChanges({ config: new SimpleChange(null, board.config, false), panelHp: new SimpleChange(null, board.panelHp, false) });
+    const promoted = { ...cell(green).piece!, hp: 7, max_hp: 14, vet: 1 };
+    board.unitPromotions = { [uid]: promoted }; board.panelHp = { [uid]: 7 };
+    board.ngOnChanges({ unitPromotions: new SimpleChange(null, board.unitPromotions, false), panelHp: new SimpleChange(null, board.panelHp, false) });
+    expect(cell(green).piece).toEqual(jasmine.objectContaining({ hp: 7, max_hp: 14, vet: 1 }));
+    board.panelHp = { [uid]: 3 }; board.ngOnChanges({ panelHp: new SimpleChange(null, board.panelHp, false) });
+    expect(cell(green).piece!.hp).toBe(3);
+    board.unitPromotions = {}; board.panelHp = { [uid]: 5 };
+    board.ngOnChanges({ unitPromotions: new SimpleChange(null, {}, false), panelHp: new SimpleChange(null, board.panelHp, false) });
+    expect(cell(green).piece).toEqual(jasmine.objectContaining({ hp: 5, max_hp: 12, vet: 0 }));
+  });
+
+  it('removes attack reach under Sap zero ATK and suppresses the protected king’s overtime skull', () => {
+    board.config = structuredClone(DEFAULT_GAME_CONFIG); board.radius = 11; board.turnNumber = 77;
+    board.boardState = { '0,0': { unit_id: 'king', color: 'white', uid: 'king', hp: 1, max_hp: 60, vet: 3 },
+      '1,0': { unit_id: 'pawn', color: 'black', uid: 'foe', hp: 14, max_hp: 14, vet: 3 } };
+    let buff = stackEffect(undefined, { name: 'Sap', mov: 0, atk: 0, def: 0, setAtk: 0 }, 'black', true);
+    buff = stackEffect(buff, { name: 'Fortress', mov: 0, atk: 0, def: 0, effect: 'invulnerable' }, 'white');
+    board.unitBuffs = { king: buff };
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false), config: new SimpleChange(null, board.config, false),
+      radius: new SimpleChange(4, 11, false), unitBuffs: new SimpleChange(null, board.unitBuffs, false) });
+    board.onHexHover(cell('0,0'));
+    expect(board.previewAttacks.size).toBe(0); expect(board.doomState(cell('0,0'))).toBe('');
+  });
+
+  it('keeps close enemies out of archer targets and removes a shieldman’s attack reach', () => {
+    board.config = structuredClone(DEFAULT_GAME_CONFIG);
+    board.radius = 11;
+    board.controlAllSides = true; board.turnColor = 'white'; board.myColor = 'white';
+    board.boardState = {
+      '0,0': { unit_id: 'archer', color: 'white', hp: 6, max_hp: 6 },
+      '2,0': { unit_id: 'pawn', color: 'black', hp: 12, max_hp: 12 },
+      '3,0': { unit_id: 'pawn', color: 'black', hp: 12, max_hp: 12 },
+      '6,0': { unit_id: 'pawn', color: 'black', hp: 12, max_hp: 12 },
+      '7,0': { unit_id: 'pawn', color: 'black', hp: 12, max_hp: 12 },
+    };
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false),
+      config: new SimpleChange(null, board.config, false), radius: new SimpleChange(4, 11, false) });
+    board.onHexClick(cell('0,0'));
+    expect([...board.attackTargets].sort()).toEqual(['3,0', '6,0']);
+    expect(cell('0,0').stats!.rangeLow).toBe(3);
+    expect(cell('0,0').stats!.rangeHigh).toBe(6);
+    board.movesLeft = 0; board.movesLeftFor = '0,0';
+    board.onHexHover(cell('0,0'));
+    expect(board.previewAttacks.has('2,0')).toBeFalse();
+    expect(board.previewAttacks.has('3,0')).toBeTrue();
+    board.boardState = { ...board.boardState,
+      '0,0': { unit_id: 'shieldman', color: 'white', hp: 30, max_hp: 30 } };
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false) });
+    board.onHexClick(cell('0,0'));
+    expect(board.attackTargets.size).toBe(0);
+    board.onHexHover(cell('0,0'));
+    expect(board.previewAttacks.size).toBe(0);
+  });
+
+  it('keeps unavailable attack dashed, enables Shove attacks at Vet 2 and suppresses drained attacks', () => {
+    board.config = structuredClone(DEFAULT_GAME_CONFIG);
+    board.radius = 11; board.interactive = true;
+    board.controlAllSides = true; board.turnColor = 'white';
+    board.boardState = {
+      '0,0': { unit_id: 'pawn', color: 'white', uid: 'own', hp: 12, max_hp: 12 },
+      '1,0': { unit_id: 'shieldman', color: 'black', uid: 'enemy', hp: 30, max_hp: 30 },
+    };
+    const rebuild = () => board.ngOnChanges({
+      boardState: new SimpleChange(null, board.boardState, false),
+      config: new SimpleChange(null, board.config, false),
+      unitBuffs: new SimpleChange(null, board.unitBuffs, false),
+    });
+    board.unitBuffs = { enemy: { atk: 8, mov: 0 } }; rebuild();
+    board.onHexClick(cell('0,0')); board.onHexHover(cell('1,0'));
+    expect(board.attackTargets.has('1,0')).toBeTrue();
+    expect(board.forecastDamage('0,0')).toBeNull();
+    expect(cell('1,0').stats!.atk).toBe('—');
+    board.unitBuffs = { own: { atk: -10, mov: -2 } }; rebuild();
+    board.onHexClick(cell('0,0')); board.onHexHover(cell('0,0'));
+    expect(board.attackTargets.size).toBe(0);
+    expect(board.previewAttacks.size).toBe(0);
+    expect((board as any).moveCosts.has('-5,0')).toBeFalse();
+    expect((board as any).moveCosts.has('-4,0')).toBeTrue();
+    board.turnColor = 'black'; board.unitBuffs = { enemy: { atk: 8, mov: 0 } }; rebuild();
+    board.onHexClick(cell('1,0'));
+    expect(board.attackTargets.has('0,0')).toBeFalse();
+    board.boardState['1,0'] = { ...board.boardState['1,0'], vet: 2 }; rebuild();
+    board.onHexClick(cell('1,0'));
+    expect(board.attackTargets.has('0,0')).toBeTrue();
+    expect(cell('1,0').stats!.atk).toBe('12');
+  });
+
+  it('uses earned first-star profiles for Unit inspection, reach, forecasts and wounded reserves', () => {
+    setPanelsDealt(false);
+    board.config = structuredClone(DEFAULT_GAME_CONFIG);
+    board.config.setup.white['11,1'] = 'pawn';
+    board.radius = 11; board.turnNumber = 7;
+    board.controlAllSides = true; board.turnColor = 'white'; board.myColor = 'white';
+    board.boardState = {
+      '0,0': { unit_id: 'king', color: 'white', uid: 'king', hp: 60, max_hp: 60, vet: 1 },
+      '2,0': { unit_id: 'pawn', color: 'black', uid: 'enemy', hp: 14, max_hp: 14, vet: 1 },
+      '-3,0': { unit_id: 'bishop', color: 'white', uid: 'healer', hp: 8, max_hp: 8, vet: 1 },
+      '-1,0': { unit_id: 'pawn', color: 'white', uid: 'ally', hp: 3, max_hp: 14, vet: 1 },
+    };
+    board.panelHp = { 'w11,1': 7 };
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false),
+      config: new SimpleChange(null, board.config, false), radius: new SimpleChange(4, 11, false),
+      turnNumber: new SimpleChange(20, 7, false) });
+    const selected = jasmine.createSpy('selected'); board.hexSelected.subscribe(selected);
+    board.onHexClick(cell('0,0'));
+    expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ atk: [24, 20], mv: 8, vet: 1 }));
+    expect(cell('0,0').stats!.rangeHigh).toBe(2);
+    expect(board.attackTargets.has('2,0')).toBeTrue();
+    board.onHexHover(cell('2,0'));
+    expect(board.forecastDamage('2,0')).toBe('-10');
+    expect(board.forecastDamage('0,0')).toBeNull();
+    board.onHexClick(cell('-3,0'));
+    expect([...board.healTargets].sort()).toEqual(['-1,0', '0,0']);
+    board.onHexHover(cell('-1,0'));
+    expect(board.forecastDamage('-1,0')).toBe('+6');
+    expect(cell('11,1').piece).toEqual(jasmine.objectContaining({ hp: 7, max_hp: 14, vet: 1 }));
+    board.onHexClick(cell('11,1'));
+    expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ hp: 7, hpMax: 14, atk: [10], def: 10, vet: 1 }));
+  });
+
+  it('offers a healer only other friendly battlefield units, previews HP and confirms touch healing', () => {
+    board.config = { ...config, units: { ...config.units, medic: {
+      name: 'Medic', symbol: 'M', attack: 0, attackRange: 1, heal: [14, 13, 12, 11], move: 1, hp: 22,
+    } } };
+    board.boardState = {
+      '0,0': { unit_id: 'medic', color: 'white', hp: 22, max_hp: 22 },
+      '3,0': { unit_id: 'guard', color: 'white', hp: 5, max_hp: 30 },
+      '-3,0': { unit_id: 'guard', color: 'black', hp: 9, max_hp: 9 },
+    };
+    board.controlAllSides = true;
+    board.turnColor = 'white';
+    board.myColor = 'white';
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false), config: new SimpleChange(config, board.config, false) });
+    board.onHexClick(cell('0,0'));
+    expect([...board.healTargets]).toEqual(['3,0']);
+    expect(board.attackTargets.size).toBe(0);
+    expect(cell('0,0').stats!.rangeHigh).toBe(4);
+    const seen: any[] = []; board.attackMade.subscribe(e => seen.push(e));
+    (board as any).lastPointer = 'touch';
+    board.onHexClick(cell('3,0'));
+    expect(seen.length).toBe(0);
+    expect(board.forecastDamage('3,0')).toBe('+12');
+    expect(board.forecastDamage('0,0')).toBeNull();
+    expect(board.keyWordsFor(cell('3,0'))).toContain('can heal');
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.armed-hint').textContent).toContain('heal');
+    expect(fixture.nativeElement.querySelector('.hex-heal-armed')).not.toBeNull();
+    board.onHexClick(cell('3,0'));
+    expect(seen).toEqual([{ from: '0,0', to: '0,0', attack: '3,0', heal: true }]);
+    board.movesLeftFor = '0,0';
+    board.actionSpent = true;
+    board.onHexClick(cell('0,0'));
+    expect(board.healTargets.size).toBe(0);
+    expect(board.drivable(cell('0,0'))).toBeFalse();
+    board.actionSpent = false;
+    board.turnNumber = 27;
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 27, false) });
+    board.onHexClick(cell('0,0'));
+    expect(board.healTargets.has('3,0')).toBeTrue();
+    board.onHexHover(cell('0,0'));
+    expect(board.previewHeals.size).toBeGreaterThan(0);
+    board.turnNumber = 1;
+    board.ngOnChanges({ turnNumber: new SimpleChange(27, 1, false) });
+    board.onHexClick(cell('0,0'));
+    expect(board.healTargets.size).toBe(0);
+    board.onHexHover(cell('0,0'));
+    expect(board.previewHeals.size).toBe(0);
+  });
+
+  it('gives an armed friendly ability the next unit click before normal healing or attacking', () => {
+    board.config = structuredClone(DEFAULT_GAME_CONFIG);
+    board.radius = 11;
+    board.controlAllSides = true; board.turnColor = 'white'; board.myColor = 'white';
+    board.boardState = {
+      '0,0': { unit_id: 'bishop', color: 'white', hp: 8, max_hp: 8, uid: 'medic' },
+      '1,0': { unit_id: 'rook', color: 'white', hp: 1, max_hp: 40, uid: 'ally' },
+      '-1,0': { unit_id: 'pawn', color: 'black', hp: 12, max_hp: 12, uid: 'enemy' },
+    };
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false),
+      config: new SimpleChange(null, board.config, false), radius: new SimpleChange(4, 11, false) });
+    const attack = spyOn(board.attackMade, 'emit');
+    const clicked = spyOn(board.hexClicked, 'emit');
+    for (const pointer of ['mouse', 'touch']) {
+      board.abilityMode = null;
+      board.onHexClick(cell('0,0'));
+      expect(board.healTargets.has('1,0')).toBeTrue();
+      (board as any).lastPointer = pointer;
+      board.abilityMode = 'friendly';
+      board.ngOnChanges({ abilityMode: new SimpleChange(null, 'friendly', false) });
+      clicked.calls.reset();
+      board.onHexClick(cell('1,0'));
+      expect(clicked).toHaveBeenCalledWith(jasmine.objectContaining({ uid: 'ally' }));
+      expect(attack).not.toHaveBeenCalled();
+      expect(board.armedAttack).toBeNull();
+      // The room also needs the wrong-kind click to cancel the armed cast.
+      clicked.calls.reset();
+      board.onHexClick(cell('-1,0'));
+      expect(clicked).toHaveBeenCalledWith(jasmine.objectContaining({ uid: 'enemy' }));
+      expect(attack).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps original battlefield veterans ranked through staged withdrawal, Undo and commit', () => {
+    board.config = structuredClone(DEFAULT_GAME_CONFIG);
+    board.radius = 11; board.turnNumber = 27; board.controlAllSides = true;
+    const selected = spyOn(board.hexSelected, 'emit');
+    for (const color of ['white', 'black'] as const) {
+      const sign = color === 'white' ? 1 : -1;
+      const origin = [-4 * sign, 9 * sign].join(',');
+      const landing = [-12 * sign, 10 * sign].join(',');
+      const rook = { unit_id: 'rook', color, hp: 40, max_hp: 40, uid: `original-${color}` };
+      board.myColor = color; board.turnColor = color; board.moveHistory = []; board.withdrawn = [];
+      board.committedBoard = { [origin]: rook }; board.boardState = board.committedBoard;
+      board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false),
+        committedBoard: new SimpleChange(null, board.committedBoard, false),
+        config: new SimpleChange(null, board.config, false), radius: new SimpleChange(4, 11, false) });
+      expect(cell(origin).vet).toBe(2);
+      board.boardState = { [landing]: rook };
+      board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false) });
+      expect(cell(landing).vet).toBe(2);
+      expect(board.vetPips(cell(landing)).map(pip => pip.glyph)).toEqual(['★', '★']);
+      board.onHexClick(cell(landing));
+      expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ key: landing, vet: 2 }));
+      board.boardState = board.committedBoard;
+      board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false) });
+      expect(cell(origin).vet).toBe(2);
+      board.boardState = {}; board.committedBoard = {};
+      board.withdrawn = [{ at: landing, unit: rook }];
+      board.moveHistory = [{ from: origin, to: landing, turn: 27, withdrawn: true, unit: rook, color, unit_id: 'rook' }] as any;
+      board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false),
+        committedBoard: new SimpleChange(null, board.committedBoard, false),
+        withdrawn: new SimpleChange(null, board.withdrawn, false), moveHistory: new SimpleChange(null, board.moveHistory, false) });
+      expect(cell(landing).vet).toBe(2);
+    }
+  });
+
+  it('starts both sides unranked on the battlefield and in both panels', () => {
+    board.turnNumber = 1;
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 1, false) });
+    const occupied = board.cells.filter(c => c.piece);
+    // The fixture deals both panels, so a field-only reset cannot pass.
+    expect(new Set(occupied.map(c => c.panel))).toEqual(new Set(['', 'tl', 'tr', 'bl', 'br']));
+    expect(new Set(occupied.map(c => c.piece!.color))).toEqual(new Set(['white', 'black']));
+    for (const hex of occupied) {
+      expect(hex.vet).withContext(hex.key).toBe(0);
+      expect(board.vetPips(hex).map(p => p.glyph)).withContext(hex.key).toEqual(['-']);
+    }
+    (board as any).cdr.detectChanges();
+    const glyphs = [...fixture.nativeElement.querySelectorAll('text.vet-star')] as SVGTextElement[];
+    expect(glyphs.length).toBe(occupied.length);
+    expect(glyphs.every(g => g.textContent?.trim() === '-')).toBeTrue();
+    // The Unit panel receives the same zero as the actual board glyph.
+    const selected = jasmine.createSpy('selected');
+    board.hexSelected.subscribe(selected);
+    board.onHexClick(cell('0,0'));
+    expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ vet: 0 }));
+  });
+
+  it('renders boundary stars in every eligible zone and refreshes the selected Unit panel', () => {
+    board.turnNumber = 6;
+    board.ngOnChanges({ turnNumber: new SimpleChange(20, 6, false) });
+    const selected = jasmine.createSpy('selected');
+    board.hexSelected.subscribe(selected);
+    board.onHexClick(cell('0,0'));
+    for (const [ply, vet] of [[7, 1], [8, 1], [27, 2], [28, 2], [49, 3], [71, 3]]) {
+      const previous = board.turnNumber;
+      board.turnNumber = ply;
+      board.ngOnChanges({ turnNumber: new SimpleChange(previous, ply, false) });
+      (board as any).cdr.detectChanges();
+      for (const hex of board.cells.filter(c => c.piece)) {
+        const earned = !['bl', 'tr'].includes(hex.panel) ? vet : 0;
+        expect(hex.vet).withContext(`${hex.key} at ${ply}`).toBe(earned);
+        expect(board.vetPips(hex).filter(p => p.glyph === '★').length).toBe(earned);
+      }
+      expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ key: '0,0', vet }));
+      // Stars are actually painted, not just present on the render model.
+      const eligible = board.cells.filter(c => c.piece && !['bl', 'tr'].includes(c.panel)).length;
+      const stars = [...fixture.nativeElement.querySelectorAll('text.vet-star')] as SVGTextElement[];
+      expect(stars.filter(g => g.textContent?.trim() === '★').length).toBe(eligible * vet);
+    }
+  });
 
   it('takes overtime out of the king, on the king', async () => {
     // Overtime bleeds a point off a side at the end of each of its
@@ -554,7 +935,31 @@ describe('GameBoardComponent reach preview', () => {
     expect(zoned.length).toBe(5 * 19);
   });
 
-  it('draws a dark line along every edge where a panel meets the battlefield', () => {
+  it('keeps a distinct centre outline on occupied zones and side-specific base blues when flipped', () => {
+    board.radius = 11;
+    board.ngOnChanges({ radius: new SimpleChange(4, 11, false) });
+    for (const rotate of [false, true]) {
+      board.rotateBoard = rotate;
+      (board as any).cdr.detectChanges();
+      const centers = board.cells.filter(cell => cell.zoneCenter);
+      expect(centers.map(cell => cell.key).sort()).toEqual(['-3,6', '-7,0', '0,0', '3,-6', '7,0'].sort());
+      expect(fixture.nativeElement.querySelectorAll('.zone-center').length).toBe(5);
+      expect(fixture.nativeElement.querySelectorAll('.zone-inner').length).toBe(30);
+      expect(board.cells.filter(cell => cell.zoneLayer === 1).length).toBe(30);
+      expect(centers.some(cell => cell.piece)).toBeTrue();
+      for (const [owner, fill] of [['white', 'rgb(191, 219, 254)'], ['black', 'rgb(30, 58, 138)']]) {
+        expect(board.cells.filter(cell => cell.zoneOwner === owner).length).toBe(19);
+        const hex = fixture.nativeElement.querySelector(`.hex-cell.zone-${owner}-base`);
+        expect(getComputedStyle(hex).fill).toBe(fill);
+      }
+      const outline = fixture.nativeElement.querySelector('.zone-center');
+      expect(getComputedStyle(outline).fill).toBe('none');
+      expect(getComputedStyle(outline).stroke).toBe('rgb(250, 204, 21)');
+      expect(getComputedStyle(outline).pointerEvents).toBe('none');
+    }
+  });
+
+  it('draws a line along every edge where a panel meets the battlefield', () => {
     // The owner, 26 Sep 2026: "try to draw a darker line on between the
     // reserve/base and the board edge".
     board.radius = 11;
@@ -1189,7 +1594,7 @@ describe('GameBoardComponent reach preview', () => {
 
       // And a unit that never moved greys too once the turn's three are used.
       anyBoard().panelMoved.clear();
-      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('bl').add(uid));
       expect(board.isPanelSpent(cell)).toBeTrue();
       // Three is rules.panelMoversPerTurn, not the board's own number.
       board.config = { ...config, rules: { ...(config as any).rules, panelMoversPerTurn: 4 } };
@@ -1255,7 +1660,7 @@ describe('GameBoardComponent reach preview', () => {
       // The three-mover cap is the base's alone: a reserve unit is not held
       // back by base units having used the turn's allowance.
       anyBoard().panelMoved.clear();
-      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('bl').add(uid));
       expect(board.isPanelSpent(cell)).toBeFalse();
     });
 
@@ -2164,7 +2569,7 @@ describe('GameBoardComponent reach preview', () => {
       expect(anyBoard().reserves[from]).toBeTruthy();
       expect(anyBoard().reserves[to]).toBeUndefined();
       expect(anyBoard().panelMoved.has(uid)).toBeFalse();
-      expect(anyBoard().baseMovers.has(uid)).toBeFalse();
+      expect(anyBoard().moversIn('bl').has(uid)).toBeFalse();
       expect(board.lastPanelMove).toBe(0);
       expect(board.hasWalked(anyBoard().cellsByKey.get(from))).toBeFalse();
     });
@@ -2198,7 +2603,7 @@ describe('GameBoardComponent reach preview', () => {
     it('lets three move a turn, then no more until the next', () => {
       const cell = baseCell();
       // Three others have already been walked this turn, and this is a fourth.
-      ['a', 'b', 'c'].forEach(uid => anyBoard().baseMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('bl').add(uid));
       board.onHexClick(cell);
       expect(board.legalTargets.size).toBe(0);
 
@@ -2406,21 +2811,21 @@ describe('GameBoardComponent reach preview', () => {
 
     it('caps the reserve at three movers a turn, the way the base is', () => {
       const res = reserveCell();
-      ['a', 'b', 'c'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('br').add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBe(0);
 
       // And outside the opening too. The reserve used to shuffle freely once
       // the opening was over; it carries the allowance all match now.
       enterTurn(1, 20);
-      ['a', 'b', 'c'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('br').add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBe(0);
 
       // The two panels' allowances are separate: a base full of movers does
       // not spend the reserve's, and a fourth in the reserve is still refused.
       enterTurn(20, 21);
-      ['d', 'e', 'f'].forEach(uid => anyBoard().baseMovers.add(uid));
+      ['d', 'e', 'f'].forEach(uid => anyBoard().moversIn('bl').add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBeGreaterThan(0);
     });
@@ -2443,24 +2848,34 @@ describe('GameBoardComponent reach preview', () => {
       expect(board.attackTargets.has('1,0')).toBeTrue();
     });
 
+    it('keeps movement caps separate when Cast gives control of another physical reserve', () => {
+      enterTurn(1, 55);
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('br').add(uid));
+      const controlled = { ...reserveCell(), panel: 'tl', piece: { ...reserveCell().piece, uid: 'controlled', color: 'white' } };
+      expect(anyBoard().panelCanMove(controlled)).toBeTrue();
+      ['x', 'y', 'z'].forEach(uid => anyBoard().moversIn('tl').add(uid));
+      expect(anyBoard().panelCanMove(controlled)).toBeFalse();
+      expect(anyBoard().panelCanMove(reserveCell())).toBeFalse();
+    });
+
     it('lets five out of the reserve on a postmatch', () => {
       // The engines raise the reserve's allowance to five there. The board
       // kept its own copy of the three and never heard about it, so the fourth
       // and fifth were refused by the only thing the player can click.
       enterTurn(1, 27);
       const res = reserveCell();
-      ['a', 'b', 'c'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('br').add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBeGreaterThan(0);
 
       // The base keeps its three, though: nothing in that allowance was
       // about the base.
-      ['d', 'e', 'f'].forEach(uid => anyBoard().baseMovers.add(uid));
+      ['d', 'e', 'f'].forEach(uid => anyBoard().moversIn('bl').add(uid));
       board.onHexClick(baseCell());
       expect(board.legalTargets.size).toBe(0);
 
       // And five is still a cap.
-      ['d', 'e'].forEach(uid => anyBoard().reserveMovers.add(uid));
+      ['d', 'e'].forEach(uid => anyBoard().moversIn('br').add(uid));
       board.onHexClick(res);
       expect(board.legalTargets.size).toBe(0);
 
@@ -2481,10 +2896,10 @@ describe('GameBoardComponent reach preview', () => {
         enterTurn(1, ply);
         // Two started leaves one to go, so the cell has somewhere to walk -
         // without that, the nought below would prove nothing about the cap.
-        ['a', 'b'].forEach(uid => anyBoard().reserveMovers.add(uid));
+        ['a', 'b'].forEach(uid => anyBoard().moversIn('br').add(uid));
         board.onHexClick(reserveCell());
         expect(board.legalTargets.size).withContext(`ply ${ply}, two started`).toBeGreaterThan(0);
-        anyBoard().reserveMovers.add('c');
+        anyBoard().moversIn('br').add('c');
         board.selectedHex = null;
         board.onHexClick(reserveCell());
         expect(board.legalTargets.size).withContext(`ply ${ply}`).toBe(0);
@@ -2700,7 +3115,7 @@ describe('GameBoardComponent setup deal', () => {
     expect(reserves['-17,11']).toEqual({
       unit_id: 'rook', color: 'white',
       hp: DEFAULT_GAME_CONFIG.units.rook.hp, max_hp: DEFAULT_GAME_CONFIG.units.rook.hp,
-      uid: 'w-17,11',
+      uid: 'w-17,11', vet: 0,
     });
   });
 
@@ -2716,8 +3131,11 @@ describe('GameBoardComponent setup deal', () => {
         attack: 77,
         defense: 31,
         attackRange: 3,
+        attackMinRange: 1,
         value: 123,
       };
+      // This fixture gives every id an attack role, including the normally healing bishop.
+      delete (changed as any).heal;
       config.units[unitId] = changed;
       const fixture = TestBed.createComponent(GameBoardComponent);
       board = fixture.componentInstance;
@@ -2738,7 +3156,7 @@ describe('GameBoardComponent setup deal', () => {
       expect(seen.hp).withContext(unitId).toBe(115);
       expect(seen.hpMax).withContext(unitId).toBe(changed.hp);
       expect(seen.mv).withContext(unitId).toBe(changed.move);
-      expect(seen.atk).withContext(unitId).toBe('77,57,38');
+      expect(seen.atk).withContext(unitId).toEqual([77, 57, 38]);
       expect(seen.def).withContext(unitId).toBe(changed.defense);
       expect(seen.points).withContext(unitId).toBe(changed.value);
       expect(hex.stats.hp).withContext(unitId).toBe(99);
@@ -3355,4 +3773,183 @@ describe('GameBoardComponent on a touch screen', () => {
     expect(unscaled).toBeGreaterThan(0);
     expect(scaled / unscaled).toBeCloseTo(2, 3);
   });
+});
+
+
+describe('board turn announcements', () => {
+  let fixture: ComponentFixture<GameBoardComponent>;
+  let board: GameBoardComponent;
+  let swoosh: jasmine.Spy;
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({ imports: [GameBoardComponent] }).compileComponents();
+    fixture = TestBed.createComponent(GameBoardComponent);
+    board = fixture.componentInstance;
+    board.config = DEFAULT_GAME_CONFIG;
+    board.radius = 11;
+    board.currentTurn = 'White';
+    board.myColor = 'black';
+    board.turnColor = 'white';
+    swoosh = spyOn(TestBed.inject(AudioService), 'playSwoosh');
+  });
+  const arrive = (ply: number, first = false) => {
+    const previous = board.turnNumber;
+    board.turnNumber = ply;
+    board.turnColor = ply % 2 === 1 ? 'white' : 'black';
+    board.ngOnChanges({ turnNumber: new SimpleChange(previous, ply, first) });
+    (board as any).cdr.detectChanges();
+  };
+  const notice = () => fixture.nativeElement.querySelector('.turn-announcement') as HTMLElement | null;
+
+  it('announces each side once with its colour, briefly, and leaves the Black-seat board clickable', fakeAsync(() => {
+    board.freshGameStart = true;
+    arrive(1, true);
+    expect(notice()!.querySelector('strong')!.textContent).toBe('Initialization');
+    expect([...notice()!.querySelectorAll('span')].map(s => s.textContent)).toEqual(['Turn 1', 'White']);
+    expect(getComputedStyle(notice()!).backgroundColor).toBe('rgb(255, 255, 255)');
+    expect(getComputedStyle(notice()!).color).toBe('rgb(17, 17, 17)');
+    expect(notice()!.closest('.board-container')).not.toBeNull();
+    expect(getComputedStyle(notice()!.parentElement!).overflow).toBe('hidden');
+    expect(getComputedStyle(notice()!).animationDuration).toBe('0.9s');
+    expect(swoosh).toHaveBeenCalledTimes(1);
+    expect(getComputedStyle(notice()!).pointerEvents).toBe('none');
+    tick(600); fixture.detectChanges();
+    expect(notice()).not.toBeNull();
+    tick(300); fixture.detectChanges();
+    expect(notice()).toBeNull();
+    arrive(2);
+    expect(notice()!.querySelector('strong')).toBeNull();
+    expect([...notice()!.querySelectorAll('span')].map(s => s.textContent)).toEqual(['Turn 1', 'Black']);
+    expect(getComputedStyle(notice()!).backgroundColor).toBe('rgb(17, 17, 17)');
+    expect(getComputedStyle(notice()!).color).toBe('rgb(255, 255, 255)');
+    expect(swoosh).toHaveBeenCalledTimes(2);
+    arrive(3);
+    expect(notice()!.querySelector('strong')).toBeNull();
+    expect(notice()!.querySelector('span')!.textContent).toBe('Turn 2');
+    tick(300); arrive(3);
+    expect(swoosh).toHaveBeenCalledTimes(3);
+    tick(600); fixture.detectChanges();
+    expect(notice()).toBeNull();
+  }));
+
+  it('uses the schedule for every phase, halftime, postmatch and overtime milestone', fakeAsync(() => {
+    const stages: [number, string][] = [
+      [7, 'Phase 1'], [17, 'Phase 1 Halftime'], [27, 'Phase 1 Postmatch'],
+      [29, 'Phase 2'], [39, 'Phase 2 Halftime'], [49, 'Phase 2 Postmatch'],
+      [51, 'Phase 3'], [61, 'Phase 3 Halftime'], [71, 'Phase 3 Postmatch'],
+      [73, 'Overtime 1'], [89, 'Overtime 2'], [99, 'Overtime 3'],
+    ];
+    for (const [ply, stage] of stages) {
+      board.turnNumber = ply - 2;
+      arrive(ply);
+      expect(notice()!.querySelector('strong')!.textContent).withContext(String(ply)).toBe(stage);
+      expect(notice()!.querySelector('span')!.textContent).toBe(`Turn ${Math.ceil(ply / 2)}`);
+      arrive(ply + 1);
+      expect(notice()!.querySelector('strong')).toBeNull();
+      expect(notice()!.querySelectorAll('span')[1].textContent).toBe('Black');
+    }
+    tick(board.turnAnnouncementMs);
+  }));
+
+  it('waits for every replay beat and upkeep before showing and sounding the next side', fakeAsync(() => {
+    board.turnNumber = 1;
+    board.turnColor = 'black';
+    board.turnNumber = 2;
+    const steps = [{ kind: 'pick' as const, from: '', to: '', index: 0 }];
+    board.playback = steps;
+    const events: string[] = [];
+    board.playbackDone.subscribe(() => events.push('done'));
+    swoosh.and.callFake(() => events.push('swoosh'));
+    board.ngOnChanges({ turnNumber: new SimpleChange(1, 2, false), playback: new SimpleChange([], steps, false) });
+    fixture.detectChanges();
+    expect(notice()).toBeNull();
+    tick(0);
+    expect(notice()).toBeNull();
+    expect(swoosh).not.toHaveBeenCalled();
+    for (let ms = 0; ms < 5000 && !board.turnAnnouncement; ms += 10) tick(10);
+    fixture.detectChanges();
+    expect(events).toEqual(['done', 'swoosh']);
+    expect(notice()).not.toBeNull();
+    expect(notice()!.querySelectorAll('span')[1].textContent).toBe('Black');
+    tick(board.turnAnnouncementMs); fixture.detectChanges();
+    expect(notice()).toBeNull();
+  }));
+
+  it('keeps only the latest notice when a newer turn interrupts a replay', fakeAsync(() => {
+    board.turnNumber = 1;
+    const steps = [{ kind: 'pick' as const, from: '', to: '', index: 0 }];
+    board.playback = steps;
+    board.turnNumber = 2; board.turnColor = 'black';
+    board.ngOnChanges({ turnNumber: new SimpleChange(1, 2, false), playback: new SimpleChange([], steps, false) });
+    tick(0);
+    board.turnNumber = 3; board.turnColor = 'white'; board.playback = [];
+    board.ngOnChanges({ turnNumber: new SimpleChange(2, 3, false), playback: new SimpleChange(steps, [], false) });
+    for (let ms = 0; ms < 5000 && !board.turnAnnouncement; ms += 10) tick(10);
+    fixture.detectChanges();
+    expect(swoosh).toHaveBeenCalledTimes(1);
+    expect([...notice()!.querySelectorAll('span')].map(s => s.textContent)).toEqual(['Turn 2', 'White']);
+    tick(board.turnAnnouncementMs);
+  }));
+
+  it('does not announce a queued turn if the game ends during replay', fakeAsync(() => {
+    board.turnNumber = 2;
+    board.playback = [];
+    board.ngOnChanges({ turnNumber: new SimpleChange(1, 2, false), playback: new SimpleChange([], [], false) });
+    board.endReason = 'regicide';
+    tick(3000); fixture.detectChanges();
+    expect(swoosh).not.toHaveBeenCalled();
+    expect(notice()).toBeNull();
+  }));
+
+  it('traces every exposed hex edge, including panels, without tracing interior edges', () => {
+    const point = (x: number, y: number) => `${x},${y}`;
+    const edgeKey = (a: string, b: string) => [a, b].sort().join('|');
+    for (const orientation of ['edge-up', 'vertex-up']) {
+      for (const radius of [2, 11]) {
+        board.radius = radius;
+        board.config = { ...DEFAULT_GAME_CONFIG, board: { ...DEFAULT_GAME_CONFIG.board, orientation } };
+        board.ngOnChanges({ config: new SimpleChange(null, board.config, false) });
+        (board as any).cdr.detectChanges();
+        const path = fixture.nativeElement.querySelector('path.board-outline') as SVGPathElement;
+        expect(fixture.nativeElement.querySelector('rect.board-frame')).toBeNull();
+        expect(path.getAttribute('d')).toBe(board.boardOutline);
+        expect(getComputedStyle(path).pointerEvents).toBe('none');
+        const counts = new Map<string, number>();
+        for (const cell of board.cells) {
+          const vertices = cell.points.split(' ').map(p => p.split(',').map(Number));
+          vertices.forEach(([x, y], i) => {
+            const [nx, ny] = vertices[(i + 1) % 6];
+            const edge = edgeKey(point(x, y), point(nx, ny));
+            counts.set(edge, (counts.get(edge) ?? 0) + 1);
+          });
+        }
+        const expected = [...counts].filter(([, count]) => count === 1).map(([edge]) => edge).sort();
+        const actual = [...board.boardOutline.matchAll(/M([-\d.]+),([-\d.]+) L([-\d.]+),([-\d.]+)/g)]
+          .map(match => edgeKey(point(Number(match[1]), Number(match[2])), point(Number(match[3]), Number(match[4]))));
+        expect(actual.sort()).withContext(`${orientation} radius ${radius}`).toEqual(expected);
+        expect(new Set(actual).size).toBe(actual.length);
+        expect(board.cells.some(cell => !!cell.panel)).toBeTrue();
+      }
+    }
+  });
+
+  it('does not replay an ongoing turn on reload or announce after the match ends', fakeAsync(() => {
+    arrive(1, true);
+    expect(notice()).toBeNull();
+    expect(swoosh).not.toHaveBeenCalled();
+    arrive(2, true);
+    expect(notice()).toBeNull();
+    arrive(29, true);
+    expect(notice()).toBeNull();
+    board.turnNumber = 0;
+    arrive(1);
+    expect(notice()).toBeNull();
+    expect(swoosh).not.toHaveBeenCalled();
+    arrive(3);
+    expect(notice()!.querySelector('span')!.textContent).toBe('Turn 2');
+    tick(board.turnAnnouncementMs); fixture.detectChanges();
+    board.currentTurn = '';
+    arrive(31);
+    expect(notice()).toBeNull();
+    tick(board.turnAnnouncementMs);
+  }));
 });

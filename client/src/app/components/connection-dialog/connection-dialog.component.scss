@@ -85,12 +85,10 @@ p {
 }
 
 .button-group button {
-  // One width for all three, set by the row rather than by the label - the
-  // longest one ("Retry Connection") is what has to fit inside it.
-  flex: 1 1 0;
+  flex: 1 1 auto;
   min-width: 0;
   font-size: clamp(0.75rem, 1.7vw, 0.95rem);
-  padding: 10px 8px;
+  padding: 10px 4px;
   // .retry-button carries a margin-top from when these stacked.
   margin: 0;
   white-space: nowrap;

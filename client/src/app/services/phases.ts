@@ -17,10 +17,8 @@
  * that count and converts, which keeps the conversion at this one boundary
  * rather than at every call site.
  *
- * ponytail: a schedule and nothing else. What a phase *does* - banking a
- * score, opening deployment - is not decided yet, so nothing here acts on a
- * phase change. Adding that means giving these entries handlers, not
- * rewriting the shape.
+ * Schedule metadata is mirrored in server/game/engine/phases.py. Phase
+ * scoring and deployment rules live in match-score.ts and history-rules.ts.
  */
 export interface Phase {
   name: string;
@@ -43,7 +41,7 @@ export interface Phase {
   postmatch?: boolean;
   /**
    * Points a side banks at the start of each of its own turns - the board's
-   * currency, for the pool abilities and the wrap crossing, not the match
+   * currency for pool abilities, separate from UP and the match
    * score. `turnPointsBy` is the one place that adds them up.
    *
    * The phase's number - 1, 2, 3 - and **from its halftime**, not its first
@@ -192,9 +190,9 @@ export function isPostmatch(ply: number): boolean {
  * A turn given to setting out rather than playing: the opening's three, and
  * each numbered phase's postmatch.
  *
- * What the two share, and *all* they share: **nobody attacks and no ability
- * fires**. Their movement allowances are different - the opening gives a
- * battlefield unit one move for the whole phase, a postmatch gives five
+ * Both forbid normal attacks. Postmatch permits abilities and healing;
+ * the opening forbids both. Their movement allowances differ - the opening
+ * gives a battlefield unit one move for the whole phase, a postmatch gives five
  * crossings and three walks home for the one turn - so anything about how
  * much may move asks the narrower predicate.
  */
@@ -407,7 +405,7 @@ export function turnPointsBy(color: 'white' | 'black', ply: number): number {
  * opening's first turn is a setup turn like the rest of it.) Counted in spans,
  * so an earlier phase's postmatch pushes this along too.
  */
-function phaseStartTurn(index: number): number {
+export function phaseStartTurn(index: number): number {
   let turn = 1;
   for (let i = 0; i < index; i++) turn += phaseSpan(PHASES[i]);
   return turn;

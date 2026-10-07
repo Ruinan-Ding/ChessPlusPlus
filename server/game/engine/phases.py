@@ -292,9 +292,9 @@ def is_setup_turn(ply: int) -> bool:
     A turn given to setting out rather than playing: the opening's three, and
     each numbered phase's postmatch.
 
-    What the two share, and *all* they share: **nobody attacks and no ability
-    fires**. Their movement allowances differ - the opening gives a battlefield
-    unit one move for the whole phase, a postmatch gives five crossings and
+    Both forbid normal attacks. Postmatch permits abilities and healing;
+    the opening forbids both. Their movement allowances differ - the opening
+    gives a battlefield unit one move for the whole phase, a postmatch gives five crossings and
     three walks home for the one turn - so anything about how much may move
     asks the narrower predicate.
     """

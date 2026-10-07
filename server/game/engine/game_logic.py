@@ -13,24 +13,40 @@ All functions are pure (no DB access) and operate on a HexBoard + config.
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from .board import HexBoard, CellData, Coord, hex_distance
+from .board import HexBoard, Coord, hex_distance
 from .move_validator import get_legal_moves
+from .unit_stats import unit_stats
 
 
 # ---------------------------------------------------------------------------
 # Combat resolution
 # ---------------------------------------------------------------------------
 
-def ranged_damage(attack: int, distance: int, config: Dict[str, Any]) -> int:
+def can_attack(unit: Dict[str, Any], distance: int) -> bool:
+    """Whether this unit has an attack at this hex distance, counters included."""
+    attack = unit.get('attack', 1)
+    if isinstance(attack, list):
+        ring = distance - unit.get('attackMinRange', 1)
+        armed = 0 <= ring < len(attack) and attack[ring] > 0
+    else:
+        armed = attack > 0
+    return (armed and not unit.get('heal')
+            and unit.get('attackMinRange', 1) <= distance <= unit.get('attackRange', 1))
+
+
+def ranged_damage(attack: int | List[int], distance: int, config: Dict[str, Any], minimum: int = 1) -> int:
     """
     Damage an attack of *attack* deals at *distance* rings.
 
-    Striking a neighbour (distance 1) costs nothing. Every further ring loses
-    ``rules.rangeFalloff`` of the attack stat, linearly, floored - a hit that
-    lands at all always takes off at least 1.
+    A list names each ring's exact attack, without percentage falloff. For a
+    scalar, striking a neighbour (distance 1) costs nothing. Every further
+    ring loses ``rules.rangeFalloff`` of the stat, linearly, floored - a hit
+    that lands at all always takes off at least 1.
     """
+    if isinstance(attack, list):
+        return attack[distance - minimum] if minimum <= distance < minimum + len(attack) else 0
     if attack <= 0 or distance <= 1:
         return max(0, attack)
     falloff = config.get('rules', {}).get('rangeFalloff', 0)
@@ -67,7 +83,10 @@ def strike_damage(
     cannot drift - the same config object carries `rangeFalloff` to
     `ranged_damage` a few lines up, and `hex-rules.ts` reads this same field.
     """
-    attack = ranged_damage(attacker_def.get('attack', 1), distance, config)
+    if not can_attack(attacker_def, distance):
+        return 0
+    attack = ranged_damage(attacker_def.get('attack', 1), distance, config,
+                           attacker_def.get('attackMinRange', 1))
     if attack <= 0:
         return 0
     # Never more than the attacker could deal unblunted. The floor lifts a hit
@@ -119,9 +138,8 @@ def resolve_combat(
         }
 
     # -- Occupied by enemy -> combat --------------------------------
-    units = config.get('units', {})
-    attacker_def = units.get(attacker['unit_id'], {})
-    defender_def = units.get(defender['unit_id'], {})
+    attacker_def = unit_stats(attacker['unit_id'], config, attacker.get('vet', 0))
+    defender_def = unit_stats(defender['unit_id'], config, defender.get('vet', 0))
     distance = hex_distance(from_coord, to_coord)
 
     # Damage is what gets past armour: the ring-scaled attack stat minus the
@@ -151,7 +169,7 @@ def resolve_combat(
 
     # Counter-attack: the same sum in reverse, and only if the attacker is
     # inside the defender's own reach.
-    if distance <= defender_def.get('attackRange', 1):
+    if can_attack(defender_def, distance):
         counter = strike_damage(defender_def, attacker_def, distance, config)
         if counter > 0:
             killed = board.deal_damage(*from_coord, counter)
@@ -161,6 +179,37 @@ def resolve_combat(
         result['attacker_hp'] = attacker_cell['hp'] if attacker_cell else None
 
     return result
+
+
+def resolve_heal(
+    board: HexBoard, from_coord: Coord, target_coord: Coord, config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """The normal action's healing alternative, driven by a unit's heal list.
+
+    No defence, falloff, counter or CP cost: each ring names its exact amount.
+    Validate before changing HP, so a rejected target leaves the board intact.
+    Mirrors healingAmount and the heal branch of LocalGameService.move.
+    """
+    healer = board.get(*from_coord)
+    target = board.get(*target_coord)
+    if (not board.is_valid(*from_coord) or not board.is_valid(*target_coord)
+            or not healer or not target or from_coord == target_coord
+            or healer['color'] != target['color']):
+        raise ValueError('Healing needs another friendly battlefield unit')
+    unit = unit_stats(healer['unit_id'], config, healer.get('vet', 0))
+    amounts = unit.get('heal', [])
+    distance = hex_distance(from_coord, target_coord)
+    if not 1 <= distance <= len(amounts):
+        raise ValueError('That hex is out of healing range')
+    max_hp = target.get('max_hp', config.get('units', {}).get(target['unit_id'], {}).get('hp', 0))
+    amount = max(0, min(amounts[distance - 1], max_hp - target['hp']))
+    target['hp'] += amount
+    return {
+        'moved': False, 'attacked': False, 'damage_dealt': 0,
+        'defender_eliminated': False, 'captured_unit': None, 'defender_hp': None,
+        'healedHex': f'{target_coord[0]},{target_coord[1]}',
+        'healed_amount': amount, 'healed_hp': target['hp'], 'healed_unit': target['unit_id'],
+    }
 
 
 def resolve_panel_attack(
@@ -229,12 +278,13 @@ def resolve_panel_attack(
     if not defender or defender.get('color') == color:
         return {'error': 'Nothing to attack there'}
 
-    units = config.get('units', {})
-    attacker_def = units.get(attacker['unit_id'], {})
-    defender_def = units.get(defender['unit_id'], {})
+    attacker_def = unit_stats(attacker['unit_id'], config, attacker.get('vet', 0))
+    defender_def = unit_stats(defender['unit_id'], config, defender.get('vet', 0))
+    if attacker_def.get('heal'):
+        return {'error': 'This unit heals instead of attacking'}
     # Measured from where the unit ENDS UP, not where it started.
     distance = hex_distance((tq, tr), (aq, ar))
-    if distance > attacker_def.get('attackRange', 1):
+    if not can_attack(attacker_def, distance):
         return {'error': 'That hex is out of attack range'}
 
     # -- Legal. Everything below this line changes the board. ---------------
@@ -270,6 +320,7 @@ def resolve_panel_attack(
             'hp': defender.get('hp'),
             'max_hp': defender.get('max_hp', defender_def.get('hp')),
             'uid': defender.get('uid'),
+            'vet': defender.get('vet', 0),
         },
         'defenderHp': left,
     }
@@ -279,7 +330,7 @@ def resolve_panel_attack(
     if left <= 0:
         record['defender_eliminated'] = True
         record['captured'] = defender['unit_id']
-    elif answers and distance <= defender_def.get('attackRange', 1):
+    elif answers and can_attack(defender_def, distance):
         counter = strike_damage(defender_def, attacker_def, distance, config)
         record['counter_damage'] = counter
         if counter > 0:

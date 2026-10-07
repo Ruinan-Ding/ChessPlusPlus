@@ -13,13 +13,14 @@
  * will disagree with the server about what a unit may do.
  */
 
-export type BoardLike = Record<string, { unit_id: string; color: string } | undefined>;
+import { combatStats, hasAttack, unitPassive, unitStats } from './unit-stats';
+
+export type BoardLike = Record<string, { unit_id: string; color: string; vet?: number } | undefined>;
 
 export const HEX_DIRS: [number, number][] = [
   [+1, 0], [-1, 0], [+1, -1], [0, -1], [0, 1], [-1, 1],
 ];
 
-/** Rings from the origin to (q, r) - the hex metric, in one place. */
 /**
  * The two panels that are a **base** - each player's left plane, bottom-left
  * for white and top-right for black. The other pair is the reserve.
@@ -31,6 +32,15 @@ export const HEX_DIRS: [number, number][] = [
  * the mending and has to answer the same question.
  */
 export const BASE_PANELS = new Set(['bl', 'tr']);
+
+/** The pixel quadrant of a panel hex, using the signs of axialToPixel. */
+export function panelOfHex(key: string, orientation = 'edge-up'): string {
+  const [q, r] = String(key).split(',').map(Number);
+  if (!Number.isInteger(q) || !Number.isInteger(r)) return '';
+  const x = orientation === 'vertex-up' ? q : 2 * q + r;
+  const y = orientation === 'vertex-up' ? q + 2 * r : r;
+  return `${y < 0 ? 't' : 'b'}${x < 0 ? 'l' : 'r'}`;
+}
 
 /**
  * Whether a new game gets the **placeholder** squads instead of the setup's.
@@ -80,6 +90,7 @@ export function inHomeRows(color: string, r: number, radius: number): boolean {
   return color === 'white' ? r >= edge : r <= -edge;
 }
 
+/** Rings from the origin to (q, r) - the hex metric, in one place. */
 export function hexDistance(q: number, r: number): number {
   return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
 }
@@ -109,11 +120,13 @@ export function computeMoveCosts(
    *  on - a unit's own. The crossings need these: a friend standing on a
    *  gateway or a wrap tip is walked past, not walked into. */
   passable?: Map<string, number>,
+  kits = true,
 ): Map<string, number> {
   const costs = new Map<string, number>();
   const piece = boardState[`${sq},${sr}`];
   if (!piece) return costs;
-  const unitDef = config?.units?.[piece.unit_id];
+  const unitDef = unitStats(piece.unit_id, config, piece.vet);
+  const hop = kits && unitPassive(piece.unit_id, config, piece.vet)?.effect === 'hop';
   const moveRange: number = movesLeft ?? unitDef?.move ?? 0;
   if (moveRange <= 0) return costs;
 
@@ -133,7 +146,7 @@ export function computeMoveCosts(
         // not somewhere to stop, so it never limits the reach beyond it. An
         // enemy still blocks both the hex and the way past it.
         const blocker = boardState[key];
-        if (blocker && blocker.color !== piece.color) continue;
+        if (blocker && blocker.color !== piece.color && !hop) continue;
         if (blocker) passable?.set(key, step);
         else costs.set(key, step);
         nextFrontier.push([nq, nr]);
@@ -172,8 +185,10 @@ export function computeAttackZone(
   radius: number,
   /** Confinement, as in computeMoveCosts(). */
   area?: Set<string>,
+  /** A healer uses this same ring geometry, bounded to the battlefield. */
+  range: number = config?.units?.[unitId]?.attackRange ?? 1,
+  minimum: number = config?.units?.[unitId]?.attackMinRange ?? 1,
 ): Set<string> {
-  const range: number = config?.units?.[unitId]?.attackRange ?? 1;
   const zone = new Set<string>();
   if (range < 1) return zone;
 
@@ -182,7 +197,7 @@ export function computeAttackZone(
     const lo = Math.max(-range, -dq - range);
     const hi = Math.min(range, -dq + range);
     for (let dr = lo; dr <= hi; dr++) {
-      if (dq === 0 && dr === 0) continue;
+      if (hexDistance(dq, dr) < minimum) continue;
       offsets.push([dq, dr]);
     }
   }
@@ -200,28 +215,43 @@ export function computeAttackZone(
   return zone;
 }
 
-/**
- * Damage an attack of `attack` deals at `distance` rings. Mirrors
- * ranged_damage() in server/game/engine/game_logic.py - keep the two in step.
- */
-export function rangedDamage(attack: number, distance: number, config: any): number {
+/** Whether a unit has an attack at this distance, counters included. */
+export function canAttack(unit: any, distance: number, atkBonus = 0): boolean {
+  const attack = unit?.attack ?? 1;
+  const armed = (Array.isArray(attack) ? attack[distance - (unit?.attackMinRange ?? 1)] ?? 0 : attack) + atkBonus > 0;
+  return hasAttack(unit) && armed
+    && distance >= (unit?.attackMinRange ?? 1) && distance <= (unit?.attackRange ?? 1);
+}
+
+/** Exact list attack from its first supported ring, or scalar percentage falloff. */
+export function rangedDamage(attack: number | number[], distance: number, config: any, minimum = 1): number {
+  // Lists name exact attacks per ring; only a scalar takes percentage falloff.
+  if (Array.isArray(attack)) return attack[distance - minimum] ?? 0;
   if (attack <= 0 || distance <= 1) return Math.max(0, attack);
   const falloff: number = config?.rules?.rangeFalloff ?? 0;
   const scale = Math.max(0, 1 - falloff * (distance - 1));
   return Math.max(1, Math.trunc(attack * scale));
 }
 
-/**
- * Damage per ring for a unit, outermost ring last: [16] for a melee unit,
- * [26, 19] for one that reaches two rings. Drawn on the hex as "26,19".
- */
-export function attackTiers(unitId: string, config: any): number[] {
-  const unit = config?.units?.[unitId];
-  if (!unit) return [];
-  const attack: number = unit.attack ?? 0;
+/** Exact healing at this ring, capped to missing HP; mirrors resolve_heal. */
+export function healingAmount(unitId: string, target: { unit_id: string; hp: number; max_hp?: number },
+                              distance: number, config: any, vet = 0, bonus = 0, setting?: number): number {
+  const profile = unitStats(unitId, config, vet).heal;
+  if (!profile || profile[distance - 1] === undefined) return 0;
+  const amount = Math.max(0, setting ?? (profile[distance - 1] + bonus));
+  const max = target.max_hp ?? config?.units?.[target.unit_id]?.hp ?? 0;
+  return Math.max(0, Math.min(amount, max - target.hp));
+}
+
+/** Attack amounts from attackMinRange through attackRange, in ring order. */
+export function attackTiers(unitId: string, config: any, vet = 0, kits = true): number[] {
+  const unit = combatStats(unitId, config, vet, false, kits);
+  if (!config?.units?.[unitId] || !hasAttack(unit)) return [];
+  const attack: number | number[] = unit.attack ?? 0;
   const range: number = Math.max(1, unit.attackRange ?? 1);
   const tiers: number[] = [];
-  for (let ring = 1; ring <= range; ring++) tiers.push(rangedDamage(attack, ring, config));
+  const minimum: number = unit.attackMinRange ?? 1;
+  for (let ring = minimum; ring <= range; ring++) tiers.push(rangedDamage(attack, ring, config, minimum));
   return tiers;
 }
 
@@ -261,36 +291,47 @@ export const ZONE_WORTH = { base: 3, middle: 2, side: 1 } as const;
  * Memoised: the answer depends on nothing but the radius, and this is on the
  * path that rebuilds the board's cells - every staged step, every buff.
  */
-const zoneCache = new Map<number, Map<string, number>>();
+export interface CaptureZone {
+  center: string;
+  kind: 'base' | 'middle' | 'side';
+  owner: 'white' | 'black' | '';
+  worth: number;
+  hexes: Set<string>;
+}
+const zonesCache = new Map<number, CaptureZone[]>();
 
-export function captureZoneValues(radius: number): Map<string, number> {
-  const cached = zoneCache.get(radius);
+export function captureZones(radius: number): CaptureZone[] {
+  const cached = zonesCache.get(radius);
   if (cached) return cached;
-  // One step left or right is one column. Up and down goes in pairs of rows -
-  // (1,-2) is straight up - which is what keeps those two zones in the
-  // board's own centre column instead of half a column off it.
   const cols = Math.max(ZONE_SPREAD + 1, Math.round(radius * ZONE_COLS));
   const pairs = Math.max(1, Math.round((radius * ZONE_ROWS) / 2));
-  const centres: Array<[number, number, number]> = [
-    [0, 0, ZONE_WORTH.middle],
-    [cols, 0, ZONE_WORTH.side], [-cols, 0, ZONE_WORTH.side],
-    [pairs, -2 * pairs, ZONE_WORTH.base], [-pairs, 2 * pairs, ZONE_WORTH.base],
+  const centres: Array<[number, number, CaptureZone['kind'], CaptureZone['owner']]> = [
+    [0, 0, 'middle', ''], [cols, 0, 'side', ''], [-cols, 0, 'side', ''],
+    [pairs, -2 * pairs, 'base', 'black'], [-pairs, 2 * pairs, 'base', 'white'],
   ];
-  const worths = new Map<string, number>();
-  for (const [cq, cr, worth] of centres) {
-    // The rows a radius-N patch spans, and the span of each - the same bounds
-    // computeAttackZone walks, rather than a square with the corners thrown
-    // away.
+  const zones = centres.map(([cq, cr, kind, owner]) => {
+    const hexes = new Set<string>();
     for (let dq = -ZONE_SPREAD; dq <= ZONE_SPREAD; dq++) {
       const lo = Math.max(-ZONE_SPREAD, -dq - ZONE_SPREAD);
       const hi = Math.min(ZONE_SPREAD, -dq + ZONE_SPREAD);
       for (let dr = lo; dr <= hi; dr++) {
         const q = cq + dq, r = cr + dr;
-        if (!isInsideBoard(q, r, radius)) continue;
-        const key = `${q},${r}`;
-        worths.set(key, Math.max(worth, worths.get(key) ?? 0));
+        if (isInsideBoard(q, r, radius)) hexes.add(`${q},${r}`);
       }
     }
+    return { center: `${cq},${cr}`, kind, owner, worth: ZONE_WORTH[kind], hexes };
+  });
+  zonesCache.set(radius, zones);
+  return zones;
+}
+
+const zoneCache = new Map<number, Map<string, number>>();
+export function captureZoneValues(radius: number): Map<string, number> {
+  const cached = zoneCache.get(radius);
+  if (cached) return cached;
+  const worths = new Map<string, number>();
+  for (const zone of captureZones(radius)) {
+    for (const key of zone.hexes) worths.set(key, Math.max(zone.worth, worths.get(key) ?? 0));
   }
   zoneCache.set(radius, worths);
   return worths;
@@ -306,21 +347,24 @@ export function captureZoneHexes(radius: number): Set<string> {
 }
 
 /**
- * Who holds each capture hex. A unit standing in a zone takes the hex under
- * it and the zone hexes beside it - so the middle of a patch holds seven,
- * and a hex on its rim rather fewer. Adjacency stops at the zone's edge: the
- * ordinary board around a zone is not worth anything.
- *
- * A hex both sides reach is held by neither, which is what cancels two lines
- * of units that meet in a zone: their claims overlap along the seam where
- * they touch, and every hex in the overlap goes neutral. Only decided hexes
- * are returned, so a cancelled one reads the same as an empty one - to the
- * score and to the board.
+ * Outer-ring units score their own hex; inner-ring units also score neighbours.
+ * Every eligible unit neutralizes opposing claims on its own and adjacent hexes.
+ * Permissions are relative to the unit's side and come from config, never from its id.
+ * A centre unit holds its entire zone while no eligible enemy stands in it.
+ * With an eligible enemy anywhere in the zone, normal adjacent claims apply.
+ * A hex reached by both sides is neutral; an ineligible unit makes no claim.
  */
+export function captureEligible(piece: any, zone: CaptureZone, config?: any): boolean {
+  const permissions = config?.units?.[piece.unit_id]?.captureZones;
+  const kind = zone.kind === 'base' ? (zone.owner === piece.color ? 'home' : 'enemy') : zone.kind;
+  return permissions === undefined || permissions.includes(kind);
+}
+
 export function captureClaims(
-  boardState: BoardLike, radius: number,
+  boardState: BoardLike, radius: number, config?: any,
 ): Map<string, 'white' | 'black'> {
-  const zone = captureZoneHexes(radius);
+  const zones = captureZones(radius);
+  const disruption = { white: new Set<string>(), black: new Set<string>() };
   const claimed = new Map<string, 'white' | 'black' | 'contested'>();
   const claim = (key: string, color: 'white' | 'black') => {
     const held = claimed.get(key);
@@ -328,17 +372,32 @@ export function captureClaims(
     else if (held !== color) claimed.set(key, 'contested');
   };
   for (const [key, piece] of Object.entries(boardState)) {
-    if (!piece || !zone.has(key)) continue;
+    if (!piece) continue;
+    const allowed = new Set(zones.filter(zone => captureEligible(piece, zone, config)).flatMap(zone => [...zone.hexes]));
+    if (!allowed.has(key)) continue;
     const color = piece.color === 'black' ? 'black' : 'white';
     claim(key, color);
+    disruption[color].add(key);
+    const expanded = zones.some(zone => captureEligible(piece, zone, config) && hexDistanceKeys(key, zone.center) < ZONE_SPREAD);
     const [q, r] = key.split(',').map(Number);
     for (const [dq, dr] of HEX_DIRS) {
       const next = `${q + dq},${r + dr}`;
-      if (zone.has(next)) claim(next, color);
+      if (!allowed.has(next)) continue;
+      disruption[color].add(next);
+      if (expanded) claim(next, color);
     }
   }
+  for (const zone of zones) {
+    const center = boardState[zone.center];
+    if (!center || !captureEligible(center, zone, config)) continue;
+    const enemyPresent = Object.entries(boardState).some(([key, piece]) =>
+      piece && piece.color !== center.color && zone.hexes.has(key) && captureEligible(piece, zone, config));
+    if (!enemyPresent) for (const key of zone.hexes) claim(key, center.color === 'black' ? 'black' : 'white');
+  }
   const held = new Map<string, 'white' | 'black'>();
-  for (const [key, color] of claimed) if (color !== 'contested') held.set(key, color);
+  for (const [key, color] of claimed) {
+    if (color !== 'contested' && !disruption[color === 'white' ? 'black' : 'white'].has(key)) held.set(key, color);
+  }
   return held;
 }
 
@@ -383,9 +442,8 @@ export const MIN_STRIKE_DAMAGE = 1;
  * raw stat, because that is where the hex and the unit panel show it: a +2 on
  * a unit whose second ring reads 19 makes that ring 21, not 21 less falloff.
  *
- * An attack of nothing is still nothing: the floor lifts a blow that was
- * blunted, not one that was never thrown. Without that guard a unit with no
- * attack stat at all would chip away a point a turn.
+ * Boosts modify an existing attack profile. A unit without one cannot
+ * attack, and zero effective ATK never receives the minimum-damage floor.
  *
  * Read off the config rather than a constant so the browser and the server
  * cannot drift - this is the same config object `rangedDamage` takes
@@ -393,11 +451,17 @@ export const MIN_STRIKE_DAMAGE = 1;
  */
 export function strikeDamage(
   attackerId: string, defenderId: string, distance: number, config: any,
-  atkBonus = 0, defBonus = 0,
+  atkBonus = 0, defBonus = 0, attackerVet = 0, defenderVet = 0, counter = false, kits = true,
 ): number {
-  const attacker = config?.units?.[attackerId] ?? {};
-  const defender = config?.units?.[defenderId] ?? {};
-  const attack = rangedDamage(attacker.attack ?? 1, distance, config) + atkBonus;
+  const attacker = combatStats(attackerId, config, attackerVet, counter, kits);
+  const defender = unitStats(defenderId, config, defenderVet);
+  return strikeFromStats(attacker, defender, distance, config, atkBonus, defBonus);
+}
+
+export function strikeFromStats(attacker: any, defender: any, distance: number, config: any, atkBonus = 0, defBonus = 0): number {
+  if (!canAttack(attacker, distance, atkBonus)) return 0;
+  const base = rangedDamage(attacker.attack ?? 1, distance, config, attacker.attackMinRange ?? 1);
+  const attack = base + atkBonus;
   if (attack <= 0) return 0;
   // Never more than the attacker could deal unblunted. The floor lifts a hit
   // that armour absorbed; it is not a damage source of its own, and without

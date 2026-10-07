@@ -35,10 +35,13 @@ import math
 import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from .unit_stats import ranked_unit, unit_stats
+
 # The phase schedule's own count of a side's turns. Mending needs it, and it
 # lived here as a private copy until the schedule was ported whole; one copy of
 # a rule is the only kind that cannot drift from itself.
 from .phases import hand_overs_by  # noqa: F401  (re-exported as panels.hand_overs_by)
+from .phases import PHASES, PLIES_PER_TURN, SCORING_PHASES, phase_start_turn
 
 #: Radius of a single hex in the client's SVG units. Only ratios and signs
 #: matter here, but the client's own value is kept so the bounding-box
@@ -349,6 +352,7 @@ def dealt_panels(
                 'max_hp': full,
                 'uid': uid,
                 'panel': panel,
+                'vet': 0,
             }
     return dealt
 
@@ -410,6 +414,7 @@ def set_up_panels(
                 'max_hp': full,
                 'uid': uid,
                 'panel': panel,
+                'vet': 0,
             }
     return dealt
 
@@ -642,6 +647,7 @@ def withdrawn_units(
             continue
         standing = home.get(uid)
         if standing:
+            standing['unit'] = {**standing['unit'], **unit}
             standing['hp'] = move.get('defenderHp') or 0
             standing['turn'] = move.get('turn')
     # Killed where it stood is killed: not drawn, and not mended back to life.
@@ -705,6 +711,8 @@ def panel_occupancy(
             positions[uid]['at'] = move.get('to')
         elif move.get('entered') and uid:
             positions.pop(uid, None)
+        elif move.get('intoPanel') and uid in positions and move.get('defenderHp') is not None:
+            positions[uid]['unit'].update(unit)
 
     standing: Dict[str, Dict[str, Any]] = {}
     for uid, stood in positions.items():
@@ -729,7 +737,8 @@ def panel_occupancy(
         # Read off where it stands NOW: a unit wrapped out of its base is a
         # reserve unit, and answers blows as one.
         unit['panel'] = panel_of(*axial_to_pixel(aq, ar, orientation))
-        standing[at] = unit
+        vet = unit_veterancy(uid, at, moves, ply or 1, radius, orientation)
+        standing[at] = ranked_unit(unit, config, vet)
     return standing
 
 
@@ -809,7 +818,7 @@ def move_costs(
     piece = units.get(coord_key(sq, sr))
     if not piece:
         return costs, passable
-    unit_def = (config.get('units') or {}).get(piece.get('unit_id')) or {}
+    unit_def = unit_stats(piece['unit_id'], config, piece.get('vet', 0))
     move_range = unit_def.get('move', 0) if moves_left is None else moves_left
     try:
         move_range = int(move_range)
@@ -884,7 +893,7 @@ def entry_targets(
     if not zone:
         return {}
 
-    unit_def = (config.get('units') or {}).get(unit.get('unit_id')) or {}
+    unit_def = unit_stats(unit['unit_id'], config, unit.get('vet', 0))
     mov = unit_def.get('move', 0) if moves_left is None else moves_left
     try:
         mov = int(mov)
@@ -984,7 +993,7 @@ def homecoming_targets(
     except ValueError:
         return {}
     color = unit.get('color')
-    unit_def = (config.get('units') or {}).get(unit.get('unit_id')) or {}
+    unit_def = unit_stats(unit['unit_id'], config, unit.get('vet', 0))
     if unit_def.get('commander'):
         return {}
     # Only from your own first three rows. The owner's rule, and the same bound
@@ -1206,7 +1215,7 @@ def panel_allowance(
         cap = rule_of(config, 'postmatchEntries')
     if uid not in movers and len(movers) >= cap:
         return None
-    stat = ((config.get('units') or {}).get(unit.get('unit_id')) or {}).get('move', 0)
+    stat = unit_stats(unit['unit_id'], config, unit.get('vet', 0)).get('move', 0)
     try:
         stat = int(stat)
     except (TypeError, ValueError):
@@ -1311,3 +1320,71 @@ def panel_move_targets(
             continue
         out[hex_key] = {'cost': total, 'price': price}
     return out
+
+
+def unit_veterancy(uid, at, history, ply, radius, orientation='edge-up'):
+    """Phase-only stars. Mirrors history-rules.unitVeterancy in the browser.
+
+    Identity follows panel crossings, so only where this unit stood at each
+    award matters, including after a reload. Veterans keep their stars in a
+    base but gain none there. Combat and ordinary walks award nothing.
+    """
+    crossings = []
+    for move in history or []:
+        if not isinstance(move, dict) or (move.get('unit') or {}).get('uid') != uid:
+            continue
+        if not (move.get('entered') or move.get('withdrawn') or move.get('panelMove')):
+            continue
+        if type(move.get('turn')) is not int:
+            continue
+        try:
+            parse_key(move.get('from'))
+            parse_key(move.get('to'))
+        except (ValueError, TypeError):
+            continue
+        crossings.append(move)
+    boundaries = [phase_start_turn(1)] + [
+        phase_start_turn(index) + PHASES[index]['turns'] for index in SCORING_PHASES]
+    where = crossings[0]['from'] if crossings else at
+    next_move, vet = 0, 0
+    for turn in boundaries:
+        boundary = (turn - 1) * PLIES_PER_TURN + 1
+        if boundary > ply:
+            break
+        # A deployment in the new stage happens AFTER that stage's award.
+        while next_move < len(crossings) and crossings[next_move]['turn'] < boundary:
+            where = crossings[next_move]['to']
+            next_move += 1
+        try:
+            q, r = parse_key(where)
+        except (ValueError, TypeError):
+            continue
+        if on_battlefield(q, r, radius) or panel_of(*axial_to_pixel(q, r, orientation)) not in BASE_PANELS:
+            vet = min(3, vet + 1)
+    return vet
+
+
+def promotion_heals(config, board_state, history, ply):
+    """One full heal for existing vet-3 field/reserve units at Phase 3 postmatch."""
+    boundary = (phase_start_turn(3) + PHASES[3]['turns'] - 1) * PLIES_PER_TURN + 1
+    if ply != boundary:
+        return []
+    radius = config.get('board', {}).get('radius', 11)
+    orientation = config.get('board', {}).get('orientation', 'edge-up')
+    for at, unit in board_state.items():
+        uid = unit.get('uid', f"{unit['color'][0]}{at}")
+        if unit.get('hp', 0) > 0 and unit_veterancy(uid, at, history, ply - 1, radius, orientation) == 3:
+            unit['hp'] = unit.get('max_hp', config.get('units', {}).get(unit['unit_id'], {}).get('hp', unit['hp']))
+    heals = []
+    for at, unit in panel_occupancy(config, radius, history, orientation, ply - 1).items():
+        full = unit.get('max_hp', unit['hp'])
+        if (unit['panel'] in BASE_PANELS or unit['vet'] != 3
+                or unit['hp'] <= 0 or unit['hp'] >= full):
+            continue
+        heals.append({
+            'from': '', 'to': '', 'unit_id': unit['unit_id'], 'color': unit['color'], 'turn': ply,
+            'captured': None, 'attacked': False, 'damage_dealt': 0, 'moved': False,
+            'defender_eliminated': False, 'intoPanel': True, 'panelEffect': True,
+            'promotionHeal': True, 'unit': dict(unit), 'defenderHp': full, 'panel': unit['panel'],
+        })
+    return heals

@@ -1,5 +1,8 @@
 **ChessPlusPlus correctness and readiness review — 26 September 2026**
 
+> **Historical review.** Findings, line numbers and test counts below describe dev18.
+> For current branch status and verification, read [CODEX_HANDOFF.md](CODEX_HANDOFF.md).
+
 > **Status, 26 Sep 2026: all eleven findings are fixed**, each with a regression test, in
 > `2b01cb5` (merged as PR #19) - see PUNCHLIST 6.38. The readiness gaps and the recommendations
 > that are not bugs (cross-engine parity for move/combat/panel histories, deployment, moving the

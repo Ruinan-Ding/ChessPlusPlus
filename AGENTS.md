@@ -32,13 +32,14 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (329 tests, 2 Oct 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (403 tests, 7 Oct 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
 python scripts/e2e/match.py    # one full match: lobby, invite, room, moves, rejoin, resign
 python scripts/e2e/edges.py    # races, second tab, token lifetime, disconnect after the result (~90s)
-python scripts/e2e/endings.py  # two matches played out: to turn 50 on passes, and won on points (~1 min)
+python scripts/e2e/drafts.py   # private staging, Undo, atomic commits, disconnected-player expiry (~15s)
+python scripts/e2e/endings.py  # four matches: early phase losses, points and overtime (~1 min)
 python scripts/e2e/panels.py   # crossings, walks home, blows into a panel - needs the server
                                # started with CPP_DEAL_PANELS=1, or it fails for want of panel units
 # E2E_PORT=<port> aims them at a server other than :8000. edges.py also reads the database
@@ -47,6 +48,10 @@ python scripts/e2e/panels.py   # crossings, walks home, blows into a panel - nee
 # Client (from client/)
 ng serve                                              # serve on :4200
 ng test
+ng test --watch=false --browsers=ChromeHeadless --code-coverage  # report in client/coverage/
+# game-room.integration.spec.ts drives rendered controls through the real solo services;
+# FullMatchLiveIntegrationTests plays all 72/100 plies over two ASGI connections.
+# Tactical ability tests arrange snapshots; complete-match tests use the shipped deal.
 # The room in all three layouts, before the match and in it, every tab, and the login, lobby
 # and setup, desktop to phone, in headless Chrome against a running ng serve (4201 spares the
 # owner's 4200): nothing scaled, clipped, cut short or scrolled but the logs, text >= 12px,
@@ -107,7 +112,7 @@ changed in the code changes its line there, and goes under "New since the last r
 Units and abilities are kept out of it on purpose.
 
 The whole-number rules a config may leave out (`panelMoversPerTurn`, `postmatchEntries`,
-`homecomingsPerSetupTurn`, `cpAtStart`, `cpPhaseOffset`) are listed once per side in `COUNTED_RULES`, filled in
+`homecomingsPerSetupTurn`, `cpAtStart`, `cpPhaseOffset`, `upAtStart`) are listed once per side in `COUNTED_RULES`, filled in
 at their defaults by both normalisers, and read through `ruleOf(config, key)` /
 `rule_of(config, key)` - never as a module constant, because one server process plays every
 room and each room may carry its own config. `postmatchEntries` was `phaseInitEntries` until
@@ -119,9 +124,14 @@ say `additionalProperties: false` on `rules`, but nothing loads the schema at ru
 `phases.ts` / `phases.py`) is still code, for that reason: it is read by functions that take
 only a ply, and making it per-room means handing them the room's schedule.
 
+**Combat ring eligibility is mirrored.** `canAttack` / `can_attack` checks the attack
+at the requested ring, so a positive tier elsewhere cannot arm a zero tier. Both suites
+consume the hand-written `combat-parity.json` cases, including minimum-range blind spots,
+scalar attacks and healing profiles.
+
 **The scoring rules are mirrored too, and a test holds the two copies together.** The capture
-zones, the phase bank, deaths, the endings, the CP award, the points the schedule pays and the
-overtime conversion are written in `match-score.ts` / `hex-rules.ts` / `phases.ts` and again in
+zones, the phase bank, deaths, the endings, the CP award, UP transactions and halftime
+snapshots, the points the schedule pays and the overtime conversion are written in `match-score.ts` / `hex-rules.ts` / `phases.ts` and again in
 `scoring.py` / `phases.py`. Each side's own tests pin their own numbers, so a rule changed on one
 side alone used to pass both. `server/scripts/make_scoring_parity.py` writes fixed cases (a fixed
 seed) with the server's answers to `client/src/app/services/scoring-parity.json` - there because
@@ -181,6 +191,13 @@ also refuse **two placements on one hex** in `setup`, compared as numbers (`-05,
 kings on `0,0` built a board where white had lost before the first move. Add a case whenever
 the two are found to disagree.
 
+Client unit/catalogue references resolve only from own object entries. Inherited names such
+as `constructor`, `toString`, `hasOwnProperty` and `__proto__` define nothing unless the config
+explicitly supplies them; explicitly defined IDs remain opaque and valid. Pool-reference
+validation stays in the client's stricter catalogue checks. The common placement/path cases
+are in the shared fixture. Python's board radius check excludes booleans, as its other
+integer fields already do; a valid radius-1 setup cannot hide an invalid `true` radius.
+
 ## Hex geometry
 
 Axial coordinates `(q, r)`, flat-top, radius-N board holds every hex where
@@ -218,13 +235,13 @@ apart horizontally, so squaring needs ~1.155× more rows than columns.
 The bounds are guarded with `!onBattlefield`, so tuning them can only ever trim filler. Without
 that guard, narrowing `limitX` silently shaves the hexagon's own left and right vertices.
 
-Filler hexes are the **reserve panels** (see Game spec): tinted per corner
-(`.panel-tl/tr/bl/br`), and each one holds a placeholder squad that can be selected and shuffled
-within its own panel. Confinement is enforced by the `zone` argument to `computeMoveCosts()` /
-`computeAttackZone()`, which replaces the `isInsideBoard` bound, plus a same-panel requirement on
-attack targeting - so a reserve cannot leave its panel and nothing on the battlefield can reach
-into one. Battlefield units still bound themselves with `isInsideBoard`, so movement cannot leak
-off the board either.
+Filler hexes are the **base and reserve panels** (see Game spec), tinted per corner
+(`.panel-tl/tr/bl/br`). The config's setup deals the base squads; the shipped reserves start
+empty. Placeholder squads remain a test fixture behind `PANELS_DEALT`. Ordinary panel walks
+use the `zone` argument to `computeMoveCosts()` instead of the battlefield bound. Explicit
+crossing hooks add the priced wrap, reserve deployment and walks home under their stage gates;
+an ordinary flood never leaks across the boundary. Panel units cannot initiate attacks, but
+battlefield attacks can reach enemy panels, with reserve counters and no base counters.
 
 Serialised coords are `"q,r"` strings (`coord_key` / `parse_coord`). `parse_coord` raises
 `ValueError` on anything malformed so callers catch one exception type.
@@ -274,22 +291,30 @@ Decided so far:
   - **`computeMoveCosts` reports what it walked THROUGH as well as where it may stop**, via an
     optional `passable` map. `moveCosts` alone cannot answer "how far to a hex I can only pass
     over", which is exactly what a crossing needs when a friend is standing on the tip. The
-    board keeps it as `passableCosts` and asks `costAt()`, which reads either. Every unit gets 6 **except the shieldman, which gets 5** -
+    board keeps it as `passableCosts` and asks `costAt()`, which reads either. Pawn, archer,
+    bishop, queen and king get 6; shieldman and rook get 4; knight gets 8 -
   the first place a unit's speed is actually part of what it is. `test_engine.py` used to pin
   every unit to 6; it now walks each unit out from an empty board and checks it reaches exactly
   its own `move` rings - movement read per unit from the config is the thing worth guarding, and
   the shipped numbers can change without touching a test.
-- **Running out of time passes the turn**, it does not lose the game (superseded: the turn
-  timer used to end the match against whoever was on the clock). The server owns that clock and
-  passes for you; the client renders it and, if you had a turn staged, tries to commit it first.
-  **Solo never commits on the clock** (`updateTurnClock`): there is no server to race and nobody
-  waiting, and the turn's *end* is where overtime takes its toll - so a clock that ended the
-  turn for you killed a king on its last HP while the player was still deciding how to save it.
-  In solo the clock paces and beeps; ending the turn stays a click.
+- **Running out of time commits the staged turn**, or passes when nothing was staged;
+  it does not lose the game. The owner confirmed on 7 Oct 2026: *"the timer should be
+  beeping the last 5 seconds and a hard beep when the timer runs out, and commit all the
+  moves done"*. This supersedes solo's manual-only expiry: both solo colours now submit
+  through the normal End Turn path, including board moves, panel steps and casts.
+  A warning sounds once at each of 5, 4, 3, 2 and 1 seconds; zero sounds a stronger
+  triangle-wave beep. Mute/volume still apply, unlimited games have no expiry and replay
+  time is excluded as before. Loading an already expired snapshot does not submit it.
+  Online the server saves the latest validated private turn draft and commits it at
+  expiry, including while its player is disconnected within the existing grace period.
+  End Turn sends the same command batch. The draft sequence and board revision guard
+  one atomic commit, so the timer and browser cannot replay a turn or apply only its
+  first moves. A timed-out broadcast sounds expiry without a duplicate beep.
   Timer choices are `{0, 15, 30, 60, 120, 180, 240, 300}` seconds, 0 meaning unlimited, and the
   allow-list lives in `validators.validate_game_options`.
-- **One unit acts per turn**, alternating plies (confirmed — the existing chess-like turn
-  plumbing stays as-is; move + attack + ability all resolve inside a single player action).
+- **One battlefield unit acts per side's turn**, except the later overtime stages, which
+  allow two and then three (see the schedule below). Plies alternate; a unit's move, attack
+  and ability resolve within that side's turn, alongside the separate panel allowances.
 - **Attack is decoupled from movement.** Units carry `attackRange` in rings of `hex_distance`.
   Implemented — see the Combat section.
 - **Damage is flat and deterministic.** No hit/dodge/crit rolls.
@@ -300,17 +325,208 @@ Decided so far:
   immediately; there is deliberately no ability DSL yet.
 - **Passive, activatable, and unit-level ultimate** abilities. Activatables recharge over N
   turns; ultimates get 1–2 charges per match.
-- **Veterancy:** XP from damage dealt, damage received, and kills. Reaching a rank unlocks an
-  ability or passive. Rank is *derived* from XP, never stored.
+- **Veterancy comes from phase boundaries**, replacing the old XP proposal. The CP
+  Strengthen ability is the explicit exception in solo. Everyone
+  starts at **zero**, on both sides and in every zone. **At the start of Phase 1, every unit
+  on the battlefield or in the green reserve gains its first star. At the start of each
+  numbered phase's postmatch, those units gain one more, capped at vet 3.** Both sides gain
+  together, once at the stage's first ply, not again for black's half. Being present at that
+  boundary is what counts; entering reserve or battlefield afterwards earns nothing until
+  the next award. Halftimes, later phase starts, ordinary turns, damage and kills grant none.
+  **A red-base unit gains no stars there, but a veteran returning home keeps its earned
+  stars.** This replaces the earlier wording that all base units always have zero: newly
+  dealt base units start at zero; an experienced unit is not reset by coming home.
+  **At Phase 3 postmatch start, a living battlefield or green-reserve unit that already
+  had vet 3 before the award heals to full HP.** A unit promoted from vet 2 to vet 3 at that
+  boundary gains its star without this heal. Red-base units gain neither the award nor this
+  heal. It happens once at the stage boundary, for both sides together; it never revives a
+  killed unit. The owner: *"for those that made it to phase 3 postmatch with vet 3 already,
+  heal them to full"*.
+  - The owner, 3 Oct 2026: *"verterncy is only gained by being in the field or reserve (green
+    panel) after a phase end. it gets a star right after a pahse, starting effect in phase
+    phase. all units in the base (red panel, has 0 vet) everything in the field has vet 1
+    starting phase 1. that is the only way to gain vet"*, then *"that means to actually apply
+    that on the game board. everyone starting at vet 0"*. The timing and cap were clarified:
+    *"im not seeing them gain vet after each phase. at start of phase 1, everything in reserve
+    and board gets vet 1. after then everything gets vet at start of postmatch. max is vet 3"*.
+    Returning to base: *"Keep its earned stars"*.
+  - `unitVeterancy` in `history-rules.ts` and `unit_veterancy` in `panels.py` reconstruct each
+    unit's rank from its uid and panel crossings at those boundaries. The board draws that
+    rank and sends it to the Unit panel, including after a reload. A staged withdrawal reads
+    the unit's committed battlefield location until its crossing is recorded, so its earned
+    stars stay visible before End Turn as well as after it. Both engines carry `vet`
+    in battlefield cells; panel occupancy derives it from the same record. No XP tally or
+    random placeholder ranks. First-star stat changes are applied by `unitStats` /
+    `unit_stats` from the shared config; the old display-only third-star bonus table is
+    removed. Unit passives and Vet 3 abilities run in solo; online abilities remain
+    deferred (PUNCHLIST 6.15).
+- **Bishop healing revision, 5 Oct 2026.** The owner: *"for bishop HEL, make it
+  1:8 2:6 by default, and for vet 1 ability add 3:4 and 4:2"*. Base healing covers
+  rings 1-2 for 8/6 HP; Vet 1 extends it to rings 3-4 for 4/2 HP. These profiles
+  are in the shared config and replace the earlier range-2 first-star unlock.
+
+- **CP path abilities specified and implemented in solo, 5 Oct 2026.** These replace
+  the shipped path placeholders. One path is still bought once per match. Bastion now costs
+  **5 CP**, Onslaught costs **10 CP**, and Tempo becomes **Sprint**, costing **20 CP**.
+  Temporary effects use the established full-turn duration (caster's turn plus opponent's);
+  damage, healing, conversion and promotion happen immediately. The path-specific action
+  replaces that path's Reselect button. The pool's existing pair selection is separate.
+
+  | Path | Passive | Replaces Reselect | Skill | Ultimate |
+  |---|---|---|---|---|
+  | Bastion (5 CP) | +1 DEF only while under attack | **Convert:** spend 3 CP for 5 regular points, cooldown 1, five uses per phase | **Sap:** the selected hex's unit has ATK/HEL 0; adjacent occupants receive -4 ATK/HEL; 5 CP, cooldown 1, three uses per match | **Fortress:** every owned unit takes no damage whatsoever for one full turn; enemy DEF becomes 0; 25 CP, once per match |
+  | Onslaught (10 CP) | Every friendly unit gains +1 ATK | **Strengthen:** a selected friendly unit gains one veterancy star; 5 CP, cooldown 1, five uses per phase | **Cleave:** selected hex takes 5 HP damage, its six adjacent hexes take 3 HP damage; friendly fire applies; 10 CP, cooldown 1, three uses per match | **Ruin:** deal 3 HP damage to every unit including battlefield, green reserve and red base, and heal every owned unit by 3; 25 CP, once per match |
+  | Sprint (20 CP; renamed Tempo) | Every friendly unit gains +1 MOV | **Recharge:** subtract 1 cooldown from both abilities in a selected pair, leaving positive cooldowns at least 1; 5 CP, cooldown 1, five uses per phase | **Trap:** selected hex's occupant cannot move or attack and loses temporary buffs; adjacent units receive -4 MOV; 15 CP, cooldown 1, three uses per match | **Blitz:** friendly units gain +8 MOV/+2 ATK/+2 DEF and existing healers gain +4 HEL; enemies cannot move, attack or use unit abilities, but may counterattack and use pool/CP abilities; 35 CP, once per match |
+
+  **Hex targeting confirmed:** any rendered hex may be selected, including empty, red-base
+  and green-reserve hexes. Sap/Trap affect current occupants only and follow those units;
+  later arrivals receive nothing. The owner chose *"Any hex; affect current occupants only"*.
+  **Scope/rank/numbers confirmed:** path passives and Fortress/Blitz affect battlefield
+  and green-reserve units, excluding the red base. Passives work at vet 0 after the path
+  is bought. The owner answered *"No, only board and green reserve"*, *"Yes, no stars
+  required"*, and *"15cp 5 cd 3 uses"* for Trap. Ruin still includes the red base as
+  explicitly specified.
+  **Final interactions confirmed:** Ruin damages everyone first, then heals only friendly
+  survivors; units killed by its damage stay dead. Fortress also prevents the overtime
+  king toll. Trap's centre may counter but cannot use its unit ability, and removes only
+  positive temporary buffs, keeping debuffs, earned rank and Cast control. Trap and Blitz
+  also block normal bishop healing. Recharge may be used on a ready pair, still paying CP
+  and its cooldown while the pair stays at zero. On 7 Oct the owner clarified that
+  positive cooldowns stop at **1**, preventing the same ability from being used
+  twice in a turn; ready abilities stay at zero. Recharge opens its description
+  first, then Use arms the selection of either member of a carried pair. The owner: *"Damage everyone, then heal
+  my survivors"*, *"Yes, prevent overtime damage too"*, *"Counter allowed; unit ability
+  blocked"*, *"Yes, remove positive buffs only"*, *"you can use it thoguth it shouldnt do
+  anything i think"*, and *"No, normal healing is blocked too"*.
+  **Healing modifiers confirmed:** Sap also sets the centre occupant's HEL to zero and
+  reduces adjacent occupants' HEL by 4. Blitz adds 4 HEL to existing healers only; it
+  grants neither healing nor healing range to other units. The owner: *"sap also reduces
+  HEL to 0 with adjecent hex hel -4, blitz also increase hel by 4"*, then *"Boost existing
+  healers only"*.
+   The original pool Sap and the Bastion
+  Sap remain distinct abilities despite their shared display name. Strengthen is an explicit
+  exception to the earlier phase-only veterancy rule; existing phase awards and the vet-3
+  cap remain unchanged. Older saved catalogues retain their own rules. Online abilities
+  remain deferred under PUNCHLIST 6.15.
+
+- **Unit veterancy kits, specified 4 Oct and implemented 5 Oct 2026 (PUNCHLIST 6.79).** The
+  owner: *"vet1 unlocks a stat boost. vet 2 unlocks the passive, vet 3 unlocks the unit ability
+  which uses UP"*. These unlocks add to the earned-star schedule above; they do not replace
+  it or grant stars for actions. "Pond" means the existing pawn. First-star stat changes
+  are implemented in both engines, movement, combat, healing, forecasts and the Unit panel.
+  Wounded units gain current/max HP once, and panel wound records retain the promoted rank.
+  Panel metadata replays in history order: an earlier wound cannot overwrite a later
+  withdrawal’s rank or maximum HP, while damage recorded after withdrawal still applies.
+  All eight Vet 2 passives and Vet 3 UP abilities are implemented in solo. New games use
+  their own configured kits; older saved catalogues retain their legacy abilities.
+  Server ability execution remains deferred under 6.15.
+
+  | Unit | Vet 1 stat change | Vet 2 passive | Vet 3 unit ability |
+  |---|---|---|---|
+  | Pawn | +2 HP, +2 ATK, +2 DEF | **Rapid Movement:** use remaining MOV after attacking | **Sacrifice:** remove the pawn, +1 ATK/DEF/MOV for one full turn and immediately heal 1 HP to friendly battlefield and green-reserve units, gain 8 UP, count the pawn's death against its side; cost 3 UP, cooldown 5 |
+  | Archer | +2 MOV | **Counter:** counter only at range 1 for 2 damage or range 2 for 1 damage | **Bog:** its attack applies -4 MOV to the enemy; cost 3 UP, cooldown 3 (supersedes the duplicated Vet 2 Counter wording) |
+  | Shieldman | +2 DEF, +2 HP | **Shove:** attack for 4 ATK before DEF; ATK buffs improve attacks, but it never counterattacks | **Taunt:** attacking stays optional, but an attack must target a reachable taunting shieldman; cost 1 UP, cooldown 1 |
+  | Rook | +2 DEF, +2 ATK | **Bog:** after an exchange in which an enemy attacks the rook or the rook attacks/counters, reduce that enemy's ATK and DEF by 1 for one full turn; stacks on subsequent exchanges without a cap | **Cleave:** when attacking, damage every adjacent enemy around the rook with its normal ATK against each DEF; only the directly attacked unit counters; cost 5 UP, cooldown 5 |
+  | Knight | +2 ATK, +2 HP | **Hop:** pass through multiple consecutive enemies, paying one MOV per hex, ending on an empty hex; an open panel crossing may also be traversed despite enemy blockers | **Charge:** a second strike only after an actual counter, if the knight survived; no counter to the second strike; cost 5 UP, cooldown 5 |
+  | Bishop | Add healing 4 at range 3 and 2 at range 4 | **Regenerate:** every living Vet 2+ bishop on the battlefield or green reserve fully heals at the end of its owner's turn, even if it did not act | **Cast:** control a selected adjacent enemy, immediately end the bishop's action and grant the controlled unit an extra move/attack; cost 10 UP, cooldown 5 |
+  | Queen | +1 MOV, +2 HP | **Intimidate:** adjacent battlefield enemies lose 1 ATK, 1 DEF and 1 MOV at the owner's turn start, until that owner's next turn | **Nullify:** disable the attacked enemy's counter; cost 3 UP, cooldown 1 |
+  | King | Deal 20 damage at range 2, +2 MOV | **Persuade:** adjacent battlefield allies gain 1 MOV, 1 DEF and 1 ATK at the owner's turn start, until that owner's next turn | **Call:** heal friendly battlefield/green-reserve units by 2 and give them +2 DEF; enemy battlefield/green-reserve units take 1 immediate HP damage and -2 DEF/-1 ATK for the full turn; cost 5 UP, cooldown 5 |
+
+  **Cast clarifications confirmed:** the owner answered *"Yes, it acts immediately as an
+  extra unit"*, *"Through the opponent's next turn; returns at my next turn"*, and
+  *"Yes, kings can be controlled"*. Cast is an explicit exception to the usual battlefield
+  action allowance. The controlled unit can receive the caster's buffs. Its original side
+  cannot drive it during its next turn but may attack or debuff it. A controlled unit's
+  death counts as an attrition loss against the caster, confirmed by *"1 costs at the
+  caster"*. It captures and neutralizes for the caster if its normal zone permissions
+  allow it. Cast targets may be on the battlefield or green reserve; red-base
+  targets are excluded, confirmed by *"battlefiend and reserve green panel"*. A controlled
+  unit may withdraw into the caster's red base when the normal door is open, confirmed by
+  *"Allow it to walk into the caster's base"*. The owner clarified: *"it refunds to opponent
+  if the door is open. they still cant move it as its under control for one whole turn.
+  then its theirs to move. it functions just as it does in any other way"*. The normal
+  UP refund goes to the unit's original owner. It stays where it withdrew and remains
+  controlled until the caster's next turn starts, then its original owner may move it.
+  After control expires, a postmatch withdrawal follows normal deployment plus pass
+  behavior. The retained original-owner marker does not grant an extra action or hold
+  the turn open; only an active Cast recipient’s immediate extra action does.
+  **Controlling a king alone does not win; if it dies, its
+  original owner loses.** The owner: *"Yes, its original owner still loses when it dies"*.
+  Keep ownership separate from control so commander detection and death attribution follow
+  those rules; changing a cell's colour alone is insufficient.
+
+  **HP and combat clarifications:** Vet 1 HP raises current and maximum together: the owner
+  chose *"Increase current and max HP: 7/14"* for a wounded pawn at 5/12. Archer Counter and
+  Shieldman Shove (formerly Deflect) amounts are *"ATK before DEF, using normal damage rules"*. The owner
+  named archer's active: *"vet 2 passive was called counter and vet 3 ability is called bog,
+  and only when it attacks"*. Taunt/Call prices: *"1UP 1CD for shieldman, 5UP 5CD for call"*.
+  Sacrifice lasts *"1 turn, green as well"*, clarified as friendly battlefield/green
+  recipients and an immediate +1 HP heal; red bases are excluded. Cleave hits *"Adjacent
+  enemies around the rook"* with *"the same atk that rook does"*. Charge is *"Second strike
+  only after an actual counter; no second counter"*. Bog lasts one full turn, replacing
+  the earlier next-two-enemy-turns answer. Intimidate/Persuade use their owner's turn start and battlefield
+  scope. Regenerate includes green reserve. Hop: *"if panel is open it can cross it, and it
+  hops multiple enemies"*. Call's enemy effects: *"deal 1h imeediately bf and green, also
+  -1 atk ful turn"*, both immediate damage and a temporary ATK reduction.
+
+  Shieldman clarification, superseded 7 Oct: **Deflect is now named Shove.** At Vet 2
+  it supplies 4 ATK for attacks only, before enemy DEF. Warcry and other ATK buffs
+  improve its attacks but never permit a counter. The owner: *"change defelect to
+  "shove" defelect only gives 4 attack for attacking. it warcry shouldnt enable
+  coutner attack"*. The stable catalogue id/effect `deflect` is retained for saves.
+  Rook Bog: *"Both normal attacks and counters; apply after the exchange"*. On 5 Oct the owner confirmed: an attacker may choose any reachable taunting
+  shieldman, with reach checked after moving; Bog applies one stack per exchange, after
+  its damage and counter resolve, and a later exchange can add another stack; ATK buffs
+  and drains modify archer Counter's range-1/range-2 profile. The owner then confirmed
+  *"there should be no cap"*: every later qualifying exchange can add another stack.
+  Attacks and counters qualify, but one exchange still adds only one stack after its
+  damage resolves. The owner clarified *"bog only lasts 1 full turn"*, replacing
+  the earlier duration: each stack lasts the triggering turn plus the following
+  opponent turn and expires at the next turn of the side whose action triggered it.
+  Sacrifice removes its caster rather than dealing HP damage, so Fortress does not prevent
+  that removal. The solo engine derives removal from the configured cast ID and retains the
+  normal death/UP records through commit and reload, including the existing staged shape.
+  Pool, unit and CP army effects enumerate recipients through `abilityRecipients`, using
+  the staged board and panels with the configured battlefield/reserve/base scope.
+  **Implementation:** `unit-stats.ts` resolves rank-gated passive profiles; `unit-combat.ts`
+  shares Charge, Nullify and Taunt rules between forecasts, staging and local commits.
+  Fixed recipients, per-uid cooldowns, whole-cast Undo and solo reload retain the existing
+  ability history model. `unit-control.ts` separates current control from original ownership,
+  including king defeat, control expiry and original-owner withdrawal refunds. Cast ends
+  the bishop's action and grants only its recipient an extra action. Movement caps remain
+  per physical panel when control gives a side units in another panel. Rapid Movement folds
+  its remaining walk into the attack record, including a walk home with post-counter HP;
+  `panelDefender` retains the defender separately if that attack landed in a panel.
+  Intervening casts resolve after combat and before the remaining walk, so Strike can
+  free its destination. The action and all its casts commit atomically; a refused walk
+  keeps none. The solo message carries this middle list as `effectsAfterAttack`.
+  Both scoring mirrors retain the UP cast/refund and ability-death records; this adds no
+  server casting route. Vet 1 stats run in both engines; Vet 2/3 effects run only in solo.
+  Initial kit verification: all 702 client specs, 356 server tests, 374 scoring parity
+  cases, production build and
+  migration consistency check pass. Real Chrome checks: 78 for Vet 1, 120 for Vet 2,
+  240 for Vet 3 and 32 final control/withdrawal cases, across both seats and desktop,
+  tablet or phone as recorded in CODEX_HANDOFF.md. All 351 layout checks pass. Forty
+  deliberate rule regressions were caught and restored byte-for-byte. Review follow-up
+  (6.80): 708 client specs, 358 server tests, 23 shared combat-ring cases, clean production
+  build and migration check; 68 additional desktop/touch Chrome assertions and nine
+  deliberate regressions. Coverage follow-up (6.81): 723 client specs and 363 server tests,
+  plus four legacy server checks, pass. Thirty new malformed-config cases bring shared
+  config refusals to 190. New tests cover UP/cooldown refusal across all eight kits,
+  exact control expiry and UID isolation, Taunt ring eligibility, config/message shapes,
+  saved-config state and route reuse. Input guards, the editor baseline and duplicate
+  room subscriptions are fixed. Production build and migration check pass. No new
+  template or stylesheet changes. Not yet SEEN.
 - **Four reserve planes flank the battlefield** — two per player. They are drawn as *hexes in
   the same grid*, filling the hexagon's bounding square so the whole play area is one square of
   hexagons. They are not part of the battlefield: units there are out of play, and
   `get_legal_moves()` never reaches them.
-  - **Left plane** = the player's pool. Completely out of the war: it cannot be attacked or
-    interacted with by the opponent at all. Troops are staged *from* here.
-  - **Right plane** = staged troops. Every couple of phases of the war, units here can be
-    selected and deployed into the player's first row. Unlike the left plane, the right plane
-    **can** be attacked, but only in very specific ways.
+  - **Left plane** = the red base, from the player's perspective. Troops wrap from it
+    into the reserve, or walk home into it for a refund. Battlefield enemies can attack it;
+    its units never counter and mend there at the end of their own side's turn.
+  - **Right plane** = the green reserve. Units can deploy through its three gateways during
+    the opening, each phase's second half and its postmatch. Battlefield enemies can attack
+    it, and surviving reserve units counter when the attacker is in their attack band.
   - **Each side opens with its base squad; both reserves open empty.** The owner, 25 Sep
     2026: *"at the start of game, there will be units in base"*, by the numbers on the board
     (Show Hex), as white: rooks on 518 and 523, knights on 519 and 522, bishops on 520 and 521,
@@ -346,8 +562,8 @@ Decided so far:
     reserve alike, gets its own MOV per turn and no more** - spendable a few steps at a time,
     never an endless shuffle (`panelMoved` in `game-board.component.ts`, keyed by uid).
     **No panel unit attacks**, base or reserve: they walk and nothing else. A **reserve unit
-    still counters when it is hit** - *specified, not built*, because nothing can reach into a
-    panel yet and the engines have no reserve to resolve a counter for. Only **three units of
+    still counters when it is hit**, if it survives and the attacker is in its configured
+    attack band. Both engines resolve those panel blows. Only **three units of
     a panel may be moved in a turn** (`rules.panelMoversPerTurn`, `baseMovers` / `reserveMovers`
     - a set per panel, so one panel's walks are not counted against the other's cap).
     **Both panels carry the cap, all match**: three out of the base and three out of the
@@ -368,9 +584,9 @@ Decided so far:
     Each side greys to **its own grey** - light for white, dark for black - because opacity
     alone made a spent white plate wash out while a spent black one only went mid-grey. Only
     the side whose turn it is greys; the opponent's panels are not the player's to move.
-  - **The wrap costs points.** Crossing costs the unit's **own worth** - its config `value`,
-    the same number a death is scored by, so a rook is 18 - taken off the crossing side's
-    points (`wrapCost()` / `wrapCrossed` in `game-board.component.ts`, spent by
+  - **The wrap costs UP.** Crossing costs the unit's **own worth** - its config `value`,
+    the same number a death is scored by, so a rook is 12 - taken off the crossing side's
+    UP (`wrapCost()` / `wrapCrossed` in `game-board.component.ts`, spent by
     `onWrapCrossed()` in the room). **A side that cannot pay is not offered the crossing**:
     nothing beyond the tip enters the flood, so there is no hex to click. **The price is still
     drawn on the far tip, greyed and struck through** (`wrapDenied` / `.wrap-denied`) - a gap
@@ -379,6 +595,9 @@ Decided so far:
     short. What it *can* afford is marked instead - every hex on the far side that the crossing
     buys carries a red **`-x`** where x is that price, because the price is for making the
     crossing, not for the hex. An ordinary shuffle inside a panel costs nothing.
+  - **Gateway arrows and closed-gateway crosses remain visible over occupying units.**
+    On occupied gateways the mark fades in and out; reduced-motion users see a steady
+    mark. Unit labels stay above it, and the mark never intercepts clicks.
   - **The two ends of the wrap are marked with an arrow**: **up** out of the base, **down**
     into the reserve - hexes **283** and **306** on white's side of the shipped board, and the
     reverse of that on black's. Assigned by colour and drawn in board space, so a solo game as
@@ -694,7 +913,7 @@ Decided so far:
       `wrapDeniedAt()`, `refundAt()`, `isEntry()`, which pick the driving layer when there is
       one and the looking layer otherwise.
       - **Priced against the purse that would pay** (`pointsOf()`, `theirPoints` bound from the
-        room's `theirMovePoints`). Pricing one of theirs against *your* points would show them
+        room's `theirMovePoints`). Pricing one of theirs against *your* UP would show them
         a crossing they cannot make, or hide one they can.
     - **Reach on a panel is a WASH, not a fill** (`panelWash()`, `.panel-wash`). Every reach
       colour carries `!important`, so laid on a panel hex it wiped the panel's own colour out
@@ -750,7 +969,7 @@ Decided so far:
       - **0 HP means gone**: a unit killed in a panel is simply not dealt again, and is not
         mended back to life.
   - **Coming home pays.** The refund is the unit's **own worth** - the same `value` the wrap
-    charges to send one out, so a unit sent out and brought home again leaves the points where
+    charges to send one out, so a unit sent out and brought home again leaves the UP where
     it found them. Every base hex the walk reaches is marked with a green **`+x`**, against
     the wrap's red `-x`. *The owner left the number open ("x can be whatever you want"); the
     unit's own worth is the one already in play, and is a choice, not a specification.*
@@ -860,9 +1079,9 @@ Decided so far:
     makes that move illegal on arrival. The engine rejects it, which clears the staged turn -
     recoverable, since `submittedTurn` is reset on a move error and the turn can be played
     again, but the walk is lost with no explanation.
-  - **Which turns and phases close the way home is undecided.** The owner has said there will
-    be some. Until they are named it is open whenever a unit can reach it, and the gate
-    belongs in `addBaseEntry` beside `entryBind`. Do not invent the schedule.
+  - **The way home opens during setup turns and all of overtime**, and stays shut during
+    the played halves of numbered phases (`isHomecomingOpen` / `is_homecoming_open`).
+    Geometry and the unit's remaining MOV still decide whether it can reach a doorway.
   - **The gap opens in every room** (`entryBind`). The server has a reserve model now,
     `server/game/engine/panels.py`, and answers `enter_board` itself - a crossing is
     deployment, not the turn's board action, so it hands nothing over and answers with a full
@@ -888,17 +1107,15 @@ Decided so far:
       (`hand_overs_by`), not the phase schedule. Without it the client previewed a blow from
       the mended HP while the server struck from the recorded one, and the unit dropped further
       than the player was shown - which is why it could not wait for stage 3.
-    - **The toll is not behind this gate** - `tollBind` is, and stays solo until the server
-      takes it.
-  - **Which turns the gap is open is still undecided.** The owner has said it closes during
-    certain phases; until those are named it is open whenever the unit can reach it. Do not
-    invent the schedule.
-  - **Deployment is not built.** Units leave a panel two ways - the priced wrap out of the
-    base and the gap out of the reserve - and come back one, the marks into the base. What is
-    still missing is the **server model** behind any of it and any **roster or
-    army-composition flow**: the panels hold a placeholder squad dealt from the first five
-    non-commander units in config, and nothing chooses it. Do not add staging/deployment UI
-    unprompted.
+    - **The toll has its own gate**, `tollBind`, separate from panel entry. Both engines
+      now take it; the room suppresses its warning for a match already decided on points.
+  - **Reserve deployment opens during setup turns and each numbered phase's second half**,
+    including its postmatch; it stays shut in the played first halves and overtime
+    (`isEntryOpen` / `is_entry_open`).
+  - **Deployment and its server model are built.** Units leave a panel through the priced
+    base-to-reserve wrap or reserve-to-board gateways, and return through their base doorways.
+    The shared setup chooses the starting squads on both engines. A separate roster or
+    army-composition editor remains unbuilt; do not add it unprompted.
   - **Left and right are from each player's own perspective.** The board is drawn white-at-the
     bottom, and a solo game played as Black rotates the whole SVG 180° (`rotateBoard`) so the
     player still faces up the screen; glyphs counter-rotate through `textTransform()`. That is
@@ -918,10 +1135,9 @@ Decided so far:
     Left panels are the red pair, right panels the green pair; white gets the bright shades,
     black the dark ones. Wiring the planes up later must follow this mapping — treating
     screen-left as "left plane" would silently give black the wrong two.
-  - Still unspecified: plane capacity (squaring the board yields 236 filler hexes, almost
-    certainly more than the real design wants), how troops enter the left plane, the exact
-    deployment cadence ("a couple of phases"), what a "phase of the war" is, which first-row
-    hexes a deployment can target, and the specific ways the right plane can be attacked.
+  - The shipped radius-11 grid has 144 filler hexes, 36 per panel. Starting squads,
+    crossings, deployment windows and panel attacks are specified above and implemented.
+    A future army-composition flow or additional capacity rule still needs the owner's spec.
 
 - **A carried ability can be swapped out.** The green `+` beside a path's passive offers your
   carried four back: click one that is **not cooling down** and it leaves the loadout, freeing
@@ -946,11 +1162,26 @@ Decided so far:
   not a reading:** asked whether the x3 zone by the OTHER side's base pays its taker 3 as well,
   the owner answered *"worth 3 a hex"* - so a zone's worth never depends on who holds it. The board
   writes the worth (x3, x2, x1) at the bottom of every empty zone hex. A unit standing in one
-  claims the hex under it and the zone hexes beside it, so the middle of a patch holds seven hexes
-  and its rim fewer. Adjacency stops at the zone's edge; the open board around a zone is worth
-  nothing. **A hex both sides reach is held by neither**, which is what cancels two lines of units
-  meeting in a zone: their claims overlap along the seam and every hex in the overlap goes
-  neutral, and a cancelled hex reads exactly like an empty one, to the score and on the board.
+  scores only its occupied hex on the **outer ring** (distance 2 from the centre). On the
+  **inner ring** (distance 1), it also scores adjacent zone hexes. Every eligible unit, including
+  outer-ring units, **neutralizes opposing claims on its occupied and adjacent hexes** even
+  where it earns no points itself. Dashed gold inset outlines mark the six inner-ring hexes.
+  **An eligible unit on the centre holds all nineteen hexes if no eligible enemy is anywhere
+  inside that zone.** With an eligible enemy in the zone, the centre scores only its own hex
+  and immediate neighbours; other units keep their layer rules. Enemies
+  outside the zone or unable to affect it neither neutralize claims nor remove the bonus.
+  The five centres have a gold inset outline, visible beneath an occupied unit's plate.
+  Adjacency stops at the zone's edge; the open board around a zone is worth nothing.
+  **Capture and neutralization permissions are cumulative**, specified 4 Oct 2026: pawn,
+  archer and shieldman affect only their own nearest 3x zone; bishop, rook and knight can also
+  affect the middle 2x and both side 1x zones; king and queen can affect every zone including
+  the enemy's 3x. These are optional per-unit `captureZones` lists (`home`, `middle`, `side`,
+  `enemy`), relative to the unit's side; an omitted list keeps older configs unrestricted and
+  an empty list permits none. Engine code never branches on unit ids. Black's 3x zone is
+  dark blue, white's light blue, independent of seat or board rotation; held claims retain
+  their amber/violet wash. **A hex within an eligible enemy's immediate adjacency is neutralized
+  for the claiming side**, even if that enemy does not earn points from the hex itself. A
+  cancelled hex reads exactly like an empty one, to the score and on the board.
   Geometry, worth and claims are `captureZoneValues()` / `captureClaims()` / `captureScore()` in
   `hex-rules.ts`, read by the board (which colours them, white's amber and black's violet) and by
   the room (which scores them), so the two can never disagree. **The server has them too**
@@ -958,12 +1189,14 @@ Decided so far:
   onto `board.py`'s own geometry), because it banks each phase's score and ends the match on it -
   see the scoring below. Its `_js_round` is `Math.round`, not Python's `round`, which rounds a
   half to even.
-- **The battlefield's edge is drawn dark where the panels meet it.** `panelSeams` in
-  `game-board.component.ts`: one segment on every edge a panel hex shares with a battlefield
-  hex (88 on the shipped board), dark brown and three times the hex lines' weight, drawn over
-  every hex so no neighbour paints half of it out, and under the labels. Rebuilt only when
-  the board's shape changes. *The owner, 26 Sep 2026: "try to draw a darker line on between
-  the reserve/base and the board edge".*
+- **A blue seam separates the battlefield from every base/reserve panel.** `panelSeams`
+  in `game-board.component.ts` draws one segment on every shared panel/battlefield edge
+  (88 on the shipped board). Its blue `#2563eb` stroke is 4 SVG units wide, with rounded
+  endpoints, drawn over every hex and under the labels, and takes no clicks. Geometry
+  rebuilds only when the board's shape changes. This supersedes the older dark-brown
+  seam. The owner, 7 Oct 2026: *"the buarder between the reserve to board or base to board
+  makes it hard to tell which unit is in reserve or base or board. maybe change it to a
+  different color, so black or white has a discinct line across the border. perhaps blue?"*
 - **Each side's home rows are tinted.** The three rows nearest a side's edge - its setup area, up
   to and including the pawn wall, so `r = 9, 10, 11` for white and the mirror for black - carry a
   pale wash: green for the seat's own, red for the opponent's. `homeOf()` in
@@ -972,13 +1205,13 @@ Decided so far:
   Which of the two is "mine" follows `myColor`, which in a solo game follows `soloColor` - so the
   player's own rows stay the near ones under `rotateBoard`. Cosmetic: no rule reads a home row.
 - **The header score is `cap - death`, and it is called VICTORY POINTS (VP)** - the owner's
-  word for it. Not to be confused with the *points* that buy abilities and wrap crossings,
+  word for it. Not to be confused with the *points* that buy abilities, or UP that buys wrap crossings,
   which are a separate pool entirely. Each side's standing shows beside the turn indicator -
   the opponent's to its left, yours to its right - as flag, what the capture hexes held are
   worth, skull, deaths, total.
   **Cap is what you hold right now**, read off the board every time and gone the moment you walk
   away; it is not banked and it is *not* ability points. **Death accumulates**: losing a unit
-  costs you its config `value` (a pawn is 5) - **except one killed in a base** (a red panel,
+  costs you its config `value` (a pawn is 8) - **except one killed in a base** (a red panel,
   `BASE_PANELS`), which costs nothing; one killed in a reserve (green) costs as on the board.
   *The owner, 24 Sep 2026: "killing things in base (red panel) should not count towards
   victory points ... in green panel it ... counts towards victory points".* `deathsOf()` /
@@ -1090,11 +1323,16 @@ Decided so far:
   backfill ground the line has vacated; they do not pour onto an empty board.*
 
 - **A phase's postmatch turn has its own allowances.** One full turn, both sides, and on it:
-  **no ability fires and nobody attacks** (`isSetupTurn()`, shared with the opening -
-  `noAttackMessage()` says which of the two refused, `Nobody attacks in the postmatch` or
-  `Nobody attacks in the opening`, since "the opening" on turn 14 points at a phase that
-  ended a whole phase ago); **five units may be started out of the reserve** rather than the
-  usual three (`rules.postmatchEntries`, and it stands *instead of* the per-panel three,
+  **abilities and normal unit healing are allowed; normal unit attacks are forbidden**.
+  This applies to every numbered phase's postmatch, for both sides. Pool, path and unit casts
+  use the same eligibility, target, cost and cooldown rules as during play; online casts
+  remain deferred under PUNCHLIST 6.15. Healing is the bishop's normal action and still
+  consumes its action. An offensive ability can kill a king and end the game before points
+  or overtime settle it. The owner, 4 Oct 2026: *"abilities and anything can be used but units cant attack"*.
+  This supersedes the former ban on postmatch casts and healing.
+  `isSetupTurn()` still blocks normal attacks, including panel blows and enemy landings;
+  `noAttackMessage()` names the opening or postmatch. **Five units may be started out of the
+  reserve** rather than the usual three (`rules.postmatchEntries`, and it stands *instead of* the per-panel three,
   covering walks inside the reserve as well as crossings out of it - capping the walk at three
   would leave two of the five unable to reach a gateway); and **three units may walk home**
   (`rules.homecomingsPerSetupTurn`, counted by `homecomingsAt()` / `homecomings_at()`). The base
@@ -1114,17 +1352,13 @@ Decided so far:
   - **Nobody attacks at all** - not on the battlefield either. No targets are offered and no
     strike layer is drawn (`isInitialization()` in `services/phases.ts`, read by
     `refreshTargets` and `refreshPreview`).
-  - **No ability is CAST** - not a pool ability, not a path's skill or ultimate, not a unit's
-    own - **but choosing is exactly what the opening is for.** Two gates, and the split
-    matters: `canChooseAbilities()` (take a pair up, take a path, hand a pair back through
-    Reselect) is open through every setup turn; `canUseAbilities()` is that plus
-    "not `isSetupTurn()`", and everything that spends an ability runs through it. So a
-    numbered phase's postmatch turn shuts casting for the same reason the opening does.
-    The panels say which rule closed them, and name the turn (`abilityBlockedNote`: on turn
-    14, `Unavailable: no abilities during the phase 1 postmatch.`). The
-    offline engine refuses one too (`abilityFault()`): it need not know what a cast is
-    *worth* to know none should have arrived, which is the one ability rule it can keep with
-    the abilities still unsettled.
+  - **Only the bought path's CP utility can be cast** during initialization. Pool casts,
+    path skills/ultimates, unit abilities and normal healing remain blocked. Choosing
+    pairs and paths stays open through `canChooseAbilities()`; `canUseAbilities(side, index)`
+    permits the utility exception. The offline engine accepts promotion-only opening
+    effects on moves or passes while still rejecting combat/stat/status casts. Every
+    postmatch permits normal casting. This replaces the previous all-casts-closed rule,
+    following the owner's initialization use budget on 7 Oct.
   - **Three full turns each** - white's hand-over and black's, so six hand-overs (see the
     schedule table: the turns there are full turns).
   - A side may move **three base units and three reserve units a turn, and one battlefield
@@ -1253,18 +1487,16 @@ Decided so far:
   and laptops), B (tablets on their side, small windows) and C (upright screens, phones,
   touch, the other screens) are done, and what two reviews of them found is fixed (6.42,
   6.43).
-  - **Three layouts** (`roomLayout`, decided in `fitRoom()`). The three columns from 1180x730
-    up, unscaled; short of that still the columns, scaled - on a computer's window down to 72%
-    (`ROOM_DESKTOP_ZOOM`: a 960x540 window is 74%), on a touch screen only to 90%
-    (`ROOM_MILD_ZOOM`), `touchOnly` telling the two apart by `(hover: none) and (pointer:
-    coarse)` and a change of it choosing again. The owner, 28 Sep 2026: *"the game is
-    unplayable with anything tucked away"* - a computer keeps every panel in sight as far as
-    its type stays about 9px (8.6 at the very least: 72% was chosen when the floor went from
-    705 to 730, so that every window that had the columns kept them, 529px tall and up). Below
-    that, a landscape window gets the board and one column
-    of tabs (`tabbed`), and a portrait one the board over the tabs (`stacked`) - for a phone or
-    a tablet, which the owner took the tabs for ("tabs are fine"), and a tiny computer window.
-    What the two share is one block of the stylesheet, under `.with-tabs`.
+  - **Three layouts** (`roomLayout`, decided in `fitRoom()`). The three columns from
+    1180x1025 up, unscaled; smaller desktop windows keep the columns when at least 850px
+    wide and 526px tall, the same windows as before Unit moved left. Their scaling fits the
+    taller column. **The owner chose all panels visible, even with smaller text**, 3 Oct
+    2026. Touch screens keep the 90% limit (`ROOM_MILD_ZOOM`), `touchOnly` telling the two
+    apart by `(hover: none) and (pointer: coarse)` and a change of it choosing again. Below
+    those limits, a landscape window gets the board and one column of tabs (`tabbed`),
+    and a portrait one the board over the tabs (`stacked`). Unit stays pinned when its
+    contents fit; its own tab and compact strip keep it accessible below that height.
+    What the two smaller layouts share is one block under `.with-tabs`.
   - **One unit sizes everything but the board.** `--u` on `.game-room-container`, between 12px
     and 20px, and every type size, padding, gap and both columns' widths are written in it -
     `u(n)` and `t(n)` in the stylesheet, `t` being type with a 12px floor. The board is not in
@@ -1276,22 +1508,62 @@ Decided so far:
     at their floor. The formula and its measurements are in the comment above `--u`.
   - **Floors, each on the thing itself.** Type 12px (`t()`, and the `max(12px, ...)` the
     component's `abilityFontSize`/`statFontSize` return, HP's included); every control in the
-    header and the columns 24px each way (WCAG 2.2, 2.5.8); each column 248px wide, what two
-    ability buttons need side by side at 12px. Buttons and inputs get a base size in the unit
+    header and the columns 24px each way (WCAG 2.2, 2.5.8); the left column has a 300px width
+    floor for labelled stat pairs, the right 248px for its controls. Buttons and inputs get a base size in the unit
     (`:where(button, input, ...)`) - they do not inherit font size, and every one nobody sized
     stayed 13.33px.
-  - **Their panel is over yours in the left column; the Unit panel tops the right one.** Both
-    ability panels with the Unit panel under them were what made the room need 1120px of
-    height. Phase A (28 Sep 2026) put theirs over History and the chat, and the owner, 29 Sep:
-    *"why did you move opponent ... almost blocking the chat box"* - put it back, and *"we need
-    to make it try to fit"*. Back over yours with the Unit panel still in the left column, the
-    columns wanted a window 910px tall at the 12px unit (705 before); with the Unit panel moved
-    to the top of the right column - it reads either side's unit, beside the board - 730. The
-    Unit panel is its own height there (`flex: 0 0 auto`; it had taken the left column's spare,
-    and in the right one it would take the chat's), and History and the Game/Lobby box share
-    the rest 1 : 3 (it was 1 : 1.4) - the chat showed one message on the owner's 1284x649 window
-    (43px to History's 174), and is about even with History now (110, 107; 156, 149 at 1080p).
-    Measured with `--u` forced unit by unit and the window bisected, in headless Chrome.
+  - **Their abilities, then yours, then Unit in the left column.** The owner, 3 Oct
+    2026: *"in the game, the unit tab on the top right should be on the bottom left below
+    the abilities tab"*, then *"ok move it there, then that would expand history and the
+    players tab a bit"*. Unit is directly below your Abilities, before Resign/Offer Draw.
+    History tops the right column and Game/Lobby share the rest at their existing 1:3
+    ratio. On the owner's 1284x649 window History grew from 107px to 152px, and the room
+    box from 317px to 452px. The owner added the same day: *"try to fill the rest of
+    the verticle spaces with the unit tab on the left"*. Unit fills the remaining left
+    column height (`flex: 1 0 auto`), its effects box taking the extra space, with
+    Resign/Offer Draw at the bottom. It keeps its own content height as the floor;
+    neither ability panel may crush its stats or effects. The column's gaps are a
+    little tighter, and its sizing was measured with a three-ring unit and its ability
+    detail open, not only the empty Unit panel. The earlier arrangement of 29 Sep put
+    Unit top-right to fit a shorter column; this decision supersedes that placement.
+  - **Unit stats are HP/MOV, ATK/DEF, HEL/VET.** The owner, 3 Oct 2026:
+    *"actually for ATK, do this for archer, instead of RNG, embed that into atk, so its
+    atk is "1:15/15 2:14/14 3:13/13 4:12/12". make bishop heal instead of ATK, so make
+    its ATK a dash and hav its HEL "1:14/14 2:13/13 3:12/12 4:11/11". change RNG to VET
+    instead, where its a dash, 1star, 2star, or3star. you can remove the star in the unit
+    name. reorder the unit table like "HP|MOV, ATK|DEF, HEL|VET" make HEL long like ATK"*.
+    Range belongs to each current/base pair in ATK and HEL. Both use the wide column;
+    DEF and VET use the narrow one. HP and MOV share equal halves of the first row.
+    The owner's 4 Oct roster below supersedes those example amounts: archer attacks
+    are 4, 3, 2, 1 at rings 3-6. Bishop's attack is zero (shown as `—`), with
+    healing amount 8 at ring 1 in `units.<id>.heal`.
+    An absent heal list means no healing stat; both validators require 1-4 nonnegative
+    whole-number entries when present. **Healing replaces the attack action**:
+    optionally move, then heal one **other friendly battlefield unit** in its configured
+    healing rings (currently ring 1), capped at that unit's max HP, with **no CP cost**. The owner answered
+    *"Yes, use those healing rules"*, 3 Oct 2026, to that exact proposal.
+    It follows the attack action's stage gates: no healing while setting out,
+    no healer or target in a panel, and healing ends that unit's movement and
+    action for the turn. No defence or range falloff subtracts from HEL; it
+    never counters or deals damage. `make_move {from, to, heal}` rides the same
+    revision, allowance and hand-over path as a strike, and cannot carry an
+    attack or withdrawal alongside it. Both engines resolve the amount from
+    the room's config, not from client HP, and history records `healedHex`,
+    `healed_amount`, `healed_hp`, `healed_unit`. Undo drops the staged HP change
+    and restores the bishop's action; a reload keeps committed healing. This
+    is a normal unit action, not a catalogue ability cast.
+    VET shows `—`, `★`, `★★` or `★★★` from the same earned rank as the board. The Unit
+    heading retains the name and point value and no longer carries stars; board stars
+    remain. HEL keeps the requested light green (`#4ade80`), and VET takes RNG's light
+    yellow (`#facc15`), on the normal stat cell background. These colours belong on
+    the value text, as the owner clarified earlier: *"i meant the text of the value
+    light green and light yellow, just like how atk hp def mov has colored text"*.
+    The left column and tabbed column have a 300px width floor to fit four labelled
+    pairs at the 12px font floor; the right desktop column keeps its existing width.
+    The compact strip names the available action stat and VET, with each stat kept
+    together and tight vertical gaps in unpinned tabbed layouts.
+    Archer's lower attack bound is 3; its supported rings are 3-6, in both engines.
+    The desktop height floor stays 1025px, and landscape touch pins Unit from 805px.
   - **The logs scroll, nothing else does.** History and the chats keep to their newest line
     (`scrollChatToBottom`): a line coming in moves one only if it was at its newest, so a
     player reading back is not pulled off it - unless the line is their own (`own`), which
@@ -1325,6 +1597,10 @@ Decided so far:
     take half their row each, their words held to one line (`.label`) and the key put under
     them when they are short of width - "End Turn (TAB)" had run 24px over Show Hex, and then,
     with nothing holding its words, broken onto three lines.
+  - **Path choices keep each name and cost on one line**: Bastion - 5, Onslaught - 10
+    and Sprint 20, in both ability panels. The three choices remain side by side and
+    reserve the height of the path they open, so selecting a path does not move the
+    panels.
   - **The header gives way in order** (`fitHeader`, `banner-fit.ts`, the timer app's way):
     everything at full size; then compact - "Setup", "Leave", "Connected", the same words
     shorter (`.header-compact`, and `:host-context` in the connection status); then the
@@ -1362,7 +1638,7 @@ Decided so far:
     through afresh every second. `--banner-fit` is what its font sizes multiply by.
   - **The tabs** (`.tabbed`): the board on the left, as big as the window allows, and one
     column: Undo and End Turn, Show Hex and Flip, the Unit panel while the window is at least
-    `UNIT_PIN_MIN_HEIGHT` (690) tall, a strip of tabs - Yours, Unit (only when it is not
+    `UNIT_PIN_MIN_HEIGHT` (805) tall, a strip of tabs - Yours, Unit (only when it is not
     pinned), Theirs, History, Room - the panel the tab picks, and Resign and Offer Draw. The
     panels stay in the markup where the columns put them: the columns become `display:
     contents` and `main`'s grid places what was in them, so there is one copy of every panel.
@@ -1376,7 +1652,7 @@ Decided so far:
     box were `overflow: hidden` for the columns, and on a phone that hid the chat's input.
     History's expand button is not drawn under the tabs (it has the whole panel already), and
     the Room tab stays filled if History was expanded before the layout changed. **Where the
-    Unit panel is a tab, its strip is not** (`.unit-strip`): two lines - the unit and its
+    Unit panel is a tab, its strip is not** (`.unit-strip`): the unit and its
     side, then HP, ATK, DEF and MOV - where the pinned panel would stand, under the board on a
     phone, in sight whatever tab is showing; pressed, it opens the panel. Behind its tab the
     panel filled in, on a hover or a tap, where nobody could see it, and a phone's board draws
@@ -1561,25 +1837,25 @@ Decided so far:
     its place set the line 2-3px taller at every size, so the panel's numbers jumped between
     a unit with a star and one without. 1.12 is under Arial's own at every size the room
     draws, so no heading grew for it.
-  - **Where the room still scales**: short of the columns - on a computer to 72%, on a touch
-    screen to 90% (above).
-    `ROOM_MIN_WIDTH`/`ROOM_MIN_HEIGHT` (1180 x 730) is the least size at which the sweep finds
-    the columns whole with the unit at its floor. The window's units are safe inside the
-    zoomed room: every term only falls as the window does, so below the floor the unit sits at
-    12px and the room is laid out at exactly the size that was measured. **The floors give way
-    there, not a panel**: the owner's own window, 1284x649, draws the columns at 0.89 - its
-    text at 10.7px and 37 controls under 24px (0.92 and 11px before their panel went back to
-    the left column) - and that is the right trade. Holding the floors
-    would take the tabs, at a size where every panel fits in sight at once, and the owner,
-    28 Sep 2026, asked whether it should: *"its weird you considered that since the game is
-    unplayable with anything tucked away"*. So never offer hiding a panel to make type bigger;
-    tabs are for a screen the columns cannot be drawn on at all.
-  - **The other screens.** The lobby's header wraps under 720px wide and its roster stands over
-    its chat; held to one row it had run the connection line and the chat off a phone's screen.
-    Its words have the 12px floor. Every control on the three is 24px each way at the least:
-    the lobby's Change, Configure Setup and Single Player fell to 22px on a phone, and setup's
-    Format JSON was the browser's own 21px button, its style under a class nothing had any
-    more.
+  - **Desktop resizing keeps every panel visible.** Mouse-driven windows always keep
+    Opponent, Abilities and Unit in the left column and scale the three-column room
+    to fit, including below the former 850x526 cutoff. The owner reaffirmed this on
+    5 Oct 2026: hiding the left panels makes the game unplayable. Touch screens retain
+    their 90% scaling limit and accessible tabbed/stacked layouts below it.
+  - **The lobby title yields to the current player.** The header itself stays on one
+    row: when its title no longer fits beside the player and controls, the whole
+    title disappears, rather than moving above "Playing as" or becoming an ellipsis.
+    A ResizeObserver measures the title's actual available width and is disconnected
+    when the lobby is destroyed. The name and connection status stay together on one
+    row; a long name has a tooltip. Change, Configure Setup and Single Player remain
+    on that row at every width, as the owner requested on 5 Oct. On narrow screens
+    the control row scrolls horizontally to keep every control reachable without
+    shrinking its text or hit area. The volume popover sits outside that scroller.
+    A disconnected status keeps its first word
+    beside Reconnect. Connected keeps "to Game Server" on the same line. The rename
+    form opens below the controls. The roster stands over chat. Every control retains
+    the existing 24px minimum, including the open volume slider; its percentage is at
+    least 12px.
     - **The ⋮ menu beside a player is one function** (`openUserMenu` in
       `services/user-menu.ts`), the lobby's and the room's. It is built on the body, outside
       every component, so its look is in the global `styles.scss`: a component's styles are
@@ -1609,6 +1885,10 @@ Decided so far:
       solo room ('local') saves itself: nothing answers a `set_custom_config` for it, and
       "Saved!" never showed there. The editor has the screen's height,
       the "Coming Soon" box above it only its words'; Arial, one size of button.
+      Unsaved checks compare normalized JSON strings exactly, ignoring whitespace and object
+      key order. They use no lossy checksum: changing a unit name from `Aa` to `BB` must still
+      prompt before Back leaves. Normalization preserves own `__proto__` keys as data, so
+      editing an explicitly configured unit under that ID cannot silently look unchanged.
     - **The lobby**: a rename the server refuses is said in the rename panel (`renameError`,
       `RENAME_ERRORS`), not the chat; a rename that goes through shuts it. Its chat follows its
       newest line only when its reader is at it, or the line is theirs (`onLobbyMessages`).
@@ -1628,23 +1908,30 @@ Decided so far:
     before it for a browser without: 100vh is the window with the browser's toolbar tucked
     away, and the room ran 56-90px under the toolbar showing - the bar along the bottom with
     it. The unit's own terms were in `dvh` already.
-  - **Checked by `client/scripts/layout-sweep.mjs`**, in headless Chrome - 329 checks, all
-    holding, 29 Sep 2026 - in two runs of a
+  - **Checked by `client/scripts/layout-sweep.mjs`**, in headless Chrome - 490 checks, all
+    holding, 5 Oct 2026, including connected/disconnected/offline lobby states,
+    long names, rename controls, the volume popup, invitation/connection/room/Reveal
+    dialogs and setup errors/unsaved changes. Dialog checks measure text bounds
+    and hit-test actions after scrolling them into view; Reveal waiting also
+    checks the header's Leave button. Both path rows keep their
+    names and costs on one line. Hidden ellipsis text is measured by its visible bounds;
+    controls clipped by a non-scrolling box still fail. In two runs of a
     Chrome each - a computer's sizes, then a touch screen's: once touch has been emulated in a
     headless tab it stays a touch screen (`pointer: coarse`, `hover: none`), turned off or
     reloaded, and every computer size measured after a phone's had been measured as one - no
     keys named on its buttons, and the tabs where a computer keeps the columns. The room
-    before the match at 9 sizes, and in it - the columns at 16 window sizes from 3440x1440 to
+    before the match at 9 sizes, and in it - the columns at 19 window sizes from 3440x1440 to
     1180x730, a computer's window short of them at 5 (the columns scaled, their floors
-    reported, the zoom checked to the hundredth) and smaller still at 2 (the tabs), the tabs
-    on a touch screen at 9 from 1366x620
+    reported, the zoom checked to the hundredth) and smaller still at 2 (the columns), the tabs
+    on a touch screen at 10 from 1366x620
     to 800x505 and the board over the tabs on 5 upright
     tablets, every tab of each and the rail's Lobby tab with two dozen online and a line of
     chat from somebody else in each chat (put there through Angular's development hooks - a
     solo game is offline), touch emulated for the tablets, and each once more with the board's
     overlays up ("Tap again to strike", "Whole board"); an offer of a draw waiting, at 9 sizes;
-    the longest banner the match can show at all 33; and the login, lobby and setup at 7 sizes
-    from 1920x1080 to 360x740. Each the layout it should be, nothing scaled, nothing scrolling
+    the longest banner the match can show at all 36; and the login, lobby and setup at 9 sizes
+    from 1920x1080 down to short landscape phones at 740x330. Room dialogs are
+    checked separately at seven desktop/phone sizes. Each the layout it should be, nothing scaled, nothing scrolling
     but the logs, nothing clipped or cut short, nothing off screen, no text under 12px, no
     control under 24px, every log with room for an entry whole (the roster its first, you), no
     two controls over each other, no words out of their button - by a range over the words,
@@ -1668,6 +1955,14 @@ Decided so far:
     the dev server was stopped twice for want of it - a development build (`ng build
     --configuration development`) served by any static server that answers every other path
     with its `index.html`, at a fraction of the memory.
+  - **Dialogs stay inside the window and wrap long public names.** Invitations,
+    Reveal requests/waits and room endings retain readable names inside their cards.
+    Reveal and room connection/end dialogs cap their height and scroll when a short
+    window needs it; every action must remain reachable. The host's Leave Room button
+    stays above the Reveal waiting overlay. The failed-connection buttons share a row
+    with widths based on their labels, so Retry Connection fits at 360px.
+    The setup editor fills its remaining space with a 24px minimum instead of 160px:
+    short landscape phones can edit even while validation errors are open.
   - What the zoom-everything room replaced (25 Sep), all measured: the Unit panel crushed to
     its border by the ability panels above it (2px at 1400x800, everything below HP/ATK gone
     on the owner's 1904x946); the header's buttons pushed off its right edge below ~1470px;
@@ -1900,10 +2195,69 @@ Decided so far:
     used to be written out at every hand-over, five copies across two languages, and the
     browser engine's panel blow had already lost its mutual draw: a blow that left neither side
     a commander went to black by list order.
-- **What a phase otherwise does is not decided.** No phase change fires anything else: no
-  deployment opens, nothing is locked
-  Do not build phase plumbing unprompted. (This is the same "phase of the war" the reserve
-  planes' deployment cadence refers to; how the two line up is still unspecified.)
+- **The board announces each side's turn after replay**, updated by the owner on
+  7 Oct 2026. The notice shows **Turn N** above **White** or **Black**, using a white
+  box/dark text or black box/light text to match the side to move. Both halves share
+  the full-turn number. At initialization, a numbered phase, halftime, postmatch or
+  overtime stage's first ply, the larger stage name appears above those two lines;
+  Black's half does not repeat that stage heading. The notice waits for all replay
+  beats and upkeep to finish, then slides right to centre to left in 0.9 seconds,
+  including about 0.5 seconds at centre, with a short volume/mute-aware swoosh.
+  It stays upright in either board orientation and never blocks clicks or delays
+  the next side's controls. Reduced motion skips the slide. Loading or resyncing
+  an existing turn does not announce it; only `game_started` supplies a fresh-start
+  cue. A replaced replay announces only the latest turn; a finished match announces none.
+  The owner's earlier request that the notice not count towards the clock remains
+  unresolved: excluding its 0.9 seconds from the deadline versus leaving the clock
+  independent. The notice itself still does not change the timer deadline.
+- **Cooldown labels, 7 Oct 2026.** Unlimited activatable pool and unit buttons show
+  `Name (remaining/total) cost`, for example `Warcry (0/3) 4` ready and
+  `Warcry (3/3) 4` immediately after use. Ready/cooling detail notes use the same
+  configured denominator. CP utilities show remaining phase uses, e.g. `Convert (5) 3`;
+  CP skills show remaining match uses, e.g. `Trap (3) 15`; ultimates show `(1)` then `(0)`.
+  CP utilities and skills have cooldown 1 and grey out after use for the turn. Exhausted
+  buttons stay clickable for their descriptions and cannot cast. Convert, Strengthen and
+  Recharge each allow five uses per initialization, numbered phase, or overtime. Halftime
+  and postmatch share the numbered phase budget; all overtime stages share one budget.
+  Utilities can be used during initialization; other casts and normal healing remain blocked.
+  Counts persist through reload and Undo restores the budget of the originating phase.
+  `usesScope: "phase"` configures the phase budget; omitted scope retains match limits.
+  Passives have no cooldown and show their names alone.
+  Path purchase buttons use `Bastion - 5`, `Onslaught - 10`, `Sprint - 20` on one
+  line. Onslaught now costs 10 CP to activate, superseding 7 CP; the shared config
+  carries that price. The owner: *"change all cooldown in this format"*,
+  *"onsualt should be 10 poitns to activate, not 7"*, and *"make the 3 cp selections
+  with a dash, like Onsault - 10"*.
+  Convert, Strengthen and Recharge each have cooldown 1. Recharge subtracts 1
+  from both abilities in the selected pair, with positive cooldowns floored at 1;
+  already-ready abilities remain 0. The owner: *"make convert, streghten, and
+  recharge all 1cd. recharge -1 cd instead of -3, but cannot reduce less to than 1
+  like before"*.
+- **Unit detail ownership, 7 Oct 2026.** Opening a unit passive/ability description
+  pins the Unit panel to that unit's UID. Hover cannot redirect its Use button.
+  Selecting a different unit, including another of the same type, or clearing the
+  selection closes the description and Use view. The first touch tap on a normal
+  attack/heal target also sends the selection event before its confirmation; it closes
+  stale details without committing the action. Updates or movement of the same
+  UID retain its details. Armed pool casts and bishop Cast keep their separate
+  target-selection flow. The owner: *"click a different unit, but the ability/passive
+  desc box and use button gets stuck ... it should get out of that box"*.
+- **Board readability, clarified 7 Oct 2026.** A gold SVG outline traces every exposed
+  side of the outermost hexes in the complete grid, including every base/reserve
+  panel. It follows the hex-shaped perimeter through zoom, resize and flipping;
+  there is no rectangular frame. Its 4-SVG-unit stroke has rounded endpoints and
+  takes no clicks. The owner: *"dont put a literal square box around the whole
+  24x24 board including the panels. actually trace the hexes around the board"*.
+  Closed-gateway crosses use lighter red `#ef4444` so they stay visible over dark
+  units, per the owner's request on 7 Oct.
+  Both sides' red base and green reserve hexes have contrasting 1.25-unit outlines:
+  pale outlines on both red bases and Black's dark green reserve, dark outlines
+  on White's light green reserve. No rows, columns or playable cells are added.
+  The turn backdrop slowly pulses over a four-second cycle: your green background
+  brightens toward pale green-white, while the opponent's red background dims
+  toward dark red-black. Only the backdrop changes, leaving units and hex colours
+  intact. The amber replay cue takes precedence, and reduced motion holds a steady
+  green/red background.
 
 Assumed by an agent, **not** yet confirmed by the owner — treat as weaker than the above and
 re-check before building on it:
@@ -1911,12 +2265,9 @@ re-check before building on it:
 - **No line-of-sight for ranged attacks** — range is pure `hex_distance`, and units do not block
   shots. Cheapest option; a real LOS check is the upgrade path.
 
-Deferred, not rejected: global (army-wide) ultimates, stat growth on rank, the real config
-editor UI.
-
-Not yet specified at all: the actual unit roster (the config still ships chess-piece
-placeholders), concrete stat values, ability numbers, XP thresholds, and how many charges an
-ultimate gets.
+Deferred, not rejected: the config editor's form UI and authoritative online ability
+execution (6.15). Army ultimates, first-star stat changes and the solo unit kits are
+implemented as specified above. Future effects and numbers remain the owner's call.
 
 ## Single-player rooms (client-side, offline)
 
@@ -1952,6 +2303,12 @@ UUID, no access token, no socket. It runs entirely in the browser.
   trying to reach the server behind the connection dialog, which is what makes the retry
   mechanism visible. A flag that suppressed the dialog left users with no way back and no
   reconnect attempts.
+- **The lobby records its socket destination even while offline.** It calls
+  `connect('lobby')`; the offline service remembers that room without opening a socket.
+  Reconnect after a fresh offline load or solo reload therefore rejoins the roster
+  channel, rather than the unused `default` room that could report Connected without
+  receiving a user list. A regression covers the real service URL, join and self row;
+  the browser flow also checks a server outage, offline play/reload and reconnection.
 - The connection dialog is the whole story when there is no server: it counts attempts, offers
   **Single Player** from the first attempt (which just goes offline - the lobby's own Single
   Player button starts the game), and adds **Retry Connection** / **Back to Login** once the
@@ -2012,9 +2369,10 @@ sends that dict straight back on its next mode change.
 
 ## Combat
 
-A unit's turn is "walk, then optionally swing", carried by one `make_move`:
-`{from, to, attack?}` where `to` is where the unit ends up (possibly where it already stood)
-and `attack` names the hex it strikes from there.
+A unit's turn is walk, then optionally attack or heal, carried by one `make_move`:
+`{from, to, attack?, heal?}` where `to` is where the unit ends up (possibly where it already
+stood), and `attack` or `heal` names its target from there. The two actions are exclusive;
+normal healing follows the rules in the Unit stats section above.
 
 - **Losing**: the objective is `regicide` - a side is beaten when it has no unit flagged
   `commander: true` left (the king). `elimination` (no units at all) is the other accepted
@@ -2024,9 +2382,13 @@ and `attack` names the hex it strikes from there.
   exchange, which ends `draw_mutual` rather than crediting the survivor of a list order.
   The end reason names the objective (`regicide` / `elimination`); `find_defeated()` still
   answers "is it over" for callers that need nothing else.
-- **Reach** is `units.<id>.attackRange` in rings of hex distance, ignoring obstacles. Damage
-  falls off `rules.rangeFalloff` (0.25) per ring past the first, floored, never under 1 — see
-  `ranged_damage()`.
+- **Reach** is `units.<id>.attackRange` in rings of hex distance, ignoring obstacles. A
+  scalar `attack` falls off `rules.rangeFalloff` (0.25) per ring past the first, floored,
+  never under 1 — see `ranged_damage()`. An `attack` list gives exact attack per ring,
+  before defence, without percentage falloff. Both validators require 1-4 nonnegative
+  whole-number entries, one per ring from optional `attackMinRange` (default 1) through
+  `attackRange`. Too-close strikes and counters are refused. Old scalar and ring-1 list
+  configs still work. The owner's archer values of 4 Oct 2026 are `[4, 3, 2, 1]`, rings 3-6.
 - **Damage is `attack - defense`**, floored at **`MIN_STRIKE_DAMAGE` (1)**: armour blunts a
   hit but never turns it aside entirely, and never heals (`strike_damage()`). It floored at 0
   until 16 Sep 2026, which left whole matchups unable to hurt each other at all — a pawn (14
@@ -2062,7 +2424,7 @@ and `attack` names the hex it strikes from there.
     schema nor either validator puts an upper bound on the field, so the clamp in
     `strike_damage` / `strikeDamage` is what holds this.
 - **The defender counter-attacks** with the same sum reversed, but only if the attacker is
-  inside *its* reach — a melee unit cannot answer a bishop three rings out. A unit reduced to
+  inside *its* attack band — a melee unit cannot answer an archer three rings out. A unit reduced to
   0 HP never counters.
 - **The attacker holds its ground**, even on a kill. Taking the hex would be free movement, and
   attacking is what ends the unit's movement for the turn.
@@ -2070,46 +2432,37 @@ and `attack` names the hex it strikes from there.
   `attackTiers`) for the board glyphs and the offline engine. Change one, change both — the
   specs compare them against these numbers.
 
-## Points
+## Points and unit points (UP)
 
-Placeholder numbers, but a real economy now, and **derived rather than tallied**. Every source and
-sink of a point is on the move history or the schedule, so both engines add them up from those.
-The owner's rules and their history are under *Two currencies* in the phases section; this is
-the ledger:
+**Owner revision, 4 Oct 2026:** unit worth is UP, separate from ability points. Each side
+starts with **10 UP** (`rules.upAtStart`). Battlefield attack/counter kills pay the dead
+unit's value in UP; ability kills and panel kills pay nothing. Walking home refunds that
+unit's value in UP. A base-to-reserve crossing spends UP equal to its value, confirmed
+by the owner: *"Yes, spend UP for the crossing"*. A pawn is worth 8 UP.
 
-| | |
-|---|---|
-| a side's turn begins | its rate - 1, then 2 from Phase 2's halftime, 3 from Phase 3's, nothing in overtime - and a phase's grant (10, 20, 30) on the side's first turn of it (`turnPointsBy`) |
-| overtime begins | the side's banked victory points, once, on its own first overtime turn (`vpAsPoints`) |
-| a kill on the board | +the dead unit's `value` to the killer; a counter-swing that kills the attacker pays the defender's side its `value` |
-| a kill in a panel | nothing, base or reserve, whoever dies |
-| walking home | +the unit's `value` |
-| the wrap | −the unit's `value` (on the `panelMove` record's `price`) |
-| a pool ability | −its `abilityCosts` entry — solo only, and **not** on the record |
+**At each numbered phase's halftime start (turns 9, 20, 31), both sides add their own
+current phase VP to UP**, confirmed: *"Add it to UP"*. The snapshot uses the displayed
+phase score, including that phase's losses, its multiplier and the zero floor. Store that
+award once at the boundary; later moves, Black's half, reloads and resyncs never recompute it.
+UP appears beside CP, for example `CP: 5 UP: 10`. These unit transactions no longer change
+regular ability points.
 
-The first two rows are `scheduledPoints()` in `match-score.ts` / `scheduled_points()` in
-`scoring.py`; a unit's worth is read by `unitValue()` / `unit_value()` and nowhere else. A cast
-that kills pays nothing; only a turn's own action ever did. A round trip — wrap out, walk home —
-is points-neutral, which is what the refund is for.
+Regular points come from scheduled turn income, phase-start grants and overtime VP
+conversion. Pool abilities spend these points; ability grants also pay this currency.
+UP comes from the unit transactions and halftime snapshots above. CP retains its existing
+path costs and postmatch awards.
 
-- **Server**: `points_of(color, ply, history, config, bank)` in `server/game/engine/economy.py`,
-  *bank* being the state row's `phase_bank`. The wrap is priced against it, so it has to be
-  right.
-- **Client**: `pointsFromHistory(color)` in the room mirrors it. **`reconcilePoints` resets both
-  purses from the record on every `game_started`, `move_made`, `turn_passed` and
-  `game_state_update`, solo and networked alike** — and the live tally still moves in between, so
-  a wrap staged this turn shows its price at once. Nothing else pays a point: not the start of a
-  turn (`beginTurnFor` only ticks cooldowns), not a kill on its way in. So a new way to earn one
-  is one line in the record's sum, and a held move - one of an Overtime 2 or 3 turn's several,
-  which arrives as a `game_state_update` rather than a `move_made` - is paid like any other.
-- **The one thing the record does not hold is abilities**, which are solo only: a pool ability
-  is bought with points, and Rally hands 300 out. `chargeFor()` keeps that apart as
-  `myAbilityPoints` / `opponentAbilityPoints`, persisted with the solo state, and
-  `reconcilePoints` adds it on - so the reset gives back nothing spent. A networked room casts
-  nothing and adds 0. (Solo used to keep a tally alone and pay each source by hand, which is how
-  a held move's kill went unpaid.)
-- Cooldowns still tick at the start of a side's turn and are still client-side; see Ability
-  panels.
+Both engines derive committed balances from history and the schedule. `points_of` /
+`pointsFromHistory` count regular points; `unit_points_of` / `unitPoints` count UP.
+`reconcilePoints` refreshes both sides on starts, moves, passes and state snapshots.
+Staged crossings and homecomings update UP immediately and Undo reverses them. A snapshot
+  at the same ply retains staging and overlays only transactions not already recorded. An
+  advancing snapshot discards the prior turn's staging before reconciling balances. Solo UI
+  saves carry their ply; older UI saves without it discard their uncommitted preview on load
+  rather than applying its refunds to an unknown turn. Committed history is retained.
+Solo ability spending is still held separately in `myAbilityPoints` /
+`opponentAbilityPoints`; online casts remain deferred. Cooldowns still tick at the start
+of each side's turn.
 
 ## The panels, the toll and the opening, on the server
 
@@ -2142,7 +2495,7 @@ no panel table, no points column and no migration.
   crossing was refused when only crossings were sent.
 - **The `panelMove` record**: `from`, `to`, `turn`, `unit` (with `uid`), **`panel` — the panel the
   walk BEGAN in**, which decides whose movers it spends (the wrap starts in the base), `cost` (MOV)
-  and `price` (points). The server derives `cost` and `price`; the client sends them only for the
+  and `price` (UP). The server derives `cost` and `price`; the client sends them only for the
   browser engine.
 - **`panel_allowance`** is what a panel unit may still spend this ply, or `None`: locked out of the
   opening (`locked_units`), or its panel's three movers used up (`panel_movers` — three per base
@@ -2151,7 +2504,7 @@ no panel table, no points column and no migration.
   had already half spent getting to the gateway.
 - **The wrap** (`panel_move_targets`): base units only, into their own reserve, while
   `is_wrap_open(ply)`; one step on top of reaching the base tip, no enemy on the far tip, and the
-  unit's `value` in points against `points_of`. Out of MOV is judged before out of money, as the
+  unit's `value` in UP against `unit_points_of`. Out of MOV is judged before out of money, as the
   client judges it.
 - **The client places recorded units** in `placeRecorded`, after the deal and the walks home —
   skipping any unit this turn has walked and not yet sent, whose staged hex is newer. This is how
@@ -2247,6 +2600,14 @@ with the first's row, channel name and identity secret. `change_username` releas
 and claims the new one in one transaction (`_rename_player_connection`), so a rename that loses
 leaves the player exactly where they were. A guest name handed out instead is claimed the same
 way, try after try (`_claim_guest_name`) - the second random name used to go unchecked.
+
+**Blank entry chooses a random identity, 6 Oct 2026.** The owner: "when user enter lobby
+without putting in anything it picks a random name for it that doesnt collide". Empty or
+whitespace login generates a valid `Player` name with a random 64-bit hexadecimal suffix,
+clears pending tripcode credentials and keeps the identity in this tab's session. It does
+not overwrite a remembered chosen name/proof. The shared generator skips known names
+case-insensitively; the server's existing atomic claim/guest retry remains the final check
+against concurrent joins. Invalid nonempty names and malformed tripcodes still fail.
 
 **What a name can be - `clean_username` in `validators.py`, the one rule.** The owner,
 2 Oct 2026: at least one `a–z`, `A–Z` or `0–9`, with no spaces or other characters; the
@@ -2497,6 +2858,21 @@ the one the owner agreed to, 29 Sep 2026. A record without `attackedHex` is the 
 shape - the attacker never left `from`, the defender is on `to` - and reads that way. A move
 without a blow reads as it always did.
 
+**One cast animates all its recipients simultaneously**, confirmed by the owner on
+7 Oct 2026. Buffs, debuffs, damage and healing from a multi-target cast share one beat,
+one slot flash and one sound, including CP hex skills/ultimates, army debuffs, Call
+and Sacrifice. Rook Cleave's direct and splash hits land together at impact,
+before the directly attacked unit's counter. The same recipient list is kept through staged saves and the End Turn
+recap; each HP delta and friendly/hostile glow belongs to its own unit. This changes
+presentation only: Ruin still damages everyone before healing friendly survivors,
+and ordinary attacks/counters keep their exchange order. Cancelling a cast removes
+its entire animation, and upkeep retains its existing simultaneous presentation.
+**Exhausted abilities stay inspectable.** Once a configured once-per-match or
+three-use ability has no uses left, its button is grey even if it is an ultimate or
+was picked recently. Clicking still opens its description with a "Used up" status;
+activation remains blocked. Undo restores its use and normal styling. This includes
+both solo sides and uses the existing per-side/per-unit use accounting.
+
 **The recap follows each unit on its own** (`buildPlayback`). Every staged action carries the
 hex its unit set off from, and that origin is the key: a walk collapses per unit, the units play
 in the order they acted, and a cast lands on whichever unit stood on its hex as it was made.
@@ -2518,7 +2894,7 @@ under-charges a unit that had to go round something, and the server would then r
 recomputes legal targets from what is left after every hop, and the Unit panel's MOV shows what
 remains. Attacking is staged too - previewed with the same damage sums the server uses - and
 ends the unit's movement for the turn. End Turn sends each unit's move as one message -
-`make_move {from, to, attack?}`, or `panel_attack` for a blow into a panel - in the order they
+`make_move {from, to, attack? / heal?}`, or `panel_attack` for a blow into a panel - in the order they
 were played, `more` on all but the last, its casts included (see *a turn's casts ride inside
 its board-move messages*), so the engine takes each move whole or refuses it whole.
 
@@ -2544,7 +2920,66 @@ wholesale, so a divergence corrects itself on commit rather than persisting.
 
 ## Ability panels
 
-Both side boxes render the same six slots. Each is live only on its own side's turn, via
+Pool ability hints do not advertise unit veterancy gates; those requirements belong
+to unit abilities. Unit ability hints still show the rank they actually require.
+
+### First pool, specified 4 Oct 2026
+
+The eight abilities are four paired rows, in this order. Costs are points; cooldowns count
+that side's own turns. Stat changes last the casting turn plus the opponent's turn and expire
+at the start of the caster's next turn. Healing and direct damage change HP immediately.
+
+| Pair | Friendly cast | Other cast |
+|---|---|---|
+| 1 | **Warcry:** 4 points, cooldown 3, +8 ATK on a selected friendly unit | **Sap:** 5 points, cooldown 5, -8 ATK on all eligible enemies |
+| 2 | **Bulwark:** 4 points, cooldown 3, +8 DEF on a selected friendly unit | **Weakening:** 5 points, cooldown 1, -8 DEF on all eligible enemies |
+| 3 | **Dash:** 3 points, cooldown 4, +4 MOV on a selected friendly unit | **Mire:** 2 points, cooldown 3, -2 MOV on all eligible enemies |
+| 4 | **Mend:** 1 point, cooldown 1, restore 2 HP to a selected friendly unit, capped at its maximum | **Strike:** 3 points, cooldown 4, deal 4 damage to a selected enemy |
+
+Weakening's DEF reduction supersedes the owner's initial duplicated ATK wording. Sap,
+Weakening and Mire are universal casts: no clicked target, covering the **enemy battlefield
+and green reserve units present when cast**. Red-base units are excluded from that cast.
+**Later arrivals receive no effect; an affected unit returning to the red base keeps it** until
+expiry. Individual casts retain their existing panel targeting rules. A cast's charge,
+cooldown and all recipients undo together, including after a solo reload. Reserve combat
+  resolves those recipients by their supplied unit UID, so staged damage, counter eligibility
+  and the bonuses sent to the local engine agree with the board forecast.
+
+The owner revised the shipped pool numbers on 7 Oct. Latest: *"make warcry and
+bulwark 4 points. mire 2 points. strike 4cd. dash 4cd"*. Weakening's cooldown is
+1, and Mend costs 1 point and heals 2 HP, from the earlier request. These are
+config edits; imported/saved matches retain their own configured values.
+
+**Unavailable ATK/HEL differs from numeric zero, clarified 7 Oct.** A unit with no
+intrinsic or unlocked attack/healing profile displays **—** for that stat on the Unit
+panel; the board also draws — for unavailable ATK. A modifier cannot grant that
+capability. Bishop ATK and Vet 0–1 shieldman ATK remain unavailable. Vet 2+ Shove
+provides shieldmen with an attack profile that can receive ATK buffs, but never counters.
+Pure ATK/HEL boosts reject incompatible friendly targets before points, cooldown or a
+use are spent; those units are not highlighted as eligible targets. Mixed army effects
+retain their applicable stats, and discard positive boosts to absent ATK/HEL at cast time.
+The active-effect list also omits incompatible path bonuses rather than claiming they apply.
+Existing negative and zero-setting
+debuff recipients are retained until expiry, including on unavailable ATK. A shieldman
+unlocking Shove while Sap is active receives the retained drain; the owner confirmed
+*"Keep the debuff until it expires"*.
+An existing stat drained to zero remains numeric **0** and can receive a buff. For
+ATK/HEL setters, later modifiers apply after the most recent setting, so a later boost
+can restore a CP Sap zero; earlier modifiers are not applied again. DEF setters retain
+their existing absolute behavior. Immediate HP healing such as Mend does not require
+HEL and remains available to any otherwise legal friendly target. The owner:
+*"you cannot buff atk onto something that doesnt have attack like bishop or shildman.
+however this attackbuff does work with vet 2 shieldman. change something that doesnt
+have atk or hel to - on the unit instead of 0. you cant buff somethign with - unlike
+actual 0 (usually due to debuff)"*.
+
+The owner clarified: *"Weakening reduces DEF by 8"*, universal targets are *"actually all +
+reserve (green panel units)"*, and arrivals/returns: *"it doesnt get it, and those going back
+into red base keeps it"*. These replace the old default pool's example numbers and order.
+Older saved matches retain their own catalogues; the legacy fixture exercises that support.
+Online casts remain deferred while this catalogue is being specified, as in PUNCHLIST 6.15.
+
+Both side boxes render the same configured pool and path slots. Each is live only on its own side's turn, via
 `canUseAbilities('mine' | 'opponent')`. The opponent's box additionally requires
 `isSinglePlayer`, so in multiplayer it is permanently disabled — you can see your opponent's
 abilities but never press them. Ability effects are **client-side only**, so activation is
@@ -2557,56 +2992,55 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
   - `cooldown` - turns a cast cools for (`cooldownOf()`; 3 when unset, `DEFAULT_COOLDOWN`). It
     was a hard-coded 3 in five places, whatever the catalogue said. A swap's cold start uses
     the incoming ability's own.
-  - `turns` - how many of **its caster's** turns a mov/atk/def change lasts (1 when unset).
+  - `turns` - how many of **its caster's** turns a mov/atk/def/hel or status change lasts (1 when unset).
     Damage, a heal and points happen once. Each cast is its own entry in the unit's `effects`,
     **with its own caster**, and `beginTurnFor()` counts each down on its own caster's turn and
     re-sums what is left (`summed()`). It used to drop the unit's whole list on whichever side
     had cast *first*, so a unit carrying one side's boost and the other's drain lost both at
-    the wrong time.
-  - `uses` - casts a match allows (`usesLeft()`, `spendUse()`, `abilityUses`), counted per
+    the wrong time. Rank-gated Bog, adjacent auras and Cast derive absolute expiry
+    from this configured duration too; one caster turn is two plies.
+  - `uses` - casts the match or configured phase allows (`usesLeft()`, `spendUse()`, `abilityUses`), counted per
     side for a panel's ability and per unit for a unit's own; no limit when unset, except a
     path's ultimate, which is once. It replaced `myUltimateUsed`, which only the universal cast
     path ever set - an enemy-target ultimate could be cast every three turns all match. Undo
     gives the use back; an old save's spent ultimate becomes one use of it.
+    `usesScope: "phase"` adds `|phase:<phaseIndexAt(ply)>` to the existing saved count key;
+    missing scope retains match counts. A staged spend stores its original key for Undo.
   - `points` - always **points**, whatever bought the ability (`grantPoints()`). A path's
     universal ability netted its `points` against its CP cost, so Fortress refunded CP and the
     points purse never moved.
   - `validateGameRules()` refuses an unknown field, a number that is not whole or out of range,
-    a `target` that is not one of the three, an odd pool or slot count (picks are pairs), an
-    ability in two slots, and **a number its kind never reads** (`IGNORED_BY`): `damage` or
+    a `target` outside friendly, enemy, universal, all-enemies, hex or pair, an odd pool or slot count
+    (picks are pairs), an ability in two slots, and **a number its kind never reads** (`IGNORED_BY`): `damage` or
     `points` on a friendly ability, `heal` or `points` on an enemy one, stats, `damage`, `heal`
-    or `turns` on a universal one, anything but stats on a passive, `turns` on one that
-    changes no stat. Cleave's `points: 5` used to pay nobody, silently.
-- **A unit type's own ability** is `units.<id>.ability`, a **friendly** catalogue id cast on
-  the unit itself from the Unit panel (both validators refuse any other kind, and a passive).
-  It is the unit's: nothing has to be picked for it, its cooldown is per unit
-  (`unitCooldowns` by uid, ticked on its own side's turns) and so are its `uses`, and in a
-  solo game either side's units use theirs on that side's turn, from that side's purse
-  (`sideOfUnit()`). A unit type with none shows **No ability**. It used to be the pool's first
-  slot for every unit, usable only by the seat's own side, only once that pair was picked, on
-  a cooldown every unit shared. The shipped config gives every unit Dash - what that first
-  slot was - for the owner to replace.
-- **Six slots**: four actives, then the passive (`isPassive()` — index 4) and the ultimate
-  (`isUltimate()` — index 5) on their own bottom row. The passive is always on, never cast, no
-  cost and no cooldown; the ultimate costs more and is once per game unless its `uses` says
-  otherwise.
-- **The passive is earned**: ★2 (`vetNeeded()`), read off the displayed unit's veterancy. The
-  actives are not gated - `vetNeeded()` returns 0 for them, and `abilityHint()` leaves the
-  requirement clause out entirely rather than printing an empty one.
+    or `turns` on a points-only universal one, HP or points on an army debuff, anything but
+    stats on a passive, `turns` on one that changes no stat. Cleave's `points: 5` used to pay nobody, silently.
+- **A unit type's own ability** is `units.<id>.ability`, a catalogue id used from the
+  Unit panel. Shipped unit actives unlock at Vet 3 and spend UP; their cooldown is per
+  uid and follows the current controller's turns. Cast arms an adjacent enemy target;
+  the other seven activate on their caster. Unit passives are separate `units.<id>.passive`
+  references and unlock at Vet 2. Older saved unit Dash entries remain compatible.
+- **Four carried pool slots**, picked in pairs, plus the chosen path's passive, utility,
+  skill and ultimate. Slots are derived from catalogue references, never fixed indices.
+  A passive is never cast and has no cooldown; a path unlock pays for it. Ultimates have
+  one use in the shipped config; custom catalogues may set their own `uses`.
+- **Rank gates:** specified unit passives unlock at Vet 2 and UP actives at Vet 3.
+  Older unit Dash entries keep their legacy Vet 2 gate. New CP path passives work
+  immediately at Vet 0; older catalogues without `minVet` keep their Vet 1 gate. Pool casts have no rank requirement. Server effects remain deferred.
 - **Casting is click-then-target.** `selectAbility()` arms the slot rather than firing it; the
-  next unit clicked on the board receives it. A friendly-target ability buffs, an enemy-target
+  next unit clicked on the board receives it, before normal healing or attacking can take
+  that click. A friendly-target ability buffs, an enemy-target
   one damages, and clicking the wrong kind cancels. Points and cooldown are spent on landing,
   not on arming. An offensive cast **stages like a move** - it pushes onto `stagedActions`, so
   it shows through a staged step and Undo takes it back.
-- **Rally (slot 7) is the owner's testing lever, not a balanced ability**: it costs **0** and
-  hands out **300 points**, so any priced rule - a wrap crossing, a path, an ultimate - can be
-  exercised without playing thirty turns to afford it. Leave it alone unless the owner asks;
-  it was 2 points for 1 before, and that is what it goes back to when real numbers land.
-- **Two currencies, split by which ability it is** (`isPathSlot()`, asked of `abilityPaths`
+- **Rally remains in the catalogue for older/custom testing configs, outside the shipped pool**: it costs **0** and
+  hands out **300 regular points**, for pool-ability testing. It does not grant CP or UP. Leave it alone unless the owner asks;
+  The specified first pool replaces its old slot with Strike.
+- **Pool abilities use points, paths use CP, and unit actives use UP**, with ability costs split by type (`isPathSlot()`, asked of `abilityPaths`
   rather than of the slot number, so moving a path's slots cannot quietly change what they
   cost):
   - **CP** buys the *special* abilities - the three paths and everything inside them: passive,
-    skill, ultimate. **Each side starts with `rules.cpAtStart` (5)** - *the owner, 24 Sep
+    utility, skill, ultimate. **Each side starts with `rules.cpAtStart` (5)** - *the owner, 24 Sep
     2026: "at the start of the game, user has 5cp"* - **and earns the rest at the start of
     each postmatch** (turns 14, 25 and 36), off the phase that has just banked (`cpAwarded()`
     in `match-score.ts`, `cp_awarded()` in `engine/scoring.py`; `cpOf()` adds the start).
@@ -2616,8 +3050,8 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
     lower `phase_x + (mine + theirs) + abs(mine - theirs)`. So a hard-fought phase pays both
     sides more, and the side behind is paid up to level: Phase 2 banking white 12, black 4 -
     the bank's figures, already doubled - pays white 10 + 16 = 26 and black 34.
-    - **Nothing else awards CP.** The 5 a side starts with buys the cheapest path (Tempo, 5)
-      and no other before turn 14. Choosing is open on a setup turn, so an award can be spent
+    - **Nothing else awards CP.** The 5 a side starts with buys Bastion (5), after the
+      5 Oct path revision; Onslaught (10) and Sprint (20) require later income. Choosing is open on a setup turn, so an award can be spent
       in the postmatch it arrives on. It used to be a flat `rules.cpPerPhase` (100) as each of
       the five phases began.
     - **Only the phase's own scores are compared**, not the match's: the side behind in that
@@ -2625,8 +3059,8 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
       same. A late phase still awards.
     - The server has the formula but spends nothing yet - abilities are solo (6.15) - so the
       Python copy is kept in step for when they are not.
-  - **Points** buy the eight-ability pool, and stay the board's currency besides: the wrap
-    crossing charges them and coming home refunds them. A side banks points **at the start of
+  - **Points** buy the eight-ability pool. **UP** pays unit actives and the wrap, and receives homecoming
+    refunds, Sacrifice income and battlefield attack/counter kill rewards. A side banks regular points **at the start of
     each of its own turns, at a rate that steps up at each phase's halftime**: 1 a turn to
     turn 19, **2 from Phase 2's halftime (turn 20), 3 from Phase 3's (turn 31)**, and
     **nothing in overtime** (`turnPointsBy()`, off `POINT_RATES`, which reads
@@ -2656,18 +3090,11 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
       the server's copy has nothing to price with it yet, since no wrap is open in overtime.
     - **Two places add that point up and both read the one table.** `pointsFromHistory()`
       re-derives the whole purse from the record on every hand-over, solo included;
-      `economy.points_of()` is the server's copy, which the wrap is priced against
+      `economy.points_of()` is the server's regular-points copy
       (`turnPointsBy()` / `turn_points_by()` walk the rates). The scoring parity tests hold the
       two to the same answers.
-    - Besides the turn: **+the dead unit's value for a kill on the board** (and the defender
-      is paid the attacker's value when a counter kills it) - *the owner, 24 Sep 2026:
-      "anytime a unit is killed, i get the amount of regular points which the one i killed is
-      worth"*, where it was 1 - **+the unit's value** when it walks home, **-the price** of a
-      wrap crossing. **A blow into a panel pays nobody**, base or reserve, whoever dies of it:
-      *"in green panel it doesnt award points if the unit in there kills or gets killed for
-      any player."* A cast that kills pays nobody either. `killRewards()` is the one place the
-      room reads a kill's pay, for `pointsFromHistory()`, mirroring `points_of()`. All of it
-      derived from the record, never a stored tally.
+    - Unit kill rewards, homecoming refunds and wrap prices use **UP**, as revised above.
+      Regular points receive none of these unit transactions.
   - Everything goes through `purseFor()` / `chargeFor()` / `purseName()`, so a cost, a grant, a
     hint and an Undo all read the same currency off one place.
   - `cpOf(side)` is **derived** - `cpAtStart` plus `cpAwarded(bank, color, cpPhaseOffset)` off
@@ -2688,8 +3115,7 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
   the moment there is something to press.
   - **Unit panel**, nothing selected: `Total: x` (`liveUnits` - your units still on the
     battlefield, 24 on a fresh board) and `Opponent: y` (`opponentUnits` - theirs).
-  - **Abilities panel**, nothing to do: `Points: x` on the left and `CP: y` on the right - the
-    two currencies, each on the slot that would spend it. With an action available the left
+  - **Abilities panel**, nothing to do: `Points: x` on the left and `CP: y UP: z` on the right. With an action available the left
     slot is that action (`Pick` / `Use`); with somewhere to go back to, the right is `Back`.
     Note that `Dash` and `Focus` and the rest of the *targeted* abilities never show `Use` at
     all - they are armed by clicking the ability and then a unit - which has been mistaken for
@@ -2707,7 +3133,8 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
     pairing is visible before it is discovered.
   - **The detail says what comes with it**: "Also picks Mire." (`partnerAlsoPicked`), and only
     while it is still a choice - nothing is said about one already carried.
-  - The swap button is **Reselect**, not `+`.
+  - New paths replace **Reselect** with Convert, Strengthen or Recharge. Legacy
+    catalogues without `path.utility` retain Reselect and the swap rules below.
   - **A pick taken back in the turn it was made is free**; a swap in any later turn costs
     `swapDebt`, and whatever refills the slot comes in on its own cooldown. The debt exists
     so swapping is not a way to hand yourself a *ready* ability mid-match - but changing your
@@ -2725,22 +3152,22 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
       order-sensitivity this was meant to remove, surviving for anyone who had swapped once.
       `markUsed()` writes the glow on every cast and it clears when that side is up again, so
       within a turn it is exactly "what I have cast".
-  - **Picking is open through the initialization** - see the opening's rules; only casting is
+  - **Picking is open through initialization**; CP utilities can cast there, while other casting is
     not.
-- **Effects are stat boosts and drains** (`abilityEffects`, the owner's placeholder numbers):
+- **Effects are stat boosts and drains** (`abilityEffects`, read from the configured catalogue):
   MOV, ATK, DEF. They live in `buffs`, keyed by the unit's uid, one entry per cast, and each
   lifts after its ability's `turns` of its own caster's turns (see above). The Unit panel shows
   every entry with the turns it has left, and boosted-over-base (`statAtk` etc.), so
   a +4 on a base 26 reads `30/26`; **+MOV is real steps**, fed to the board as `unitBuffs` and
   into `movesLeft` once a step is staged.
-- **Veterancy is drawn beside the name** in `unitPanelTitle` (`Pawn ★★★ - White`), the same
-  placeholder rank the hex draws.
+- **Veterancy is drawn in the VET stat cell**, using the same rank the hex draws.
+  New units start at zero; phase awards update the earned stars.
 - **Boosts have to be declared on `make_move`.** Both engines re-derive the turn from where
   the unit started, off the unit's own stats, so a boosted move is rejected as illegal and a
   boosted strike lands base damage unless `endTurn()` says otherwise. It sends `moveBonus` (the
   extra steps) and `bonuses` (`{atk, def, targetAtk, targetDef}` - both units, because the
   counter reads the other side's numbers). `LocalGameService.move()` takes them as whole
-  numbers, extra steps never below 0 (`extraSteps()`) - **and no ceiling**: it capped them at
+  numbers, including signed movement changes (`extraSteps()`) - **and no ceiling**: it capped them at
   10 steps and +/-20, which no config said, so a Surge the owner made 12 was offered on the
   board and refused as illegal. `strikeDamage(..., atkBonus, defBonus)` applies them **after**
   ring falloff, which is where
@@ -2753,8 +3180,10 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
   walk the server rejects as illegal, and the extra damage forecasts a trade it contradicts.
 - **Only a rejected move clears the staged turn** (`MOVE_ERROR_CODES`). A chat or invite error
   must not silently bin a turn the player has been building.
-- ponytail ceiling: buffs are client-side and hex-keyed. A boost follows a *staged* move, not a
-  unit the server moves for us, and a reload drops it.
+- **Ability effects use pure functions** in `ability-rules.ts`: stacking, expiry on each
+  caster's turn, and cooldown arithmetic. The room owns targeting, staging, animation and
+  persistence. Buffs are keyed by uid and restored from solo saves; engine-owned casts, costs
+  and cooldowns are still the deferred boundary for online abilities.
 
 ## Unit identity
 
@@ -2766,12 +3195,18 @@ whole game.
 Per-unit state hangs off that id, never off the hex:
 
 - **Boosts** (`buffs` in the game room) are keyed by `uid`, so a boost survives a staged step,
-  an Undo and the server's own confirmation with no re-keying anywhere.
-- **Veterancy** is `placeholderVet(uid, unit_id)`. Keyed on the hex, as it first was, a unit's
-  rank changed every time it walked - and rank gates its ability slots.
+  an Undo and a solo reload with no re-keying anywhere. Online casts remain deferred.
+- **Veterancy starts at zero and is earned at the specified phase boundaries** (Game spec).
+  Rank is reconstructed from the unit's uid and recorded panel crossings, and carried in
+  battlefield cells. Movement and reloads preserve it; returning to base does not reset it.
 
 Anything per-unit added later (cooldowns, XP, statuses) belongs in the cell for the same reason.
 Re-keying per-unit state on every move is a bug waiting for the one caller that forgets.
+
+The client's canonical `PieceData` and `BoardState` live in `game-state.service.ts` and are
+shared by the board, room and local engine. `uid` and `vet` remain optional for older saves
+and fixtures. The board's `SelectedUnit.atk` carries numeric attack tiers; only the display
+formats them, so stat calculations never parse presentation text.
 
 ## The socket
 
@@ -2810,7 +3245,7 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
   optional `attack` field on `make_move` (see Combat). An "attack by moving onto an enemy" click
   does nothing; that path is gone for good.
 - `server/game/tests_disabled/` is **not** disabled. Its 4 tests match Django's `test*.py`
-  discovery pattern and run under a bare `manage.py test` (89 vs 85). They pass. Left as-is.
+  discovery pattern and run under a bare `manage.py test` in addition to `game.testsuite`.
 - `client/src/app/components/setup-config/setup-config.component.html` is still a raw JSON
   `<textarea>` with a "Configuration UI will be added here" placeholder.
   - **Back keeps the way to the room until it goes.** `onBack` saves first if asked, and clears
@@ -2818,12 +3253,12 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
     before asking, so a save the validator refused left the editor open with the room
     forgotten, and the next Back went to the lobby.
 - **The ability catalogue lives in the config** (`abilities`: `slots`, `pool`, `paths`,
-  `catalogue`), in the shipped file. **The engine still does not read it** — only the client
-  does — so tuning an ability is a config edit and nothing more. This is the *system* half of
-  PUNCHLIST 6.15; the numbers themselves are still the owner's placeholders, and two testing
-  levers sit in the pool: **Mend** (free, heals 20) and **Rally** (free, hands out 300 points),
-  both carrying `testing: true` so they can be kept out of a real game. **Abilities stay gated
-  to solo (`buffsBind`, `canChooseAbilities`) until the numbers settle.**
+  `catalogue`), in the shipped file. The client executes the specified pool pairs, unit kits
+  and CP paths in solo; changing their numbers is a config edit. The Python engine does not
+  execute the catalogue yet. **Abilities stay gated to solo** (`buffsBind`,
+  `canChooseAbilities`) until authoritative server execution is implemented under PUNCHLIST
+  6.15. Older saved/custom catalogues retain their own configured entries, including any
+  marked `testing: true`; the shipped pool now uses the owner's specified costs and effects.
   - **Ids outlive slots.** The catalogue is keyed by a stable `id`; the room works internally in
     *slot numbers* (the template, the glows, the cooldown arrays all do), and `abilityIds` is the
     single place the two meet — pool first, then each path's passive, skill and ultimate.
@@ -2851,10 +3286,27 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
   a whole file to LF. `git diff --stat` will not show it (`core.autocrlf` normalises the
   comparison), so only a byte count does. It has happened twice to the Python test files. Use the
   file-aware editor, or a Python rewrite that opens the file in binary.
-- **The roster is the six chess-piece placeholders plus two the owner asked for**: an
-  **Archer** (`A`, bow-and-arrow glyph - value 8, hp 16, atk 15, def 7, range 3, move 6) and a
-  **Shieldman** (`S`, shield glyph - value 9, hp 30, atk 8, def 18, range 1, move 5). Stats are
-  invented on the existing scale; the owner said to make them up. They stand on the pawn row -
+- **Unit roster stats, 4 Oct 2026.** Owner: *"now lets work on the actual stats to the units (which after we implment abilities, it will probably complete the core conept of this game). pawn:: HP:12 MOV:6 ATK:1:6 DEF:6 cost:4. sheildman:: HP:30 MOV:4 DEF:24 cost:8. archer:: HP:6 MOV:6 ATK:3:4.4:3.3:2.4:1 DEF:4 cost:8. rook:: HP:40 MOV:4 ATK:1:12 DEF:16 MOV:4 cost:12. knight:: HP:18 MOV:8 ATK:1:12 DEF:10 cost:14. bishop:: HP:8 MOV:6 HEL:1:4 DEF:4 cost:16. queen:: HP::30 MOV:6 ATK1:18.2:12 DEF:12 cost:20. king::HP60 MOV:6 ATK1:24 DEF:18 cost:24"*. Clarifications: *"Rings 3–6: 3:4 4:3 5:2 6:1"* for archer; *"No attack (ATK —)"* for shieldman. Cost is the existing config `value`, now unit worth in UP for crossings and refunds, and also the phase loss value. The shared config alone sets these numbers:
+
+  | Unit | HP | MOV | ATK (ring:amount) | DEF | HEL (ring:amount) | Cost |
+  |---|---|---|---|---|---|---|
+  | Pawn | 12 | 6 | 1:8 | 8 | — | 8 |
+  | Shieldman | 30 | 4 | — | 24 | — | 8 |
+  | Archer | 6 | 6 | 3:4 4:3 5:2 6:1 | 4 | — | 8 |
+  | Rook | 40 | 4 | 1:12 | 16 | — | 12 |
+  | Knight | 18 | 8 | 1:12 | 10 | — | 14 |
+  | Bishop | 8 | 6 | — | 4 | 1:8 2:6 | 16 |
+  | Queen | 30 | 6 | 1:18 2:12 | 12 | — | 20 |
+  | King | 60 | 6 | 1:24 | 18 | — | 24 |
+
+  Later on 4 Oct the owner raised pawn ATK, DEF and cost to 8, and bishop HEL to 8; those newer values are in the table.
+
+  Archer normal attacks start at ring 3; its Vet 2 Counter covers rings 1-2 in solo. Before Vet 2, a shieldman cannot attack or counter even with buffs. At Vet 2, Shove supplies 4 ATK for attacks only; Warcry can improve those attacks but never enables a counter. Bishop's base healing is 8 HP at ring 1 and 6 at ring 2; Vet 1 adds 4 HP at ring 3 and 2 at ring 4. Its friendly targeting, max-HP cap and zero CP cost are unchanged. ATK is before defence; the existing minimum damage rule still applies. First-star growth is listed in the unit veterancy kits above; higher-rank passives and actives are implemented in solo as described there.
+
+- **The roster is the six chess-piece names plus two the owner asked for**: an
+  **Archer** (`A`, bow-and-arrow glyph - value 8, hp 6, atk 4/3/2/1 at rings 3-6, def 4, move 6) and a
+  **Shieldman** (`S`, shield glyph - value 8, hp 30, no attack, def 24, move 4). Their former
+  placeholder stats were superseded by the owner's complete roster on 4 Oct 2026. They stand on the pawn row -
   **24 units a side, 48 on the board.** Rows, white's numbers (black is the point mirror
   `(q,r) -> (-q,-r)`, and every change is applied to both - a one-sided setup is never what is
   wanted):
@@ -2872,3 +3324,42 @@ Re-keying per-unit state on every move is a bug waiting for the one caller that 
     them carries the side regardless.
   - **Do not assume a given hex holds a pawn.** `local-game.service.spec.ts` has had its stock
     unit moved twice by setup changes (`-9,9`, then `-7,9`); it now uses `-5,9`.
+
+**Multiplayer timed drafts, owner decision 7 Oct 2026 (implemented).**
+The owner chose *"Commit the saved moves"* when a player disconnects after staging.
+The server retains and validates the latest saved draft and commits it at expiry,
+including during the existing disconnect grace period. A finished game still takes
+precedence. Drafts do not change the committed board before End Turn or expiry.
+
+**Early phase ending, owner decision 7 Oct 2026 (implemented in both engines).**
+At Phase 1 tally, White loses if no eligible White unit occupies any capture-zone
+hex. Occupancy by an eligible unit is enough, even when its claim is contested.
+At Phase 2 tally, Black loses if Black's current phase VP tallies to zero (the
+owner's correction; this is not an occupancy check). Each pending loss is frozen
+at the tally, permits both sides' full postmatch turns, and resolves at postmatch
+end. Regicide during postmatch takes precedence over the pending result.
+
+`TurnDraft` (migration 0013) is separate from committed state. Saving it changes no
+board revision and exposes it only to its current player on a requested snapshot.
+`save_turn_draft` and `commit_turn` require the room seat, current ply/revision and an
+increasing sequence. Their commands reuse the existing move handlers on a state copy;
+client-supplied stats, HP and casts are discarded. The final write requires both the
+board revision and the draft sequence. Undo replaces the draft, including with an
+empty turn; rematches discard it. Invalid-draft deletion also matches its originating
+ply and player: a replacement, including the next player reusing its sequence, must
+not be discarded or passed over. A fallback timeout pass checks draft absence
+under the same state-row lock as saves and commits, because saving staging does
+not bump the board revision. Panel-only walks and entries queue autosaves through
+their selection event. Finishing atomic turns log their records and retain attack
+markers before the terminal result; restoring the finished snapshot does not log
+that turn again. The expired timer retries lost writes until its
+turn commits, changes, finishes or is cancelled; a fixed retry limit left turns
+without a clock. A reserve entrant cannot take another board move, attack or heal
+that turn, while the separate battlefield allowance remains available to other units. After a reload, the room binds the incoming snapshot
+before reconstructing clicks and refreshes the view between staged commands.
+
+`phase_bank` freezes `pendingLoss` alongside the tally. Phase 1 resolves at new ply 29,
+Phase 2 at new ply 51, after Black's postmatch action. Old or late banks do not infer
+historical occupancy from a later board. The early rules remain schedule code, mirrored
+in `match-score.ts` and `scoring.py`, not new config fields. Both suites now check 382
+scoring parity cases, regenerated because these rules intentionally changed on both sides.
