@@ -253,11 +253,20 @@ describe('boardMovesAt', () => {
 });
 
 
-describe('phase-only veterancy', () => {
+describe('phase awards and Strengthen veterancy', () => {
   const rank = (at: string, ply: number, history: any[] = [], orientation = 'edge-up') =>
     unitVeterancy('v', at, history, ply, 11, orientation);
   const step = (turn: number, from: string, to: string, flags: any = {}) => ({
     turn, from, to, unit: { uid: 'v' }, panelMove: true, ...flags,
+  });
+
+  it('retains Strengthen stars across reload and future awards without awarding a second star for the same boundary', () => {
+    const history: any[] = [{ turn: 9, promotion: { uid: 'v', vet: 2 } }];
+    expect(rank('0,0', 8, history)).toBe(1);
+    expect(rank('0,0', 9, history)).toBe(2);
+    expect(rank('0,0', 27, JSON.parse(JSON.stringify(history)))).toBe(3);
+    expect(rank('0,0', 71, history)).toBe(3);
+    expect(rank('-12,1', 71, history)).toBe(2);
   });
 
   it('awards both sides only at Phase 1 and postmatch starts, capped at three', () => {

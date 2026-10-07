@@ -152,15 +152,6 @@ export function panelMoverAllowed(
 }
 
 /**
- * The units of *color* walked home this ply. Mirrors `homecomings_at` in
- * server/game/engine/panels.py.
- *
- * Keyed by uid, off the record's own copy of the unit as it left the board -
- * the only place a withdrawn unit survives. A set rather than a count because
- * a unit walks home in one record and could not be counted twice anyway; the
- * set makes that explicit rather than lucky.
- */
-/**
  * How many board moves of `color` this ply already holds. Mirrors
  * `board_moves_at` in server/game/engine/game_logic.py.
  *
@@ -222,6 +213,15 @@ export function boardMoveLandings(
   return out;
 }
 
+/**
+ * The units of *color* walked home this ply. Mirrors `homecomings_at` in
+ * server/game/engine/panels.py.
+ *
+ * Keyed by uid, off the record's own copy of the unit as it left the board -
+ * the only place a withdrawn unit survives. A set rather than a count because
+ * a unit walks home in one record and could not be counted twice anyway; the
+ * set makes that explicit rather than lucky.
+ */
 export function homecomingsAt(
   history: Move[] | undefined, ply: number, color: string,
 ): Set<string> {
@@ -241,6 +241,7 @@ export function homecomingsAt(
  * together at Phase 1's start and each postmatch's start, capped at three.
  * Only battlefield/reserve occupancy at that boundary counts. A veteran
  * keeps its stars when it walks home, but earns none while in the base.
+ * Strengthen promotions are recorded separately as the explicit CP exception.
  * Ordinary walks, damage and kills cannot change rank. Deriving from the
  * record also brings existing saved games up to date without a migration.
  */
@@ -255,9 +256,15 @@ export function unitVeterancy(
     ...SCORING_PHASES.map(index => phaseStartTurn(index) + PHASES[index].turns)]
     .map(turn => (turn - 1) * PLIES_PER_TURN + 1);
   let where = normalizeKey(crossings[0]?.from ?? at);
+  const promotions = (history ?? []).filter(move => move?.promotion?.uid === uid && Number.isInteger(move.turn)
+    && Number.isInteger(move.promotion.vet)).sort((a, b) => a.turn - b.turn);
+  let promoted = 0;
   let next = 0, vet = 0;
   for (const boundary of boundaries) {
     if (boundary > ply) break;
+    while (promoted < promotions.length && promotions[promoted].turn < boundary) {
+      vet = Math.min(3, Math.max(vet, promotions[promoted++].promotion.vet));
+    }
     // A deployment recorded in the new stage happens AFTER its award.
     while (next < crossings.length && crossings[next].turn < boundary) {
       where = normalizeKey(crossings[next++].to);
@@ -267,6 +274,9 @@ export function unitVeterancy(
     if (isInsideBoard(q, r, radius) || !BASE_PANELS.has(panelOfHex(where, orientation))) {
       vet = Math.min(3, vet + 1);
     }
+  }
+  while (promoted < promotions.length && promotions[promoted].turn <= ply) {
+    vet = Math.min(3, Math.max(vet, promotions[promoted++].promotion.vet));
   }
   return vet;
 }

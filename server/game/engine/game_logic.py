@@ -13,9 +13,9 @@ All functions are pure (no DB access) and operate on a HexBoard + config.
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from .board import HexBoard, CellData, Coord, hex_distance
+from .board import HexBoard, Coord, hex_distance
 from .move_validator import get_legal_moves
 from .unit_stats import unit_stats
 

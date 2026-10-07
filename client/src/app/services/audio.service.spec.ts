@@ -1,4 +1,5 @@
 import { AudioService } from './audio.service';
+import { readStore, removeStore, writeStore } from './storage';
 
 /**
  * The tones are synthesised, so what can be checked is what was scheduled:
@@ -12,8 +13,12 @@ describe('AudioService', () => {
   let samples: Float32Array;
   let cutoffs: number[];
   let ramps: number[];
+  let preferences: Array<string | null>;
+  const keys = ['cpp.audio.volume', 'cpp.audio.muted'];
 
   beforeEach(() => {
+    preferences = keys.map(key => readStore('local', key));
+    keys.forEach(key => removeStore('local', key));
     started = [];
     noise = []; cutoffs = []; ramps = [];
     realContext = (window as any).AudioContext;
@@ -58,7 +63,13 @@ describe('AudioService', () => {
     (window as any).AudioContext = FakeContext;
   });
 
-  afterEach(() => { (window as any).AudioContext = realContext; });
+  afterEach(() => {
+    (window as any).AudioContext = realContext;
+    keys.forEach((key, index) => {
+      if (preferences[index] === null) removeStore('local', key);
+      else writeStore('local', key, preferences[index]!);
+    });
+  });
 
   const service = (): AudioService => {
     const audio = new AudioService();
@@ -113,4 +124,35 @@ describe('AudioService', () => {
     expect(started).toEqual([]);
     expect(noise).toEqual([]);
   });
+
+  it('clamps and persists volume, and restores audible volume when unmuting from zero', () => {
+    const audio = new AudioService();
+    audio.setVolume(2); expect(new AudioService().volume).toBe(1);
+    audio.setVolume(-1); expect(new AudioService().volume).toBe(0);
+    audio.toggleMute();
+    expect(new AudioService().muted).toBeTrue();
+    audio.toggleMute();
+    const restored = new AudioService();
+    expect(restored.muted).toBeFalse(); expect(restored.volume).toBe(0.5);
+    restored.previewVolume();
+    expect(started.map(note => note.frequency)).toEqual([660, 880, 660]);
+  });
+
+  it('uses safe defaults for invalid stored preferences', () => {
+    writeStore('local', 'cpp.audio.volume', 'NaN');
+    writeStore('local', 'cpp.audio.muted', 'not-a-boolean');
+    const audio = new AudioService();
+    expect(audio.volume).toBe(0.5); expect(audio.muted).toBeFalse();
+  });
+
+  it('still changes audio settings when browser storage refuses reads and writes', () => {
+    const get = spyOn(Storage.prototype, 'getItem').and.throwError('Storage unavailable');
+    const set = spyOn(Storage.prototype, 'setItem').and.throwError('Storage unavailable');
+    const audio = new AudioService();
+    expect(audio.volume).toBe(0.5);
+    expect(() => { audio.setVolume(0.25); audio.toggleMute(); }).not.toThrow();
+    expect(audio.volume).toBe(0.25); expect(audio.muted).toBeTrue();
+    get.and.callThrough(); set.and.callThrough();
+  });
+
 });

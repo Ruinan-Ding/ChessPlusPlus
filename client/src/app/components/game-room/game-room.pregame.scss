@@ -10,6 +10,21 @@
 
 // ==================== REVEAL MODE REQUEST MODALS ====================
 
+.reveal-waiting-overlay,
+.reveal-request-overlay {
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.reveal-waiting-modal,
+.reveal-request-modal {
+  min-width: 0;
+  max-height: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
 // HOST WAITING MODAL: Full screen overlay blocking all except leave button
 .reveal-waiting-overlay {
   position: fixed;
@@ -29,7 +44,7 @@
     border-radius: 12px;
     padding: 40px 50px;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-    max-width: 500px;
+    max-width: min(500px, 100%);
     text-align: center;
     pointer-events: auto;
     
@@ -82,13 +97,14 @@
     background: white;
     border-radius: 12px;
     box-shadow: 0 15px 50px rgba(0, 0, 0, 0.4);
-    max-width: 450px;
+    max-width: min(450px, 100%);
     pointer-events: auto;
     
     .modal-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 12px;
       padding: 25px 30px;
       border-bottom: 2px solid #ecf0f1;
       
@@ -106,6 +122,7 @@
         padding: 8px 16px;
         border-radius: 20px;
         min-width: 60px;
+        flex: 0 0 auto;
         text-align: center;
       }
     }

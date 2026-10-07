@@ -277,6 +277,10 @@
               "ultimate": {
                 "type": "string",
                 "description": "Catalogue id. Once a match unless its catalogue entry sets `uses`."
+              },
+              "utility": {
+                "type": "string",
+                "description": "Catalogue id for the path action replacing Reselect. Omitted preserves the legacy pair swap."
               }
             },
             "additionalProperties": false
@@ -307,9 +311,11 @@
                   "friendly",
                   "enemy",
                   "universal",
-                  "all-enemies"
+                  "all-enemies",
+                  "hex",
+                  "pair"
                 ],
-                "description": "What a cast is aimed at. 'universal' needs no target and grants points. 'all-enemies' needs no target and changes stats on the enemy battlefield and green reserve units present when cast. Red base units and later arrivals are excluded; affected units keep the effect when returning to base."
+                "description": "What a cast is aimed at. 'universal' needs no target and grants points. 'all-enemies' needs no target and changes stats on the enemy battlefield and green reserve units present when cast. Red base units and later arrivals are excluded; affected units keep the effect when returning to base. 'hex' selects any rendered hex, including empty and panel hexes; recipients are captured at casting. 'pair' selects a carried pool pair."
               },
               "cost": {
                 "type": "integer",
@@ -324,12 +330,12 @@
               "turns": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "How many of its caster's turns a mov/atk/def change lasts: it lifts as the caster's turn begins, this many times over. Omitted means 1. Damage, healing and points happen once, on the cast."
+                "description": "How many caster turns a temporary stat or status effect lasts. It expires at that caster's turn start after this many full turns. Omitted means 1. Damage, healing, promotion, recharge and points happen immediately."
               },
               "uses": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "How many times it can be cast in a match - by a side, or by each unit for a unit's own ability. Omitted means no limit, except a path's ultimate, which is once."
+                "description": "Maximum casts per match, or per phase with usesScope phase; per side for panel abilities and per unit for unit abilities. Omitted means unlimited, except a path ultimate defaults to one."
               },
               "mov": {
                 "type": "integer"
@@ -377,9 +383,18 @@
                   "charge",
                   "control",
                   "nullify",
-                  "call"
+                  "call",
+                  "defensive-armor",
+                  "promote",
+                  "recharge",
+                  "hex-sap",
+                  "hex-cleave",
+                  "hex-trap",
+                  "fortress",
+                  "ruin",
+                  "blitz"
                 ],
-                "description": "Hardcoded unit passive or Vet 3 active. Omitted keeps existing pool and path behavior. Unit effects currently execute in solo play."
+                "description": "Configured unit or CP path behavior. Effects execute in solo; online casting remains deferred."
               },
               "counterAttack": {
                 "type": "array",
@@ -408,41 +423,139 @@
               "enemyDef": {
                 "type": "integer",
                 "description": "Enemy DEF change from Call for one full turn."
+              },
+              "minVet": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Minimum rank for a path passive. Omitted preserves the legacy first-star gate.",
+                "maximum": 3
+              },
+              "stars": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Immediate stars granted by Strengthen, capped at vet 3."
+              },
+              "recharge": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Cooldown removed from each half of a carried pair. Positive cooldowns stop at 1; already-ready abilities stay at 0."
+              },
+              "splashDamage": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Direct HP damage to occupants of the six hexes adjacent to the chosen hex."
+              },
+              "splashAtk": {
+                "type": "integer",
+                "description": "ATK modifier for adjacent hex recipients."
+              },
+              "splashMov": {
+                "type": "integer",
+                "description": "MOV modifier for adjacent hex recipients."
+              },
+              "setAtk": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Set the existing stat to this value; subsequent modifiers apply after the latest setting. Does not grant an absent attack/healing profile."
+              },
+              "enemyDefSet": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Absolute DEF assigned to enemy recipients, overriding temporary DEF modifiers."
+              },
+              "scope": {
+                "enum": [
+                  "field-reserve",
+                  "all"
+                ],
+                "description": "Path recipient zones. field-reserve excludes red bases. Passives also apply to later eligible arrivals; temporary casts capture only current recipients."
+              },
+              "hel": {
+                "type": "integer",
+                "description": "Temporary modifier to each ring of an existing normal healing profile."
+              },
+              "setHel": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Set the existing stat to this value; subsequent modifiers apply after the latest setting. Does not grant an absent attack/healing profile."
+              },
+              "splashHel": {
+                "type": "integer",
+                "description": "Healing modifier for adjacent hex recipients."
+              },
+              "usesScope": {
+                "type": "string",
+                "enum": [
+                  "match",
+                  "phase"
+                ],
+                "description": "Scope of the uses budget. Omitted means match. Phase means initialization, each numbered phase including halftime/postmatch, or all overtime stages together; requires uses."
               }
             },
             "additionalProperties": false,
             "allOf": [
               {
                 "if": {
+                  "properties": {
+                    "target": {
+                      "const": "hex"
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ]
+                },
+                "then": {
                   "required": [
                     "effect"
                   ],
                   "properties": {
                     "effect": {
-                      "const": "counter"
+                      "enum": [
+                        "hex-sap",
+                        "hex-cleave",
+                        "hex-trap"
+                      ]
                     }
                   }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "target": {
+                      "const": "pair"
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ]
                 },
                 "then": {
                   "required": [
-                    "counterAttack"
-                  ]
+                    "effect"
+                  ],
+                  "properties": {
+                    "effect": {
+                      "const": "recharge"
+                    }
+                  }
                 }
               },
               {
                 "if": {
                   "required": [
-                    "effect"
+                    "usesScope"
                   ],
                   "properties": {
-                    "effect": {
-                      "const": "deflect"
+                    "usesScope": {
+                      "const": "phase"
                     }
                   }
                 },
                 "then": {
                   "required": [
-                    "atk"
+                    "uses"
                   ]
                 }
               }

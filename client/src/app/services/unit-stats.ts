@@ -43,6 +43,34 @@ export function combatStats(unitId: string, config: any, vet = 0, counter = fals
   if (counter && passive?.effect === 'counter') {
     return { ...unit, attack: passive.counterAttack, attackMinRange: 1, attackRange: passive.counterAttack.length };
   }
-  if (passive?.effect === 'deflect' && !counter) return { ...unit, attack: passive.atk };
+  if (passive?.effect === 'deflect') return { ...unit, attack: counter ? 0 : passive.atk };
   return unit;
+}
+
+/** A modifier changes an existing attack; it never grants attack capability. */
+export function hasAttack(unit: any): boolean {
+  const attack = unit?.attack ?? 1;
+  return !unit?.heal?.length && (Array.isArray(attack) ? attack.some(n => n > 0) : attack > 0);
+}
+
+/** Ignore boosts to unavailable stats, retaining other benefits and existing debuff semantics. */
+export function unitEffect<T extends { atk?: number; hel?: number; setAtk?: number; setHel?: number }>(
+  effect: T, unitId: string, config: any, vet = 0, kits = true,
+): T {
+  const next = { ...effect };
+  if (!hasAttack(combatStats(unitId, config, vet, false, kits))) {
+    if ((next.atk ?? 0) > 0) next.atk = 0;
+    if ((next.setAtk ?? 0) > 0) delete next.setAtk;
+  }
+  if (!unitStats(unitId, config, vet).heal?.length) {
+    if ((next.hel ?? 0) > 0) next.hel = 0;
+    if ((next.setHel ?? 0) > 0) delete next.setHel;
+  }
+  return next;
+}
+
+export function canReceiveBoost(effect: any, unitId: string, config: any, vet = 0, kits = true): boolean {
+  if (!(effect?.atk > 0 || effect?.hel > 0)) return true;
+  const next = unitEffect(effect, unitId, config, vet, kits);
+  return next.atk > 0 || next.hel > 0 || next.mov > 0 || next.def > 0 || next.heal > 0 || !!next.effect;
 }

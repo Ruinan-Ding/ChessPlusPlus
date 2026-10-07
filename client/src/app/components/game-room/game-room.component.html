@@ -58,7 +58,7 @@
       <!-- Each loses its first or last word when the header is short of room
            (.header-compact, fitHeader) - the turn banner beside them is the
            thing the row is for. -->
-      <button class="leave-btn" (click)="leaveGameRoom()">Leave<span class="label-long"> Room</span></button>
+      <button class="leave-btn" [class.reveal-leave]="showRevealWaitingModal" (click)="leaveGameRoom()">Leave<span class="label-long"> Room</span></button>
       <app-connection-status></app-connection-status>
     </div>
   </header>
@@ -130,7 +130,7 @@
             <!-- Carried four first, the rest of the pool under them. -->
             <ng-container *ngFor="let i of abilityOrder('opponent')">
               <button class="scaffold-btn" type="button"
-                      [style.font-size]="abilityFontSize(i, opponentCooldowns[i])"
+                      [style.font-size]="abilityFontSize(i, opponentCooldowns[i], 'opponent')"
                       [class.pair-left]="isPairLeft(i)"
                       [class.arming]="isArmed('opponent', i)"
                       [title]="abilityHint(i)"
@@ -142,8 +142,9 @@
                       [class.picking]="isPicking('opponent', i)"
                       [class.unpicked]="!isPicked('opponent', i)"
                       [class.ability-unavailable]="!canAfford('opponent', i, opponentCooldowns[i])"
+                      [class.exhausted]="usesLeft('opponent', i) === 0"
                       (click)="selectAbility('opponent', i, opponentCooldowns)"
-              >{{ abilityLabel(i, opponentCooldowns[i]) }}</button>
+              >{{ abilityLabel(i, opponentCooldowns[i], 'opponent') }}</button>
             </ng-container>
             <!-- Until a path is taken there is nothing here but the three
                  it could be, each named for the passive it grants. A path is
@@ -160,32 +161,31 @@
                 <div class="path-passive-row">
                   <button class="passive-row unpicked" type="button"
                           [title]="abilityHint(chosen.path.passive)"
-                          [style.font-size]="abilityFontSize(chosen.path.passive, 0)"
+                          [style.font-size]="abilityFontSize(chosen.path.passive, 0, 'opponent')"
                           (click)="selectAbility('opponent', chosen.path.passive, opponentCooldowns)"
-                  >{{ abilityLabel(chosen.path.passive, 0) }}</button>
-                  <!-- Swap. Give up one of the four you carry - any that is
-                       not cooling down - and the slot is free for another.
-                       What goes into it goes in cold. -->
+                  >{{ abilityLabel(chosen.path.passive, 0, 'opponent') }}</button>
+                  <!-- Configured path utility; old catalogues retain the pair swap. -->
                   <button class="path-extra-btn" type="button"
-                          [class.armed]="swapArmed === 'opponent'"
-                          [disabled]="swapArmed !== 'opponent' && !canSwap('opponent')"
-                          [title]="swapArmed === 'opponent'
-                            ? 'Click one of the four you carry to give it up.'
-                            : 'Swap one of the four you carry.'"
-                          (click)="toggleSwap('opponent')">Reselect</button>
+                          [class.cooling]="chosen.path.utility !== undefined && opponentCooldowns[chosen.path.utility!] > 0"
+                          [class.exhausted]="chosen.path.utility !== undefined && usesLeft('opponent', chosen.path.utility!) === 0"
+                          [class.armed]="chosen.path.utility === undefined ? swapArmed === 'opponent' : isArmed('opponent', chosen.path.utility!)"
+                          [disabled]="chosen.path.utility === undefined && swapArmed !== 'opponent' && !canSwap('opponent')"
+                          [style.font-size]="chosen.path.utility === undefined ? null : abilityFontSize(chosen.path.utility!, opponentCooldowns[chosen.path.utility!], 'opponent')"
+                          [title]="chosen.path.utility === undefined ? 'Swap a carried pair.' : abilityHint(chosen.path.utility!)"
+                          (click)="selectPathUtility('opponent', chosen.path, opponentCooldowns)">{{ pathUtilityLabel(chosen.path, opponentCooldowns, 'opponent') }}</button>
                 </div>
                 <div class="path-pair">
                   <button class="scaffold-btn unpicked" type="button"
                           [title]="abilityHint(chosen.path.skill)"
-                          [style.font-size]="abilityFontSize(chosen.path.skill, 0)"
+                          [style.font-size]="abilityFontSize(chosen.path.skill, 0, 'opponent')"
                           (click)="selectAbility('opponent', chosen.path.skill, opponentCooldowns)"
-                  >{{ abilityLabel(chosen.path.skill, 0) }}</button>
+                  >{{ abilityLabel(chosen.path.skill, 0, 'opponent') }}</button>
                 
                   <button class="scaffold-btn ultimate-btn unpicked" type="button"
                           [title]="abilityHint(chosen.path.ultimate)"
-                          [style.font-size]="abilityFontSize(chosen.path.ultimate, 0)"
+                          [style.font-size]="abilityFontSize(chosen.path.ultimate, 0, 'opponent')"
                           (click)="selectAbility('opponent', chosen.path.ultimate, opponentCooldowns)"
-                  >{{ abilityLabel(chosen.path.ultimate, 0) }}</button>
+                  >{{ abilityLabel(chosen.path.ultimate, 0, 'opponent') }}</button>
                 </div>
               </div>
               <ng-template #opponentPathChoices>
@@ -195,7 +195,7 @@
                           [title]="pathHint(p)"
                           (click)="focusPath('opponent', p)">
                     <span class="path-name">{{ path.name }}</span>
-                    <span class="path-cost">{{ path.cost }}</span>
+                    <span class="path-cost">- {{ path.cost }}</span>
                   </button>
                 </div>
               </ng-template>
@@ -203,45 +203,47 @@
             <ng-container *ngIf="pathChoice('opponent') as path">
               <div class="ability-bottom-row">
                 <button class="passive-row" [title]="abilityHint(path.passive)"
-                        [style.font-size]="abilityFontSize(path.passive, 0)"
+                        [style.font-size]="abilityFontSize(path.passive, 0, 'opponent')"
                         [class.picked-recent]="isRecentPick('opponent', path.passive)"
                         [class.picking]="isPicking('opponent', path.passive)"
                         (click)="selectAbility('opponent', path.passive, opponentCooldowns)"
-                >{{ abilityLabel(path.passive, 0) }}</button>
-                  <!-- Swap. Give up one of the four you carry - any that is
-                       not cooling down - and the slot is free for another.
-                       What goes into it goes in cold. -->
+                >{{ abilityLabel(path.passive, 0, 'opponent') }}</button>
+                  <!-- Configured path utility; old catalogues retain the pair swap. -->
                   <button class="path-extra-btn" type="button"
-                          [class.armed]="swapArmed === 'opponent'"
-                          [disabled]="swapArmed !== 'opponent' && !canSwap('opponent')"
-                          [title]="swapArmed === 'opponent'
-                            ? 'Click one of the four you carry to give it up.'
-                            : 'Swap one of the four you carry.'"
-                          (click)="toggleSwap('opponent')">Reselect</button>
+                          [class.cooling]="path.utility !== undefined && opponentCooldowns[path.utility!] > 0"
+                          [class.exhausted]="path.utility !== undefined && usesLeft('opponent', path.utility!) === 0"
+                          [class.armed]="path.utility === undefined ? swapArmed === 'opponent' : isArmed('opponent', path.utility!)"
+                          [disabled]="path.utility === undefined && swapArmed !== 'opponent' && !canSwap('opponent')"
+                          [style.font-size]="path.utility === undefined ? null : abilityFontSize(path.utility!, opponentCooldowns[path.utility!], 'opponent')"
+                          [title]="path.utility === undefined ? 'Swap a carried pair.' : abilityHint(path.utility!)"
+                          (click)="selectPathUtility('opponent', path, opponentCooldowns)">{{ pathUtilityLabel(path, opponentCooldowns, 'opponent') }}</button>
                 <!-- Two to a row, ultimate first: they are one line of
                      the panel, not two. -->
                 <div class="path-pair">
                   <button class="scaffold-btn" type="button" [title]="abilityHint(path.skill)"
-                          [style.font-size]="abilityFontSize(path.skill, opponentCooldowns[path.skill])"
+                          [style.font-size]="abilityFontSize(path.skill, opponentCooldowns[path.skill], 'opponent')"
                           [class.arming]="isArmed('opponent', path.skill)"
                           [class.recent]="isRecent('opponent', path.skill)"
                           [class.picked-recent]="isRecentPick('opponent', path.skill)"
                           [class.casting]="isCasting('opponent', path.skill)" [class.brief]="castingBrief"
                           [class.picking]="isPicking('opponent', path.skill)"
                           [class.ability-unavailable]="!canAfford('opponent', path.skill, opponentCooldowns[path.skill])"
+                          [class.exhausted]="usesLeft('opponent', path.skill) === 0"
+                          [class.cooling]="opponentCooldowns[path.skill] > 0"
                           (click)="selectAbility('opponent', path.skill, opponentCooldowns)"
-                  >{{ abilityLabel(path.skill, opponentCooldowns[path.skill]) }}</button>
+                  >{{ abilityLabel(path.skill, opponentCooldowns[path.skill], 'opponent') }}</button>
                 
                   <button class="scaffold-btn ultimate-btn" type="button" [title]="abilityHint(path.ultimate)"
-                          [style.font-size]="abilityFontSize(path.ultimate, opponentCooldowns[path.ultimate])"
+                          [style.font-size]="abilityFontSize(path.ultimate, opponentCooldowns[path.ultimate], 'opponent')"
                           [class.arming]="isArmed('opponent', path.ultimate)"
                           [class.recent]="isRecent('opponent', path.ultimate)"
                           [class.picked-recent]="isRecentPick('opponent', path.ultimate)"
                           [class.casting]="isCasting('opponent', path.ultimate)" [class.brief]="castingBrief"
                           [class.picking]="isPicking('opponent', path.ultimate)"
                           [class.ability-unavailable]="!canAfford('opponent', path.ultimate, opponentCooldowns[path.ultimate])"
+                          [class.exhausted]="usesLeft('opponent', path.ultimate) === 0"
                           (click)="selectAbility('opponent', path.ultimate, opponentCooldowns)"
-                  >{{ abilityLabel(path.ultimate, opponentCooldowns[path.ultimate]) }}</button>
+                  >{{ abilityLabel(path.ultimate, opponentCooldowns[path.ultimate], 'opponent') }}</button>
                 </div>
               </div>
             </ng-container>
@@ -331,6 +333,7 @@
                       [class.picking]="isPicking('mine', i)"
                       [class.unpicked]="!isPicked('mine', i)"
                       [class.ability-unavailable]="!canAfford('mine', i, myCooldowns[i])"
+                      [class.exhausted]="usesLeft('mine', i) === 0"
                       (click)="selectAbility('mine', i, myCooldowns)"
               >{{ abilityLabel(i, myCooldowns[i]) }}</button>
             </ng-container>
@@ -352,16 +355,15 @@
                           [style.font-size]="abilityFontSize(chosen.path.passive, 0)"
                           (click)="selectAbility('mine', chosen.path.passive, myCooldowns)"
                   >{{ abilityLabel(chosen.path.passive, 0) }}</button>
-                  <!-- Swap. Give up one of the four you carry - any that is
-                       not cooling down - and the slot is free for another.
-                       What goes into it goes in cold. -->
+                  <!-- Configured path utility; old catalogues retain the pair swap. -->
                   <button class="path-extra-btn" type="button"
-                          [class.armed]="swapArmed === 'mine'"
-                          [disabled]="swapArmed !== 'mine' && !canSwap('mine')"
-                          [title]="swapArmed === 'mine'
-                            ? 'Click one of the four you carry to give it up.'
-                            : 'Swap one of the four you carry.'"
-                          (click)="toggleSwap('mine')">Reselect</button>
+                          [class.cooling]="chosen.path.utility !== undefined && myCooldowns[chosen.path.utility!] > 0"
+                          [class.exhausted]="chosen.path.utility !== undefined && usesLeft('mine', chosen.path.utility!) === 0"
+                          [class.armed]="chosen.path.utility === undefined ? swapArmed === 'mine' : isArmed('mine', chosen.path.utility!)"
+                          [disabled]="chosen.path.utility === undefined && swapArmed !== 'mine' && !canSwap('mine')"
+                          [style.font-size]="chosen.path.utility === undefined ? null : abilityFontSize(chosen.path.utility!, myCooldowns[chosen.path.utility!])"
+                          [title]="chosen.path.utility === undefined ? 'Swap a carried pair.' : abilityHint(chosen.path.utility!)"
+                          (click)="selectPathUtility('mine', chosen.path, myCooldowns)">{{ pathUtilityLabel(chosen.path, myCooldowns) }}</button>
                 </div>
                 <div class="path-pair">
                   <button class="scaffold-btn unpicked" type="button"
@@ -384,7 +386,7 @@
                           [title]="pathHint(p)"
                           (click)="focusPath('mine', p)">
                     <span class="path-name">{{ path.name }}</span>
-                    <span class="path-cost">{{ path.cost }}</span>
+                    <span class="path-cost">- {{ path.cost }}</span>
                   </button>
                 </div>
               </ng-template>
@@ -397,16 +399,15 @@
                         [class.picking]="isPicking('mine', path.passive)"
                         (click)="selectAbility('mine', path.passive, myCooldowns)"
                 >{{ abilityLabel(path.passive, 0) }}</button>
-                  <!-- Swap. Give up one of the four you carry - any that is
-                       not cooling down - and the slot is free for another.
-                       What goes into it goes in cold. -->
+                  <!-- Configured path utility; old catalogues retain the pair swap. -->
                   <button class="path-extra-btn" type="button"
-                          [class.armed]="swapArmed === 'mine'"
-                          [disabled]="swapArmed !== 'mine' && !canSwap('mine')"
-                          [title]="swapArmed === 'mine'
-                            ? 'Click one of the four you carry to give it up.'
-                            : 'Swap one of the four you carry.'"
-                          (click)="toggleSwap('mine')">Reselect</button>
+                          [class.cooling]="path.utility !== undefined && myCooldowns[path.utility!] > 0"
+                          [class.exhausted]="path.utility !== undefined && usesLeft('mine', path.utility!) === 0"
+                          [class.armed]="path.utility === undefined ? swapArmed === 'mine' : isArmed('mine', path.utility!)"
+                          [disabled]="path.utility === undefined && swapArmed !== 'mine' && !canSwap('mine')"
+                          [style.font-size]="path.utility === undefined ? null : abilityFontSize(path.utility!, myCooldowns[path.utility!])"
+                          [title]="path.utility === undefined ? 'Swap a carried pair.' : abilityHint(path.utility!)"
+                          (click)="selectPathUtility('mine', path, myCooldowns)">{{ pathUtilityLabel(path, myCooldowns) }}</button>
                 <!-- Two to a row, ultimate first: they are one line of
                      the panel, not two. -->
                 <div class="path-pair">
@@ -418,6 +419,8 @@
                           [class.casting]="isCasting('mine', path.skill)" [class.brief]="castingBrief"
                           [class.picking]="isPicking('mine', path.skill)"
                           [class.ability-unavailable]="!canAfford('mine', path.skill, myCooldowns[path.skill])"
+                          [class.exhausted]="usesLeft('mine', path.skill) === 0"
+                          [class.cooling]="myCooldowns[path.skill] > 0"
                           (click)="selectAbility('mine', path.skill, myCooldowns)"
                   >{{ abilityLabel(path.skill, myCooldowns[path.skill]) }}</button>
                 
@@ -429,6 +432,7 @@
                           [class.casting]="isCasting('mine', path.ultimate)" [class.brief]="castingBrief"
                           [class.picking]="isPicking('mine', path.ultimate)"
                           [class.ability-unavailable]="!canAfford('mine', path.ultimate, myCooldowns[path.ultimate])"
+                          [class.exhausted]="usesLeft('mine', path.ultimate) === 0"
                           (click)="selectAbility('mine', path.ultimate, myCooldowns)"
                   >{{ abilityLabel(path.ultimate, myCooldowns[path.ultimate]) }}</button>
                 </div>
@@ -568,14 +572,15 @@
                    Disabled, a touch screen could not read it at all - its
                    words were in a tooltip. A unit in a panel still is. -->
               <button class="scaffold-btn" type="button" *ngIf="displayUnitAbility !== null; else noOwnAbility"
-                      [style.font-size]="abilityFontSize(displayUnitAbility, unitCooldownOf(displayUnit.uid))"
+                      [style.font-size]="abilityFontSize(displayUnitAbility, unitCooldownOf(displayUnit.uid), displayUnit.uid)"
                       [title]="unitAbilityHint(displayUnitAbility)"
                       [class.focused]="unitAbilityFocus?.index === displayUnitAbility"
                       [class.locked]="!vetUnlocked(displayUnitAbility)"
                       [class.ability-unavailable]="!displayUnitAbilityReady"
+                      [class.exhausted]="usesLeft(displayUnit.uid, displayUnitAbility) === 0"
                       [disabled]="!!displayUnit.panel"
                       (click)="selectUnitAbility(displayUnitAbility)"
-              >{{ abilityLabel(displayUnitAbility, unitCooldownOf(displayUnit.uid)) }}</button>
+              >{{ abilityLabel(displayUnitAbility, unitCooldownOf(displayUnit.uid), displayUnit.uid) }}</button>
               <ng-template #noOwnAbility>
                 <button class="scaffold-btn locked" type="button" disabled
                         title="This unit has no ability of its own."
@@ -690,6 +695,7 @@
           [opponentAttackMarkers]="opponentAttackMarkers"
           [opponentKillMarkers]="opponentKillMarkers"
           [abilityMode]="activeBoardAbilityMode()"
+          [abilityEffect]="activeBoardAbilityEffect()"
           [abilityCasterColor]="activeBoardAbilityCasterColor()"
           [playback]="playback"
           (playbackStep)="onPlaybackStep($event)"
@@ -699,6 +705,10 @@
           (attackMade)="onPlayerAttack($event)"
           (hexSelected)="onHexSelected($event)"
           (hexClicked)="onHexClicked($event)"
+          (abilityHexClicked)="onAbilityHexClicked($event)"
+          [whitePathPassive]="pathPassiveFor('white')"
+          [blackPathPassive]="pathPassiveFor('black')"
+          [unitPromotions]="unitPromotions"
           (hexHovered)="onHexHovered($event)"
         ></app-game-board>
 

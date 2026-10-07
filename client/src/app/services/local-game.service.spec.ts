@@ -1,3 +1,5 @@
+import { stackEffect } from './ability-rules';
+import { carries } from './unit-combat';
 import { TestBed } from '@angular/core/testing';
 import { LocalGameService, LOCAL_OPPONENT } from './local-game.service';
 import { unitPoints } from './match-score';
@@ -13,7 +15,7 @@ describe('LocalGameService', () => {
   let service: LocalGameService;
   let replies: any[];
 
-  /** Replies are delivered on a macrotask, like socket traffic. */
+  /** Let queued reply microtasks settle after the sending call. */
   const flush = async () => { await new Promise(r => setTimeout(r, 0)); };
 
   beforeEach(async () => {
@@ -61,6 +63,110 @@ describe('LocalGameService', () => {
   // The stock unit these tests push about is the pawn on -5,9. The two hexes
   // it has been on before, -9,9 and -7,9, have each in turn been dealt an
   // archer; -5,9 is a pawn on the setup as it stands.
+
+  it('persists Fortress immunity through the opponent turn, prevents the overtime toll and expires next caster turn', async () => {
+    const g = (service as any).game;
+    Object.assign(g, { turnNumber: 77, currentTurn: 'Solo', moveHistory: [], phaseBank: {} });
+    g.boardState = { '-8,0': { ...fullUnit('king', 'white', 'wk'), hp: 1 }, '8,0': fullUnit('king', 'black', 'bk') };
+    const protection = stackEffect(undefined, { name: 'Fortress', effect: 'invulnerable', mov: 0, atk: 0, def: 0 }, 'white', false, 79);
+    service.send({ type: 'pass_turn', effectsBefore: [{ status: { uid: 'wk', buff: protection } }, { at: '-8,0', uid: 'wk', hp: 0 }] });
+    await flush();
+    expect(g.boardState['-8,0'].hp).toBe(1); expect(g.turnNumber).toBe(78); expect(last('game_over')).toBeUndefined();
+    const restored = new LocalGameService(TestBed.inject(ConfigService)), saved = (restored as any).game;
+    expect(carries(saved.abilityBuffs.wk, 'invulnerable')).toBeTrue();
+    restored.send({ type: 'pass_turn' }); await flush();
+    expect(saved.turnNumber).toBe(79); expect(saved.abilityBuffs.wk).toBeUndefined();
+    restored.send({ type: 'pass_turn' }); await flush();
+    expect(saved.boardState['-8,0']).toBeUndefined(); expect(saved.endReason).toBe('regicide');
+  });
+
+  it('rolls back status changes when their accompanying walk is refused', async () => {
+    const g = (service as any).game;
+    g.turnNumber = 9; g.currentTurn = 'Solo';
+    const before = structuredClone(g.boardState), history = g.moveHistory;
+    const lock = stackEffect(undefined, { name: 'Trap', effect: 'action-lock', mov: 0, atk: 0, def: 0 }, 'black', true, 11);
+    service.send({ type: 'make_move', from: '20,20', to: '21,20', effectsBefore: [{ status: { uid: 'victim', buff: lock } }] });
+    await flush();
+    expect(last('invalid_move')).toBeDefined(); expect(g.abilityBuffs).toBeUndefined();
+    expect(g.boardState).toEqual(before); expect(g.moveHistory).toBe(history); expect(g.turnNumber).toBe(9);
+  });
+
+  it('rejects ordinary moves, healing and unit actions for locked units while permitting their counters', async () => {
+    const g = (service as any).game;
+    g.turnNumber = 9; g.currentTurn = 'Solo'; g.moveHistory = [];
+    g.boardState = { '0,0': fullUnit('bishop', 'white', 'own'), '1,0': fullUnit('pawn', 'white', 'ally'),
+      '-8,0': fullUnit('king', 'white', 'wk'), '8,0': fullUnit('king', 'black', 'bk') };
+    g.abilityBuffs = { own: stackEffect(undefined, { name: 'Blitz', effect: 'action-lock', mov: 0, atk: 0, def: 0 }, 'black', true, 11) };
+    for (const action of [{ to: '0,1' }, { to: '0,0', heal: '1,0' }, { to: '0,0', unitAction: true }]) {
+      service.send({ type: 'make_move', from: '0,0', ...action }); await flush();
+      expect(last('invalid_move').message).toContain('cannot act'); expect(g.turnNumber).toBe(9);
+    }
+    g.boardState['0,0'] = fullUnit('pawn', 'white', 'own'); g.boardState['1,0'].color = 'black'; g.currentTurn = LOCAL_OPPONENT;
+    service.send({ type: 'make_move', from: '1,0', to: '1,0', attack: '0,0' }); await flush();
+    expect(last('move_made').move.counter_damage).toBeGreaterThan(0);
+  });
+
+  it('locks panel walks, reserve deployments and attacks into panels without spending the turn or UP', async () => {
+    const g = (service as any).game;
+    Object.assign(g, { turnNumber: 17, currentTurn: 'Solo', moveHistory: [], phaseBank: {} });
+    g.boardState = { '-10,0': fullUnit('archer', 'white', 'actor'),
+      '-8,0': fullUnit('king', 'white', 'wk'), '8,0': fullUnit('king', 'black', 'bk') };
+    const reserve = fullUnit('pawn', 'white', 'reserve');
+    const lock = stackEffect(undefined, { name: 'Trap', effect: 'action-lock', mov: 0, atk: 0, def: 0 }, 'black', true, 19);
+    g.abilityBuffs = { actor: lock, reserve: lock };
+    const board = structuredClone(g.boardState);
+    const commands = [
+      { type: 'panel_move', from: '11,1', to: '12,1', panel: 'br', cost: 1, unit: reserve },
+      { type: 'enter_board', from: '12,1', to: '-10,9', unit: reserve },
+      { type: 'panel_attack', from: '-10,0', to: '-10,0', attack: '-12,-1', panel: 'tl',
+        unit: fullUnit('pawn', 'black', 'enemy') },
+    ];
+    for (const command of commands) {
+      replies.length = 0;
+      service.send(command); await flush();
+      expect(last('invalid_move')?.message).withContext(command.type).toContain('cannot act');
+      expect(g.boardState).toEqual(board); expect(g.moveHistory).toEqual([]);
+      expect(g.turnNumber).toBe(17); expect(g.currentTurn).toBe('Solo');
+      expect(unitPoints(g.config, g.moveHistory, 'white')).toBe(10);
+    }
+    g.abilityBuffs = {};
+    for (const command of commands) {
+      replies.length = 0;
+      service.send(command); await flush();
+      expect(last('invalid_move')).withContext(command.type).toBeUndefined();
+    }
+    expect(g.turnNumber).toBe(18);
+    expect(g.boardState['-10,9'].uid).toBe('reserve');
+    expect(g.moveHistory.some((move: any) => move.intoPanel && move.attacked)).toBeTrue();
+  });
+
+  it('commits HEL modifiers and zero settings without granting healing to non-healers', async () => {
+    const g = (service as any).game;
+    for (const [bonus, amount] of [[{ hel: 4 }, 10], [{ helSet: 0 }, 0]] as const) {
+      Object.assign(g, { turnNumber: 9, currentTurn: 'Solo', moveHistory: [], phaseBank: {} });
+      g.boardState = { '0,0': fullUnit('bishop', 'white', 'b'), '2,0': { ...fullUnit('pawn', 'white', 'p'), hp: 1, max_hp: 14, vet: 1 },
+        '-8,0': fullUnit('king', 'white', 'wk'), '8,0': fullUnit('king', 'black', 'bk') };
+      service.send({ type: 'make_move', from: '0,0', to: '0,0', heal: '2,0', bonuses: { atk: 0, def: 0, targetAtk: 0, targetDef: 0, ...bonus } }); await flush();
+      expect(last('move_made').move.healed_amount).toBe(amount); expect(g.boardState['2,0'].hp).toBe(1 + amount);
+    }
+    g.turnNumber = 9; g.currentTurn = 'Solo'; g.boardState['0,0'] = fullUnit('pawn', 'white', 'b');
+    replies.length = 0;
+    service.send({ type: 'make_move', from: '0,0', to: '0,0', heal: '2,0', bonuses: { hel: 4 } }); await flush();
+    expect(last('invalid_move')).toBeDefined();
+  });
+
+  it('records Strengthen current/max HP once and reloads its rank without reapplying the first-star gain', async () => {
+    const g = (service as any).game;
+    Object.assign(g, { turnNumber: 9, currentTurn: 'Solo', moveHistory: [], phaseBank: {} });
+    g.boardState = { '0,0': { ...fullUnit('pawn', 'white', 'p'), hp: 5, vet: 0 },
+      '-8,0': fullUnit('king', 'white', 'wk'), '8,0': fullUnit('king', 'black', 'bk') };
+    const promotion = { ...g.boardState['0,0'], hp: 7, max_hp: 14, vet: 1 };
+    service.send({ type: 'pass_turn', effectsBefore: [{ at: '0,0', uid: 'p', hp: 7, promotion }] }); await flush();
+    expect(g.boardState['0,0']).toEqual(promotion);
+    const restored = new LocalGameService(TestBed.inject(ConfigService)), saved = (restored as any).game;
+    restored.send({ type: 'pass_turn' }); await flush();
+    expect(saved.boardState['0,0']).toEqual(promotion);
+  });
 
   it('records UP casts and ability deaths once, without paying a kill reward, through reload', async () => {
     const g = (service as any).game; g.turnNumber = 55; g.currentTurn = 'Solo'; g.moveHistory = [];
@@ -427,6 +533,10 @@ describe('LocalGameService', () => {
 
   it('awards stars on passes, persists them, and reconstructs an older save on reload', async () => {
     expect(Object.values(last('game_started').boardState).every((u: any) => u.vet === 0)).toBeTrue();
+    const game = (service as any).game;
+    for (const [from, to] of [['-4,9', '-4,8'], ['4,-9', '4,-8']]) {
+      game.boardState[to] = game.boardState[from]; delete game.boardState[from];
+    }
     for (const [ply, vet] of [[6, 1], [26, 2], [48, 3], [70, 3]]) {
       const g = (service as any).game;
       g.turnNumber = ply;
@@ -917,18 +1027,17 @@ describe('LocalGameService', () => {
       position('pawn', victim);
       service.send({ type: 'make_move', from: '0,0', to: '0,0', attack: '1,0', bonuses: { targetAtk: 30 } });
       await flush();
-      expect(last('move_made').move.counter_damage).withContext(victim).toBe(victim === 'shieldman' ? 22 : 0);
+      expect(last('move_made').move.counter_damage).withContext(victim).toBe(0);
     }
     for (const distance of [1, 2]) {
       position('bishop', 'rook', distance); g.boardState[`${distance},0`].color = 'white';
       g.boardState[`${distance},0`].hp = 1;
       service.send({ type: 'make_move', from: '0,0', to: '0,0', heal: `${distance},0` }); await flush();
-      if (distance === 1) expect(last('move_made').move.healed_amount).toBe(8);
-      else expect(last('invalid_move')).toBeDefined();
+      expect(last('move_made').move.healed_amount).toBe(distance === 1 ? 8 : 6);
     }
   });
 
-  it('commits a Warcry shieldman attack and enforces movement drains', async () => {
+  it('rejects an unarmed buffed shieldman, commits Shove attacks and enforces movement drains', async () => {
     const g = (service as any).game;
     g.turnNumber = 9; g.currentTurn = 'Solo'; g.moveHistory = [];
     g.boardState = {
@@ -938,7 +1047,15 @@ describe('LocalGameService', () => {
     };
     service.send({ type: 'make_move', from: '0,0', to: '0,0', attack: '1,0', bonuses: { atk: 8 } });
     await flush();
-    expect(last('move_made').move.damage_dealt).toBe(1);
+    expect(last('invalid_move')).toBeDefined();
+    expect(g.turnNumber).toBe(9);
+    g.boardState['0,0'].vet = 2;
+    g.boardState['0,0'].hp = unitStats('shieldman', g.config, 2).hp;
+    g.boardState['0,0'].max_hp = g.boardState['0,0'].hp;
+    replies.length = 0;
+    service.send({ type: 'make_move', from: '0,0', to: '0,0', attack: '1,0', bonuses: { atk: 8 } });
+    await flush();
+    expect(last('move_made').move.damage_dealt).toBe(4);
     expect(last('move_made').boardState['0,0'].hp).toBe(31);
     g.turnNumber = 11; g.currentTurn = 'Solo'; g.moveHistory = [];
     g.boardState = { '0,0': fullUnit('pawn', 'white', 'p'), '-8,0': fullUnit('king', 'white', 'wk'), '8,0': fullUnit('king', 'black', 'bk') };

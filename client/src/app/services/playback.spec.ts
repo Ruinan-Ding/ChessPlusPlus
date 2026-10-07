@@ -210,6 +210,26 @@ describe('buildPlayback', () => {
     ]);
   });
 
+  it('keeps a multi-recipient cast in one beat and follows each recipient through collapsed moves', () => {
+    const visuals = [
+      { kind: 'ability' as const, from: '0,0', to: '0,0', uid: 'one', mark: '+4' },
+      { kind: 'ability' as const, from: '2,0', to: '2,0', uid: 'two', mark: '-3', hostile: true },
+    ];
+    const actions = [step('', '', null, { spend: { index: 5, side: 'mine', visuals } }),
+      step('0,0', '1,0'), step('2,0', '3,0')];
+    const staged = buildPlayback(actions);
+    expect(staged[0].targets).toEqual(visuals);
+    const recap = buildPlayback(actions, true);
+    expect(recap.map(beat => beat.kind)).toEqual(['move', 'move', 'ability']);
+    expect(recap[2]).toEqual(jasmine.objectContaining({ index: 5, side: 'mine', brief: true }));
+    expect(recap[2].targets).toEqual([
+      { ...visuals[0], from: '1,0', to: '1,0' }, { ...visuals[1], from: '3,0', to: '3,0' },
+    ]);
+    expect(visuals[0].to).toBe('0,0');
+    expect(visuals[1].to).toBe('2,0');
+    expect(buildPlayback([actions[0], actions[0]], true).length).toBe(2);
+  });
+
   it('has nothing to play for a turn that staged nothing', () => {
     expect(buildPlayback([])).toEqual([]);
   });

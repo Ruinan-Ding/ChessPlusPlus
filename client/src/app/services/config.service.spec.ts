@@ -28,12 +28,71 @@ describe('ConfigService validation, against the server\'s', () => {
     rules: { maxTurns: 0, turnTimeLimit: 0 },
   });
 
+  it('refuses non-object roots without throwing during normalization', () => {
+    for (const value of [undefined, null, [], [1], true, false, 0, 1, '', 'text']) {
+      const result = service.validateGameRules(value);
+      expect(result.valid).withContext(JSON.stringify(value)).toBeFalse();
+      expect(result.errors?.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('preserves the active config and emits nothing when an update is refused', () => {
+    const custom = edited(['units', 'pawn', 'hp'], 13);
+    expect(service.updateConfig(JSON.stringify(custom)).valid).toBeTrue();
+    const active = service.getConfig(), emitted: any[] = [];
+    const subscription = service.config$.subscribe(config => emitted.push(config));
+    try {
+      for (const json of ['{ not json', 'null', '[]', 'true', '1', '"text"',
+        JSON.stringify({ ...custom, units: null })]) {
+        expect(service.updateConfig(json).valid).withContext(json).toBeFalse();
+        expect(service.getConfig()).toBe(active);
+        expect(emitted).toEqual([active]);
+      }
+    } finally { subscription.unsubscribe(); }
+  });
+
+  it('refuses malformed units even when a legacy config omits the objective', () => {
+    for (const value of [null, [], true, 1, 'text']) {
+      const config = edited(['units', 'pawn'], value);
+      delete config.rules.objective;
+      expect(service.validateGameRules(config).valid).toBeFalse();
+    }
+  });
+
+  it('requires explicit definitions for unit and ability IDs that resemble object properties', () => {
+    for (const id of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+      const unknownPool = edited(['abilities', 'pool', 0], id);
+      expect(service.validateGameRules(unknownPool).valid).withContext('unknown ' + id).toBeFalse();
+      const config: any = minimal();
+      config.units = { [id]: { ...config.units.king, id, ability: id } };
+      config.setup = { white: { '0,3': id }, black: { '0,-3': id } };
+      config.abilities = { slots: 2, pool: [id, 'paired'], catalogue: {
+        [id]: { id, name: id, target: 'friendly', atk: 1 },
+        paired: { id: 'paired', name: 'Paired', target: 'enemy', damage: 1 },
+      } };
+      expect(service.validateGameRules(JSON.parse(JSON.stringify(config))).valid).withContext(id).toBeTrue();
+    }
+  });
+
+  it('refuses boolean board radii even when the setup fits a numeric radius of one', () => {
+    const config: any = minimal();
+    config.setup = { white: { '0,1': 'king' }, black: { '0,-1': 'king' } };
+    config.board.radius = 1;
+    expect(service.validateGameRules(config).valid).toBeTrue();
+    for (const radius of [true, false]) {
+      config.board.radius = radius;
+      const result = service.validateGameRules(config);
+      expect(result.valid).withContext(String(radius)).toBeFalse();
+      expect(result.errors?.some(e => e.includes('board.radius'))).toBeTrue();
+    }
+  });
+
   it('takes the config both engines agree on', () => {
     expect(service.validateGameRules(minimal()).valid).toBeTrue();
   });
 
   /** The shipped config with one key set - or, with `drop`, removed. */
-  const edited = (path: string[], value: unknown, drop = false) => {
+  const edited = (path: (string | number)[], value: unknown, drop = false) => {
     const config: any = JSON.parse(JSON.stringify(DEFAULT_GAME_CONFIG));
     let node = config;
     for (const key of path.slice(0, -1)) node = node[key];
@@ -316,9 +375,9 @@ describe('ConfigService validation, against the server\'s', () => {
     expect(service.validateGameRules(config).errors).toEqual([
       'abilities.catalogue.dash.damage does nothing on a friendly ability',
       'abilities.catalogue.strike.turns does nothing on an ability that changes no stat',
-      'abilities.catalogue.bastion.cost does nothing on a passive',
-      'abilities.catalogue.cleave.points does nothing on an enemy ability',
-      'abilities.catalogue.ruin.atk does nothing on a universal ability',
+      'abilities.catalogue.bastion.cost does nothing on defensive-armor',
+      'abilities.catalogue.cleave.points does nothing on hex-cleave',
+      'abilities.catalogue.ruin.atk does nothing on ruin',
     ]);
   });
 

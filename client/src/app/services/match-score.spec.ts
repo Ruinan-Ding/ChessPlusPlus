@@ -1,8 +1,9 @@
+import { DEFAULT_GAME_CONFIG } from './config.service';
 import {
   bankEndedPhases, capOf, cpAwarded, decidedOnPoints, deathsOf, matchVerdict, phaseTotal,
   scheduleEnding, vpAsPoints, unitPoints, halftimeUpAwards,
 } from './match-score';
-import { captureZoneHexes } from './hex-rules';
+import { captureZoneHexes, captureZones } from './hex-rules';
 
 /**
  * The phase bank and the schedule's two endings. ScoringTestCase in the
@@ -12,6 +13,31 @@ import { captureZoneHexes } from './hex-rules';
 describe('match-score', () => {
   const PAWN = { units: { pawn: { value: 5 } }, board: { radius: 11 } };
   const pawn = (color: 'white' | 'black') => ({ unit_id: 'pawn', color });
+
+  it('freezes early-phase losses at tally and waits through the full postmatch', () => {
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    const home = captureZones(11).find(z => z.owner === 'white')!.center;
+    const enemy = captureZones(11).find(z => z.owner === 'black')!.center;
+    const piece = (id: string, color: string) => ({ unit_id: id, color, hp: 12 });
+    const deaths = (color: string, turn: number) => Array(8).fill({ turn, color, unit_id: 'pawn', attacker_eliminated: true });
+    const zeroWhite = bankEndedPhases({}, config, { [home]: piece('pawn', 'white') }, deaths('white', 25), 27);
+    expect(zeroWhite[1].white).toBe(0); expect(zeroWhite[1].pendingLoss).toBeUndefined();
+    expect(bankEndedPhases({}, config, { '0,0': piece('pawn', 'white') }, [], 27)[1].pendingLoss).toBe('white');
+    expect(bankEndedPhases({}, config, { '0,0': piece('rook', 'white') }, [], 27)[1].pendingLoss).toBeUndefined();
+    const first = bankEndedPhases({}, config, {}, [], 27);
+    const second = bankEndedPhases({ 1: { white: 57, black: 57 } }, config,
+      { [enemy]: piece('pawn', 'black') }, deaths('black', 39), 49);
+    expect(second[2].pendingLoss).toBe('black');
+    for (const [bank, start, winner] of [[first, 27, 'black'], [second, 49, 'white']] as const) {
+      expect(matchVerdict(bank, start)).toBe(winner);
+      expect(scheduleEnding(bank, start)).toBeNull(); expect(scheduleEnding(bank, start + 1)).toBeNull();
+      expect(bankEndedPhases(bank, config, { [home]: piece('queen', 'white'), [enemy]: piece('queen', 'black') }, [], start + 1)).toBe(bank);
+      expect(scheduleEnding(bank, start + 2)).toEqual({ winner, reason: 'phase_result' });
+    }
+    const late = bankEndedPhases({}, config, {}, [], 50);
+    expect(late[1].pendingLoss).toBeUndefined(); expect(late[2].pendingLoss).toBeUndefined();
+    expect(scheduleEnding({ 1: { white: 0, black: 0 } }, 29)).toBeNull();
+  });
 
   it('snapshots each halftime VP once for both sides, with phase losses and multipliers', () => {
     const board = { '-3,6': pawn('white'), '7,0': pawn('black') };
@@ -105,7 +131,7 @@ describe('match-score', () => {
     expect(bankEndedPhases({}, config, board, [], 27)).toEqual({ 1: { white: 38, black: 0 } });
     config.units.custom.captureZones = [];
     expect(capOf(board, 11, 'white', config)).toBe(0);
-    expect(bankEndedPhases({}, config, board, [], 27)).toEqual({ 1: { white: 0, black: 0 } });
+    expect(bankEndedPhases({}, config, board, [], 27)).toEqual({ 1: { white: 0, black: 0, pendingLoss: 'white' } });
   });
 
   it('never banks a phase below nothing', () => {
@@ -122,7 +148,7 @@ describe('match-score', () => {
     const history = [
       { color: 'black', unit_id: 'pawn', captured: 'pawn', defender_eliminated: true, turn: 8 },
     ];
-    expect(bankEndedPhases({}, PAWN, {}, history, 27)).toEqual({ 1: { white: 0, black: 0 } });
+    expect(bankEndedPhases({}, PAWN, {}, history, 27)).toEqual({ 1: { white: 0, black: 0, pendingLoss: 'white' } });
   });
 
   it('awards CP off each banked phase, with the gap to the side behind', () => {

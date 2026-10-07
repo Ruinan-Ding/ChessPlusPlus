@@ -114,6 +114,57 @@ describe('LobbyComponent', () => {
     expect(sent.filter(m => m.type === 'change_username').length).toBe(1);
   });
 
+  it('reconnects a freshly loaded offline lobby to its roster channel', async () => {
+    fixture.destroy();
+    TestBed.resetTestingModule();
+    const flags: [string, string | null][] = ['cpp.offline', 'cpp.localGame'].map(key => [key, sessionStorage.getItem(key)]);
+    sessionStorage.setItem('cpp.offline', '1');
+    sessionStorage.removeItem('cpp.localGame');
+    const sockets: any[] = [];
+    const socketConstructor = spyOn(window, 'WebSocket').and.callFake(function (url: string | URL) {
+      const socket = {
+        url: String(url), readyState: 0, sent: [] as any[],
+        close() { this.readyState = 3; },
+        send(data: string) { this.sent.push(JSON.parse(data)); },
+      };
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    });
+    Object.assign(socketConstructor, { CONNECTING: 0, OPEN: 1, CLOSED: 3 });
+    let service: WebsocketService | undefined;
+    try {
+      await TestBed.configureTestingModule({
+        imports: [LobbyComponent], providers: [provideRouter([])],
+      }).compileComponents();
+      TestBed.inject(AuthService).setUsername('OfflineRoster');
+      fixture = TestBed.createComponent(LobbyComponent);
+      component = fixture.componentInstance;
+      fixture.detectChanges();
+      service = TestBed.inject(WebsocketService);
+      expect(sockets.length).toBe(0);
+      service.reconnectToServer();
+      expect(sockets.length).toBe(1);
+      const socket = sockets[0];
+      expect(socket.url).toMatch(/\/ws\/game\/lobby\/$/);
+      socket.readyState = 1;
+      socket.onopen();
+      expect(socket.sent).toContain(jasmine.objectContaining({ type: 'join_lobby', username: 'OfflineRoster' }));
+      socket.onmessage({ data: JSON.stringify({
+        type: 'user_list', users: [{ username: 'OfflineRoster', status: 'online' }],
+      }) });
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('.current-user-tag').textContent).toContain('(You)');
+      expect(component.serverOnline).toBeTrue();
+    } finally {
+      fixture.destroy();
+      service?.disconnect();
+      for (const [key, value] of flags) {
+        if (value === null) sessionStorage.removeItem(key);
+        else sessionStorage.setItem(key, value);
+      }
+    }
+  });
+
   it('should create', () => {
     expect(component).toBeTruthy();
   });

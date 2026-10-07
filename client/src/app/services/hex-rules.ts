@@ -13,7 +13,7 @@
  * will disagree with the server about what a unit may do.
  */
 
-import { combatStats, unitPassive, unitStats } from './unit-stats';
+import { combatStats, hasAttack, unitPassive, unitStats } from './unit-stats';
 
 export type BoardLike = Record<string, { unit_id: string; color: string; vet?: number } | undefined>;
 
@@ -21,7 +21,6 @@ export const HEX_DIRS: [number, number][] = [
   [+1, 0], [-1, 0], [+1, -1], [0, -1], [0, 1], [-1, 1],
 ];
 
-/** Rings from the origin to (q, r) - the hex metric, in one place. */
 /**
  * The two panels that are a **base** - each player's left plane, bottom-left
  * for white and top-right for black. The other pair is the reserve.
@@ -91,6 +90,7 @@ export function inHomeRows(color: string, r: number, radius: number): boolean {
   return color === 'white' ? r >= edge : r <= -edge;
 }
 
+/** Rings from the origin to (q, r) - the hex metric, in one place. */
 export function hexDistance(q: number, r: number): number {
   return Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r));
 }
@@ -219,7 +219,7 @@ export function computeAttackZone(
 export function canAttack(unit: any, distance: number, atkBonus = 0): boolean {
   const attack = unit?.attack ?? 1;
   const armed = (Array.isArray(attack) ? attack[distance - (unit?.attackMinRange ?? 1)] ?? 0 : attack) + atkBonus > 0;
-  return armed && !unit?.heal?.length
+  return hasAttack(unit) && armed
     && distance >= (unit?.attackMinRange ?? 1) && distance <= (unit?.attackRange ?? 1);
 }
 
@@ -235,8 +235,10 @@ export function rangedDamage(attack: number | number[], distance: number, config
 
 /** Exact healing at this ring, capped to missing HP; mirrors resolve_heal. */
 export function healingAmount(unitId: string, target: { unit_id: string; hp: number; max_hp?: number },
-                              distance: number, config: any, vet = 0): number {
-  const amount = unitStats(unitId, config, vet).heal?.[distance - 1] ?? 0;
+                              distance: number, config: any, vet = 0, bonus = 0, setting?: number): number {
+  const profile = unitStats(unitId, config, vet).heal;
+  if (!profile || profile[distance - 1] === undefined) return 0;
+  const amount = Math.max(0, setting ?? (profile[distance - 1] + bonus));
   const max = target.max_hp ?? config?.units?.[target.unit_id]?.hp ?? 0;
   return Math.max(0, Math.min(amount, max - target.hp));
 }
@@ -244,7 +246,7 @@ export function healingAmount(unitId: string, target: { unit_id: string; hp: num
 /** Attack amounts from attackMinRange through attackRange, in ring order. */
 export function attackTiers(unitId: string, config: any, vet = 0, kits = true): number[] {
   const unit = combatStats(unitId, config, vet, false, kits);
-  if (!config?.units?.[unitId]) return [];
+  if (!config?.units?.[unitId] || !hasAttack(unit)) return [];
   const attack: number | number[] = unit.attack ?? 0;
   const range: number = Math.max(1, unit.attackRange ?? 1);
   const tiers: number[] = [];
@@ -352,15 +354,16 @@ export function captureZoneHexes(radius: number): Set<string> {
  * With an eligible enemy anywhere in the zone, normal adjacent claims apply.
  * A hex reached by both sides is neutral; an ineligible unit makes no claim.
  */
+export function captureEligible(piece: any, zone: CaptureZone, config?: any): boolean {
+  const permissions = config?.units?.[piece.unit_id]?.captureZones;
+  const kind = zone.kind === 'base' ? (zone.owner === piece.color ? 'home' : 'enemy') : zone.kind;
+  return permissions === undefined || permissions.includes(kind);
+}
+
 export function captureClaims(
   boardState: BoardLike, radius: number, config?: any,
 ): Map<string, 'white' | 'black'> {
   const zones = captureZones(radius);
-  const eligible = (piece: any, zone: CaptureZone) => {
-    const permissions = config?.units?.[piece.unit_id]?.captureZones;
-    const kind = zone.kind === 'base' ? (zone.owner === piece.color ? 'home' : 'enemy') : zone.kind;
-    return permissions === undefined || permissions.includes(kind);
-  };
   const disruption = { white: new Set<string>(), black: new Set<string>() };
   const claimed = new Map<string, 'white' | 'black' | 'contested'>();
   const claim = (key: string, color: 'white' | 'black') => {
@@ -370,12 +373,12 @@ export function captureClaims(
   };
   for (const [key, piece] of Object.entries(boardState)) {
     if (!piece) continue;
-    const allowed = new Set(zones.filter(zone => eligible(piece, zone)).flatMap(zone => [...zone.hexes]));
+    const allowed = new Set(zones.filter(zone => captureEligible(piece, zone, config)).flatMap(zone => [...zone.hexes]));
     if (!allowed.has(key)) continue;
     const color = piece.color === 'black' ? 'black' : 'white';
     claim(key, color);
     disruption[color].add(key);
-    const expanded = zones.some(zone => eligible(piece, zone) && hexDistanceKeys(key, zone.center) < ZONE_SPREAD);
+    const expanded = zones.some(zone => captureEligible(piece, zone, config) && hexDistanceKeys(key, zone.center) < ZONE_SPREAD);
     const [q, r] = key.split(',').map(Number);
     for (const [dq, dr] of HEX_DIRS) {
       const next = `${q + dq},${r + dr}`;
@@ -386,9 +389,9 @@ export function captureClaims(
   }
   for (const zone of zones) {
     const center = boardState[zone.center];
-    if (!center || !eligible(center, zone)) continue;
+    if (!center || !captureEligible(center, zone, config)) continue;
     const enemyPresent = Object.entries(boardState).some(([key, piece]) =>
-      piece && piece.color !== center.color && zone.hexes.has(key) && eligible(piece, zone));
+      piece && piece.color !== center.color && zone.hexes.has(key) && captureEligible(piece, zone, config));
     if (!enemyPresent) for (const key of zone.hexes) claim(key, center.color === 'black' ? 'black' : 'white');
   }
   const held = new Map<string, 'white' | 'black'>();
@@ -439,8 +442,8 @@ export const MIN_STRIKE_DAMAGE = 1;
  * raw stat, because that is where the hex and the unit panel show it: a +2 on
  * a unit whose second ring reads 19 makes that ring 21, not 21 less falloff.
  *
- * Effective ATK includes boosts: a unit with zero base ATK can strike while
- * boosted. Zero effective ATK never receives the minimum-damage floor.
+ * Boosts modify an existing attack profile. A unit without one cannot
+ * attack, and zero effective ATK never receives the minimum-damage floor.
  *
  * Read off the config rather than a constant so the browser and the server
  * cannot drift - this is the same config object `rangedDamage` takes
@@ -451,8 +454,12 @@ export function strikeDamage(
   atkBonus = 0, defBonus = 0, attackerVet = 0, defenderVet = 0, counter = false, kits = true,
 ): number {
   const attacker = combatStats(attackerId, config, attackerVet, counter, kits);
-  if (!canAttack(attacker, distance, atkBonus)) return 0;
   const defender = unitStats(defenderId, config, defenderVet);
+  return strikeFromStats(attacker, defender, distance, config, atkBonus, defBonus);
+}
+
+export function strikeFromStats(attacker: any, defender: any, distance: number, config: any, atkBonus = 0, defBonus = 0): number {
+  if (!canAttack(attacker, distance, atkBonus)) return 0;
   const base = rangedDamage(attacker.attack ?? 1, distance, config, attacker.attackMinRange ?? 1);
   const attack = base + atkBonus;
   if (attack <= 0) return 0;

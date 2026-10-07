@@ -12,7 +12,7 @@ from django.test import SimpleTestCase, TestCase
 from typing import Any, Dict
 
 from game.engine import economy, panels, phases
-from game.engine.board import HexBoard, coord_key, parse_coord, hex_distance, HEX_DIRECTIONS
+from game.engine.board import HexBoard, coord_key, parse_coord, hex_distance
 from game.engine.config_loader import (
     DEFAULT_CONFIG,
     _validate_config,
@@ -2707,7 +2707,7 @@ class ScoringTestCase(TestCase):
         history = [{'color': 'black', 'unit_id': 'pawn', 'captured': 'pawn',
                     'defender_eliminated': True, 'turn': 8}]
         bank = scoring.bank_ended_phases({}, self.PAWN, {}, history, 27)
-        self.assertEqual(bank, {'1': {'white': 0, 'black': 0}})
+        self.assertEqual(bank, {'1': {'white': 0, 'black': 0, 'pendingLoss': 'white'}})
 
     def test_cp_is_awarded_off_each_banked_phase_with_the_gap_to_the_side_behind(self):
         # The owner, 24 Sep 2026: the side with the higher total gets
@@ -2974,10 +2974,10 @@ class CapturePermissionsTestCase(SimpleTestCase):
         config = {'board': {'radius': 11}, 'units': {'custom': {'captureZones': ['middle']}, 'none': {'captureZones': []}}}
         board = {'0,0': {'unit_id': 'custom', 'color': 'black'}}
         self.assertEqual(scoring.cap_of(board, 11, 'black', config), 38)
-        self.assertEqual(scoring.bank_ended_phases({}, config, board, [], 27), {'1': {'white': 0, 'black': 38}})
+        self.assertEqual(scoring.bank_ended_phases({}, config, board, [], 27), {'1': {'white': 0, 'black': 38, 'pendingLoss': 'white'}})
         board['0,0']['unit_id'] = 'none'
         self.assertEqual(scoring.capture_claims(board, 11, config), {})
-        self.assertEqual(scoring.bank_ended_phases({}, config, board, [], 27), {'1': {'white': 0, 'black': 0}})
+        self.assertEqual(scoring.bank_ended_phases({}, config, board, [], 27), {'1': {'white': 0, 'black': 0, 'pendingLoss': 'white'}})
 
     def test_outer_units_score_only_their_hex_but_still_disrupt_adjacent_claims(self):
         from game.engine import scoring
@@ -2994,6 +2994,21 @@ class CapturePermissionsTestCase(SimpleTestCase):
 
 
 class VeteranStatsTestCase(SimpleTestCase):
+    def test_shipped_healing_profile_gains_longer_rings_at_first_star(self):
+        from game.engine.game_logic import resolve_heal
+        for vet, profile in ((0, [8, 6]), (1, [8, 6, 4, 2])):
+            for ring, amount in enumerate(profile, 1):
+                board = HexBoard(5)
+                board.set_cell(0, 0, dict(unit_id='bishop', color='white', hp=8, max_hp=8, vet=vet))
+                board.set_cell(ring, 0, dict(unit_id='rook', color='white', hp=1, max_hp=40))
+                restored = HexBoard.from_dict(5, board.to_dict())
+                result = resolve_heal(restored, (0, 0), (ring, 0), DEFAULT_CONFIG)
+                self.assertEqual(result['healed_amount'], amount, (vet, ring))
+                self.assertEqual(restored.get(ring, 0)['hp'], 1 + amount)
+            board.set_cell(len(profile) + 1, 0, dict(unit_id='rook', color='white', hp=1, max_hp=40))
+            with self.assertRaises(ValueError):
+                resolve_heal(board, (0, 0), (len(profile) + 1, 0), DEFAULT_CONFIG)
+
     def test_renamed_units_use_first_star_stats_for_movement_combat_and_healing(self):
         from game.engine.unit_stats import ranked_unit, unit_stats
         from game.engine.game_logic import resolve_heal

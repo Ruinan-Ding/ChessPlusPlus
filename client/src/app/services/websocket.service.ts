@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { BehaviorSubject, Observable, Subject } from 'rxjs';
+import { BehaviorSubject, Subject } from 'rxjs';
 import { WEBSOCKET_CONFIG } from './websocket.config';
 import { LocalGameService } from './local-game.service';
 import { readStore, removeStore, writeStore } from './storage';
@@ -166,7 +166,6 @@ export class WebsocketService {
       this.currentRoomName = roomName;
       return;
     }
-    console.log(`[WebSocket.connect] Connecting to room: ${roomName}`);
     
     // A handshake in flight counts as active: tearing it down and starting
     // over is how repeated connect() calls - login, lobby, the game room -
@@ -178,7 +177,6 @@ export class WebsocketService {
       this.disconnect();
       this.currentRoomName = roomName;
     } else {
-      console.log(`[WebSocket.connect] Already on room: ${roomName}`);
       return;
     }
     
@@ -210,7 +208,6 @@ export class WebsocketService {
         ? `${hostname}:${WEBSOCKET_CONFIG.BACKEND_PORT}`
         : host;
       const wsUrl = `${wsProtocol}://${wsHost}/ws/game/${roomName}/`;
-      console.log(`[WebSocket] Attempting to connect to: ${wsUrl}`);
       this.socket = new WebSocket(wsUrl);
 
       this.connectTimeout = setTimeout(() => {
@@ -230,7 +227,6 @@ export class WebsocketService {
         if (this.reconnectingSubject.value || this.reconnectAttemptsSubject.value > 0) {
           this.clearSendQueue();
         }
-        console.log('[WebSocket] Connection established');
         this.connectionStatusSubject.next(true);
         this.reconnectingSubject.next(false);
         this.reconnectAttemptsSubject.next(0);
@@ -238,7 +234,6 @@ export class WebsocketService {
         this.startHeartbeat();
         // Flush any queued messages that were sent while connecting
         if (this.sendQueue.length) {
-          console.log(`[WebSocket] Flushing ${this.sendQueue.length} queued messages`);
           while (this.sendQueue.length && this.socket && this.socket.readyState === WebSocket.OPEN) {
             const queued = this.sendQueue.shift();
             try {
@@ -254,7 +249,6 @@ export class WebsocketService {
       };
       
       this.socket.onclose = (event) => {
-        console.log('[WebSocket] Connection closed', event.code, event.reason);
         this.clearConnectTimeout();
         this.clearSendQueue();
         this.connectionStatusSubject.next(false);
@@ -282,7 +276,6 @@ export class WebsocketService {
       this.socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          console.log('[WebSocket] Message received:', data.type);
           
           if (data.type === 'force_disconnect') {
             console.log('[WebSocket] Forced disconnect from server:', data.message);
@@ -313,14 +306,12 @@ export class WebsocketService {
         console.error('[WebSocket] Heartbeat send failed', err);
       }
     }, this.heartbeatInterval);
-    console.log('[WebSocket] Heartbeat started');
   }
 
   private stopHeartbeat(): void {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
-      console.log('[WebSocket] Heartbeat stopped');
     }
   }
 
@@ -355,7 +346,6 @@ export class WebsocketService {
       this.reconnectingSubject.next(true);
       this.reconnectAttemptsSubject.next(currentAttempts + 1);
       
-      console.log(`Attempting to reconnect (${currentAttempts + 1}/${this.maxReconnectAttempts})...`);
       
       // Jittered upward: without it every client a server restart knocked off
       // comes back in the same three-second lockstep and lands together. The
@@ -383,7 +373,6 @@ export class WebsocketService {
     if (this.offline) {
       // No server and no local game: drop it rather than queue it up to be
       // flushed at some surprising later moment.
-      console.log('[WebSocket] Offline, dropping message', message?.type);
       return;
     }
     try {
@@ -394,7 +383,6 @@ export class WebsocketService {
         return;
       } else {
         // Queue messages while connecting/reconnecting so UI actions are not lost
-        console.log('[WebSocket] Socket not open, queueing message');
         this.sendQueue.push(message);
         // A long outage must not build a backlog that all lands at once when
         // the server returns: the oldest intentions are the stalest.
@@ -436,10 +424,5 @@ export class WebsocketService {
       this.connectionStatusSubject.next(false);
     }
     this.stopHeartbeat();
-  }
-  
-  // Getter for the current room name (for the ConnectionDialogComponent)
-  getCurrentRoom(): string {
-    return this.currentRoomName;
   }
 }

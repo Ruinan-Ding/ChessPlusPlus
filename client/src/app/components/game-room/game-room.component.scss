@@ -131,6 +131,8 @@
       }
       
       .leave-btn {
+        &.reveal-leave { position: relative; z-index: 2001; }
+
         padding: u(0.5) u(0.9375);
         background-color: #e74c3c;
         color: white;
@@ -179,11 +181,25 @@
     // page: green on your turn, dark red on your opponent's.
     &.your-turn {
       background-color: #1b3a2b;
+      animation: board-turn-glow 4s ease-in-out infinite;
     }
 
     &.their-turn {
       background-color: #3a1b1b;
+      animation: board-turn-dim 4s ease-in-out infinite;
     }
+
+    @keyframes board-turn-glow {
+      0%, 100% { background-color: #1b3a2b; }
+      50% { background-color: #b7c9be; }
+    }
+
+    @keyframes board-turn-dim {
+      0%, 100% { background-color: #3a1b1b; }
+      50% { background-color: #130808; }
+    }
+
+    &.committing-mine, &.committing-theirs { animation: none; }
 
     // While a committed turn plays back the cue leaves green and red behind
     // and goes yellow, holding on whoever just moved. Yours glows; theirs is
@@ -421,6 +437,7 @@
   // holds still where it says what it said - stopped, most fall back to a
   // button that says nothing. This one holds its green ring.
   @media (prefers-reduced-motion: reduce) {
+    .game-board-panel.your-turn, .game-board-panel.their-turn { animation: none; }
     .scaffold-btn.recent { animation: none; box-shadow: 0 0 6px 2px rgba(34, 197, 94, 0.85); }
   }
 
@@ -534,8 +551,6 @@
     border-color: #d6e2f2;
   }
 
-  // ponytail: a colour and a place, nothing more - it does nothing until
-  // there is something for it to do.
   .path-extra-btn {
     padding: u(0.25) 0;
     border: none;
@@ -589,7 +604,7 @@
   .path-choices {
     grid-column: 1 / -1;
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(3, auto);
     gap: u(0.375);
     margin-top: u(0.375);
     // As tall as the two rows each one opens into - passive, then the pair -
@@ -607,13 +622,10 @@
   }
 
   .path-btn {
-    // Name over cost, so both can be read at a size worth reading: three of
-    // these share a 260px column and one line could not hold either.
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 1px;
+    gap: u(0.25);
     min-width: 0;
     // Full height of the row it sits in - which is as tall as the rows it
     // opens into, so choosing one shifts nothing.
@@ -631,12 +643,14 @@
     cursor: pointer;
 
     .path-name {
+      flex-shrink: 0;
       max-width: 100%;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
     .path-cost {
+      flex: 0 0 auto;
       font-size: t(0.72);
       font-weight: 600;
       opacity: 0.75;
@@ -990,8 +1004,7 @@
     color: white;
     cursor: pointer;
     font-size: t(0.88);
-    // The panel is 260px wide and a label like "Onslaught (0) - 7" is not.
-    // Wrapping is the answer; nowrap only moved the problem sideways.
+    // Long ability labels wrap inside their button rather than widening the panel.
     min-width: 0;
     white-space: normal;
     overflow-wrap: anywhere;
@@ -1721,6 +1734,8 @@
     justify-content: center;
     align-items: center;
     z-index: 2500;
+    padding: 16px;
+    box-sizing: border-box;
   }
 
   .reconnect-modal,
@@ -1728,7 +1743,12 @@
     background: #fff;
     border-radius: 12px;
     padding: 28px 34px;
-    max-width: 420px;
+    max-width: min(420px, 100%);
+    max-height: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    overflow: auto;
+    overflow-wrap: anywhere;
     text-align: center;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
 
@@ -2032,6 +2052,14 @@
   }
 }
 
+.scaffold-btn.exhausted,
+.scaffold-btn.exhausted:hover:not(:disabled) {
+  background-color: #8d98a3 !important;
+  color: #17212b !important;
+  border-color: #687583;
+}
+.scaffold-btn.exhausted:not(.casting):not(.picking) { animation: none; }
+
 .arming-hint {
   margin: u(0.125) 0 0;
   line-height: 1.2;
@@ -2045,4 +2073,10 @@
   // keeps the first reason (the panel is one height whether the hint is short
   // or long) without hiding the end of the sentence.
   min-height: 2.4em;
+}
+
+.path-extra-btn.cooling, .path-extra-btn.cooling:hover,
+.path-extra-btn.exhausted, .path-extra-btn.exhausted:hover,
+.scaffold-btn.cooling, .scaffold-btn.cooling:hover:not(:disabled) {
+  background: #8d98a3 !important; color: #17212b !important; animation: none !important;
 }

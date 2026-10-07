@@ -11,11 +11,23 @@ rule that is right. Where one is wrong, change the number or write a note under 
 - **A plan, not a config file.** Nothing reads this document. Units and abilities are kept
   separate and are not in it.
 
-Last updated 4 Oct 2026.
+Last updated 7 Oct 2026.
 
 ---
 
 ## New since the last review
+
+- [ ] **Early phase losses freeze at tally and resolve after both postmatch turns:**
+  Phase 1 checks White's eligible capture-zone occupancy; Phase 2 checks Black's zero
+  phase VP. Regicide takes priority. Live, 7 Oct 2026.
+
+- [ ] **Initialization permits CP utilities only**; other casts and ordinary healing
+  remain blocked. Owner phase-use revision, 7 Oct 2026. Online casts remain deferred.
+
+- [ ] **Timed solo turns automatically commit all staged work at expiry**, or pass if
+  empty. Five final-second warnings and a hard expiry beep. Online, the server commits
+  the latest validated saved draft, including during disconnect grace; a timer/browser
+  race commits once. Owner confirmed, 7 Oct 2026.
 
 - [ ] **UP is separate from ability points:** start with **10**, spend unit value on the
   base-to-reserve crossing, receive battlefield attack/counter kill value and homecoming
@@ -46,9 +58,14 @@ Last updated 4 Oct 2026.
 - [ ] **CP: one award number per phase** (5, 10, 15) instead of 5 times the phase number.
   Planned; the numbers come out the same today.
 
-Screen only, not rules: a dark line now marks where the bases and reserves meet the
+Screen only, not rules: a blue line marks where the bases and reserves meet the
 battlefield; black's 3x zone is dark blue, white's light blue, and each capture centre
-has a gold inset outline, with dashed outlines on the six inner-ring hexes. There are sounds for overtime's toll on a king and for a base healing. When
+has a gold inset outline, with dashed outlines on the six inner-ring hexes. A gold outline
+traces the outer hex edges of the complete grid, including panels; both sides' base/reserve hex edges have stronger
+contrast. After replay, each side's turn announcement shows Turn N and White/Black in a matching
+box. It lasts 0.9s, including about 0.5s at centre. Closed-arrow crosses use lighter red. Unlimited ability labels show remaining/total cooldown and cost; CP utilities show
+remaining phase uses, CP skills and ultimates show remaining match uses; path labels separate names and CP costs with a dash. Unit details close on
+a different unit selection. Multi-recipient effects animate in one shared beat; exhausted ability buttons stay grey and open their descriptions. There are sounds for overtime's toll on a king and for a base healing. When
 both happen in the same turn, the toll plays first and the heal after it.
 
 Fixed to match the rules below (the rules did not change): a unit wrapped out of its base
@@ -121,7 +138,7 @@ White's, by hex. Black's is the mirror. `setup`
 
 `stageRules`
 
-- [ ] **Opening (1-3):** no attacks, casts or normal healing; no wrap. Up to **3** units out of the
+- [ ] **Opening (1-3):** CP utilities only; no attacks, other casts or normal healing; no wrap. Up to **3** units out of the
   reserve and **3** walks home a turn.
 - [ ] **First half (4-8, 15-19, 26-30):** attacks, abilities and **the wrap**. Nothing out of
   the reserve and no walking home.
@@ -203,6 +220,13 @@ The score. `scoring`
   `match.cpBehindGetsGap`
 
 ## 8. How a match ends
+
+- [ ] **Phase 1: White loses if no eligible White unit occupies a capture-zone hex at tally.**
+  Contested occupancy still qualifies; zero VP alone does not decide this phase. *fixed*
+- [ ] **Phase 2: Black loses if its phase VP tallies to 0.** Eligible occupancy alone does
+  not prevent this loss. *fixed*
+- [ ] **Both postmatch turns finish before either pending phase loss resolves.** Freeze
+  the loser at tally; a king kill during postmatch takes priority. *fixed*
 
 - [ ] A side **loses when its king dies**. `match.objective` (regicide)
 - [ ] After Phase 3, **white wins on points if more than 10 ahead**, **black if more than 5

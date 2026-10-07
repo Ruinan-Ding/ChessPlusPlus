@@ -8,6 +8,7 @@ export interface PlayableAction {
   heal?: string;
   afterAttackWalk?: boolean;
   secondStrike?: boolean;
+  impactTargets?: AnimStep[];
   killed?: string;
   /** Who was killed there, when something was. */
   killedUnit?: { color: 'white' | 'black' };
@@ -21,6 +22,7 @@ export interface PlayableAction {
   spend?: {
     index: number; row?: string; hex?: string; uid?: string;
     side?: 'mine' | 'opponent';
+    visuals?: AnimStep[];
   };
   /** What the cast did to the target's HP: `+20`, `-14`. Drawn over it. */
   mark?: string;
@@ -46,6 +48,7 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
   const owners: Array<string | null> = [];
   /** Where each unit that has acted stands now, by the hex it set off from. */
   const standing = new Map<string, string>();
+  const targetOwners = new Map<AnimStep, string>();
   const at = (origin: string) => standing.get(origin) ?? origin;
   /** Every unit that moves or strikes this turn, by origin. */
   const origins = [...new Set(actions.filter(a => !a.spend && a.from).map(a => a.from))];
@@ -65,6 +68,7 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
       // button alone, and the board simply holds for it.
       steps.push({
         kind: 'ability', from: target, to: target, ...slot,
+        ...(action.spend.visuals ? { targets: action.spend.visuals } : {}),
         brief: collapseMoves, ...(action.mark ? { mark: action.mark } : {}),
         // Whose mark it is. The recap plays against the board the turn ended
         // on, so the hex is not enough to say who the cast landed on.
@@ -72,6 +76,10 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
         // And, for a kill, whose it was: nobody is left to read it off.
         ...(action.killedUnit ? { color: action.killedUnit.color } : {}),
       });
+      for (const target of action.spend.visuals ?? []) {
+        const owner = origins.find(origin => at(origin) === target.to);
+        if (owner) targetOwners.set(target, owner);
+      }
       // Who stood there as it landed: a unit that has moved is where it got
       // to, and one that has not is still where it set off from.
       owners.push(target ? origins.find(origin => at(origin) === target) ?? null : null);
@@ -86,7 +94,8 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
       continue;
     }
     if (action.attack && !action.afterAttackWalk) {
-      steps.push({ kind: 'attack', from: action.to, to: action.attack });
+      steps.push({ kind: 'attack', from: action.to, to: action.attack,
+        ...(action.impactTargets ? { targets: action.impactTargets } : {}) });
       owners.push(owner);
       // Only if it answered. `killed` alone used to stand in for that, which
       // played a counter beat for every blow a base absorbed and every one
@@ -121,12 +130,26 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
   const walked = new Set<string>();
   steps.forEach((step, i) => {
     const owner = owners[i];
-    if (owner !== null && rapid.has(owner)) { recap.push(step); return; }
-    if (owner !== null && !walked.has(owner)) {
+    if (owner !== null && rapid.has(owner) && !step.targets) { recap.push(step); return; }
+    for (const target of step.targets ?? []) {
+      const targetOwner = targetOwners.get(target);
+      if (!targetOwner || rapid.has(targetOwner) || walked.has(targetOwner)) continue;
+      walked.add(targetOwner);
+      if (at(targetOwner) !== targetOwner) recap.push({ kind: 'move', from: targetOwner, to: at(targetOwner) });
+    }
+    if (owner !== null && !rapid.has(owner) && !walked.has(owner)) {
       walked.add(owner);
       if (at(owner) !== owner) recap.push({ kind: 'move', from: owner, to: at(owner) });
     }
     if (step.kind === 'move') return;              // folded into its unit's line
+    if (step.targets) {
+      recap.push({ ...step, targets: step.targets.map(target => {
+        const targetOwner = targetOwners.get(target);
+        return targetOwner && !rapid.has(targetOwner)
+          ? { ...target, from: at(targetOwner), to: at(targetOwner) } : target;
+      }) });
+      return;
+    }
     if ((step.kind === 'ability' || step.kind === 'heal') && owner !== null) {
       // It landed on a unit that acted, so it lands where that unit is now.
       recap.push({ ...step, from: at(owner), to: at(owner) });

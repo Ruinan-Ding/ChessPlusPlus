@@ -82,9 +82,8 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
     this.gameId = readStore('local', 'returnToGameRoom');
 
     this.jsonConfig = this.configService.getDefaultConfig();
-    this.savedConfig = this.jsonConfig;
 
-    // Subscribe to config changes (will be used when UI is implemented)
+    // The current config emits immediately; it is the editor's saved baseline.
     this.configService.config$.pipe(takeUntil(this.destroy$)).subscribe(config => {
       // Only update if the stringified value is different to avoid cycles
       const newJsonString = JSON.stringify(config, null, 2);
@@ -93,6 +92,8 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
         this.cdr.markForCheck();
       }
     });
+
+    this.savedConfig = this.jsonConfig;
 
     // Listen for the server's response to a saved config (only relevant
     // when this.gameId is set - see saveConfig()). This screen is OnPush, so
@@ -137,26 +138,13 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
     // Fast path: string equality (avoids JSON parse when unchanged)
     if (this.jsonConfig === this.savedConfig) return false;
 
-    // Hash-based comparison to avoid deep recursion on every check
-    const currentHash = this.stableHash(this.jsonConfig);
-    const savedHash = this.stableHash(this.savedConfig);
-    return currentHash !== savedHash;
+    return this.canonicalJson(this.jsonConfig) !== this.canonicalJson(this.savedConfig);
   }
 
-  // Stable hash for JSON strings: recursively sorts object keys so two
-  // configs that differ only in key order compare equal, then hashes the
-  // canonical form. Falls back to trimmed string on parse errors.
-  private stableHash(jsonString: string): string {
+  /** Compare JSON exactly, ignoring whitespace and object-key order. */
+  private canonicalJson(jsonString: string): string {
     try {
-      const parsed = JSON.parse(jsonString);
-      const normalized = JSON.stringify(this.canonicalize(parsed));
-      let hash = 0;
-      for (let i = 0; i < normalized.length; i++) {
-        const chr = normalized.charCodeAt(i);
-        hash = (hash << 5) - hash + chr;
-        hash |= 0; // Convert to 32bit integer
-      }
-      return hash.toString();
+      return JSON.stringify(this.canonicalize(JSON.parse(jsonString)));
     } catch {
       return jsonString.trim();
     }
@@ -168,11 +156,8 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
       return value.map(v => this.canonicalize(v));
     }
     if (value && typeof value === 'object') {
-      const sorted: Record<string, any> = {};
-      for (const key of Object.keys(value).sort()) {
-        sorted[key] = this.canonicalize(value[key]);
-      }
-      return sorted;
+      return Object.fromEntries(Object.keys(value).sort()
+        .map(key => [key, this.canonicalize(value[key])]));
     }
     return value;
   }

@@ -3,7 +3,10 @@ import { GameRoomComponent } from './game-room.component';
 import { GameStateService } from '../../services/game-state.service';
 import { LocalGameService } from '../../services/local-game.service';
 import { DEFAULT_GAME_CONFIG, ConfigService, ruleOf } from '../../services/config.service';
+import { advanceBuffs, stackEffect, statSetting, passiveStat } from '../../services/ability-rules';
+import { carries, combatExchange, combatStatuses } from '../../services/unit-combat';
 import { turnHeading } from '../../services/phases';
+import { unitPoints } from '../../services/match-score';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import legacyAbilities from '../../services/legacy-abilities.fixture.json';
 
@@ -31,14 +34,8 @@ describe('GameRoomComponent ability panel', () => {
   const UNIVERSAL_PAIR = 6;
 
   /**
-   * Abilities are bought with CP, which is derived from the phase rather than
-   * held in a field - two awards of 100 by Phase 1 - so a test that wants a
-   * side on a particular balance sets what it has already spent.
-   */
-  /**
-   * `cp` to spend, whatever the turn. Nothing is awarded before Phase 1's
-   * postmatch, so a spend below nothing stands in for what the phases would
-   * have paid.
+   * Set the available CP through prior spending, using a negative spend when
+   * the test needs more than the configured starting balance.
    */
   const fundCp = (c: any, cp: number) => {
     // Less the CP a side starts with, so `cp` is exactly what it has.
@@ -62,6 +59,7 @@ describe('GameRoomComponent ability panel', () => {
     const c: any = new GameRoomComponent(
       ws, {} as any, {} as any, {} as any, {} as any,
       cdr, gameState, {} as any, audio, zone,
+      { getConfig: () => DEFAULT_GAME_CONFIG } as any,
     );
     c.username = 'me';
     c.gameStarted = true;
@@ -69,6 +67,116 @@ describe('GameRoomComponent ability panel', () => {
     c.myPoints = 10;
     return c;
   };
+
+  describe('online turn drafts', () => {
+    const online = () => {
+      const c = room(); c.isSinglePlayer = false; c.gameId = 'draft-room';
+      Object.assign(c.gameState.snapshot, { turnNumber: 7, revision: 4, boardState: {}, moveHistory: [] });
+      c.turnDraftsSupported = true;
+      c.wsService.sendMessage = jasmine.createSpy('send');
+      return c;
+    };
+
+    it('coalesces changes, saves Undo as an empty turn, and commits the same commands once', async () => {
+      const c = online();
+      const commands = [{ type: 'make_move', from: '0,0', to: '1,0' }];
+      spyOn(c, 'turnCommands').and.returnValue(commands);
+      c.queueTurnDraft(); c.queueTurnDraft(); await Promise.resolve();
+      expect(c.wsService.sendMessage.calls.count()).toBe(1);
+      expect(c.wsService.sendMessage.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({
+        type: 'save_turn_draft', gameId: 'draft-room', turnNumber: 7, revision: 4, commands,
+      }));
+      const saved = c.wsService.sendMessage.calls.mostRecent().args[0].sequence;
+      c.endTurn(); c.endTurn();
+      expect(c.wsService.sendMessage.calls.count()).toBe(2);
+      expect(c.wsService.sendMessage.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ type: 'commit_turn', commands }));
+      expect(c.wsService.sendMessage.calls.mostRecent().args[0].sequence).toBeGreaterThan(saved);
+      c.submittedTurn = -1; c.recapRunning = false;
+      c.turnCommands.and.returnValue([]); c.queueTurnDraft(); await Promise.resolve();
+      expect(c.wsService.sendMessage.calls.mostRecent().args[0].commands).toEqual([]);
+    });
+
+    for (const type of ['panel_move', 'enter_board']) {
+      it(`saves a ${type} even when no battlefield action is staged`, async () => {
+        const c = online();
+        const step = { type, from: '-12,9', to: '-11,9', cost: 1, price: 0 };
+        c.boardRef = { pendingPanelSteps: [step] };
+        c.onHexSelected(null);
+        await Promise.resolve();
+        expect(c.wsService.sendMessage).toHaveBeenCalledWith(jasmine.objectContaining({
+          type: 'save_turn_draft', commands: jasmine.arrayContaining([step]),
+        }));
+        c.onHexSelected(null);
+        await Promise.resolve();
+        expect(c.wsService.sendMessage.calls.count()).toBe(1);
+      });
+    }
+
+    it('renders the incoming snapshot before restoring draft clicks and refreshes between commands', async () => {
+      const c = online(); let bound = false;
+      c.cdr.detectChanges = jasmine.createSpy('detect').and.callFake(() => bound = true);
+      c.boardRef = { restoreDraftCommands: jasmine.createSpy('restore').and.callFake(async (commands: any[], refresh: () => void) => {
+        expect(bound).toBeTrue(); bound = false; refresh(); expect(bound).toBeTrue();
+      }) };
+      const commands = [{ type: 'make_move', from: '0,0', to: '1,0' }];
+      await c.restoreTurnDraft({ turnNumber: 7, sequence: 20, commands });
+      expect(c.boardRef.restoreDraftCommands).toHaveBeenCalledWith(commands, jasmine.any(Function));
+      expect(c.cdr.detectChanges.calls.count()).toBe(2);
+      expect(c.restoringOnlineDraft).toBeFalse();
+    });
+
+    it('does not send or restore a deferred draft after the room ends or the route changes', async () => {
+      const c = online(); c.queueTurnDraft(); c.gameStarted = false; await Promise.resolve();
+      expect(c.wsService.sendMessage).not.toHaveBeenCalled();
+      c.gameStarted = true; c.boardRef = { restoreDraftCommands: jasmine.createSpy('restore') };
+      const restored = c.restoreTurnDraft({ turnNumber: 7, sequence: 20, commands: [] });
+      c.gameId = 'another-room'; await restored;
+      expect(c.boardRef.restoreDraftCommands).not.toHaveBeenCalled();
+    });
+  });
+
+  it('describes status effects with remaining expiry and omits instant healing from ongoing effects', () => {
+    const c = room(); c.gameState.snapshot.turnNumber = 11;
+    spyOnProperty(c, 'displayBuff').and.returnValue({ effects: [
+      { name: 'Mend', mov: 0, atk: 0, def: 0, turns: 1 },
+      { name: 'Cast', mov: 0, atk: 0, def: 0, turns: 3, expiresAt: 13, effect: 'control' },
+      { name: 'Charge', mov: 0, atk: 0, def: 0, turns: 1, effect: 'charge' },
+    ] });
+    spyOnProperty(c, 'displayUnit').and.returnValue(null);
+    expect(c.displayEffects).toEqual([
+      { name: 'Cast', detail: 'Controlled by the caster', life: '1 turn' },
+      { name: 'Charge', detail: 'Second strike after a counter', life: '1 turn' },
+    ]);
+  });
+
+  describe('turn timer selection', () => {
+    it('shows the timer Start uses for edited solo setup and default online games', () => {
+      const c = room(); c.gameStarted = false; c.gameOptions = {};
+      c.configService = { getConfig: () => ({ rules: { turnTimeLimit: 120 } }) };
+      expect(c.selectedTurnTimeLimit).toBe(120);
+      c.isSinglePlayer = false;
+      expect(c.selectedTurnTimeLimit).toBe(DEFAULT_GAME_CONFIG.rules.turnTimeLimit);
+    });
+
+    it('honours an explicit choice before start and the authoritative snapshot afterwards', () => {
+      const c = room(); c.gameStarted = false; c.gameOptions = { turnTimeLimit: 15 };
+      c.configService = { getConfig: () => ({ rules: { turnTimeLimit: 120 } }) };
+      expect(c.selectedTurnTimeLimit).toBe(15);
+      c.gameStarted = true; c.gameState.snapshot.turnTimeLimit = 0;
+      expect(c.selectedTurnTimeLimit).toBe(0);
+      expect(c.formattedTurnTime).toBe('');
+      c.gameState.snapshot.turnTimeLimit = 30; c.turnSecondsRemaining = 29;
+      expect(c.formattedTurnTime).toBe('0:29');
+    });
+
+    it('does not invent a one-minute override for a mode message without options', () => {
+      const c = room(); c.gameStarted = false; c.isSinglePlayer = false;
+      c.gameOptions = { turnTimeLimit: 15 };
+      c.handleWebSocketMessage({ type: 'game_mode_changed', mode: 'default' });
+      expect(c.gameOptions).toEqual({});
+      expect(c.selectedTurnTimeLimit).toBe(DEFAULT_GAME_CONFIG.rules.turnTimeLimit);
+    });
+  });
 
   describe('the specified first pool', () => {
     const current = (color = 'white') => {
@@ -89,7 +197,7 @@ describe('GameRoomComponent ability panel', () => {
     };
     const shown = (c: any, key: string) => {
       const p = c.gameState.snapshot.boardState[key];
-      return { key, uid: p.uid, unitId: p.unit_id, color: p.color, hp: p.hp, hpMax: p.max_hp, name: p.unit_id, vet: 0, atk: [0] };
+      return { key, uid: p.uid, unitId: p.unit_id, color: p.color, hp: p.hp, hpMax: p.max_hp, name: p.unit_id, vet: p.vet ?? 0, atk: [0] };
     };
     const arm = (c: any, id: string) => {
       const i = c.slotOfAbility(id);
@@ -107,6 +215,269 @@ describe('GameRoomComponent ability panel', () => {
     const useUnit = (c: any, u: any) => { c.hoveredUnit = null; c.selectedUnit = u; c.unitAbilityFocus = { index: c.unitAbilityIndex(u) }; c.activateUnitAbility(); };
     const kitRoom = () => { const c = current(); c.gameState.snapshot.turnNumber = 55;
       c.gameState.snapshot.config.rules.upAtStart = 100; c.myUnitPoints = 100; c.opponentUnitPoints = 100; return c; };
+
+    describe('CP paths', () => {
+      const setup = (path: number, color = 'white') => {
+        const c = current(color);
+        fundCp(c, 100);
+        c.persistLocalUiState = () => {}; c.playEndTurnSound = () => {};
+        c.boardRef = { cells: Object.entries(c.gameState.snapshot.boardState).map(([key, piece]) => ({ key, piece, panel: '' })), clearMarks: () => {} };
+        c.unlockPath('mine', path);
+        return c;
+      };
+      const cast = (c: any, id: string, key?: string) => {
+        const i = c.slotOfAbility(id);
+        c.selectAbility('mine', i, c.myCooldowns);
+        if (key) c.onAbilityHexClicked(key); else c.activateFocusedAbility();
+        return i;
+      };
+      const addPanel = (c: any, key: string, panel: string, unit_id: string, color: string, hp = 10) => {
+        const piece = { unit_id, color, uid: key, hp, max_hp: 30, vet: 0 };
+        c.boardRef.cells.push({ key, piece, panel });
+        return piece;
+      };
+      const unit = (c: any, key: string) => {
+        const p = (c.stagedBoard ?? c.gameState.snapshot.boardState)[key];
+        return { key, uid: p.uid, unitId: p.unit_id, color: p.color, hp: p.hp, hpMax: p.max_hp, vet: p.vet ?? 0 };
+      };
+      const commit = (c: any) => {
+        localStorage.removeItem('cpp.localGame.v1');
+        const engine = new LocalGameService({ getConfig: () => c.gameState.snapshot.config } as any);
+        engine.send({ type: 'create_single_player_game', username: 'me' });
+        engine.send({ type: 'start_game', hostColor: 'white' });
+        const g = (engine as any).game;
+        Object.assign(g, { boardState: structuredClone(c.gameState.snapshot.boardState), turnNumber: c.gameState.snapshot.turnNumber,
+          currentTurn: 'me', moveHistory: [], phaseBank: {} });
+        g.boardState['-8,0'] = { unit_id: 'king', color: 'white', uid: 'wk', hp: 60, max_hp: 60 };
+        g.boardState['8,0'] = { unit_id: 'king', color: 'black', uid: 'bk', hp: 60, max_hp: 60 };
+        c.wsService.sendMessage = (m: any) => engine.send(m);
+        c.endTurn();
+        return { engine, g };
+      };
+
+      it('buys each path at its configured cost and applies its passive at Vet 0 only outside the red base', () => {
+        for (const [path, stat, delta] of [[0, 'def', 1], [1, 'atk', 1], [2, 'mov', 1]] as const) {
+          const c = setup(path), passive = c.pathPassiveFor('white');
+          expect(c.myCp).toBe(100 - c.abilityPaths[path].cost);
+          expect(passiveStat(passive, stat, 0, false, true)).toBe(delta);
+          expect(passiveStat(passive, stat, 0, true, true)).toBe(0);
+          expect(passiveStat(passive, stat, 0, false, false)).toBe(stat === 'def' ? 0 : delta);
+          expect(c.pathPassiveFor('black')).toBeNull();
+          c.unlockPath('mine', (path + 1) % 3);
+          expect(c.myPath).toBe(path);
+          const config = structuredClone(c.gameState.snapshot.config);
+          delete config.abilities.paths[path].utility; c.gameState.snapshot.config = config;
+          expect(passiveStat(c.pathPassiveFor('white'), stat, 0, false, true)).toBe(delta);
+        }
+      });
+
+      it('shows only applicable path bonuses before and after Shove unlocks', () => {
+        const c = setup(1);
+        c.gameState.snapshot.boardState['0,0'] = { unit_id: 'shieldman', color: 'white', uid: 'own', hp: 32, max_hp: 32, vet: 1 };
+        c.selectedUnit = unit(c, '0,0'); c.selectedUnit.vet = 1;
+        expect(c.displayEffects.some((e: any) => e.name === 'Onslaught')).toBeFalse();
+        c.selectedUnit.vet = 2;
+        expect(c.displayEffects).toContain(jasmine.objectContaining({ name: 'Onslaught', detail: '+1 ATK' }));
+      });
+
+      it('converts CP to regular points and restores both currencies and cooldown on Undo', () => {
+        const c = setup(0), points = c.myPoints;
+        const i = cast(c, 'convert');
+        expect([c.myCp, c.myPoints, c.myCooldowns[i]]).toEqual([92, points + 5, 1]);
+        c.undoMove();
+        expect([c.myCp, c.myPoints, c.myCooldowns[i]]).toEqual([95, points, 0]);
+      });
+
+      it('promotes a wounded unit once, keeps the vet-3 cap and restores current/max HP on Undo', () => {
+        const c = setup(1);
+        c.gameState.snapshot.boardState['0,0'] = { unit_id: 'pawn', color: 'white', uid: 'own', hp: 5, max_hp: 12, vet: 0 };
+        const i = c.slotOfAbility('strengthen');
+        c.selectAbility('mine', i, c.myCooldowns); c.onHexClicked(unit(c, '0,0'));
+        expect(c.stagedBoard['0,0']).toEqual(jasmine.objectContaining({ hp: 7, max_hp: 14, vet: 1 }));
+        expect([c.myCp, c.myCooldowns[i]]).toEqual([100 - c.abilityPaths[1].cost - c.abilityCosts[i], 1]);
+        c.undoMove(); expect(c.stagedBoard).toBeNull(); expect(c.myCp).toBe(100 - c.abilityPaths[1].cost);
+        c.gameState.snapshot.boardState['0,0'] = { ...c.gameState.snapshot.boardState['0,0'], hp: 7, max_hp: 14, vet: 3 };
+        c.clearAbilityFocus(); c.selectAbility('mine', i, c.myCooldowns); c.onHexClicked(unit(c, '0,0'));
+        expect(c.stagedBoard['0,0']).toEqual(jasmine.objectContaining({ hp: 7, max_hp: 14, vet: 3 }));
+      });
+
+      it('sets Sap centre ATK and HEL to zero, drains adjacent occupants and retains zero overrides through commit', () => {
+        const c = setup(0);
+        c.gameState.snapshot.boardState['1,0'].unit_id = 'bishop';
+        c.gameState.snapshot.boardState['2,0'] = { unit_id: 'bishop', color: 'black', uid: 'adj', hp: 8, max_hp: 8 };
+        c.gameState.snapshot.boardState['3,0'] = { unit_id: 'bishop', color: 'black', uid: 'far', hp: 8, max_hp: 8 };
+        cast(c, 'anchor', '1,0');
+        expect(statSetting(c.buffs.enemy, 'atk')).toBe(0); expect(statSetting(c.buffs.enemy, 'hel')).toBe(0);
+        expect([c.buffs.adj.atk, c.buffs.adj.hel]).toEqual([-4, -4]); expect(c.buffs.far).toBeUndefined();
+        c.selectedUnit = unit(c, '1,0'); expect(c.statHel).toBe('1:0/8 2:0/6');
+        const { g } = commit(c);
+        expect(statSetting(g.abilityBuffs.enemy, 'hel')).toBe(0);
+        expect(advanceBuffs(g.abilityBuffs, 'white', 11)).toEqual({});
+      });
+
+      it('blocks counters with Sap ATK 0 even when all numerical bonuses are zero', () => {
+        const c = setup(0);
+        c.gameState.snapshot.boardState['0,0'] = { unit_id: 'pawn', color: 'white', uid: 'own', hp: 12, max_hp: 12 };
+        cast(c, 'anchor', '1,0');
+        // The adjacent Sap drain is removed here to isolate the explicit zero override.
+        delete c.buffs.own;
+        c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '1,0' });
+        const sent: any[] = []; c.wsService.sendMessage = (m: any) => sent.push(m); c.endTurn();
+        expect(sent[0].bonuses.targetAtkSet).toBe(0);
+        expect(sent[0].bonuses.atk).toBe(0);
+      });
+
+      it('damages the Cleave centre and six neighbours including friends, with one payment and whole-cast Undo', () => {
+        const c = setup(1);
+        const adjacent = ['1,0', '1,-1', '0,-1', '-1,0', '-1,1', '0,1'];
+        for (const key of adjacent) c.gameState.snapshot.boardState[key] = { unit_id: 'pawn', color: 'white', uid: key, hp: 10, max_hp: 12 };
+        c.gameState.snapshot.boardState['0,0'].hp = 10;
+        const i = cast(c, 'cleave', '0,0');
+        expect(c.stagedBoard['0,0'].hp).toBe(5);
+        for (const key of adjacent) expect(c.stagedBoard[key].hp).withContext(key).toBe(7);
+        expect([c.myCp, c.myCooldowns[i], c.abilityUses['mine|cleave']]).toEqual([100 - c.abilityPaths[1].cost - c.abilityCosts[i], 1, 1]);
+        c.undoMove(); expect(c.myCp).toBe(100 - c.abilityPaths[1].cost); expect(c.stagedBoard).toBeNull(); expect(c.abilityUses['mine|cleave'] ?? 0).toBe(0);
+      });
+
+      it('Ruin includes both panel colours and red bases, damages first and heals only friendly survivors', () => {
+        const c = setup(1);
+        c.gameState.snapshot.boardState['0,0'].hp = 2;
+        addPanel(c, '-12,11', 'bl', 'pawn', 'white', 3);
+        addPanel(c, '-12,0', 'br', 'pawn', 'white', 10);
+        addPanel(c, '12,-11', 'tr', 'pawn', 'black', 10);
+        cast(c, 'ruin');
+        expect(c.stagedBoard['0,0']).toBeUndefined();
+        const hp = Object.fromEntries(c.stagedActions[0].effects.filter((e: any) => e.unit).map((e: any) => [e.unit.uid, e.hp]));
+        expect(hp).toEqual({ '-12,11': 0, '-12,0': 10, '12,-11': 7 });
+        expect(c.stagedBoard['1,0'].hp).toBe(9); expect(c.myCp).toBe(100 - c.abilityPaths[1].cost - c.abilityCosts[c.slotOfAbility('ruin')]);
+        expect(c.killMarkers.length).toBe(2);
+      });
+
+      it('Sacrifice removes a Fortress-protected pawn through commit and reload without treating removal as damage', () => {
+        const c = setup(0), pawn = veteran(c, 'pawn');
+        c.gameState.snapshot.turnNumber = 55;
+        c.gameState.snapshot.config.rules.upAtStart = 100; c.myUnitPoints = 100;
+        cast(c, 'fortress');
+        useUnit(c, pawn);
+        expect(c.stagedBoard['0,0']).toBeUndefined();
+        expect(c.myUnitPoints).toBe(105);
+        c.undoMove();
+        expect(c.stagedBoard['0,0'].uid).toBe(pawn.uid);
+        expect(carries(c.buffs[pawn.uid], 'invulnerable')).toBeTrue();
+        expect(c.myUnitPoints).toBe(100);
+        useUnit(c, pawn);
+        const { g } = commit(c);
+        expect(g.boardState['0,0']).toBeUndefined();
+        expect(g.moveHistory.filter((m: any) => m.abilityDeath?.uid === pawn.uid).length).toBe(1);
+        const restored = new LocalGameService({ getConfig: () => g.config } as any);
+        expect((restored as any).game.boardState['0,0']).toBeUndefined();
+        expect(unitPoints(g.config, g.moveHistory, 'white')).toBe(105);
+        expect(unitPoints((restored as any).game.config, (restored as any).game.moveHistory, 'white')).toBe(105);
+      });
+
+      it('Trap strips positive buffs while retaining drains and control, locks actions but leaves counters possible', () => {
+        const c = setup(2);
+        c.buffs.enemy = stackEffect(undefined, { name: 'Warcry', mov: 0, atk: 8, def: 0 }, 'black');
+        c.buffs.enemy = stackEffect(c.buffs.enemy, { name: 'Mire', mov: -2, atk: 0, def: 0 }, 'white', true);
+        c.buffs.enemy = stackEffect(c.buffs.enemy, { name: 'Cast', mov: 0, atk: 0, def: 0, effect: 'control' }, 'white');
+        cast(c, 'surge', '1,0');
+        expect([c.buffs.enemy.atk, c.buffs.enemy.mov]).toEqual([0, -2]);
+        expect(carries(c.buffs.enemy, 'control')).toBeTrue(); expect(carries(c.buffs.enemy, 'action-lock')).toBeTrue();
+        expect(c.buffs.own.mov).toBe(-4);
+        expect(c.canTakeBoardAction('1,0')).toBeFalse();
+        const exchange = combatExchange(c.gameState.snapshot.boardState['0,0'], c.gameState.snapshot.boardState['1,0'], 1,
+          c.gameState.snapshot.config, { atk: 8, def: 0, targetAtk: 0, targetDef: 0, ...combatStatuses(c.buffs.own, c.buffs.enemy) });
+        expect(exchange.countered).toBeTrue();
+        c.undoMove(); expect(c.buffs.enemy.atk).toBe(8); expect(c.myCp).toBe(80);
+      });
+
+      it('Recharge targets either member of a carried pair, stops at one, accepts ready pairs and restores cooldowns on Undo', () => {
+        const c = setup(2), warcry = c.slotOfAbility('warcry'), sap = c.slotOfAbility('sap');
+        c.pickAbility('mine', warcry); c.myCooldowns[warcry] = 2; c.myCooldowns[sap] = 5;
+        const i = c.slotOfAbility('recharge');
+        c.gameState.snapshot.config.abilities.catalogue.recharge.description = 'Old saved description: floor at 0.';
+        c.selectAbility('mine', i, c.myCooldowns);
+        expect(c.isAbilityFocusedSide('mine')).toBeTrue();
+        expect(c.pendingAbility).toBeNull();
+        expect(c.focusedAbilityDescription).toContain('stopping at 1');
+        c.activateFocusedAbility();
+        expect(c.isAbilityFocusedSide('mine')).toBeFalse();
+        c.selectAbility('mine', sap, c.myCooldowns);
+        expect([c.myCooldowns[warcry], c.myCooldowns[sap], c.myCooldowns[i], c.myCp]).toEqual([1, 4, 1, 75]);
+        c.undoMove(); expect([c.myCooldowns[warcry], c.myCooldowns[sap], c.myCp]).toEqual([2, 5, 80]);
+        c.myCooldowns[warcry] = 1; c.myCooldowns[sap] = 0; c.clearAbilityFocus();
+        c.selectAbility('mine', i, c.myCooldowns); c.activateFocusedAbility();
+        c.selectAbility('mine', sap, c.myCooldowns);
+        expect([c.myCooldowns[warcry], c.myCooldowns[sap]]).toEqual([1, 0]);
+        expect(c.abilityCanActivate('mine', warcry, c.myCooldowns[warcry])).toBeFalse();
+        c.undoMove();
+        c.myCooldowns[warcry] = c.myCooldowns[sap] = 0; c.clearAbilityFocus();
+        c.selectAbility('mine', i, c.myCooldowns); c.activateFocusedAbility(); c.selectAbility('mine', warcry, c.myCooldowns);
+        expect([c.myCooldowns[warcry], c.myCooldowns[sap], c.myCp]).toEqual([0, 0, 75]);
+      });
+
+      it('Blitz boosts existing heal profiles only and locks battlefield/reserve enemies without affecting red bases', () => {
+        const c = setup(2);
+        c.gameState.snapshot.boardState['0,0'] = { unit_id: 'bishop', color: 'white', uid: 'own', hp: 8, max_hp: 8, vet: 1 };
+        const reserve = addPanel(c, '-12,0', 'br', 'pawn', 'white');
+        const base = addPanel(c, '-12,11', 'bl', 'pawn', 'white');
+        cast(c, 'blitz');
+        c.selectedUnit = unit(c, '0,0'); expect(c.statHel).toBe('1:12/8 2:10/6 3:8/4 4:6/2');
+        c.selectedUnit = { ...c.selectedUnit, unitId: 'pawn', uid: reserve.uid }; expect(c.statHel).toBe('—');
+        expect(c.buffs[reserve.uid].mov).toBe(8); expect(c.buffs[base.uid]).toBeUndefined();
+        expect(carries(c.buffs.enemy, 'action-lock')).toBeTrue();
+        expect(c.myCp).toBe(45);
+      });
+
+      it('Fortress prevents direct damage and sets enemy DEF to zero through the opponent turn, then expires', () => {
+        const c = setup(0);
+        cast(c, 'fortress');
+        const exchange = combatExchange(c.gameState.snapshot.boardState['1,0'], c.gameState.snapshot.boardState['0,0'], 1,
+          c.gameState.snapshot.config, { atk: 0, def: 0, targetAtk: 0, targetDef: 0, ...combatStatuses(c.buffs.enemy, c.buffs.own) });
+        expect(exchange.damage).toBe(0); expect(statSetting(c.buffs.enemy, 'def')).toBe(0);
+        expect(advanceBuffs(c.buffs, 'black', 10)['own']).toBeDefined();
+        expect(advanceBuffs(c.buffs, 'white', 11)).toEqual({});
+        const result = c.hpChange(unit(c, '0,0'), -99, c.stagedBoard);
+        expect(result.board['0,0'].hp).toBe(30);
+        c.undoMove(); expect(c.buffs).toEqual({}); expect(c.myCp).toBe(95);
+      });
+
+      it('allows empty hex casts, refuses missing hexes and enforces three uses after cooldown resets', () => {
+        const c = setup(0), i = c.slotOfAbility('anchor');
+        c.boardRef.cells.push({ key: '5,0', piece: null, panel: '' });
+        cast(c, 'anchor', '30,0'); expect(c.myCp).toBe(95);
+        c.clearAbilityFocus();
+        for (let n = 0; n < 3; n++) { c.myCooldowns[i] = 0; cast(c, 'anchor', '5,0'); }
+        expect(c.myCp).toBe(80); expect(c.abilityUses['mine|anchor']).toBe(3);
+        c.myCooldowns[i] = 0; cast(c, 'anchor', '5,0'); expect(c.myCp).toBe(80);
+      });
+
+      it('commits opening moves under purchased stat passives without treating them as casts', () => {
+        for (const path of [0, 1]) {
+          const c = setup(path); c.gameState.snapshot.turnNumber = 1;
+          c.onPlayerMove({ from: '0,0', to: '0,1', cost: 1 });
+          const { g } = commit(c);
+          expect(g.turnNumber).withContext(`path ${path}`).toBe(2);
+          expect(g.boardState['0,1']?.uid).withContext(`path ${path}`).toBe('own');
+        }
+      });
+
+      it('captures the movement budget before later Trap casts and commits Sprint movements during initialization', () => {
+        const c = setup(2);
+        c.gameState.snapshot.boardState['0,0'].unit_id = 'pawn';
+        c.onPlayerMove({ from: '0,0', to: '0,7', cost: 7 });
+        c.boardRef.cells.push({ key: '0,6', piece: null, panel: '' });
+        cast(c, 'surge', '0,6');
+        expect(c.buffs.own.mov).toBe(-4);
+        const { g } = commit(c);
+        expect(g.turnNumber).toBe(10); expect(g.boardState['0,7'].uid).toBe('own');
+        const opening = setup(2); opening.gameState.snapshot.turnNumber = 1;
+        opening.gameState.snapshot.boardState['0,0'].unit_id = 'pawn';
+        opening.onPlayerMove({ from: '0,0', to: '0,7', cost: 7 });
+        const result = commit(opening);
+        expect(result.g.turnNumber).toBe(2); expect(result.g.boardState['0,7'].uid).toBe('own');
+      });
+    });
 
     it('ends a returned Cast unit’s postmatch withdrawal as deployment and pass for either seat', async () => {
       for (const color of ['white', 'black']) {
@@ -149,10 +520,10 @@ describe('GameRoomComponent ability panel', () => {
       expect(c.stagedBoard['1,0']).toBeUndefined();
       c.onPlayerMove({ from: '0,0', to: '1,0', cost: 1 });
       arm(c, 'mend'); c.onHexClicked({ ...pawn, key: '1,0', hp: 10 });
-      expect(c.stagedBoard['1,0'].hp).toBe(14);
+      expect(c.stagedBoard['1,0'].hp).toBe(12);
       c.endTurn();
       expect(sent[0].effectsAfterAttack).toContain(jasmine.objectContaining({ uid: enemy.uid, hp: 0 }));
-      expect(sent[0].effects).toContain(jasmine.objectContaining({ uid: pawn.uid, hp: 14 }));
+      expect(sent[0].effects).toContain(jasmine.objectContaining({ uid: pawn.uid, hp: 12 }));
       localStorage.removeItem('cpp.localGame.v1');
       const engine = new LocalGameService(new ConfigService());
       engine.send({ type: 'create_single_player_game', username: 'me' });
@@ -163,7 +534,7 @@ describe('GameRoomComponent ability panel', () => {
       sent.forEach(m => engine.send(m)); await new Promise(r => setTimeout(r, 0));
       expect(seen.find(m => m.type === 'invalid_move')).toBeUndefined();
       expect((engine as any).game.turnNumber).toBe(56);
-      expect((engine as any).game.boardState['1,0']).toEqual(jasmine.objectContaining({ uid: pawn.uid, hp: 14 }));
+      expect((engine as any).game.boardState['1,0']).toEqual(jasmine.objectContaining({ uid: pawn.uid, hp: 12 }));
       const restored = new LocalGameService(new ConfigService());
       expect((restored as any).game.boardState['1,0']).toEqual((engine as any).game.boardState['1,0']);
       expect((restored as any).game.moveHistory.some((m: any) => m.abilityDeath?.unit_id === 'rook')).toBeTrue();
@@ -223,6 +594,48 @@ describe('GameRoomComponent ability panel', () => {
         expect(c.purseName(c.unitAbilityIndex(u), cost)).toBe('UP');
         expect(c.abilityCosts[c.unitAbilityIndex(u)]).toBe(cost);
       }
+    });
+
+    it('refuses all eight unit casts atomically with insufficient UP or an active cooldown for either seat', () => {
+      for (const color of ['white', 'black']) {
+        for (const id of ['pawn', 'archer', 'shieldman', 'rook', 'knight', 'bishop', 'queen', 'king']) {
+          const c = current(color), s = c.gameState.snapshot;
+          s.turnNumber = color === 'white' ? 55 : 56;
+          c.myUnitPoints = 0;
+          const unit = veteran(c, id, '0,0', color);
+          const before = structuredClone(s.boardState);
+          useUnit(c, unit);
+          expect(c.unitAbilityCanActivate()).withContext(`${color} ${id} UP`).toBeFalse();
+          expect(c.stagedActions).toEqual([]);
+          expect(c.stagedBoard).toBeNull();
+          expect(c.pendingUnitCast).toBeNull();
+          expect(c.unitCooldownOf(unit.uid)).toBe(0);
+          expect([c.myPoints, c.myUnitPoints, c.myCpSpent]).toEqual([100, 0, 0]);
+          c.myUnitPoints = 100;
+          c.unitCooldowns[unit.uid] = { color, turns: 1 };
+          useUnit(c, unit);
+          expect(c.unitAbilityCanActivate()).withContext(`${color} ${id} cooldown`).toBeFalse();
+          expect(c.stagedActions).toEqual([]);
+          expect(c.buffs).toEqual({});
+          expect(c.pendingUnitCast).toBeNull();
+          expect(c.unitCooldownOf(unit.uid)).toBe(1);
+          expect(s.boardState).toEqual(before);
+          expect([c.myPoints, c.myUnitPoints, c.myCpSpent]).toEqual([100, 100, 0]);
+        }
+      }
+    });
+
+    it('keeps cooldowns independent for two veterans of the same type', () => {
+      const c = kitRoom(), first = veteran(c, 'knight'), second = veteran(c, 'knight', '1,0');
+      useUnit(c, first);
+      expect(c.unitCooldownOf(first.uid)).toBe(5);
+      expect(c.unitCooldownOf(second.uid)).toBe(0);
+      c.selectedUnit = second; c.unitAbilityFocus = { index: c.unitAbilityIndex(second) };
+      expect(c.unitAbilityCanActivate()).toBeTrue();
+      useUnit(c, second);
+      expect([c.unitCooldownOf(first.uid), c.unitCooldownOf(second.uid), c.myUnitPoints]).toEqual([5, 5, 90]);
+      c.beginTurnFor('black');
+      expect(c.unitCooldownOf(first.uid)).toBe(5);
     });
 
     it('stages Sacrifice atomically across battlefield and green reserve, with exact UP and Undo', () => {
@@ -408,13 +821,14 @@ describe('GameRoomComponent ability panel', () => {
           const c = current(color);
           c.gameState.snapshot.turnNumber = ply;
           c.gameState.snapshot.boardState['0,0'].hp = 20;
+          c.gameState.snapshot.boardState['0,0'].vet = 2;
           c.persistLocalUiState = () => {};
           const i = arm(c, id);
           if (c.abilityTargetMode(i) === 'universal') c.activateFocusedAbility();
           else c.onHexClicked(shown(c, id === 'strike' ? '1,0' : '0,0'));
           expect(c.myPoints).withContext(`${ply}: ${id}`).toBe(100 - c.abilityCosts[i]);
           expect(c.myCooldowns[i]).toBe(c.cooldownOf(i));
-          if (id === 'mend') expect(c.stagedBoard['0,0'].hp).toBe(24);
+          if (id === 'mend') expect(c.stagedBoard['0,0'].hp).toBe(20 + c.abilityEffects[i].heal);
           if (id === 'strike') expect(c.stagedBoard['1,0'].hp).toBe(8);
           if (id === 'warcry') {
             const actions = c.stagedActions.length;
@@ -432,6 +846,7 @@ describe('GameRoomComponent ability panel', () => {
       ]);
       for (const [id, stat] of [['warcry', 'atk'], ['bulwark', 'def'], ['dash', 'mov']]) {
         const c = current();
+        c.gameState.snapshot.boardState['0,0'].vet = 2;
         const target = shown(c, '0,0');
         const i = arm(c, id);
         const e = c.abilityEffects[i];
@@ -450,20 +865,60 @@ describe('GameRoomComponent ability panel', () => {
       }
     });
 
-    it('uses Warcry to arm a shieldman in the Unit panel and staged combat', () => {
+    it('refuses pure ATK buffs on unavailable stats without spending points, cooldown or a staged action', () => {
+      for (const [id, vet] of [['bishop', 0], ['bishop', 3], ['shieldman', 0], ['shieldman', 1]] as const) {
+        const c = current();
+        Object.assign(c.gameState.snapshot.boardState['0,0'], { unit_id: id, vet });
+        const u = { ...shown(c, '0,0'), vet };
+        const i = arm(c, 'warcry');
+        c.onHexClicked(u); c.selectedUnit = u;
+        expect(c.myPoints).withContext(`${id} ${vet}`).toBe(100);
+        expect(c.myCooldowns[i]).toBe(0);
+        expect(c.stagedActions.length).toBe(0);
+        expect(c.buffs.own).toBeUndefined();
+        expect(c.statAtk).toBe('—');
+        expect(c.statHel).toBe(id === 'bishop' ? (vet ? '1:8/8 2:6/6 3:4/4 4:2/2' : '1:8/8 2:6/6') : '—');
+      }
+    });
+
+    it('pins unit details to their owner and closes them on another unit, another same-type unit, or deselection', () => {
+      for (const passive of [true, false]) {
+        const c = kitRoom(); const first = veteran(c, 'shieldman');
+        c.onHexSelected(first);
+        const index = passive ? c.slotOfAbility('deflect') : c.unitAbilityIndex(first);
+        c.selectUnitAbility(index);
+        expect(c.unitAbilityFocus?.uid).toBe(first.uid);
+        const other = veteran(c, 'shieldman', '2,0');
+        c.onHexHovered(other);
+        expect(c.displayUnit.uid).toBe(first.uid);
+        expect(c.unitAbilityFocus?.index).toBe(index);
+        c.onHexSelected({ ...first, key: '-1,0' });
+        expect(c.unitAbilityFocus?.index).toBe(index);
+        c.onHexSelected(other);
+        expect(c.unitAbilityFocus).toBeNull();
+        c.selectUnitAbility(index); c.onHexSelected(null);
+        expect(c.unitAbilityFocus).toBeNull();
+        const bishop = veteran(c, 'bishop', '3,0'); c.onHexSelected(first); c.onHexHovered(null);
+        c.selectUnitAbility(index); c.onHexSelected(bishop);
+        expect(c.unitAbilityFocus).toBeNull();
+      }
+    });
+
+    it('uses Warcry to boost Shove attacks while the shieldman never counters', () => {
       const c = current();
       c.gameState.snapshot.config.units.pawn.defense = 0;
-      const unit = shown(c, '0,0');
+      c.gameState.snapshot.boardState['0,0'].vet = 2;
+      const unit = { ...shown(c, '0,0'), vet: 2 };
       const i = arm(c, 'warcry');
       c.onHexClicked(unit);
       c.selectedUnit = unit;
       const attack = c.abilityEffects[i].atk;
-      expect(c.statAtk).toBe(`1:${attack}/0`);
+      expect(c.statAtk).toBe(`1:${attack + 4}/4`);
       c.onPlayerAttack({ from: '0,0', to: '0,0', attack: '1,0' });
-      expect(c.stagedBoard['1,0'].hp).toBe(12 - attack);
-      expect(c.stagedBoard['0,0'].hp).toBe(29);
+      expect(c.stagedBoard['1,0']).toBeUndefined();
+      expect(c.stagedBoard['0,0'].hp).toBe(30);
       c.undoMove(); c.undoMove();
-      expect(c.statAtk).toBe('—');
+      expect(c.statAtk).toBe('1:4/4');
       expect(c.myPoints).toBe(100);
     });
 
@@ -559,7 +1014,7 @@ describe('GameRoomComponent ability panel', () => {
       c.gameState.snapshot.boardState['0,0'].hp = 20;
       const i = arm(c, 'mend');
       c.onHexClicked(shown(c, '0,0'));
-      expect(c.stagedBoard['0,0'].hp).toBe(24);
+      expect(c.stagedBoard['0,0'].hp).toBe(20 + c.abilityEffects[i].heal);
       c.undoMove();
       expect(c.gameState.snapshot.boardState['0,0'].hp).toBe(20);
       c.gameState.snapshot.boardState['0,0'].hp = 28;
@@ -618,6 +1073,7 @@ describe('GameRoomComponent ability panel', () => {
         {} as any, {} as any, {} as any, {} as any,
         { markForCheck: () => {}, detectChanges: () => {} } as any,
         gameState, {} as any, { playTone: () => {} } as any, zone,
+        { getConfig: () => DEFAULT_GAME_CONFIG } as any,
       );
       gameState.applyGameStarted({ revision: 1 });
 
@@ -687,6 +1143,7 @@ describe('GameRoomComponent ability panel', () => {
         {} as any, {} as any, {} as any, {} as any,
         { markForCheck: () => {}, detectChanges: () => {} } as any,
         gameState, {} as any, { playTone: () => {} } as any, zone,
+        { getConfig: () => DEFAULT_GAME_CONFIG } as any,
       );
       gameState.applyGameStarted({ revision: 4, turnNumber: 1 });
       c.stateResyncPending = true;
@@ -715,6 +1172,7 @@ describe('GameRoomComponent ability panel', () => {
         {} as any, {} as any, {} as any, {} as any,
         { markForCheck: () => {}, detectChanges: () => {} } as any,
         gameState, {} as any, { playTone: () => {} } as any, zone,
+        { getConfig: () => DEFAULT_GAME_CONFIG } as any,
       );
       gameState.applyGameStarted({ revision: 1 });
 
@@ -731,6 +1189,7 @@ describe('GameRoomComponent ability panel', () => {
         {} as any, {} as any, {} as any, {} as any,
         { markForCheck: () => {}, detectChanges: () => {} } as any,
         new GameStateService(), {} as any, { playTone: () => {} } as any, zone,
+        { getConfig: () => DEFAULT_GAME_CONFIG } as any,
       );
       c.persistLocalUiState = () => {};
       c.scrollChatToBottom = () => {};
@@ -753,6 +1212,7 @@ describe('GameRoomComponent ability panel', () => {
         {} as any, {} as any, {} as any, {} as any,
         { markForCheck: () => {}, detectChanges: () => {} } as any,
         gameState, {} as any, { playTone: () => {} } as any, zone,
+        { getConfig: () => DEFAULT_GAME_CONFIG } as any,
       );
       c.username = 'me';
       c.reconcilePoints = () => {};
@@ -1215,7 +1675,7 @@ describe('GameRoomComponent ability panel', () => {
     c.myCooldowns[TARGETED] = 2;
     c.clearAbilityFocus();
     c.selectAbility('mine', TARGETED, c.myCooldowns);
-    expect(c.focusedAbilityBlocker).toContain('2 more turns');
+    expect(c.focusedAbilityBlocker).toBe(`On cooldown: 2/${c.abilityEffects[TARGETED].cooldown}.`);
   });
 
   it('tells a networked player abilities are solo-only, not that it is not their turn', () => {
@@ -1249,39 +1709,67 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.focusedAbilityBlocker).toContain('initialization');
   });
 
-  it('never lets the clock end a solo turn, so a doomed king plays it out', () => {
+  it('beeps once per final second, sounds a hard expiry and commits staged work once in either mode', () => {
+    for (const solo of [true, false]) {
+      const c = room();
+      const sent: any[] = [];
+      c.wsService = { sendMessage: (m: any) => sent.push(m) };
+      c.persistLocalUiState = () => {};
+      c.playSteps = () => {};
+      c.playEndTurnSound = () => {};
+      const warning = spyOn(c, 'playTone');
+      const hard = spyOn(c.audioService, 'playTone');
+      c.isSinglePlayer = solo;
+      c.gameState.snapshot.turnNumber = 7;
+      c.gameState.snapshot.turnTimeLimit = 15;
+      c.stagedActions = [{ at: 7, board: {}, from: '0,0', to: '0,1', used: 1, attack: null }];
+      for (let seconds = 6; seconds >= 0; seconds--) {
+        c.gameState.snapshot.turnStartedAt = new Date(Date.now() - (15 - seconds) * 1000).toISOString();
+        c.updateTurnClock();
+        c.updateTurnClock();
+      }
+      expect(warning.calls.allArgs()).toEqual(Array.from({ length: 5 }, () => [[880], 0.08]));
+      expect(hard).toHaveBeenCalledOnceWith([220, 110], 0.16, { type: 'triangle' });
+      expect(c.turnSecondsRemaining).toBe(0);
+      expect(sent.length).toBe(1);
+      expect(sent[0]).toEqual(jasmine.objectContaining({ type: 'make_move', from: '0,0', to: '0,1' }));
+    }
+  });
+
+  it('commits panel-only and empty turns at expiry, and never submits the opponent’s online turn', () => {
+    for (const panel of [false, true]) {
+      const c = room();
+      const sent: any[] = [];
+      c.wsService = { sendMessage: (m: any) => sent.push(m) };
+      c.persistLocalUiState = () => {}; c.playSteps = () => {}; c.playEndTurnSound = () => {};
+      c.gameState.snapshot.turnNumber = 7;
+      c.gameState.snapshot.turnTimeLimit = 15;
+      c.gameState.snapshot.turnStartedAt = new Date(Date.now() - 16_000).toISOString();
+      const panelStep = { type: 'make_move', from: '-6,11', to: '-7,11', panel: 'bl' };
+      c.boardRef = panel ? { pendingPanelSteps: [panelStep] } : undefined;
+      c.lastTimerBeep = 1;
+      c.isSinglePlayer = false; c.gameState.snapshot.currentTurn = 'opponent';
+      c.updateTurnClock(); expect(sent).toEqual([]);
+      c.lastTimerBeep = 1; c.gameState.snapshot.currentTurn = 'me';
+      c.updateTurnClock();
+      expect(sent).toEqual(panel ? [panelStep, jasmine.objectContaining({ type: 'pass_turn' })]
+        : [jasmine.objectContaining({ type: 'pass_turn' })]);
+    }
+  });
+
+  it('sounds expiry once if the server timeout arrives before the local clock tick', () => {
     const c = room();
-    const sent: any[] = [];
-    c.wsService = { sendMessage: (m: any) => sent.push(m) };
+    const hard = spyOn(c.audioService, 'playTone');
+    c.gameState.applyTurnPassed = () => {};
+    c.beginTurnFor = () => {}; c.reconcilePoints = () => {};
+    c.playTurnSoundIfNeeded = () => {}; c.startTurnClock = () => {};
+    c.turnRecords = () => []; c.showTurn = () => {}; c.addSystemMessage = () => {};
     c.persistLocalUiState = () => {};
-    c.playSteps = () => {};
-    c.playEndTurnSound = () => {};
-    c.playTone = () => {};
-    c.gameStarted = true;
-    c.gameState.snapshot.currentTurn = 'me';
-    c.gameState.snapshot.turnNumber = 67;
-    c.gameState.snapshot.turnTimeLimit = 60;
-    // A turn that ran out a minute ago.
-    c.gameState.snapshot.turnStartedAt = new Date(Date.now() - 120_000).toISOString();
-    c.lastTimerBeep = 5;
-
-    // Solo: the clock counts to nothing and stops there. Ending the turn is
-    // where overtime takes its toll, so a clock that ended it for you killed
-    // a king on its last HP while you were still deciding how to save it.
-    c.isSinglePlayer = true;
-    (c as any).updateTurnClock();
-    expect(c.turnSecondsRemaining).toBe(0);
-    expect(sent.length).toBe(0);
-
-    // A networked game is unchanged: the server passes for us, and staged
-    // work gets one attempt at committing before that lands.
-    c.isSinglePlayer = false;
-    c.lastTimerBeep = 5;
-    c.gameState.snapshot.currentTurn = 'me';
-    c.username = 'me';
-    c.stagedActions = [{ at: 1, board: {}, from: '0,0', to: '0,1', used: 1, attack: null }];
-    (c as any).updateTurnClock();
-    expect(sent.length).toBe(1);
+    c.lastTimerBeep = 1;
+    const message = { type: 'turn_passed', timedOut: true, color: 'white' };
+    c.handleWebSocketMessage(message);
+    c.handleWebSocketMessage(message);
+    expect(hard).toHaveBeenCalledOnceWith([220, 110], 0.16, { type: 'triangle' });
   });
 
   it('stages, undoes and commits a bishop heal as its one action without CP or an attack', () => {
@@ -1832,6 +2320,14 @@ describe('GameRoomComponent ability panel', () => {
     c.onPlaybackDone();
     expect(c.recapRunning).toBeFalse();
     expect(c.canUseAbilities('mine')).toBeTrue();
+  });
+
+  it('does not advertise unit rank gates on pool abilities', () => {
+    const c = room();
+    for (const index of c.abilityPool) {
+      expect(c.abilityHint(index)).withContext(c.abilityEffects[index].name).not.toContain('(needs ');
+    }
+    expect(c.unitAbilityHint(0)).toContain('needs ★★');
   });
 
   it('says what Mend does, rather than “no effect yet”', () => {
@@ -2616,6 +3112,24 @@ describe('GameRoomComponent ability panel', () => {
   };
   const logged = (c: any) => c.gameRoomMessages.map((m: any) => m.content);
 
+  it('logs the finishing atomic turn and its kill marker once before the result', () => {
+    const c = watching(8); c.isSinglePlayer = false;
+    const attack = { turn: 8, color: 'black', unit_id: 'rook', from: '1,0', to: '1,0',
+      attacked: true, attackedHex: '0,0', captured: 'king', defender_eliminated: true, damage_dealt: 60 };
+    const final = { type: 'game_state_update', turnNumber: 9, currentTurn: '', revision: 1,
+      committedTurn: 8, color: 'black', endReason: 'regicide', winner: 'Opponent',
+      config: DEFAULT_GAME_CONFIG, boardState: {}, moveHistory: [attack] };
+    c.handleWebSocketMessage(final);
+    expect(logged(c)[0]).toContain('hit king');
+    expect(logged(c)[0]).toContain('(eliminated)');
+    expect(logged(c)[1]).toContain('Game over');
+    expect(c.opponentMoveVisuals[0].killed).toBe('0,0');
+    const before = logged(c).slice();
+    c.handleWebSocketMessage(final);
+    c.handleWebSocketMessage({ type: 'game_over', revision: 1, winner: 'Opponent', endReason: 'regicide' });
+    expect(logged(c)).toEqual(before);
+  });
+
   it('draws and logs every unit of an opponent’s overtime turn, not only the last', () => {
     // Found in Chrome: the first units of a two- or three-unit turn arrive as
     // state updates, and the arrows and the log were built from the closing
@@ -2741,13 +3255,13 @@ describe('GameRoomComponent ability panel', () => {
     c.selectedUnit = { key: '0,0', uid: 'b', unitId: 'bishop', name: 'Bishop', color: 'white',
       hp: 8, hpMax: 8, atk: [0], def: 4, mv: 6, points: 16, vet: 0, drivable: true };
     expect(c.statAtk).toBe('—');
-    expect(c.statHel).toBe('1:8/8');
+    expect(c.statHel).toBe('1:8/8 2:6/6');
     for (const [vet, stars] of ['—', '★', '★★', '★★★'].entries()) {
       c.selectedUnit = { ...c.selectedUnit, vet };
       expect(c.statVet).toBe(stars);
       expect(c.unitPanelTitle).toBe('Bishop - 16 pts');
     }
-    expect(c.statParts('hel').map((p: any) => p.ring)).toEqual([1, 2]);
+    expect(c.statParts('hel').map((p: any) => p.ring)).toEqual([1, 2, 3, 4]);
   });
 
   it('says "Tap again to strike" in the Unit strip, wherever there is one', () => {
@@ -3054,7 +3568,7 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.gameOver).toBeFalse();
   });
 
-  it('casts nothing at all during the opening', () => {
+  it('blocks ordinary abilities during the opening', () => {
     const c = room();
     c.gameState.snapshot.currentTurn = c.username;
     // Everything that spends an ability runs through canUseAbilities - the
@@ -3063,7 +3577,7 @@ describe('GameRoomComponent ability panel', () => {
     c.gameState.snapshot.turnNumber = 1;
     expect(c.canUseAbilities('mine')).toBeFalse();
     expect(c.canAfford('mine', 0, 0)).toBeFalse();
-    expect(c.abilityBlockedNote).toBe('Unavailable: no abilities during the initialization.');
+    expect(c.abilityBlockedNote).toBe('Unavailable: only CP utilities can be used during initialization.');
 
     // All postmatches permit casts, for either half of the full turn.
     for (const ply of [7, 10, 27, 28, 29, 49, 50, 71, 72]) {
@@ -3909,7 +4423,7 @@ describe('GameRoomComponent ability panel', () => {
       c.selectedUnit = { ...WP, vet: 1 };
       expect(c.vetUnlocked(focus)).toBeFalse();
       c.selectUnitAbility(focus);
-      expect(c.unitAbilityFocus).toEqual({ index: focus });
+      expect(c.unitAbilityFocus).toEqual({ index: focus, uid: WP.uid });
       expect(c.unitAbilityNote).toBe('Unavailable: needs ★★.');
       expect(c.unitAbilityCanActivate()).toBeFalse();
       c.activateUnitAbility();
@@ -3958,6 +4472,7 @@ describe('GameRoomComponent leaving', () => {
     const c: any = new GameRoomComponent(
       ws, route, router, shared, new NavigationStateService(), cdr, gameState, auth,
       { playTone: () => {} } as any, zone,
+      { getConfig: () => DEFAULT_GAME_CONFIG } as any,
     );
     return { c, sent, ws, gameState, disconnects };
   };
@@ -3974,6 +4489,41 @@ describe('GameRoomComponent leaving', () => {
     c.ngOnDestroy();
     expect(sent.some(m => m.type === 'join_game_room')).toBeFalse();
     expect(sent.some(m => m.type === 'leave_game_room')).toBeFalse();
+  });
+
+  it('handles each socket message once across room route reuse and stops on destroy', () => {
+    const { c, ws } = room('tok');
+    const params = new BehaviorSubject({ id: 'room-1' });
+    c.route.params = params;
+    const handled = spyOn(c, 'handleWebSocketMessage');
+    try {
+      c.ngOnInit();
+      ws.messages$.next({ type: 'heartbeat_ack' });
+      expect(handled).toHaveBeenCalledTimes(1);
+      params.next({ id: 'room-2' });
+      ws.messages$.next({ type: 'heartbeat_ack' });
+      expect(handled).toHaveBeenCalledTimes(2);
+      c.ngOnDestroy();
+      ws.messages$.next({ type: 'heartbeat_ack' });
+      expect(handled).toHaveBeenCalledTimes(2);
+    } finally { sessionStorage.removeItem('cpp.roomToken.room-2'); }
+  });
+
+  it('rejoins only the current room once after a reconnect and stops on destroy', () => {
+    const { c, ws, sent } = room('tok');
+    const params = new BehaviorSubject({ id: 'room-1' });
+    c.route.params = params;
+    try {
+      c.ngOnInit();
+      params.next({ id: 'room-2' });
+      sent.length = 0;
+      ws.connectionStatus$.next(false); ws.connectionStatus$.next(true);
+      expect(sent.filter(m => m.type === 'join_game_room').map(m => m.gameId)).toEqual(['room-2']);
+      c.ngOnDestroy(); sent.length = 0;
+      ws.connectionStatus$.next(false); ws.connectionStatus$.next(true);
+      params.next({ id: 'room-1' });
+      expect(sent).toEqual([]);
+    } finally { sessionStorage.removeItem('cpp.roomToken.room-2'); }
   });
 
   it('still leaves a room it did join', () => {
@@ -4280,13 +4830,12 @@ describe('GameRoomComponent fitting the window', () => {
       expect(c.unitPinned).withContext(`${w}x${h}`).toBeTrue();
       expect(fit(w, h, true).roomLayout).withContext(`${w}x${h} held`).toBe('tabbed');
     }
-    // The desktop width and height cutoffs still select the tabs below them.
-    expect(fit(900, 520).roomLayout).toBe('tabbed');
-    expect(fit(800, 505).roomLayout).toBe('tabbed');
-    expect(fit(800, 1000).roomLayout).toBe('stacked');
-    expect(fit(850, 526).roomLayout).toBe('columns');
-    expect(fit(849, 1000).roomLayout).toBe('stacked');
-    expect(fit(1284, 525).roomLayout).toBe('tabbed');
+    for (const [w, h] of [[900, 520], [800, 505], [800, 1000], [849, 1000], [1284, 525], [600, 400]]) {
+      const c = fit(w, h);
+      expect(c.roomLayout).withContext(`${w}x${h} resized desktop`).toBe('columns');
+      expect(c.unitPinned).withContext(`${w}x${h} resized desktop`).toBeTrue();
+      expect(c.roomZoom).withContext(`${w}x${h} resized desktop`).toBeCloseTo(Math.min(1, w / 1180, h / 1025), 6);
+    }
   });
 
   it('gives a landscape touch screen short of that the board and one column of tabs, unscaled', () => {
@@ -4371,6 +4920,7 @@ describe('GameRoomComponent tabs', () => {
       { sendMessage: () => {}, isLocal: () => false } as any, {} as any, {} as any, {} as any, {} as any,
       { markForCheck: () => {}, detectChanges: () => {} } as any, gameState, {} as any,
       { playTone: () => {} } as any, zone,
+      { getConfig: () => DEFAULT_GAME_CONFIG } as any,
     );
     c.username = 'me';
     c.persistLocalUiState = () => {};

@@ -11,13 +11,13 @@
   font-family: Arial, sans-serif;
   overflow-y: auto;
   box-sizing: border-box;  // include padding in height calculation
-  overflow: hidden;        // prevent outer container scroll
+  overflow-x: hidden;
 }
 
 .header {
   display: flex;
-  // A public tripcode extends the name; wrap controls before clipping it.
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
@@ -32,10 +32,7 @@
     align-items: center;
     gap: 8px;
     white-space: nowrap;
-    // The title is the only thing here that may lose characters. Everything
-    // to its right is a control, and a half-visible Reconnect button is
-    // worse than a shortened heading.
-    flex: 0 1 auto;
+    flex: 0 999 auto;
     min-width: 0;
     overflow: hidden;
     font-size: clamp(0.8rem, 2.1vw, 2rem);
@@ -46,21 +43,24 @@
     }
   }
 
+  h1.title-hidden span { visibility: hidden; }
+
   // The control styles itself; only where it sits is the lobby's business.
   // margin-right: auto pushes the user info and connection line to the right.
   app-volume-control {
     margin-right: auto;
     margin-left: 8px;
   }
-  
+
   .user-info {
     display: flex;
+    min-width: 0;
     align-items: center;
-    // Give the name and connection controls their own lines when needed.
     flex: 1 1 auto;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    white-space: normal;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    justify-content: safe flex-end;
+    white-space: nowrap;
     // Everything in here scales off this one size, so the whole right-hand
     // side shrinks as a unit instead of one part wrapping ahead of the rest -
     // down to 12px and no further, the floor the game room holds its type to.
@@ -74,6 +74,20 @@
     }
   }
 
+  .identity-row, .lobby-actions {
+    display: flex;
+    align-items: center;
+    gap: inherit;
+  }
+
+  .identity-row {
+    flex: 0 0 auto;
+    min-width: 0;
+    justify-content: flex-end;
+  }
+
+  .lobby-actions { flex: 0 0 auto; }
+
   .username-display {
     display: flex;
     align-items: center;
@@ -82,87 +96,14 @@
 
     span {
       min-width: 0;
-      overflow-wrap: anywhere;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
   }
-  
-  .change-username {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    // The panel below the header is prose and inputs; it wraps normally.
-    white-space: normal;
-    width: min(280px, 100%);
 
-    .tripcode-note {
-      margin: 0;
-      font-size: 12px;
-      color: #34495e;
-    }
 
-    .remove-tripcode {
-      display: flex;
-      align-items: center;
-      min-height: 24px;
-      gap: 4px;
-      font-size: 12px;
-    }
-    
-    input {
-      padding: 5px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-    }
-    
-    .char-counter {
-      font-size: 0.8rem;
-      text-align: right;
-      color: #6c757d;
-      
-      &.near-limit {
-        color: #e67e22;
-        font-weight: bold;
-      }
-    }
-    
-    // Save and Keep (or Cancel) side by side, Save the one that goes ahead.
-    // They stood a row each across the whole panel, the browser's grey, and
-    // read as two of the same thing.
-    .rename-actions {
-      display: flex;
-      gap: 8px;
-    }
 
-    button {
-      flex: 1 1 0;
-      min-height: 32px;
-      padding: 5px 10px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      background-color: #f8f9fa;
-      color: #2c3e50;
-      font: inherit;
-      cursor: pointer;
-
-      &:hover {
-        background-color: #e9ecef;
-      }
-
-      &.rename-save {
-        border-color: #3498db;
-        background-color: #3498db;
-        color: #fff;
-        &:hover { background-color: #2980b9; }
-      }
-    }
-
-    .rename-error {
-      margin: 0;
-      color: #c0392b;
-      font-size: 0.85rem;
-    }
-  }
-  
   // 24px each way at the least, the room's floor for a control (WCAG 2.2,
   // 2.5.8): the padding's clamp let them fall to 22px on a phone.
   .single-player-btn {
@@ -187,10 +128,90 @@
     border: none;
     border-radius: 4px;
     cursor: pointer;
-    
+
     &:hover {
       background-color: #2980b9;
     }
+  }
+}
+
+.change-username {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  // The panel below the header is prose and inputs; it wraps normally.
+  white-space: normal;
+  align-items: flex-end;
+  width: min(100%, 420px);
+  margin: 0 0 16px auto;
+  flex-shrink: 0;
+
+  .tripcode-note {
+    margin: 0;
+    font-size: 12px;
+    color: #34495e;
+  }
+
+  .remove-tripcode {
+    display: flex;
+    align-items: center;
+    min-height: 24px;
+    gap: 4px;
+    font-size: 12px;
+  }
+
+  input {
+    padding: 5px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+  }
+
+  .char-counter {
+    font-size: 0.8rem;
+    text-align: right;
+    color: #6c757d;
+
+    &.near-limit {
+      color: #e67e22;
+      font-weight: bold;
+    }
+  }
+
+  // Save and Keep (or Cancel) side by side, Save the one that goes ahead.
+  // They stood a row each across the whole panel, the browser's grey, and
+  // read as two of the same thing.
+  .rename-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  button {
+    flex: 1 1 0;
+    min-height: 32px;
+    padding: 5px 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background-color: #f8f9fa;
+    color: #2c3e50;
+    font: inherit;
+    cursor: pointer;
+
+    &:hover {
+      background-color: #e9ecef;
+    }
+
+    &.rename-save {
+      border-color: #3498db;
+      background-color: #3498db;
+      color: #fff;
+      &:hover { background-color: #2980b9; }
+    }
+  }
+
+  .rename-error {
+    margin: 0;
+    color: #c0392b;
+    font-size: 0.85rem;
   }
 }
 
@@ -209,19 +230,19 @@
   padding: 10px;
   background-color: #f8f9fa;
   min-height: 0; /* allow users-panel to shrink */
-  
+
   h2 {
     margin-top: 0;
     padding-bottom: 10px;
     border-bottom: 1px solid #ddd;
     font-size: 1.2rem;
   }
-  
+
   .users-list {
     overflow-y: auto;
     height: calc(100% - 50px);
   }
-  
+
   .user-item {
     display: flex;
     align-items: center;
@@ -231,11 +252,11 @@
     padding: 8px 4px;
     border-bottom: 1px solid #eee;
     cursor: pointer;
-    
+
     &:hover {
       background-color: #f1f1f1;
     }
-    
+
     .status-dot {
       flex-shrink: 0;
       width: 10px;
@@ -245,7 +266,7 @@
       &.online {
         background-color: #2ecc71;
       }
-      
+
       &.in-game {
         background-color: #f1c40f; /* Yellow for in-game status */
       }
@@ -262,7 +283,7 @@
         background-color: #f1c40f; /* Yellow color for invited status */
       }
     }
-    
+
     .username {
       /* min-width:0 is load-bearing: without it this flex item refuses to
          shrink below its content, and the "(You)" tag gets pushed outside the
@@ -284,7 +305,7 @@
       white-space: normal;
       overflow-wrap: anywhere;
     }
-    
+
     .user-status {
       flex: 0 0 auto;
       font-size: 0.78rem;
@@ -292,7 +313,7 @@
       margin-right: 4px;
       white-space: nowrap;
     }
-    
+
     /* Style for the three-dots button */
     .action-button {
       flex-shrink: 0;
@@ -303,26 +324,26 @@
       font-size: 18px;
       padding: 2px 8px;
       color: #555;
-      
+
       &:hover {
         background-color: #e0e0e0;
         color: #333;
       }
-      
+
       &:disabled {
         opacity: 0.3;
         cursor: not-allowed;
       }
     }
   }
-  
+
   .user-item.current-user {
     // The tint and blue edge already mark this row as yours; bolding it too
     // widened the name enough to push "(You)" into truncation.
     background-color: #f0f7ff;
     border-left: 3px solid #4a90e2;
   }
-  
+
   .current-user-tag {
     flex: 0 0 auto;          // never squeezed out of the clipped username box
     color: #4a90e2;
@@ -340,7 +361,7 @@
   background-color: white;
   min-height: 0; /* allow chat-panel to shrink */
   min-width: 0;
-  
+
   .chat-messages {
     flex-grow: 1;
     padding: 15px;
@@ -349,7 +370,7 @@
     flex-direction: column;
     gap: 10px;
   }
-  
+
   .message-item {
     max-width: 100%;
     box-sizing: border-box;
@@ -358,44 +379,44 @@
     margin: 5px 0;
     border-radius: 10px;
     background-color: #f1f1f1;
-    
+
     &.system-message {
       background-color: #e8f4f8;
       font-style: italic;
       align-self: center;
-      
+
       .message-username {
         color: #3498db;
         font-weight: bold;
       }
     }
-    
+
     &.my-message {
       text-align: right;
       background-color: #e0f7fa;
       border-radius: 10px 10px 0 10px;
       margin-left: auto;
-      
+
       .message-header {
         justify-content: flex-end;
-        
+
         .message-username {
           color: #1565C0;
         }
-        
+
         .message-time {
           margin-left: 8px;
         }
       }
     }
-    
+
     .message-header {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       gap: 8px;
       margin-bottom: 4px;
-      
+
       .message-username {
         min-width: 0;
         font-family: 'Roboto Condensed', sans-serif;
@@ -404,11 +425,11 @@
         color: #2c3e50;
         order: 1;
       }
-      
+
       .action-button {
         order: 2;
       }
-      
+
       .message-time {
         margin-left: auto;
         color: #666;
@@ -416,17 +437,17 @@
         order: 3;
       }
     }
-    
+
     .message-content {
       margin-top: 5px;
     }
   }
-  
+
   .chat-input {
     display: flex;
     padding: 10px;
     border-top: 1px solid #ddd;
-    
+
     input {
       flex-grow: 1;
       padding: 8px;
@@ -434,7 +455,7 @@
       border-radius: 4px;
       margin-right: 10px;
     }
-    
+
     button {
       padding: 8px 15px;
       background-color: #3498db;
@@ -442,7 +463,7 @@
       border: none;
       border-radius: 4px;
       cursor: pointer;
-      
+
       &:hover {
         background-color: #2980b9;
       }
@@ -458,7 +479,7 @@
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.8rem;
-  
+
   &:hover {
     background-color: #e9ecef;
   }
@@ -475,7 +496,7 @@
   justify-content: center;
   align-items: center;
   z-index: 1000;
-  
+
   .challenge-content {
     background-color: white;
     padding: 20px;
@@ -483,18 +504,18 @@
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
     width: 300px;
     text-align: center;
-    
+
     p {
       margin: 10px 0;
     }
   }
-  
+
   .challenge-actions {
     display: flex;
     justify-content: center;
     gap: 15px;
     margin-top: 20px;
-    
+
     button {
       padding: 8px 20px;
       border: none;
@@ -502,20 +523,20 @@
       cursor: pointer;
       font-weight: bold;
     }
-    
+
     .accept-btn {
       background-color: #2ecc71;
       color: white;
-      
+
       &:hover {
         background-color: #27ae60;
       }
     }
-    
+
     .decline-btn {
       background-color: #e74c3c;
       color: white;
-      
+
       &:hover {
         background-color: #c0392b;
       }
@@ -534,7 +555,7 @@
   justify-content: center;
   align-items: center;
   z-index: 1000;
-  
+
   .invite-content {
     background-color: white;
     padding: 20px;
@@ -542,18 +563,19 @@
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
     width: 300px;
     text-align: center;
-    
+    overflow-wrap: anywhere;
+
     p {
       margin: 10px 0;
     }
   }
-  
+
   .invite-actions {
     display: flex;
     justify-content: center;
     gap: 15px;
     margin-top: 20px;
-    
+
     button {
       padding: 8px 20px;
       border: none;
@@ -561,20 +583,20 @@
       cursor: pointer;
       font-weight: bold;
     }
-    
+
     .accept-btn {
       background-color: #2ecc71;
       color: white;
-      
+
       &:hover {
         background-color: #27ae60;
       }
     }
-    
+
     .decline-btn {
       background-color: #e74c3c;
       color: white;
-      
+
       &:hover {
         background-color: #c0392b;
       }
@@ -594,19 +616,14 @@
   color: #b7791f;
 }
 
-// A phone. The header's one row cannot hold the title, the name, three
-// buttons and the connection line at any size worth reading - held to one
-// row, it ran the connection line and the chat off the right of the screen,
-// out of reach. So under 720px the header wraps (the title and the sound on
-// one line, the rest under it), and the roster stands over the chat rather
-// than beside it, its list scrolling in up to two fifths of the height.
+// On phones the title yields to the name; the roster stands above the chat.
 @media (max-width: 720px) {
   .lobby-container {
     padding: 12px;
   }
 
   .header {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     row-gap: 8px;
     margin-bottom: 12px;
 
@@ -615,10 +632,7 @@
     }
 
     .user-info {
-      flex: 1 1 100%;
-      flex-wrap: wrap;
-      white-space: normal;
-      row-gap: 6px;
+      flex: 1 1 auto;
     }
   }
 

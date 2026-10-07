@@ -1,22 +1,9 @@
 import { Injectable } from '@angular/core';
+import { readStore, writeStore } from './storage';
 
 const VOLUME_KEY = 'cpp.audio.volume';
 const MUTED_KEY = 'cpp.audio.muted';
 const DEFAULT_VOLUME = 0.5;
-
-/**
- * localStorage *throws* in private browsing and with site data blocked, and
- * these run in field initialisers - unguarded, the root service fails to
- * construct and every component that injects it goes down with it. Sound is
- * optional; the lobby is not.
- */
-function read(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
 
 @Injectable({ providedIn: 'root' })
 export class AudioService {
@@ -123,23 +110,18 @@ export class AudioService {
   private readVolume(): number {
     // Number(null) is 0, which passes every guard below - read it as "never
     // set" or a fresh browser starts silent and no sound in the game plays.
-    const raw = read(VOLUME_KEY);
+    const raw = readStore('local', VOLUME_KEY);
     if (raw === null) return DEFAULT_VOLUME;
     const value = Number(raw);
     return Number.isFinite(value) && value >= 0 && value <= 1 ? value : DEFAULT_VOLUME;
   }
 
   private readMuted(): boolean {
-    return read(MUTED_KEY) === 'true';
+    return readStore('local', MUTED_KEY) === 'true';
   }
 
   private save(): void {
-    try {
-      localStorage.setItem(VOLUME_KEY, String(this.volume));
-      localStorage.setItem(MUTED_KEY, String(this.muted));
-    } catch {
-      // Private browsing, or site data blocked. The setting just will not
-      // outlive the tab.
-    }
+    writeStore('local', VOLUME_KEY, String(this.volume));
+    writeStore('local', MUTED_KEY, String(this.muted));
   }
 }

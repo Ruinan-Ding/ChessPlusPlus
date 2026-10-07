@@ -3,9 +3,9 @@
     CPP_DEAL_PANELS=1 DJANGO_DEBUG=true venv/Scripts/daphne.exe core.asgi:application
     venv/Scripts/python.exe scripts/e2e/panels.py                        # in a second shell
 
-**CPP_DEAL_PANELS=1 is required.** A new game now opens with all four panels
-empty while the owner clears the placeholder squads out, and a script about the
-panels needs units standing in them. The unit tests set the flag in process;
+**CPP_DEAL_PANELS=1 is required.** A normal game opens with its configured base
+squads and empty reserves. These checks use the placeholder reserve squads.
+The unit tests set the flag in process;
 this one drives a real server over a real socket, so it has to be started with
 the squads dealt. Without it every crossing here has nothing to cross.
 
@@ -64,7 +64,7 @@ def seat():
     socks[B].type('game_started')
     white, black = socks[start['playerWhite']], socks[start['playerBlack']]
     check('two players are seated in a started room', start['turnNumber'] == 1, start)
-    ctx.update(la=la, lb=lb, white=white, black=black, game=game)
+    ctx.update(la=la, lb=lb, white=white, black=black, game=game, config=start['config'])
 step('seat', seat)
 
 
@@ -86,7 +86,8 @@ def crossing():
     landed = mine['boardState'].get(LANDS_ON) or {}
     check('a reserve unit crosses onto the board', landed.get('uid') == 'rbr4', landed)
     check('the server lands the unit it derived, not the one offered',
-          landed.get('unit_id') == 'archer' and landed.get('hp') == 16, landed)
+          landed.get('unit_id') == 'archer'
+          and landed.get('hp') == landed.get('max_hp') == ctx['config']['units']['archer']['hp'], landed)
     check('the other player sees the same crossing',
           (theirs['boardState'].get(LANDS_ON) or {}).get('uid') == 'rbr4', theirs['boardState'].get(LANDS_ON))
     check('a crossing does not take the turn',

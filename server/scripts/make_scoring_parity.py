@@ -108,6 +108,12 @@ def make_cases(rng):
                     'defender_eliminated': True, 'captured': 'rook', 'refundColor': color}]
         cases.append({'config': {'board': {'radius': 11}, 'units': UNITS},
                       'board': {}, 'history': history, 'bank': {}, 'ply': 58})
+    for phase, first, loss in ((1, 27, 'white'), (2, 49, 'black')):
+        for ply in (first, first + 1, first + 2):
+            cases.append({'config': {'board': {'radius': 11}, 'units': UNITS}, 'board': {}, 'history': [],
+                          'bank': {str(phase): {'white': 0, 'black': 0, 'pendingLoss': loss}}, 'ply': ply})
+        cases.append({'config': {'board': {'radius': 11}, 'units': UNITS}, 'board': {}, 'history': [],
+                      'bank': {str(phase): {'white': 0, 'black': 0, 'pendingLoss': loss, 'late': True}}, 'ply': first + 2})
     return cases
 
 

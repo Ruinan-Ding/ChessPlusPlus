@@ -17,10 +17,8 @@
  * that count and converts, which keeps the conversion at this one boundary
  * rather than at every call site.
  *
- * ponytail: a schedule and nothing else. What a phase *does* - banking a
- * score, opening deployment - is not decided yet, so nothing here acts on a
- * phase change. Adding that means giving these entries handlers, not
- * rewriting the shape.
+ * Schedule metadata is mirrored in server/game/engine/phases.py. Phase
+ * scoring and deployment rules live in match-score.ts and history-rules.ts.
  */
 export interface Phase {
   name: string;
@@ -43,7 +41,7 @@ export interface Phase {
   postmatch?: boolean;
   /**
    * Points a side banks at the start of each of its own turns - the board's
-   * currency, for the pool abilities and the wrap crossing, not the match
+   * currency for pool abilities, separate from UP and the match
    * score. `turnPointsBy` is the one place that adds them up.
    *
    * The phase's number - 1, 2, 3 - and **from its halftime**, not its first

@@ -23,7 +23,7 @@
  * so the room shows the engine's bank rather than keeping one of its own.
  */
 import { ruleOf } from './config.service';
-import { BASE_PANELS, captureClaims, captureScore } from './hex-rules';
+import { BASE_PANELS, captureClaims, captureScore, captureZones, captureEligible } from './hex-rules';
 import {
   OVERTIME_FIRST_PLY, OVERTIME_LAST_TURN, PHASES, SCORING_PHASES, handOversBy, isPostmatch,
   phaseIndexAt, phaseStartTurn, PLIES_PER_TURN, turnOf, turnPointsBy,
@@ -38,7 +38,7 @@ export type Side = 'white' | 'black';
  *
  * `late` marks a phase banked after its moment - see `bankEndedPhases`.
  */
-export type PhaseBank = Record<number, { white: number; black: number; late?: boolean }>;
+export type PhaseBank = Record<number, { white: number; black: number; late?: boolean; pendingLoss?: Side }>;
 
 /**
  * How far behind a side may finish the third phase and still force overtime,
@@ -50,7 +50,7 @@ export type PhaseBank = Record<number, { white: number; black: number; late?: bo
 export const OVERTIME_MARGIN = { white: 5, black: 10 };
 
 /** How a match the schedule ends was ended. Mirrors the server's reasons. */
-export type ScheduleEndReason = 'points' | 'overtime';
+export type ScheduleEndReason = 'points' | 'overtime' | 'phase_result';
 
 /**
  * What a unit is worth, by its config `value`; 0 for no unit, or one the
@@ -155,6 +155,13 @@ export function bankEndedPhases(
       // Already over before this hand-over: its moment has passed.
       ...(phaseOver(phase, ply - 1) ? { late: true } : {}),
     };
+    const entry = out[phase];
+    if (!entry.late) {
+      if (phase === 1 && !Object.entries(board ?? {}).some(([at, piece]) =>
+          piece?.color === 'white' && (piece.hp === undefined || piece.hp > 0)
+          && captureZones(radius).some(zone => zone.hexes.has(at) && captureEligible(piece, zone, config)))) entry.pendingLoss = 'white';
+      if (phase === 2 && entry.black === 0) entry.pendingLoss = 'black';
+    }
   }
   return out ?? bank ?? {};
 }
@@ -275,8 +282,8 @@ export function decidedOnPoints(bank: PhaseBank | null | undefined): Side | null
 }
 
 /**
- * What the bank says of the match at `ply`, for the header: `null` until all
- * three phases are in, then the side that took it on points, else overtime -
+ * What the bank says of the match at `ply`, for the header: a pending early
+ * loss, or after all three phases the points winner, else overtime -
  * and once turn 50 has been played out, black. The same answers
  * `scheduleEnding` ends the match on, so the header never names a result the
  * schedule will not reach. A resignation, a draw or a forfeit can still end it
@@ -284,6 +291,8 @@ export function decidedOnPoints(bank: PhaseBank | null | undefined): Side | null
  * 2026 - *"you can draw/forfiet anytime"*.
  */
 export function matchVerdict(bank: PhaseBank | null | undefined, ply: number): Side | 'overtime' | null {
+  const pending = [1, 2].find(phase => bank?.[phase]?.pendingLoss && !bank[phase].late);
+  if (pending !== undefined) return bank![pending].pendingLoss === 'white' ? 'black' : 'white';
   if (!allBanked(bank)) return null;
   return decidedOnPoints(bank) ?? (turnOf(ply) > OVERTIME_LAST_TURN ? 'black' : 'overtime');
 }
@@ -296,6 +305,7 @@ export function matchVerdict(bank: PhaseBank | null | undefined, ply: number): S
  * on the board ended the match first: a king killed on the turn Phase 3
  * banks, or on turn 50, has already decided it.
  *
+ * - `phase_result`: a frozen Phase 1/2 loss, after both postmatch halves.
  * - `points`: all three phases are in, none of them late, and one side is
  *   past the other's margin - **once Phase 3's postmatch has been played**,
  *   on the hand-over into turn 37 (`OVERTIME_FIRST_PLY`). The result is
@@ -309,6 +319,11 @@ export function matchVerdict(bank: PhaseBank | null | undefined, ply: number): S
 export function scheduleEnding(
   bank: PhaseBank | null | undefined, ply: number,
 ): { winner: Side; reason: ScheduleEndReason } | null {
+  for (const phase of [1, 2]) {
+    const loss = bank?.[phase]?.pendingLoss;
+    if (loss && !bank![phase].late && ply >= (phaseStartTurn(phase + 1) - 1) * PLIES_PER_TURN + 1)
+      return { winner: loss === 'white' ? 'black' : 'white', reason: 'phase_result' };
+  }
   const points = ply >= OVERTIME_FIRST_PLY ? decidedOnPoints(bank) : null;
   if (points) return { winner: points, reason: 'points' };
   if (turnOf(ply) > OVERTIME_LAST_TURN) return { winner: 'black', reason: 'overtime' };

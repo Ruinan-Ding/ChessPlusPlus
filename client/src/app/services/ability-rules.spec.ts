@@ -1,10 +1,38 @@
-import { advanceBuffs, advanceUnitCooldowns, cooldownAfterTurn, stackEffect } from './ability-rules';
+import { advanceBuffs, advanceUnitCooldowns, cooldownAfterTurn, stackEffect, statSetting, stripPositiveEffects } from './ability-rules';
 import type { UnitBuff } from './ability-rules';
 
 const dash = { name: 'Dash', mov: 2, atk: 3, def: 4, turns: 2 };
 const sap = { name: 'Sap', mov: -2, atk: -3, def: -4, turns: 1 };
 
 describe('ability rules', () => {
+  it('allows later ATK/HEL buffs to restore a zero-setting debuff without reapplying earlier boosts', () => {
+    let held = stackEffect(undefined, { name: 'Earlier boost', mov: 0, atk: 8, def: 2, hel: 4 }, 'white');
+    held = stackEffect(held, { name: 'Sap', mov: 0, atk: 0, def: 0, setAtk: 0, setHel: 0, setDef: 0 }, 'black', true);
+    expect([statSetting(held, 'atk'), statSetting(held, 'hel')]).toEqual([0, 0]);
+    const before = structuredClone(held);
+    held = stackEffect(held, { name: 'Later boost', mov: 0, atk: 8, def: 2, hel: 4 }, 'white');
+    expect([statSetting(held, 'atk'), statSetting(held, 'hel')]).toEqual([8, 4]);
+    expect(statSetting(held, 'def')).toBe(0);
+    const restored = JSON.parse(JSON.stringify(held));
+    expect([statSetting(restored, 'atk'), statSetting(restored, 'hel')]).toEqual([8, 4]);
+    const drained = stackEffect(held, { name: 'Drain', mov: 0, atk: -20, def: 0, hel: -20 }, 'black', true);
+    expect([statSetting(drained, 'atk'), statSetting(drained, 'hel')]).toEqual([0, 0]);
+    expect([statSetting(before, 'atk'), statSetting(before, 'hel')]).toEqual([0, 0]);
+  });
+
+  it('strips positive parts of mixed buffs and protection while retaining debuffs and control without mutating Undo', () => {
+    let held = stackEffect(undefined, { name: 'Mixed', mov: 4, atk: 8, def: -2, hel: 4 }, 'white');
+    held = stackEffect(held, { name: 'Sap', mov: 0, atk: -3, def: 0, setHel: 0 }, 'black', true);
+    held = stackEffect(held, { name: 'Cast', mov: 0, atk: 0, def: 0, effect: 'control' }, 'white');
+    held = stackEffect(held, { name: 'Fortress', mov: 0, atk: 0, def: 0, effect: 'invulnerable' }, 'white');
+    const before = structuredClone(held), stripped = stripPositiveEffects(held)!;
+    expect([stripped.mov, stripped.atk, stripped.def, stripped.hel]).toEqual([0, -3, -2, 0]);
+    expect(stripped.effects.some(e => e.effect === 'control')).toBeTrue();
+    expect(stripped.effects.some(e => e.effect === 'invulnerable')).toBeFalse();
+    expect(stripped.effects.some(e => e.setHel === 0)).toBeTrue();
+    expect(held).toEqual(before);
+  });
+
   it('stacks opposing effects without changing the snapshot held for Undo', () => {
     const held = stackEffect(undefined, dash, 'white');
     Object.freeze(held.effects[0]);

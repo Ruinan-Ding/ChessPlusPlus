@@ -44,6 +44,17 @@ numeric attack tiers until display formatting. `ability-rules.ts` contains the e
 solo effect and cooldown calculations; the room owns targeting, staging and persistence.
 The first four pairs use the specified shared catalogue. `history-rules.ts` also applies
 the Phase 3 veteran full heal; the board announces full turns and schedule milestones.
-Online abilities remain deferred. The [handoff](../CODEX_HANDOFF.md) records current branch,
+Online turns use `save_turn_draft` / `commit_turn` when the server advertises
+`turnDraftsSupported`. Staging and Undo save a private validated draft; End Turn and
+timeout commit one batch. Reload binds the snapshot before restoring staged clicks.
+Older servers keep the existing command path. Online abilities remain deferred. The [handoff](../CODEX_HANDOFF.md) records current branch,
 verification and outstanding work; [AGENTS.md](../AGENTS.md) is the workflow and game-rule
 source of truth.
+
+Ability entries can limit casts with `uses`; `usesScope: "phase"` gives a separate
+budget for initialization, each numbered phase (including halftime/postmatch) and
+overtime. Missing scope keeps a match budget. The room saves counts by holder,
+ability id and phase, and Undo restores the originating budget. CP utilities are
+allowed during initialization; ordinary casts remain blocked. ATK/HEL capability
+checks use the configured profile and unlocked passive, distinguishing absent stats
+from temporary numeric zero. See [AGENTS.md](../AGENTS.md) for current game rules.

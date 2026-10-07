@@ -44,6 +44,36 @@ class ConfigParityTestCase(SimpleTestCase):
         with open(FIXTURES, encoding='utf-8') as f:
             cls.fixtures = json.load(f)
 
+    def test_non_object_configs_raise_value_error(self):
+        for raw in ([], [1], True, False, 0, 1, '', 'text'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                load_config(raw)
+
+    def test_boolean_radius_is_not_an_integer_even_with_a_valid_small_setup(self):
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['setup'] = {'white': {'0,1': 'king'}, 'black': {'0,-1': 'king'}}
+        config['board']['radius'] = 1
+        build_initial_board(load_config(config))
+        for radius in (True, False):
+            config['board']['radius'] = radius
+            with self.subTest(radius=radius), self.assertRaisesRegex(ValueError, 'board.radius'):
+                load_config(config)
+
+    def test_default_fallback_returns_an_independent_config(self):
+        for raw in (None, {}):
+            with self.subTest(raw=raw):
+                config = load_config(raw)
+                self.assertEqual(config, DEFAULT_CONFIG)
+                config['units']['pawn']['hp'] += 1
+                self.assertNotEqual(config['units']['pawn']['hp'], DEFAULT_CONFIG['units']['pawn']['hp'])
+
+    def test_malformed_units_are_refused_when_objective_is_absent(self):
+        for value in (None, [], True, 1, 'text'):
+            config = _edited(['units', 'pawn'], value)
+            del config['rules']['objective']
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                load_config(config)
+
     def test_every_refused_edit_is_refused(self):
         for case in self.fixtures['refused']:
             with self.subTest(path=case['path'], value=case['value']):

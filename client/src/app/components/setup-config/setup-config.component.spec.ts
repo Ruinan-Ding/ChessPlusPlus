@@ -1,4 +1,5 @@
 import { Subject } from 'rxjs';
+import { ConfigService, DEFAULT_GAME_CONFIG } from '../../services/config.service';
 import { SAVE_ANSWER_MS, SetupConfigComponent } from './setup-config.component';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 
@@ -14,12 +15,12 @@ describe('SetupConfigComponent', () => {
   let connected: boolean;
   let marked: jasmine.Spy;
 
-  const editor = () => {
+  const editor = (service?: ConfigService) => {
     navigated = [];
     intents = [];
     const router = { navigate: (...args: any[]) => navigated.push(args) } as any;
     // Valid exactly when it parses: this is about Back, not about the rules.
-    const configService = {
+    const configService = service ?? {
       getDefaultConfig: () => '{}',
       config$: new Subject(),
       updateConfig: (json: string) => {
@@ -51,6 +52,67 @@ describe('SetupConfigComponent', () => {
   afterEach(() => {
     removeStore('local', 'returnToGameRoom');
     removeStore('local', 'gameRoomToken');
+  });
+
+  it('opens the active custom config as saved and leaves without a discard prompt', () => {
+    const service = new ConfigService(), custom = structuredClone(DEFAULT_GAME_CONFIG);
+    custom.units.pawn.hp = 17;
+    expect(service.updateConfig(JSON.stringify(custom)).valid).toBeTrue();
+    const c = editor(service);
+    try {
+      expect(JSON.parse(c.jsonConfig).units.pawn.hp).toBe(17);
+      expect(c.savedConfig).toBe(c.jsonConfig);
+      expect(c.hasUnsavedChanges).toBeFalse();
+      c.onBack();
+      expect(c.leaving).toBeFalse();
+      expect(navigated.length).toBe(1);
+      expect(sent.map(m => m.type)).not.toContain('set_custom_config');
+    } finally { c.ngOnDestroy(); }
+  });
+
+  it('prompts before discarding a real edit whose old 32-bit checksum collides', () => {
+    const service = new ConfigService(), config = structuredClone(DEFAULT_GAME_CONFIG);
+    config.units.pawn.name = 'Aa';
+    expect(service.updateConfig(JSON.stringify(config)).valid).toBeTrue();
+    const c = editor(service);
+    try {
+      config.units.pawn.name = 'BB';
+      c.jsonConfig = JSON.stringify(config);
+      expect(c.hasUnsavedChanges).toBeTrue();
+      c.onBack();
+      expect(c.leaving).toBeTrue();
+      expect(navigated).toEqual([]);
+    } finally { c.ngOnDestroy(); }
+  });
+
+  it('keeps explicitly configured __proto__ unit edits in the unsaved comparison', () => {
+    const service = new ConfigService(), config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    config.units = { ...config.units, ['__proto__']: { ...config.units.pawn, id: '__proto__' } };
+    expect(service.updateConfig(JSON.stringify(config)).valid).toBeTrue();
+    const c = editor(service);
+    try {
+      config.units['__proto__'].hp += 1;
+      c.jsonConfig = JSON.stringify(config);
+      expect(c.hasUnsavedChanges).toBeTrue();
+      c.onBack();
+      expect(c.leaving).toBeTrue();
+      expect(navigated).toEqual([]);
+    } finally { c.ngOnDestroy(); }
+  });
+
+  it('keeps an edited real config unsaved until the room accepts it', () => {
+    const service = new ConfigService(), c = editor(service);
+    try {
+      const edited = JSON.parse(c.jsonConfig);
+      edited.units.pawn.hp = 17;
+      c.jsonConfig = JSON.stringify(edited);
+      c.onBack(); c.leaveChoice('save');
+      expect(c.saving).toBeTrue();
+      expect(c.hasUnsavedChanges).toBeTrue();
+      socket.next({ type: 'error', code: 'INVALID_CONFIG', message: 'refused' });
+      expect(c.hasUnsavedChanges).toBeTrue();
+      expect(navigated).toEqual([]);
+    } finally { c.ngOnDestroy(); }
   });
 
   it('asks before leaving changes unsaved, and Stay loses nothing', () => {

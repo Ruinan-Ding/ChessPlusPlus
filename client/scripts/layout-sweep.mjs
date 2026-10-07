@@ -14,13 +14,16 @@
 // Then the other screens - the login, the lobby, the setup - at desktop,
 // tablet and phone sizes: nothing past the screen's edge or scrolling
 // sideways, no text under 12px and no control under 24px. They are pages of
-// prose and forms, and may scroll down.
+// prose and forms, and may scroll down. The lobby also checks connection
+// states, long names, the rename form and the open volume control. Dialogs
+// also check text bounds and reachable actions; setup checks errors and
+// unsaved changes, including short landscape phones.
 //
 // CHROME overrides where Chrome is looked for. Exits non-zero if any size the
 // room is meant to hold fails a check: the three columns from 1180x1025 up,
-// and on a computer's window down to 850x526, scaled (their type's floor
-// reported, not failed); the board and one column of tabs (roomLayout
-// 'tabbed') on a landscape touch screen, or a computer window smaller still,
+// and on resized computer windows, scaled (their type's floor reported,
+// not failed); the board and one column of tabs (roomLayout 'tabbed') on
+// a landscape touch screen,
 // every tab of it; and the board over the tabs (roomLayout 'stacked') on an
 // upright tablet, every tab of it, with touch emulated - before the match, in
 // it, and with an offer of a draw waiting. No unit's numbers on another's.
@@ -92,7 +95,7 @@ const PHONES_UPRIGHT = [[430, 739], [412, 804], [390, 664], [360, 640]];
 // board over the tabs, and a phone each way up (reported only - `want` null).
 const PREGAME = [
   [1920, 1080, 'columns', false], [1180, 730, 'columns', false],
-  [1024, 768, 'tabbed', true], [1024, 600, 'tabbed', true], [800, 505, 'tabbed', false],
+  [1024, 768, 'tabbed', true], [1024, 600, 'tabbed', true], [800, 505, 'columns', false],
   [820, 1180, 'stacked', true], [768, 1024, 'stacked', true],
   [844, 340, null, true], [390, 664, null, true],
 ];
@@ -100,7 +103,7 @@ const PREGAME = [
 // phone each way up: a strip over the board, which gives up the height.
 const DRAW_OFFER = [
   [1180, 730, 'columns', false], [1366, 768, 'columns', false], [1920, 950, 'columns', false],
-  [1024, 768, 'tabbed', true], [800, 505, 'tabbed', false], [768, 1024, 'stacked', true],
+  [1024, 768, 'tabbed', true], [800, 505, 'columns', false], [768, 1024, 'stacked', true],
   [844, 340, null, true], [390, 664, null, true], [360, 640, null, true],
 ];
 // The other screens, at a desktop, a laptop, tablets and phones either way up.
@@ -108,6 +111,12 @@ const SCREENS = ['login', 'lobby', 'setup'];
 const SCREEN_SIZES = [
   [1920, 1080, false], [1366, 768, false], [1024, 768, true], [820, 1180, true],
   [844, 390, true], [390, 844, true], [360, 740, true],
+  [844, 340, true], [740, 330, true],
+];
+
+const DIALOG_SIZES = [
+  [1920, 1080, false], [900, 520, false], [620, 740, false],
+  [390, 664, true], [360, 640, true], [844, 340, true], [740, 330, true],
 ];
 
 const MIN_TEXT = 12;
@@ -291,6 +300,16 @@ const PROBE = `(() => {
     }
     if (text.right > box.right + 1 || text.left < label.right - 1) {
       faults.push(name + ' values run outside their cell or over their label');
+    }
+  }
+  for (const button of room.querySelectorAll('.path-btn')) {
+    if (!shown(button)) continue;
+    const name = button.querySelector('.path-name');
+    const cost = button.querySelector('.path-cost');
+    const n = name.getBoundingClientRect(), c = cost.getBoundingClientRect();
+    if (Math.abs((n.top + n.bottom - c.top - c.bottom) / 2) > 1
+        || name.scrollWidth > name.clientWidth + 1) {
+      faults.push('path name and cost must fit on one line: ' + button.textContent.trim());
     }
   }
   const header = room.querySelector(':scope > header');
@@ -572,6 +591,48 @@ async function resize(send, w, h, touch = false) {
   await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: touch });
 }
 
+// Check the dialog itself: the page behind a backdrop cannot tell us whether
+// its text overflows or its actions are covered. Scroll long dialogs to each
+// action before testing it, so a short landscape window can still use them.
+const DIALOG_PROBE = `(selector) => {
+  const root = document.querySelector(selector), faults = [];
+  if (!root) return ['missing dialog: ' + selector];
+  const r = root.getBoundingClientRect();
+  if (r.left < -1 || r.top < -1 || r.right > innerWidth + 1 || r.bottom > innerHeight + 1) {
+    faults.push('dialog outside viewport: ' + selector);
+  }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    if (!node.textContent.trim()) continue;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    if ([...range.getClientRects()].some(t => t.left < r.left - 1 || t.right > r.right + 1)) {
+      faults.push('text outside dialog: ' + node.textContent.trim());
+    }
+  }
+  for (const button of root.querySelectorAll('button')) {
+    button.scrollIntoView({ block: 'nearest' });
+    const b = button.getBoundingClientRect(), range = document.createRange();
+    range.selectNodeContents(button);
+    const t = range.getBoundingClientRect();
+    if (t.width && (t.left < b.left - 1 || t.right > b.right + 1)) {
+      faults.push('label outside button: ' + button.textContent.trim());
+    }
+    const at = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+    if (!button.disabled && (!at || !button.contains(at))) {
+      faults.push('dialog action obstructed: ' + button.textContent.trim());
+    }
+  }
+  if (root.matches('.reveal-waiting-modal')) {
+    const leave = document.querySelector('.header-actions .leave-btn'), b = leave.getBoundingClientRect();
+    if (!leave.contains(document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2))) {
+      faults.push('Leave is blocked while waiting for Reveal');
+    }
+  }
+  return faults;
+}`;
+
 // A page other than the room: what runs past the screen's edge, and what
 // text is under 12px.
 const SCREEN_PROBE = `(() => {
@@ -581,8 +642,13 @@ const SCREEN_PROBE = `(() => {
   if (de.scrollWidth > de.clientWidth + 1) faults.push('the page scrolls sideways');
   const past = [...document.querySelectorAll('body *')].filter((el) => {
     if (!shown(el)) return false;
-    const r = el.getBoundingClientRect();
-    return r.right > innerWidth + 1 || r.left < -1;
+    let { left, right } = el.getBoundingClientRect();
+    for (let parent = el.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+      if (getComputedStyle(parent).overflowX === 'visible') continue;
+      const bounds = parent.getBoundingClientRect();
+      left = Math.max(left, bounds.left); right = Math.min(right, bounds.right);
+    }
+    return right > left && (right > innerWidth + 1 || left < -1);
   }).map((el) => (el.tagName.toLowerCase() + '.' + String(el.className).split(' ')[0]).slice(0, 30));
   if (past.length) faults.push("past the screen's edge: " + [...new Set(past)].slice(0, 5).join(', '));
   const small = [...document.querySelectorAll('body *')].filter((el) => shown(el)
@@ -597,6 +663,52 @@ const SCREEN_PROBE = `(() => {
     .filter((el) => { const r = el.getBoundingClientRect(); return Math.min(r.width, r.height) < ${MIN_TARGET} - 0.5; })
     .map((el) => (el.textContent.trim() || el.placeholder || el.tagName.toLowerCase()).slice(0, 18));
   if (tiny.length) faults.push(tiny.length + ' controls under ${MIN_TARGET}px: ' + tiny.slice(0, 4).join(' | '));
+  for (const control of document.querySelectorAll('button, input, select, textarea')) {
+    if (!shown(control)) continue;
+    const box = control.getBoundingClientRect();
+    let left = box.left, right = box.right, top = box.top, bottom = box.bottom;
+    let doneX = false, doneY = false;
+    for (let parent = control.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+      const style = getComputedStyle(parent), bounds = parent.getBoundingClientRect();
+      if (style.display === 'contents') continue;
+      if (/auto|scroll/.test(style.overflowX) && parent.scrollWidth > parent.clientWidth + 1) doneX = true;
+      if (/auto|scroll/.test(style.overflowY) && parent.scrollHeight > parent.clientHeight + 1) doneY = true;
+      if (!doneX && /hidden|clip/.test(style.overflowX)) {
+        left = Math.max(left, bounds.left); right = Math.min(right, bounds.right);
+      }
+      if (!doneY && /hidden|clip/.test(style.overflowY)) {
+        top = Math.max(top, bounds.top); bottom = Math.min(bottom, bounds.bottom);
+      }
+    }
+    if (right - left < box.width - 1 || bottom - top < box.height - 1) {
+      faults.push('control clipped by a non-scrolling box: ' + (control.textContent.trim() || control.type));
+    }
+  }
+  const lobbyHeader = document.querySelector('app-lobby .header');
+  if (lobbyHeader) {
+    const n = lobbyHeader.querySelector('.username-display span').getBoundingClientRect();
+    const c = lobbyHeader.querySelector('app-connection-status').getBoundingClientRect();
+    if (Math.abs((n.top + n.bottom - c.top - c.bottom) / 2) > 3) {
+      faults.push('player name and connection status occupy different rows');
+    }
+    {
+      for (const button of lobbyHeader.querySelectorAll('.lobby-actions button')) {
+        const b = button.getBoundingClientRect();
+        if (Math.abs((n.top + n.bottom - b.top - b.bottom) / 2) > 3) {
+          faults.push('lobby action left the header row: ' + button.textContent.trim());
+        }
+      }
+    }
+  }
+  for (const button of document.querySelectorAll('button')) {
+    if (!shown(button)) continue;
+    const range = document.createRange();
+    range.selectNodeContents(button);
+    const text = range.getBoundingClientRect(), box = button.getBoundingClientRect();
+    if (text.width && (text.left < box.left - 1 || text.right > box.right + 1)) {
+      faults.push('label outside its button: ' + button.textContent.trim());
+    }
+  }
   return faults;
 })()`;
 
@@ -730,9 +842,9 @@ try {
   for (const [w, h] of SMALL_WINDOWS) {
     await eachTab(w, h, (tab, m) => record(tab === '-' ? 'scaled' : tab, w, h, m, judgeScaled(m, w, h)));
   }
-  console.log('\nA computer window smaller still - the board and one column of tabs, every tab:');
+  console.log('\nA computer window smaller still - all columns remain visible:');
   for (const [w, h] of TINY_WINDOWS) {
-    await eachTab(w, h, (tab, m) => recordShort(tab, w, h, m, 'tabbed'));
+    await eachTab(w, h, (tab, m) => record(tab === '-' ? 'scaled' : tab, w, h, m, judgeScaled(m, w, h)));
   }
   } else {
   console.log('\nThe board and one column of tabs on a touch screen, every tab:');
@@ -754,7 +866,7 @@ try {
   console.log('\nThe longest banner the match can show:');
   const everySize = [
     ...ASSERTED.map(([w, h]) => [w, h, 'columns', false]),
-    ...TINY_WINDOWS.map(([w, h]) => [w, h, 'tabbed', false]),
+    ...TINY_WINDOWS.map(([w, h]) => [w, h, 'columns', false]),
     ...TABBED.map(([w, h]) => [w, h, 'tabbed', true]),
     ...STACKED.map(([w, h]) => [w, h, 'stacked', true]),
   ];
@@ -785,6 +897,35 @@ try {
     report('scaled', w, h, m);
   }
   }
+  console.log('\nRoom dialogs:');
+  for (const [w, h, touch] of DIALOG_SIZES.filter(([, , t]) => mine(t))) {
+    await resize(send, w, h, touch);
+    for (const [state, selector] of [
+      ['reconnect', '.reconnect-modal'], ['end', '.end-modal'],
+      ['waiting', '.reveal-waiting-modal'], ['request', '.reveal-request-modal'],
+    ]) {
+      await ev(`(() => {
+        const room = ng.getComponent(document.querySelector('app-game-room'));
+        const name = 'WWWWWWWWWWWWWWWWWWWWWWWW!xxxxxxxxxxxx';
+        room.connectionLost = '${state}' === 'reconnect';
+        room.showEndModal = '${state}' === 'end';
+        room.endModalTitle = 'Match finished';
+        room.endModalDetail = name + ' has left the game room.';
+        room.showRevealWaitingModal = '${state}' === 'waiting';
+        room.showRevealRequestModal = '${state}' === 'request';
+        room.players = [{ username: room.username }, { username: name }];
+        room.revealRequester = name;
+        room.revealRequestCountdown = 5;
+        room.cdr.detectChanges();
+        return true;
+      })()`);
+      await sleep(200);
+      const faults = await ev(`(${DIALOG_PROBE})('${selector}')`);
+      if (faults.length) failed++; else held++;
+      console.log(`${faults.length ? 'FAIL' : ' ok '} ${state.padEnd(9)} ${`${w}x${h}`.padEnd(10)}`
+        + (faults.length ? `\n       ${faults.join('\n       ')}` : ''));
+    }
+  }
   console.log('\nThe other screens:');
   for (const page of SCREENS) {
     for (const [w, h, touch] of SCREEN_SIZES.filter(([, , t]) => mine(t))) {
@@ -795,6 +936,73 @@ try {
       if (faults.length) failed++; else held++;
       console.log(`${faults.length ? 'FAIL' : ' ok '} ${page.padEnd(9)} ${`${w}x${h}`.padEnd(10)}`
         + (faults.length ? `\n       ${faults.join('\n       ')}` : ''));
+      if (page === 'lobby') {
+        for (const variant of ['connected', 'long name', 'disconnected', 'offline', 'rename', 'volume', 'connecting', 'failed', 'invite']) {
+          await ev(`(() => {
+            const lobby = ng.getComponent(document.querySelector('app-lobby'));
+            lobby.username = ['long name', 'disconnected', 'offline'].includes('${variant}')
+              ? 'WWWWWWWWWWWWWWWWWWWWWWWW!xxxxxxxxxxxx' : 'Sweep';
+            lobby.activeInvite = '${variant}' === 'invite'
+              ? { inviter: 'WWWWWWWWWWWWWWWWWWWWWWWW!xxxxxxxxxxxx', inviteId: 'sweep', timeLeft: 30 } : null;
+            lobby.showChangeUsername = '${variant}' === 'rename';
+            lobby.nameWasTaken = lobby.showChangeUsername;
+            lobby.renameError = lobby.showChangeUsername ? 'This name is already taken.' : '';
+            lobby.cdr.detectChanges();
+            const status = ng.getComponent(document.querySelector('app-connection-status'));
+            status.isConnected = !['disconnected', 'offline'].includes('${variant}');
+            status.isOffline = '${variant}' === 'offline';
+            status.cdr.detectChanges();
+            const volume = ng.getComponent(document.querySelector('app-volume-control'));
+            volume.open = '${variant}' === 'volume';
+            ng.applyChanges(volume);
+            const dialog = ng.getComponent(document.querySelector('app-connection-dialog'));
+            dialog.isReconnecting = '${variant}' === 'connecting';
+            dialog.connectionFailed = '${variant}' === 'failed';
+            ng.applyChanges(dialog);
+            return true;
+          })()`);
+          await sleep(200);
+          const extra = await ev(SCREEN_PROBE);
+          if (['connecting', 'failed', 'invite'].includes(variant)) {
+            const selector = variant === 'invite' ? '.invite-content' : '.connection-dialog';
+            extra.push(...await ev(`(${DIALOG_PROBE})('${selector}')`));
+          }
+          if (extra.length) failed++; else held++;
+          console.log(`${extra.length ? 'FAIL' : ' ok '} lobby ${variant.padEnd(12)} ${`${w}x${h}`.padEnd(10)}`
+            + (extra.length ? `\n       ${extra.join('\n       ')}` : ''));
+        }
+      }
+      if (page === 'setup') {
+        for (const variant of ['errors', 'unsaved']) {
+          await ev(`(() => {
+            const setup = ng.getComponent(document.querySelector('app-setup-config'));
+            setup.errors = '${variant}' === 'errors' ? Array(20).fill('Unknown unit field: unexpected.') : [];
+            setup.leaving = '${variant}' === 'unsaved';
+            ng.applyChanges(setup);
+            return true;
+          })()`);
+          const extra = variant === 'unsaved'
+            ? await ev(`(${DIALOG_PROBE})('.leave-dialog')`) : await ev(SCREEN_PROBE);
+          if (extra.length) failed++; else held++;
+          console.log(`${extra.length ? 'FAIL' : ' ok '} setup ${variant.padEnd(12)} ${`${w}x${h}`.padEnd(10)}`
+            + (extra.length ? `\n       ${extra.join('\n       ')}` : ''));
+        }
+      }
+      if (page === 'login') {
+        for (const failedState of [false, true]) {
+          await ev(`(() => {
+            const dialog = ng.getComponent(document.querySelector('app-connection-dialog'));
+            dialog.isReconnecting = ${!failedState};
+            dialog.connectionFailed = ${failedState};
+            ng.applyChanges(dialog);
+            return true;
+          })()`);
+          const extra = await ev(`(${DIALOG_PROBE})('.connection-dialog')`);
+          if (extra.length) failed++; else held++;
+          console.log(`${extra.length ? 'FAIL' : ' ok '} login ${failedState ? 'failed' : 'connecting'} ${w}x${h}`
+            + (extra.length ? `\n       ${extra.join('\n       ')}` : ''));
+        }
+      }
     }
   }
 } catch (e) {

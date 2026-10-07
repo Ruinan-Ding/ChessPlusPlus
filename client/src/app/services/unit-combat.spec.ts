@@ -26,6 +26,33 @@ describe('unit combat effects', () => {
     expect(tauntAllows(board, '0,0', '1,-1', config, buffs, false)).toBeTrue();
     expect(tauntAllows({ '0,0': board['0,0'], '1,-1': board['1,-1'], '3,0': board['1,0'] }, '0,0', '1,-1', config, buffs)).toBeTrue();
   });
+  it('prevents counters and Charge after a lethal strike or when counters are disabled', () => {
+    const knight = piece('knight'), pawn = piece('pawn', 'black', 1);
+    const killed = combatExchange(knight, pawn, 1, config, { ...bonuses, charge: true });
+    expect([killed.targetHp, killed.attackerHp, killed.countered, killed.counterDamage, killed.secondDamage])
+      .toEqual([0, 20, false, 0, 0]);
+    const disabled = combatExchange(knight, { ...pawn, hp: 14 }, 1, config, { ...bonuses, charge: true }, false);
+    expect([disabled.targetHp, disabled.attackerHp, disabled.countered, disabled.secondDamage])
+      .toEqual([10, 20, false, 0]);
+  });
+
+  it('bases Taunt eligibility on the exact attack ring and ATK buffs, ignoring dead or friendly taunters', () => {
+    const custom = structuredClone(config);
+    Object.assign(custom.units.archer, { attack: [0, 8], attackMinRange: 1, attackRange: 2 });
+    const attacker = piece('archer'), shield = piece('shieldman', 'black', 32);
+    const board = { '0,0': attacker, '1,0': shield, '2,0': piece('pawn', 'black', 14) };
+    const taunt = stackEffect(undefined, { name: 'Taunt', effect: 'taunt', mov: 0, atk: 0, def: 0 }, 'black');
+    const buffs: any = { [shield.uid]: taunt };
+    expect(tauntAllows(board, '0,0', '2,0', custom, buffs)).toBeTrue();
+    buffs[attacker.uid] = { atk: 8 };
+    expect(tauntAllows(board, '0,0', '2,0', custom, buffs)).toBeFalse();
+    expect(tauntAllows(board, '0,0', '1,0', custom, buffs)).toBeTrue();
+    board['1,0'] = { ...shield, hp: 0 };
+    expect(tauntAllows(board, '0,0', '2,0', custom, buffs)).toBeTrue();
+    board['1,0'] = { ...shield, color: 'white' };
+    expect(tauntAllows(board, '0,0', '2,0', custom, buffs)).toBeTrue();
+  });
+
   it('retains original ownership, position and wounds through control expiry and reload', () => {
     const unit = { ...piece('king', 'black', 7), owner: 'black', color: 'white', controlledUntil: 57, controlTurn: 55 };
     const history = JSON.parse(JSON.stringify([{ turn: 55, control: unit, at: '-12,11' }]));

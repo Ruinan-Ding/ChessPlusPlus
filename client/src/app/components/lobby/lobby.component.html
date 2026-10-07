@@ -1,61 +1,66 @@
 <div class="lobby-container">
   <div class="header">
-    <h1><span>ChessPlusPlus Lobby</span></h1>
+    <h1 #lobbyTitle [class.title-hidden]="hideTitle"><span>ChessPlusPlus Lobby</span></h1>
     <!-- Outside the <h1>: a heading takes phrasing content, not a control group. -->
     <app-volume-control></app-volume-control>
     <div class="user-info">
-      <div class="username-display">
-        <span>Playing as: <strong>{{ username }}</strong></span>
+      <div class="identity-row">
+        <div class="username-display">
+          <span [title]="username">Playing as: <strong>{{ username }}</strong></span>
+        </div>
+        <app-connection-status></app-connection-status>
+      </div>
+      <div class="lobby-actions">
         <!-- Not with an invite out or in: an invite is addressed to the name (renameLocked). -->
         <button class="btn-small" (click)="toggleChangeUsername()" [disabled]="renameLocked && !showChangeUsername"
           [attr.title]="renameLocked ? 'Answer or withdraw your invite first' : null">Change</button>
+        <button class="setup-btn" (click)="openSetup()">Configure Setup</button>
+        <button class="single-player-btn" (click)="startSinglePlayer()">Single Player</button>
       </div>
-      <div class="change-username" *ngIf="showChangeUsername">
-        <p class="name-taken" *ngIf="nameWasTaken">
-          "{{ username }}" is yours for now - the name you asked for was taken. Pick another, or
-          keep this one.
-        </p>
-        <input
-          type="text"
-          [(ngModel)]="newUsername"
-          (ngModelChange)="renameError = ''"
-          placeholder="Name or Name#key"
-          aria-label="New username"
-          [attr.aria-invalid]="renameError ? true : null"
-          autocomplete="off" autocapitalize="off" spellcheck="false"
-          aria-describedby="rename-tripcode-note"
-          (keyup.enter)="changeUsername()"
-        >
-        <!-- The parser counts Unicode characters; native maxlength would
-             silently truncate emoji keys before validation. -->
-        <div class="char-counter" [ngClass]="{'near-limit': newUsernameLength > 20}">
-          {{ newUsernameLength }}/24
-        </div>
-        <p id="rename-tripcode-note" class="tripcode-note">Add #key for a tripcode.
-          Don’t use passwords or sensitive information.
-          <span *ngIf="hasTripcode">Leave out # to keep your current code.</span></p>
-        <label class="remove-tripcode" *ngIf="hasTripcode">
-          <input type="checkbox" [(ngModel)]="removeTripcode"> Remove tripcode
-        </label>
-        <!-- Why the name was refused, here where it was asked for (renameError). -->
-        <p class="rename-error" *ngIf="renameError" role="alert">{{ renameError }}</p>
-        <div class="rename-actions">
-          <button type="button" class="rename-save" (click)="changeUsername()">Save</button>
-          <button type="button" (click)="keepAssignedName()">{{ nameWasTaken ? 'Keep' : 'Cancel' }}</button>
-        </div>
-      </div>
-      <button class="setup-btn" (click)="openSetup()">Configure Setup</button>
-      <button class="single-player-btn" (click)="startSinglePlayer()">Single Player</button>
-      <app-connection-status></app-connection-status>
     </div>
   </div>
-  
+
+  <div class="change-username" *ngIf="showChangeUsername">
+    <p class="name-taken" *ngIf="nameWasTaken">
+      "{{ username }}" is yours for now - the name you asked for was taken. Pick another, or
+      keep this one.
+    </p>
+    <input
+      type="text"
+      [(ngModel)]="newUsername"
+      (ngModelChange)="renameError = ''"
+      placeholder="Name or Name#key"
+      aria-label="New username"
+      [attr.aria-invalid]="renameError ? true : null"
+      autocomplete="off" autocapitalize="off" spellcheck="false"
+      aria-describedby="rename-tripcode-note"
+      (keyup.enter)="changeUsername()"
+    >
+    <!-- The parser counts Unicode characters; native maxlength would
+         silently truncate emoji keys before validation. -->
+    <div class="char-counter" [ngClass]="{'near-limit': newUsernameLength > 20}">
+      {{ newUsernameLength }}/24
+    </div>
+    <p id="rename-tripcode-note" class="tripcode-note">Add #key for a tripcode.
+      Don’t use passwords or sensitive information.
+      <span *ngIf="hasTripcode">Leave out # to keep your current code.</span></p>
+    <label class="remove-tripcode" *ngIf="hasTripcode">
+      <input type="checkbox" [(ngModel)]="removeTripcode"> Remove tripcode
+    </label>
+    <!-- Why the name was refused, here where it was asked for (renameError). -->
+    <p class="rename-error" *ngIf="renameError" role="alert">{{ renameError }}</p>
+    <div class="rename-actions">
+      <button type="button" class="rename-save" (click)="changeUsername()">Save</button>
+      <button type="button" (click)="keepAssignedName()">{{ nameWasTaken ? 'Keep' : 'Cancel' }}</button>
+    </div>
+  </div>
+
   <div class="lobby-content">
     <div class="users-panel">
       <h2 [class.offline-head]="!serverOnline">{{ serverOnline ? 'Online Users' : 'Offline' }}</h2>
       <div class="users-list">
-        <div 
-          class="user-item" 
+        <div
+          class="user-item"
           *ngFor="let user of sortedUsers"
           [ngClass]="{'current-user': user.username === username, 'configuring-user': user.status === 'configuring'}"
           (contextmenu)="openUserMenu($event, user)"
@@ -71,12 +76,12 @@
             <span *ngIf="user.username === username" class="current-user-tag">(You)</span>
           </span>
           <span class="user-status">
-            {{ user.status === 'online' ? 'Available' : 
-               (user.status === 'in-game' ? 'In Game' : 
+            {{ user.status === 'online' ? 'Available' :
+               (user.status === 'in-game' ? 'In Game' :
                (user.status === 'configuring' ? 'Configuring' : 'Invited')) }}
           </span>
-          <button 
-            class="action-button" 
+          <button
+            class="action-button"
             (click)="openUserMenu($event, user)"
             [disabled]="user.username === username"
             [attr.aria-label]="'Options for ' + user.username"
@@ -84,11 +89,11 @@
         </div>
       </div>
     </div>
-    
+
     <div class="chat-panel">
       <div class="chat-messages" #lobbyChat>
-        <div 
-          class="message-item" 
+        <div
+          class="message-item"
           *ngFor="let message of messages"
           [ngClass]="{
             'system-message': message.type === 'system',
@@ -98,9 +103,9 @@
         >
           <div class="message-header">
             <span class="message-username">{{ message.username }}</span>
-            <button 
+            <button
               *ngIf="message.username !== 'System' && message.username !== username"
-              class="action-button" 
+              class="action-button"
               (click)="openUserMenu($event, { username: message.username, status: 'online' })"
               [attr.aria-label]="'Options for ' + message.username"
             >
@@ -114,17 +119,17 @@
         </div>
       </div>
       <div class="chat-input">
-        <input 
-          type="text" 
-          [(ngModel)]="messageContent" 
-          placeholder="Type a message..." 
+        <input
+          type="text"
+          [(ngModel)]="messageContent"
+          placeholder="Type a message..."
           (keyup.enter)="sendMessage()"
         >
         <button (click)="sendMessage()">Send</button>
       </div>
     </div>
   </div>
-  
+
   <!-- Invite Dialog -->
   <div class="invite-dialog" *ngIf="activeInvite">
     <div class="invite-content">
@@ -136,6 +141,6 @@
       </div>
     </div>
   </div>
-  
+
   <app-connection-dialog></app-connection-dialog>
 </div>

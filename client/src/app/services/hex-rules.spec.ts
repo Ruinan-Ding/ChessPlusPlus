@@ -188,6 +188,9 @@ describe('strikeDamage', () => {
       units: { ...config.units, guard: { ...config.units.guard, attack: 0 } },
     };
     expect(strikeDamage('guard', 'wall', 1, unarmed)).toBe(0);
+    expect(strikeDamage('guard', 'wall', 1, unarmed, 100)).toBe(0);
+    expect(canAttack(unarmed.units.guard, 1, 100)).toBeFalse();
+    expect(attackTiers('guard', unarmed)).toEqual([]);
   });
 
   it('adds a boost to the scaled ring, which is where the hex shows it', () => {
@@ -223,7 +226,7 @@ describe('explicit attack rings', () => {
     expect(zone.has('6,0')).toBeTrue();
     expect(zone.has('7,0')).toBeFalse();
     expect(strikeDamage('archer', 'pawn', 2, config, 30)).toBe(0);
-    expect(strikeDamage('shieldman', 'pawn', 1, config, 30)).toBe(30);
+    expect(strikeDamage('shieldman', 'pawn', 1, config, 30)).toBe(0);
     config.units.archer.attack[1] = 0;
     expect(strikeDamage('archer', 'pawn', 4, config, 30)).toBe(30);
   });

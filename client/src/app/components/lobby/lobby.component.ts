@@ -1,9 +1,9 @@
-import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef, ViewChild } from '@angular/core';
+import { Component, OnInit, OnDestroy, AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
 import { Subject } from 'rxjs';
-import { takeUntil, filter, take } from 'rxjs/operators';
+import { takeUntil, filter } from 'rxjs/operators';
 import { ConnectionStatusComponent } from '../connection-status/connection-status.component';
 import { VolumeControlComponent } from '../volume-control/volume-control.component';
 import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
@@ -11,7 +11,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { AuthService } from '../../services/auth.service';
-import { parseUsernameInput, USERNAME_INPUT_ERROR } from '../../services/username';
+import { parseUsernameInput, randomUsername, USERNAME_INPUT_ERROR } from '../../services/username';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 import { closeUserMenu, openUserMenu as showUserMenu } from '../../services/user-menu';
 import { afterDraw, atNewest } from '../../services/scrolling';
@@ -28,7 +28,7 @@ const RENAME_ERRORS = ['USERNAME_TAKEN', 'INVALID_USERNAME', 'USERNAME_TOO_LONG'
   styleUrls: ['./lobby.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class LobbyComponent implements OnInit, OnDestroy {
+export class LobbyComponent implements OnInit, OnDestroy, AfterViewInit {
   private isRejoiningFromNavigation: boolean = false;
   username: string = '';
   users: User[] = [];
@@ -55,6 +55,10 @@ export class LobbyComponent implements OnInit, OnDestroy {
    * sat open saying nothing.
    */
   renameError = '';
+
+  @ViewChild('lobbyTitle') private lobbyTitle?: ElementRef<HTMLElement>;
+  hideTitle = false;
+  private titleObserver?: ResizeObserver;
 
   /** The chat's log, to follow its newest line (onLobbyMessages). */
   @ViewChild('lobbyChat') private chatLog?: ElementRef<HTMLElement>;
@@ -107,14 +111,12 @@ export class LobbyComponent implements OnInit, OnDestroy {
   ) {}
   
   ngOnInit(): void {
-    console.log('[Lobby] ngOnInit called');
     
     window.addEventListener('beforeunload', this.handleBeforeUnload);
     
     this.isRejoiningFromNavigation = this.navigationState.isIntentionalNavigation();
     const navContext = this.navigationState.getNavigationContext();
     
-    console.log(`[Lobby] ngOnInit: isIntentionalNavigation=${this.isRejoiningFromNavigation}, navContext=${navContext}`);
     
     // If context is 'none', we're returning from a game room - apply remaining invite cooldown
     // Cooldown is 5 seconds from when they joined the game room, not from when they left
@@ -123,25 +125,15 @@ export class LobbyComponent implements OnInit, OnDestroy {
       // rate-limit - leaving one must not block the next invite.
       if (readStore('session', 'leftSinglePlayer') === '1') {
         removeStore('session', 'leftSinglePlayer');
-        console.log('[Lobby] Returned from a single-player room - no cooldown');
       } else if (this.gameRoomJoinTime > 0) {
-        console.log('[Lobby] Detected return from game room - applying remaining cooldown');
         const elapsedSeconds = Math.ceil((Date.now() - this.gameRoomJoinTime) / 1000);
         const remainingCooldown = Math.max(0, 5 - elapsedSeconds);
         if (remainingCooldown > 0) {
           this.startInviteCooldownWithDuration(remainingCooldown);
-        } else {
-          console.log('[Lobby] Cooldown already expired');
         }
       } else {
-        console.log('[Lobby] No game room join time recorded, applying full cooldown');
         this.startInviteCooldown();
       }
-    }
-    
-    // If context is 'lobby', we're returning from setup - no cooldown needed
-    if (navContext === 'lobby' && this.isRejoiningFromNavigation) {
-      console.log('[Lobby] Detected return from setup (context: lobby) - no cooldown');
     }
     
     if (this.isRejoiningFromNavigation) {
@@ -149,17 +141,15 @@ export class LobbyComponent implements OnInit, OnDestroy {
       // Clear any lingering invite state (user statuses come from the server)
       this.activeInvite = null;
       this.invitePending = false;
-      console.log('[Lobby] Rejoining from navigation, will send rejoining: true');
     }
     
     // Written back only when it was made up here: the tab's name may be a
     // guest name the server handed out, which is this tab's and nobody's
     // starting name (AuthService).
     const current = this.authService.getUsername();
-    this.username = current || this.generateRandomUsername();
-    if (!current) this.authService.setUsername(this.username);
+    this.username = current || randomUsername(this.sharedDataService.getLobbyUsers().map(user => user.username));
+    if (!current) this.authService.setUsername(this.username, false, '');
     this.newUsername = this.authService.getBaseUsername();
-    console.log('[Lobby] Username:', this.username);
     
     this.wsService.connectionStatus$.pipe(takeUntil(this.destroy$)).subscribe(connected => {
       this.serverOnline = connected;
@@ -211,7 +201,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
           
         case 'username_changed':
           if (!message.oldUsername || !message.newUsername) {
-            console.error('Invalid username_changed message: missing required fields', message);
+            console.error('Invalid username_changed message: missing required fields');
             break;
           }
           this.addSystemMessage(`${message.oldUsername} has changed their name to ${message.newUsername}.`);
@@ -239,10 +229,9 @@ export class LobbyComponent implements OnInit, OnDestroy {
           
         case 'challenge_accepted':
           if (!message.username || !message.gameId || !message.token) {
-            console.error('Invalid challenge_accepted message: missing required fields', message);
+            console.error('Invalid challenge_accepted message: missing required fields');
             break;
           }
-          console.log('[Lobby] Received challenge_accepted:', message);
           this.addSystemMessage(`${message.username} has accepted your invitation!`);
           this.invitePending = false;
           this.gameRoomJoinTime = Date.now();
@@ -261,7 +250,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
           const gameId = message.gameId;
           const gameToken = message.token;
           if (gameId && this.router) {
-            console.log('[Lobby] Navigating to game room:', gameId, 'with token');
             this.router.navigate(['/game-room', gameId], { queryParams: { token: gameToken } }).catch(err => {
               console.error('Navigation to game room failed:', err);
             });
@@ -291,7 +279,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
             console.error('Invalid challenge_declined message: missing username field', message);
             break;
           }
-          console.log('[Lobby] Received challenge_declined:', message);
           this.addSystemMessage(`${message.username} has declined your invitation.`);
           this.invitePending = false;
           this.users = this.users.map((user: User) => {
@@ -306,7 +293,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
         
         case 'connection_established':
           // Server confirmation message - no action needed
-          console.log('[Lobby] Server connection confirmed');
           break;
         
         case 'heartbeat_ack':
@@ -377,7 +363,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
             'CHALLENGE_NOT_FOUND', 'USER_NOT_FOUND', 'INVALID_OPPONENT'
           ];
           if (message.code && challengeErrorCodes.includes(message.code)) {
-            console.log(`[Lobby] ${message.code} - resetting invite state`);
             this.invitePending = false;
             this.users = this.users.map((user: User) => {
               if (user.username === this.username) {
@@ -399,10 +384,8 @@ export class LobbyComponent implements OnInit, OnDestroy {
       }
     );
     
-    // connect() is a no-op when the socket is already up on this room.
-    if (!this.wsService.isOffline()) {
-      this.wsService.connect('lobby');
-    }
+    // Offline connect() records the room for Reconnect without opening a socket.
+    this.wsService.connect('lobby');
     if (this.wsService.isOffline()) {
       this.joinLobby();  // answered locally; there is no socket to wait for
     }
@@ -430,7 +413,22 @@ export class LobbyComponent implements OnInit, OnDestroy {
     });
   }
 
+  ngAfterViewInit(): void {
+    const title = this.lobbyTitle?.nativeElement;
+    if (!title || typeof ResizeObserver === 'undefined') return;
+    this.titleObserver = new ResizeObserver(() => {
+      const span = title.querySelector('span')!;
+      const hidden = span.scrollWidth > span.clientWidth + 1;
+      if (hidden !== this.hideTitle) {
+        this.hideTitle = hidden;
+        this.cdr.markForCheck();
+      }
+    });
+    this.titleObserver.observe(title);
+  }
+
   ngOnDestroy(): void {
+    this.titleObserver?.disconnect();
     window.removeEventListener('beforeunload', this.handleBeforeUnload);
     // Built on the body, it would outlive the lobby.
     closeUserMenu();
@@ -459,7 +457,7 @@ export class LobbyComponent implements OnInit, OnDestroy {
     this.wsService.disconnect();
   }
   
-  private handleBeforeUnload = (event: BeforeUnloadEvent): void => {
+  private handleBeforeUnload = (_event: BeforeUnloadEvent): void => {
     // Send leave_lobby message immediately on window close
     if (this.wsService.isConnected() && this.username) {
       this.wsService.sendMessage({
@@ -678,8 +676,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
 
   private handleGameChallenge(message: any): void {
-    console.log('[Lobby] handleGameChallenge called with:', message);
-    console.log('[Lobby] Current activeInvite:', this.activeInvite);
     
     // Validate message has required fields (backend sends 'inviteId', not 'challenge_id')
     if (!message?.challenger || !message?.inviteId) {
@@ -700,7 +696,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
       timeLeft: 5 // 5 seconds to accept
     };
     
-    console.log('[Lobby] Set activeInvite:', this.activeInvite);
 
     this.users = this.users.map((user: User) => {
       if (user.username === message.challenger || user.username === this.username) {
@@ -719,7 +714,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
         this.cdr.markForCheck();
 
         if (this.activeInvite.timeLeft <= 0) {
-          console.log('[Lobby] Invite timer expired, auto-declining');
           this.clearCountdownTimer();
           this.respondToInvite('decline');
         }
@@ -735,7 +729,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
 
   inviteUser(opponent: string): void {
-    console.log('[Lobby] inviteUser called with opponent:', opponent);
     if (!opponent || typeof opponent !== 'string') {
       console.error('Invalid opponent username:', opponent);
       return;
@@ -760,7 +753,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
         challenger: this.username,
         opponent: opponent
       };
-      console.log('[Lobby] Sending game_challenge message:', JSON.stringify(message));
       this.wsService.sendMessage(message);
       this.invitePending = true;
     } catch (error) {
@@ -779,14 +771,11 @@ export class LobbyComponent implements OnInit, OnDestroy {
   }
 
   respondToInvite(response: 'accept' | 'decline'): void {
-    console.log('[Lobby] respondToInvite called with:', response);
-    console.log('[Lobby] Current activeInvite:', this.activeInvite);
     if (!this.activeInvite) {
       console.warn('[Lobby] No active invite to respond to');
       return;
     }
     const messageType = response === 'accept' ? 'challenge_accept' : 'challenge_decline';
-    console.log('[Lobby] Sending', messageType, 'message');
     this.wsService.sendMessage({
       type: messageType,
       username: this.username,
@@ -843,7 +832,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
       }
       this.cdr.markForCheck();
     }, 1000);
-    console.log('[Lobby] Started 5-second invite cooldown');
   }
   
   private addSystemMessage(content: string): void {
@@ -882,10 +870,6 @@ export class LobbyComponent implements OnInit, OnDestroy {
       const log = this.chatLog?.nativeElement;
       if (log) log.scrollTop = log.scrollHeight;
     });
-  }
-
-  private generateRandomUsername(): string {
-    return `Player${Math.floor(Math.random() * 10000)}`;
   }
 
   /** Solo room: you plus a placeholder opponent seat you configure yourself. */

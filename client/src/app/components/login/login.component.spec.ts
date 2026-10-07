@@ -90,7 +90,7 @@ describe('LoginComponent', () => {
 
   it('rejects spaces and a second # before joining', () => {
     const navigate = spyOn(TestBed.inject(Router), 'navigate');
-    for (const name of ['Alice Smith', 'Alice#one#two', '']) {
+    for (const name of ['Alice Smith', 'Alice#one#two', '#key']) {
       component.username = name;
       component.login();
       expect(component.loginError).toContain('1–24 letters or numbers');
@@ -98,6 +98,29 @@ describe('LoginComponent', () => {
       expect(fixture.nativeElement.querySelector('#username').getAttribute('aria-invalid')).toBe('true');
     }
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('enters with a fresh tab-only name when the input is blank or whitespace', () => {
+    const navigate = spyOn(TestBed.inject(Router), 'navigate').and.resolveTo(true);
+    const auth = TestBed.inject(AuthService);
+    auth.setUsername('Chosen', true, 'old-proof');
+    auth.setTripcodeKey('old key');
+    const assigned: string[] = [];
+    for (const input of ['', '   ']) {
+      component.username = input;
+      fixture.nativeElement.querySelector('.login-button').click();
+      const name = auth.getUsername();
+      expect(name).toMatch(/^Player[0-9a-f]{16}$/);
+      expect(component.loginError).toBe('');
+      expect(auth.getTripcodeCredentials()).toEqual({});
+      expect(sessionStorage.getItem('username')).toBe(name);
+      expect(localStorage.getItem('username')).toBe('Chosen');
+      expect(localStorage.getItem('tripcodeToken')).toBe('old-proof');
+      assigned.push(name);
+    }
+    expect(assigned[0]).not.toBe(assigned[1]);
+    expect(navigate).toHaveBeenCalledTimes(2);
+    expect(navigate).toHaveBeenCalledWith(['/lobby']);
   });
 
   it('should create', () => {

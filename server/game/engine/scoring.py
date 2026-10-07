@@ -123,6 +123,12 @@ def capture_zone_hexes(radius: int) -> frozenset:
     return frozenset(capture_zone_values(radius))
 
 
+def capture_eligible(piece: dict, zone: dict, config: Optional[dict] = None) -> bool:
+    permissions = (config or {}).get('units', {}).get(piece['unit_id'], {}).get('captureZones')
+    kind = ('home' if zone['owner'] == piece.get('color') else 'enemy') if zone['kind'] == 'base' else zone['kind']
+    return permissions is None or kind in permissions
+
+
 def capture_claims(board_state: Dict[str, Any], radius: int, config: Optional[dict] = None) -> Dict[str, str]:
     """Outer units score their hex; inner units also score neighbours.
 
@@ -133,11 +139,6 @@ def capture_claims(board_state: Dict[str, Any], radius: int, config: Optional[di
     units cannot capture, neutralize or block it. Opposing adjacent claims cancel.
     """
     zones = capture_zones(radius)
-
-    def eligible(piece: dict, zone: dict) -> bool:
-        permissions = (config or {}).get('units', {}).get(piece['unit_id'], {}).get('captureZones')
-        kind = ('home' if zone['owner'] == piece.get('color') else 'enemy') if zone['kind'] == 'base' else zone['kind']
-        return permissions is None or kind in permissions
 
     disruption = {'white': set(), 'black': set()}
     claimed: Dict[str, str] = {}
@@ -152,13 +153,13 @@ def capture_claims(board_state: Dict[str, Any], radius: int, config: Optional[di
     for key, piece in (board_state or {}).items():
         if not piece:
             continue
-        allowed = set().union(*(zone['hexes'] for zone in zones if eligible(piece, zone)))
+        allowed = set().union(*(zone['hexes'] for zone in zones if capture_eligible(piece, zone, config)))
         if key not in allowed:
             continue
         color = 'black' if piece.get('color') == 'black' else 'white'
         claim(key, color)
         disruption[color].add(key)
-        expanded = any(eligible(piece, zone) and hex_distance(parse_coord(key), parse_coord(zone['center'])) < ZONE_SPREAD
+        expanded = any(capture_eligible(piece, zone, config) and hex_distance(parse_coord(key), parse_coord(zone['center'])) < ZONE_SPREAD
                        for zone in zones)
         q, r = parse_coord(key)
         for dq, dr in HEX_DIRECTIONS.values():
@@ -170,10 +171,10 @@ def capture_claims(board_state: Dict[str, Any], radius: int, config: Optional[di
                 claim(neighbour, color)
     for zone in zones:
         center = (board_state or {}).get(zone['center'])
-        if not center or not eligible(center, zone):
+        if not center or not capture_eligible(center, zone, config):
             continue
         enemy_present = any(
-            piece and piece.get('color') != center.get('color') and key in zone['hexes'] and eligible(piece, zone)
+            piece and piece.get('color') != center.get('color') and key in zone['hexes'] and capture_eligible(piece, zone, config)
             for key, piece in (board_state or {}).items())
         if not enemy_present:
             for key in zone['hexes']:
@@ -300,6 +301,14 @@ def bank_ended_phases(bank: Optional[Dict[str, Any]], config: Dict[str, Any],
         # Already over before this hand-over: its moment has passed.
         if phase_over(phase, ply - 1):
             entry['late'] = True
+        if not entry.get('late'):
+            if phase == 1 and not any(piece and piece.get('color') == 'white' and piece.get('hp', 1) > 0
+                                      and any(key in zone['hexes'] and capture_eligible(piece, zone, config)
+                                              for zone in capture_zones(radius))
+                                      for key, piece in board_state.items()):
+                entry['pendingLoss'] = 'white'
+            if phase == 2 and entry['black'] == 0:
+                entry['pendingLoss'] = 'black'
         out[str(phase)] = entry
     return out
 
@@ -409,6 +418,7 @@ def schedule_ending(bank: Optional[Dict[str, Any]], ply: int) -> Optional[Tuple[
     on the board ended the match first: a king killed on the turn Phase 3
     banks, or on turn 50, has already decided it.
 
+    * ``'phase_result'``: a frozen Phase 1/2 loss, after both postmatch halves.
     * ``'points'``: all three phases are in, none of them late, and one side is
       past the other's margin - **once Phase 3's postmatch has been played**,
       on the hand-over into turn 37 (``OVERTIME_FIRST_PLY``). The result is
@@ -418,6 +428,10 @@ def schedule_ending(bank: Optional[Dict[str, Any]], ply: int) -> Optional[Tuple[
     * ``'overtime'``: turn 50 has been played out - the hand-over is into
       turn 51 - with both kings standing. Black's.
     """
+    for phase in (1, 2):
+        entry = (bank or {}).get(str(phase), {})
+        if entry.get('pendingLoss') and not entry.get('late') and ply >= (phase_start_turn(phase + 1) - 1) * PLIES_PER_TURN + 1:
+            return ('black' if entry['pendingLoss'] == 'white' else 'white'), 'phase_result'
     points = decided_on_points(bank) if ply >= OVERTIME_FIRST_PLY else None
     if points:
         return points, 'points'

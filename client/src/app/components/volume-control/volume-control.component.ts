@@ -65,6 +65,8 @@ import { AudioService } from '../../services/audio.service';
       cursor: pointer;
       font-size: 1.1rem;
       padding: 0 2px;
+      min-width: 24px;
+      min-height: 24px;
     }
 
     /* Out of the flow, so a header that has to stay on one line does not
@@ -89,11 +91,12 @@ import { AudioService } from '../../services/audio.service';
 
     .volume-slider {
       width: 110px;
+      min-height: 24px;
       cursor: pointer;
     }
 
     .volume-value {
-      font-size: 0.7rem;
+      font-size: max(12px, 0.7rem);
       font-weight: normal;
       color: #2c3e50;
       min-width: 28px;

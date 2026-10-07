@@ -3,7 +3,7 @@ import { Router } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../services/auth.service';
-import { parseUsernameInput, USERNAME_INPUT_ERROR } from '../../services/username';
+import { parseUsernameInput, randomUsername, USERNAME_INPUT_ERROR } from '../../services/username';
 import { WebsocketService } from '../../services/websocket.service';
 import { ConnectionDialogComponent } from '../connection-dialog/connection-dialog.component';
 
@@ -39,7 +39,8 @@ export class LoginComponent implements OnInit {
   }
 
   login(): void {
-    const parsed = parseUsernameInput(this.username);
+    const automatic = !this.username.trim();
+    const parsed = automatic ? { username: randomUsername(), tripcodeKey: '' } : parseUsernameInput(this.username);
     if (!parsed) {
       this.loginError = USERNAME_INPUT_ERROR;
       return;
@@ -48,7 +49,7 @@ export class LoginComponent implements OnInit {
       this.loginError = 'Tripcodes need a server connection.';
       return;
     }
-    this.authService.setUsername(parsed.username, true, '');
+    this.authService.setUsername(parsed.username, !automatic, '');
     this.authService.setTripcodeKey(parsed.tripcodeKey);
     this.username = parsed.username;
     this.loginError = '';

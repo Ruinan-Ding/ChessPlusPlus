@@ -1,6 +1,6 @@
 # Deploying ChessPlusPlus
 
-> **Status checked 4 Oct 2026: a plan, not a tested deployment.** The split-host changes
+> **Status checked 7 Oct 2026: a plan, not a tested deployment.** The split-host changes
 > below are still unimplemented: settings have no `DJANGO_DB_PATH`, the socket config has no
 > `BACKEND_HOST`, and this repo has no Dockerfile or Pages deployment workflow. The client now
 > uses the page's origin outside its configured dev port, which supports a same-origin server;
@@ -515,7 +515,10 @@ move history, the frozen config snapshot, ready status.
 **The timer tasks do not survive**: `_pending_turn_timers` and
 `_pending_disconnect_timers` in `consumers.py` are in-process `asyncio` tasks, so a deploy or
 restart drops them. Their deadlines do survive: turn clocks are reconstructed from the
-persisted `turn_started_at`, and disconnect grace deadlines are stored in the database. The
+persisted `turn_started_at`, and disconnect grace deadlines are stored in the database.
+Validated private turn drafts also persist in `TurnDraft` (migration 0013); the restored
+timeout commits the saved moves, including during disconnect grace. A finished game
+still wins over the timer. Apply migrations before running the updated backend. The
 next successful room join re-arms the timers; an expired deadline is handled then. Until a
 player rejoins, no timer task is running.
 

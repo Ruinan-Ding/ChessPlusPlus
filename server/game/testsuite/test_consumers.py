@@ -17,7 +17,7 @@ from django.utils import timezone
 
 from game.consumers import STALE_AFTER
 from game.models import (
-    GameChallenge, GameDisconnect, GameRoom, GameState, PlayerConnection, PlayerReadyStatus,
+    GameChallenge, GameDisconnect, GameRoom, GameState, PlayerConnection, PlayerReadyStatus, TurnDraft,
 )
 from game.engine import economy, panels
 from game.engine.game_logic import board_moves_at
@@ -900,6 +900,36 @@ class CustomConfigLiveIntegrationTests(TransactionTestCase):
             await host_comm.disconnect()
             await opp_comm.disconnect()
 
+    async def test_malformed_config_shapes_preserve_the_saved_config(self):
+        game, host_comm, opp_comm = await self._join_room()
+        saved = copy.deepcopy(DEFAULT_CONFIG)
+        saved['units']['pawn']['hp'] = 17
+        try:
+            await host_comm.send_json_to({'type': 'set_custom_config', 'config': saved})
+            await _receive_until(host_comm, 'custom_config_saved')
+            for path, value in ((['board'], None), (['units'], None), (['setup'], None),
+                                (['units', 'pawn'], None), (['setup', 'white'], []),
+                                (['setup', 'white', '0,0'], [])):
+                config = copy.deepcopy(saved)
+                node = config
+                for key in path[:-1]:
+                    node = node[key]
+                node[path[-1]] = value
+                with self.subTest(path=path):
+                    await host_comm.send_json_to({'type': 'set_custom_config', 'config': config})
+                    error = await _receive_until(host_comm, 'error')
+                    self.assertEqual(error['code'], 'INVALID_CONFIG')
+                    current = await GameRoom.objects.aget(game_id=game.game_id)
+                    self.assertEqual(current.custom_config, saved)
+            saved['units']['pawn']['hp'] = 18
+            await host_comm.send_json_to({'type': 'set_custom_config', 'config': saved})
+            await _receive_until(host_comm, 'custom_config_saved')
+            current = await GameRoom.objects.aget(game_id=game.game_id)
+            self.assertEqual(current.custom_config, saved)
+        finally:
+            await host_comm.disconnect()
+            await opp_comm.disconnect()
+
     async def test_non_host_cannot_set_custom_config(self):
         game, host_comm, opp_comm = await self._join_room()
         try:
@@ -936,6 +966,22 @@ class FloodProtectionLiveIntegrationTests(TransactionTestCase):
     limit added to GameConsumer.receive() actually engage over a real
     WebSocket, without disrupting ordinary usage.
     """
+
+    async def test_malformed_envelopes_are_refused_without_closing_the_socket(self):
+        comm = WebsocketCommunicator(URLRouter(websocket_urlpatterns), '/ws/game/lobby/')
+        try:
+            await comm.connect()
+            await _receive_until(comm, 'connection_established')
+            for payload in (None, [], True, False, 0, 1, 'text', {},
+                            {'type': None}, {'type': []}, {'type': {}}, {'type': True}, {'type': 1}):
+                with self.subTest(payload=payload):
+                    await comm.send_json_to(payload)
+                    error = await _receive_until(comm, 'error')
+                    self.assertEqual(error['code'], 'INVALID_MESSAGE')
+            await comm.send_json_to({'type': 'heartbeat'})
+            self.assertEqual((await _receive_until(comm, 'heartbeat_ack'))['type'], 'heartbeat_ack')
+        finally:
+            await comm.disconnect()
 
     async def test_oversized_message_is_rejected(self):
         from game.consumers import MAX_MESSAGE_BYTES
@@ -2369,6 +2415,23 @@ class CleanupCommandTests(TestCase):
         self.assertTrue(GameChallenge.objects.filter(status='pending').exists())
         self.assertEqual(PlayerConnection.objects.get(username='alice').status, 'invited')
 
+    def test_deleting_a_closed_room_cascades_its_draft_and_reports_rooms_not_all_rows(self):
+        old = GameRoom.objects.create(host='alice', opponent='bob', status='closed',
+                                     closed_at=timezone.now() - timedelta(days=8))
+        state = GameState.objects.create(game=old, current_turn='alice', player_white='alice',
+                                        player_black='bob', end_reason='resign', winner='bob')
+        TurnDraft.objects.create(game=state, username='alice', turn_number=1, sequence=1, commands=[])
+        live = GameRoom.objects.create(host='carol', opponent='dan', status='started')
+        live_state = GameState.objects.create(game=live, current_turn='carol', player_white='carol', player_black='dan')
+        TurnDraft.objects.create(game=live_state, username='carol', turn_number=1, sequence=1, commands=[])
+        output = StringIO()
+        call_command('cleanup_game_state', closed_days=7, stdout=output)
+        self.assertFalse(GameRoom.objects.filter(pk=old.pk).exists())
+        self.assertFalse(GameState.objects.filter(pk=old.pk).exists())
+        self.assertFalse(TurnDraft.objects.filter(pk=old.pk).exists())
+        self.assertTrue(TurnDraft.objects.filter(pk=live.pk).exists())
+        self.assertIn('Deleted 1 old closed game rooms', output.getvalue())
+
     def test_it_runs_at_all(self):
         # It had no test and is never exercised in normal play, so a crash in
         # it would only ever be found by the person reaching for it in a jam.
@@ -3405,6 +3468,91 @@ class OvertimeTollLiveIntegrationTests(TransactionTestCase):
             await opp_comm.disconnect()
 
 
+class FullMatchLiveIntegrationTests(TransactionTestCase):
+    """Use the shipped deal and real turns rather than winding a match to its ending."""
+
+    async def _play_match(self, capture):
+        # The flood guard has its own live tests; accelerated full matches
+        # need its burst allowance lifted without sleeping between actions.
+        with patch('game.consumers.RATE_LIMIT_MAX_MESSAGES', 1000):
+            game, host, opponent, white, black = await _start_seated_game()
+            try:
+                initial = await GameState.objects.aget(game_id=game.game_id)
+                revision = initial.revision
+                last_ply = 72 if capture else 100
+                banks = {}
+                for ply in range(1, last_ply + 1):
+                    mover, other = (white, black) if ply % 2 else (black, white)
+                    message = ({'type': 'make_move', 'from': '-4,9', 'to': '-4,8'} if ply == 1
+                               else {'type': 'make_move', 'from': '8,-10' if capture else '4,-9',
+                                     'to': '7,-2' if capture else '4,-8'} if ply == 2 else {'type': 'pass_turn'})
+                    await mover.send_json_to(message)
+                    kind = 'move_made' if ply <= 2 else 'turn_passed'
+                    sent = await _receive_until(mover, (kind, 'error'))
+                    self.assertEqual(sent['type'], kind, sent)
+                    received = await _receive_until(other, kind)
+                    self.assertEqual(sent, received)
+                    stored = await GameState.objects.aget(game_id=game.game_id)
+                    self.assertEqual(received['turnNumber'], ply + 1)
+                    self.assertEqual(received['revision'], revision + 1)
+                    revision = received['revision']
+                    self.assertEqual(stored.revision, revision)
+                    self.assertEqual(received['boardState'], stored.board_state)
+                    self.assertEqual(received['phaseBank'], stored.phase_bank)
+                    if ply + 1 in (27, 49, 71):
+                        phase = {27: 1, 49: 2, 71: 3}[ply + 1]
+                        banks[str(phase)] = {'white': 3 * phase, 'black': (1 if capture else 3) * phase}
+                    self.assertEqual(stored.phase_bank, banks)
+                    if ply + 1 in (7, 27, 49, 71):
+                        self.assertEqual(stored.board_state['-4,8']['vet'],
+                                         {7: 1, 27: 2, 49: 3, 71: 3}[ply + 1])
+                    if ply + 1 in (17, 39, 61):
+                        expected_up = 10 + {17: 3, 39: 9, 61: 18}[ply + 1]
+                        self.assertEqual(economy.unit_points_of('white', stored.move_history,
+                                                               stored.config_snapshot), expected_up)
+                        self.assertEqual(economy.unit_points_of('black', stored.move_history,
+                                                               stored.config_snapshot), 10 + {17: 1, 39: 3, 61: 6}[ply + 1] * (1 if capture else 3))
+                    if ply == 38:
+                        await black.send_json_to({'type': 'request_game_state'})
+                        restored = await _receive_until(black, 'game_state_update')
+                        self.assertEqual(restored['moveHistory'], stored.move_history)
+                        self.assertEqual(restored['phaseBank'], banks)
+                        self.assertEqual(restored['revision'], revision)
+                    if ply < last_ply:
+                        self.assertEqual(received['currentTurn'],
+                                         initial.player_black if ply % 2 else initial.player_white)
+                self.assertEqual(received['currentTurn'], '')
+                expected_reason = 'points' if capture else 'overtime'
+                expected_winner = initial.player_white if capture else initial.player_black
+                for socket in (white, black):
+                    result = await _receive_until(socket, 'game_over')
+                    self.assertEqual(result['endReason'], expected_reason)
+                    self.assertEqual(result['winner'], expected_winner)
+                    self.assertEqual(result['revision'], revision)
+                    await socket.send_json_to({'type': 'request_game_state'})
+                    restored = await _receive_until(socket, 'game_state_update')
+                    self.assertEqual(restored['endReason'], expected_reason)
+                    self.assertEqual(restored['winner'], expected_winner)
+                    self.assertEqual(restored['turnNumber'], last_ply + 1)
+                    self.assertEqual(restored['boardState'], stored.board_state)
+                    self.assertEqual(restored['moveHistory'], stored.move_history)
+                self.assertEqual(stored.end_reason, expected_reason)
+                self.assertEqual(stored.winner, expected_winner)
+                if not capture:
+                    kings = [unit['hp'] for unit in stored.board_state.values()
+                             if unit['unit_id'] == 'king']
+                    self.assertEqual(kings, [32, 32])
+            finally:
+                await host.disconnect()
+                await opponent.disconnect()
+
+    async def test_shipped_match_scores_promotes_awards_up_and_finishes_after_all_72_plies(self):
+        await self._play_match(capture=True)
+
+    async def test_shipped_draw_runs_all_100_plies_and_pays_every_overtime_toll(self):
+        await self._play_match(capture=False)
+
+
 class MatchEndingLiveIntegrationTests(TransactionTestCase):
     """
     The schedule's two endings, enforced by the server (engine/scoring.py): a
@@ -4210,6 +4358,59 @@ class HealingLiveIntegrationTests(TransactionTestCase):
 
 
 class UnitStatsLiveIntegrationTests(TransactionTestCase):
+    async def test_wire_bonuses_and_forged_cast_effects_cannot_change_online_rules(self):
+        game, host, opponent, white, black = await _start_seated_game()
+        try:
+            state = await GameState.objects.aget(game_id=game.game_id)
+            board = {
+                '0,0': dict(unit_id='pawn', color='white', hp=14, max_hp=14, uid='actor', vet=1),
+                '1,0': dict(unit_id='pawn', color='black', hp=14, max_hp=14, uid='target', vet=1),
+                '-8,0': dict(unit_id='king', color='white', hp=60, max_hp=60, uid='wk', vet=1),
+                '8,0': dict(unit_id='king', color='black', hp=60, max_hp=60, uid='bk', vet=1),
+            }
+            await GameState.objects.filter(game_id=game.game_id).aupdate(
+                board_state=board, turn_number=9, current_turn=state.player_white, move_history=[])
+            forged = {
+                'moveBonus': 999,
+                'bonuses': {'atk': 999, 'def': 999, 'targetAtkSet': 0, 'targetDefSet': 0,
+                            'nullify': True, 'invulnerable': True},
+                'effectsBefore': [{'at': '8,0', 'uid': 'bk', 'hp': 0,
+                                   'unitCast': {'id': 'king-call', 'uid': 'actor', 'cost': 0}}],
+                'effects': [{'at': '1,0', 'uid': 'target', 'hp': 0}],
+            }
+            await white.send_json_to({'type': 'make_move', 'from': '0,0', 'to': '0,9', **forged})
+            refused = await _receive_until(white, 'error')
+            self.assertEqual(refused['code'], 'INVALID_MOVE')
+            saved = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(saved.revision, state.revision)
+            self.assertEqual(saved.board_state, board)
+            self.assertEqual(saved.move_history, [])
+
+            await white.send_json_to({'type': 'make_move', 'from': '0,0', 'to': '0,0',
+                                      'attack': '1,0', **forged})
+            made = await _receive_until(white, 'move_made')
+            self.assertEqual(made, await _receive_until(black, 'move_made'))
+            self.assertEqual(made['move']['damage_dealt'], 1)
+            self.assertEqual(made['move']['counter_damage'], 1)
+            self.assertEqual(made['boardState']['0,0']['hp'], 13)
+            self.assertEqual(made['boardState']['1,0']['hp'], 13)
+            self.assertEqual(made['boardState']['8,0']['hp'], 60)
+            self.assertNotIn('effectsBefore', made)
+            saved = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(saved.move_history, [made['move']])
+            self.assertEqual(saved.end_reason, '')
+
+            await black.send_json_to({'type': 'pass_turn', **forged})
+            passed = await _receive_until(black, 'turn_passed')
+            self.assertEqual(passed, await _receive_until(white, 'turn_passed'))
+            self.assertEqual(passed['boardState']['8,0']['hp'], 60)
+            saved = await GameState.objects.aget(game_id=game.game_id)
+            self.assertEqual(saved.move_history, [made['move']])
+            self.assertEqual(saved.revision, state.revision + 2)
+        finally:
+            await host.disconnect()
+            await opponent.disconnect()
+
     async def test_minimum_range_and_non_attackers_are_authoritative_after_movement(self):
         game, host, opp, white, _black = await _start_seated_game()
         try:
@@ -4262,11 +4463,8 @@ class UnitStatsLiveIntegrationTests(TransactionTestCase):
                 await position('bishop', 'rook', ring, friendly=True)
                 await white.send_json_to({'type': 'make_move', 'from': '0,0', 'to': '0,0', 'heal': f'{ring},0'})
                 reply = await _receive_until(white, ('error', 'move_made'))
-                if ring == 1:
-                    self.assertEqual(reply['move']['healed_amount'], 8)
-                    self.assertEqual(reply['boardState']['1,0']['hp'], 9)
-                else:
-                    self.assertEqual(reply['code'], 'INVALID_MOVE')
+                self.assertEqual(reply['move']['healed_amount'], 8 if ring == 1 else 6)
+                self.assertEqual(reply['boardState'][f'{ring},0']['hp'], 9 if ring == 1 else 7)
         finally:
             await host.disconnect()
             await opp.disconnect()

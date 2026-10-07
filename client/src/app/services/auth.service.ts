@@ -7,7 +7,6 @@ import { readStore, removeStore, writeStore } from './storage';
 })
 export class AuthService {
   private readonly usernameSubject = new BehaviorSubject<string>('');
-  readonly username$ = this.usernameSubject.asObservable();
   private tripcodeKey = '';
   private tripcodeToken = '';
   
