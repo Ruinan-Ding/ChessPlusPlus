@@ -1,11 +1,13 @@
+import { abilityDescription } from '../../services/ability-description';
+import { sectionOf } from '../../services/game-rules';
+import { overtimeFirstPly, attacksAllowed, stageRules } from '../../services/phases';
+import { phasesOf, scoringPhases } from '../../services/phases';
+
 import { actionTime } from '../../services/action-time';
 import { controlsAt } from '../../services/unit-control';
 import { UNIT_ACTIVES } from '../../services/config.service';
 import { carries, combatExchange, tauntAllows, CombatBonuses, attackStats, combatStatuses } from '../../services/unit-combat';
-import {
-  AfterViewChecked, Component, DoCheck, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef,
-  HostListener, NgZone, ViewChild,
-} from '@angular/core';
+import { AfterViewChecked, Component, DoCheck, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef, HostListener, NgZone, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
@@ -21,27 +23,16 @@ import type { BoardState, PieceData, PieceIdentity } from '../../services/game-s
 import { advanceBuffs, advanceUnitCooldowns, cooldownAfterTurn, stackEffect, passiveStat, statSetting, stripPositiveEffects } from '../../services/ability-rules';
 import type { UnitBuff, UnitCooldown } from '../../services/ability-rules';
 import { AuthService } from '../../services/auth.service';
-import {
-  AnimStep, FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap, panelOfHex,
-} from '../game-board/game-board.component';
-import {
-  positionalBonus, attackTiers, canAttack, healingAmount, hexDistanceKeys, hexEffectBand, HexEffectArea, isInsideBoard, BASE_PANELS,
-} from '../../services/hex-rules';
-import {
-  PhaseBank, capOf, cpAwarded, deathsOf, decidedOnPoints, matchVerdict, phaseTotal,
-  scheduledPoints, withdrawalRefund, unitPoints,
-} from '../../services/match-score';
+import { AnimStep, FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap, panelOfHex } from '../game-board/game-board.component';
+import { positionalBonus, attackTiers, canAttack, healingAmount, hexDistanceKeys, hexEffectBand, HexEffectArea, isInsideBoard, BASE_PANELS } from '../../services/hex-rules';
+import { PhaseBank, capOf, cpAwarded, deathsOf, decidedOnPoints, matchVerdict, phaseTotal, scheduledPoints, withdrawalRefund, unitPoints } from '../../services/match-score';
 import { buildPlayback, historyPlayback } from '../../services/playback';
 import playbackTimings from '../../../../../shared/playback-timings.json';
 import { fitHeader } from './banner-fit';
 import { ConfigService, DEFAULT_GAME_CONFIG, ruleOf, UNIT_PASSIVES } from '../../services/config.service';
-import { activeVet, capStat, capUnit, canReceiveBoost, rankedUnit, unitEffect, unitPassive, unitStats } from '../../services/unit-stats';
+import { kitActive, activeVet, capStat, capUnit, canReceiveBoost, rankedUnit, unitEffect, unitPassive, unitStats } from '../../services/unit-stats';
 import { boardMoveUids, extraActionUids, openingMovedHexes, unitVeterancy } from '../../services/history-rules';
-import {
-  OVERTIME_FIRST_TURN, PHASES, SCORING_PHASES, boardMovesPerTurn, handOversBy,
-  isInitialization, isOvertime, isPostmatch, isSetupTurn, phaseIndexAt,
-  stageAt, turnHeading, turnOf,
-} from '../../services/phases';
+import { boardMovesPerTurn, handOversBy, isInitialization, isOvertime, isPostmatch, isSetupTurn, phaseIndexAt, stageAt, turnHeading, turnOf } from '../../services/phases';
 import { AudioService } from '../../services/audio.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 import { closeUserMenu, openUserMenu as showUserMenu } from '../../services/user-menu';
@@ -255,7 +246,6 @@ const ABILITIES_SOLO_ONLY = 'Unavailable: abilities are single-player only for n
  *
  * A reserve does not mend. It is a staging area, not a hospital.
  */
-const BASE_HEAL_PER_TURN = 1;
 
 /** Seconds of quiet between the toll's knell and the mend's chime when a turn ends on both. */
 const UPKEEP_SOUND_GAP = 0.08;
@@ -285,6 +275,7 @@ interface StagedAction {
   effects?: any[];
   extraDeaths?: FallenUnit[];
   endsAction?: boolean;
+  sourcePanel?: string;
   secondStrike?: boolean;
   actor?: PieceIdentity;
   counterActor?: PieceIdentity;
@@ -2010,14 +2001,16 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     return moved > 0 ? 'wave-up' : 'wave-down';
   }
 
-  get displayVeterancyActive(): boolean { return !!this.displayVeterancy && activeVet(this.displayUnit) >= 1; }
+  get veterancyBonusRank(): number { return sectionOf(this.gameState.snapshot.config, 'veterancy').statUnlock; }
+
+  get displayVeterancyActive(): boolean { return !!this.displayVeterancy && activeVet(this.displayUnit, undefined, this.gameState.snapshot.config) >= sectionOf(this.gameState.snapshot.config, 'veterancy').statUnlock; }
 
   get displayVeterancy(): string {
     const config = this.gameState.snapshot.config, id = this.displayUnit?.unitId ?? '';
     const base = config?.units?.[id], bonus = base?.veterancy;
     if (!bonus) return '';
     const minimum = bonus.attackMinRange ?? base.attackMinRange ?? 1;
-    const attacks = attackTiers(id, config, 0, false);
+    const attacks = attackTiers(id, config, -1, false);
     const addedAttack = Array.isArray(bonus.attack) ? bonus.attack.flatMap((n: number, i: number) =>
       n === attacks[minimum + i - (base.attackMinRange ?? 1)] ? [] : [`${minimum + i}:${n}`]).join(' ') : '';
     const addedHeal = bonus.heal?.flatMap((n: number, i: number) =>
@@ -2111,8 +2104,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   get initBoardSpent(): boolean {
     const s = this.gameState.snapshot;
     const color = this.gameState.myColor(s.currentTurn);
-    return isInitialization(s.turnNumber) && !!color
-      && boardMoveUids(s.moveHistory, s.turnNumber, color).size >= boardMovesPerTurn(s.turnNumber);
+    return isInitialization(s.turnNumber, this.gameState.snapshot.config) && !!color
+      && boardMoveUids(s.moveHistory, s.turnNumber, color).size >= boardMovesPerTurn(s.turnNumber, this.gameState.snapshot.config);
   }
 
   /**
@@ -2138,8 +2131,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     // are recorded now its destination - a panel hex - would otherwise be
     // listed here. `openingMovedHexes` excludes it, as `opening_moved_hexes`
     // does on the server: one derivation, which the offline engine shares.
-    const color = isInitialization(turn) ? this.gameState.myColor(s.currentTurn) : null;
-    const hexes: string[] = color ? [...openingMovedHexes(history as any, color)] : [];
+    const color = isInitialization(turn, this.gameState.snapshot.config) ? this.gameState.myColor(s.currentTurn) : null;
+    const hexes: string[] = color ? [...openingMovedHexes(history as any, color, this.gameState.snapshot.config)] : [];
     this.initMovedCache = { history, turn, hexes };
     return hexes;
   }
@@ -2153,7 +2146,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     // A match decided on points ends on the hand-over into overtime's first
     // turn, and its finished position is the one place overtime's ply is not
     // overtime: the score is the result, so it stays up.
-    return !isOvertime(this.gameState.snapshot.turnNumber) || !!decidedOnPoints(this.phaseBank);
+    return !isOvertime(this.gameState.snapshot.turnNumber, this.gameState.snapshot.config) || !!decidedOnPoints(this.phaseBank, this.gameState.snapshot.config);
   }
 
   /** Whether a hex is off the battlefield - where the panels start. */
@@ -2183,16 +2176,16 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * where no base mends it; a walk home would bring it back, but that writes
    * the unit's HP afresh and so starts a new reckoning.
    */
-  private inBaseAfter(history: any[], index: number, uid: string): Array<[number, boolean]> {
+  private inBaseAfter(history: any[], index: number, uid: string): Array<[number, boolean | null]> {
     const orientation = this.gameState.snapshot.config?.board?.orientation ?? 'edge-up';
-    const out: Array<[number, boolean]> = [];
+    const out: Array<[number, boolean | null]> = [];
     for (const move of history.slice(index + 1)) {
       if (move?.unit?.uid !== uid) continue;
       if (move.panelMove) {
         const panel = panelOfHex(move.to, orientation);
         if (panel) out.push([move.turn ?? 0, BASE_PANELS.has(panel)]);
       } else if (move.entered) {
-        out.push([move.turn ?? 0, false]);
+        out.push([move.turn ?? 0, null]);
       }
     }
     return out;
@@ -2216,27 +2209,28 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    */
   private mendedInBase(
     color: 'white' | 'black', since: number, inBase: boolean,
-    stays: Array<[number, boolean]>, now: number, unit?: PieceData,
+    stays: Array<[number, boolean | null]>, now: number, unit?: PieceData,
   ): number {
-    const segments: Array<[number, boolean]> = [[since, inBase], ...stays];
+    const segments: Array<[number, boolean | null]> = [[since, inBase], ...stays];
     let total = 0;
     segments.forEach(([start, base], k) => {
-      if (!base) return;
+      if (base === null) return;
       // The plies this stretch is where the unit stood at the close of: from
       // its own ply to the one before the next move. Two moves in one ply
       // leave the later one standing, and the earlier stretch empty.
       const lo = Math.max(since, start - 1);
       const hi = k + 1 === segments.length ? now - 1 : Math.min(now - 1, segments[k + 1][0] - 1);
       if (hi > lo) {
-        if (!unit?.owner) total += handOversBy(color, hi) - handOversBy(color, lo);
+        const rate = sectionOf(this.gameState.snapshot.config, 'panels')[base ? 'baseHealPerTurn' : 'reserveHealPerTurn'];
+        if (!unit?.owner) total += (handOversBy(color, hi) - handOversBy(color, lo)) * rate;
         else for (let ply = lo + 1; ply <= hi; ply++) {
           const active = ply % 2 === 1 ? 'white' : 'black';
           const control = unit.uid ? controlsAt(this.gameState.snapshot.moveHistory, ply)[unit.uid] : undefined;
-          if ((control?.color ?? unit.owner) === active) total++;
+          if ((control?.color ?? unit.owner) === active) total += rate;
         }
       }
     });
-    return total * BASE_HEAL_PER_TURN;
+    return total;
   }
 
   get withdrawnUnits(): WithdrawnUnit[] {
@@ -2293,8 +2287,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       const mended = stood.hp
         + this.mendedInBase(stood.unit.color, stood.turn, true, stays, turn, stood.unit);
       const vet = unitVeterancy(stood.unit.uid, stood.at, records, turn,
-        snapshot.config?.board?.radius ?? 11, snapshot.config?.board?.orientation ?? 'edge-up');
-      units.push({ at: stood.at, unit: rankedUnit({ ...stood.unit, hp: Math.min(full, mended) }, snapshot.config, vet, false) });
+        snapshot.config?.board?.radius ?? 11, snapshot.config?.board?.orientation ?? 'edge-up', this.gameState.snapshot.config);
+      units.push({ at: stood.at, unit: rankedUnit({ ...stood.unit, hp: Math.min(full, mended) }, snapshot.config, vet, kitActive({ ...stood.unit, panel: panelOfHex(stood.at, snapshot.config?.board?.orientation) }, snapshot.config)) });
     }
     this.withdrawnCache = { history, turn, units };
     return this.stageWithdrawn(units);
@@ -2437,8 +2431,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         const radius = config?.board?.radius ?? 11;
         const at = move.attackedHex ?? (BASE_PANELS.has(move.panel)
           ? (defender.color === 'white' ? `${-radius - 1},${radius}` : `${radius + 1},${-radius}`) : '0,0');
-        const vet = unitVeterancy(defender.uid, at, records, turn, radius, config?.board?.orientation ?? 'edge-up');
-        const ranked = rankedUnit({ ...defender, hp: move.defenderHp ?? 0 }, config, vet, false);
+        const vet = unitVeterancy(defender.uid, at, records, turn, radius, config?.board?.orientation ?? 'edge-up', this.gameState.snapshot.config);
+        const ranked = rankedUnit({ ...defender, hp: move.defenderHp ?? 0 }, config, vet, kitActive({ ...defender, panel: move.panel }, config));
         wounds.set(defender.uid, {
           left: ranked.hp,
           turn: move.turn,
@@ -2512,7 +2506,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const mine = this.gameState.myColor(this.username) || 'white';
     const color = side === 'mine' ? mine : (mine === 'white' ? 'black' : 'white');
     const config = this.gameState.snapshot.config;
-    const awarded = ruleOf(config, 'cpAtStart') + cpAwarded(this.phaseBank, color, ruleOf(config, 'cpPhaseOffset'));
+    const awarded = ruleOf(config, 'cpAtStart') + cpAwarded(this.phaseBank, color, ruleOf(config, 'cpPhaseOffset'), this.gameState.snapshot.config);
     return awarded - (side === 'mine' ? this.myCpSpent : this.opponentCpSpent);
   }
 
@@ -2657,10 +2651,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   get historyTitle(): string {
     const ply = this.gameState.snapshot.turnNumber;
     if (!ply) return 'History';
-    if (decidedOnPoints(this.phaseBank)) {
-      return `Turn ${Math.min(turnOf(ply), OVERTIME_FIRST_TURN - 1)} - Last Turn`;
+    if (decidedOnPoints(this.phaseBank, this.gameState.snapshot.config)) {
+      return `Turn ${Math.min(turnOf(ply), turnOf(overtimeFirstPly(this.gameState.snapshot.config)) - 1)} - Last Turn`;
     }
-    return turnHeading(ply);
+    return turnHeading(ply, this.gameState.snapshot.config);
   }
 
   /** The CP purse's tooltip, with the room's own starting CP in it. */
@@ -2757,7 +2751,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       const piece = cell.piece, friendly = piece.color === caster, band = bandOf(cell.key), centre = band === 'centre';
       switch (effect.effect) {
         case 'promote': {
-          const promoted = rankedUnit(piece, this.gameState.snapshot.config, Math.min(3, (piece.vet ?? 0) + (effect.stars ?? 1)), !cell.panel);
+          const promoted = rankedUnit(piece, this.gameState.snapshot.config, Math.min(3, (piece.vet ?? 0) + (effect.stars ?? 1)), kitActive({ ...piece, panel: cell.panel }, this.gameState.snapshot.config));
           change(cell, promoted.hp, promoted); break;
         }
         case 'hex-cleave': case 'ruin': {
@@ -2845,7 +2839,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       const sacrifice = this.abilityEffects[armed.index].effect === 'sacrifice';
       if (unit && !BASE_PANELS.has(unit.panel ?? '') && (sacrifice
           ? unit.color === armed.unit.color && unit.uid !== armed.unit.uid
-          : unit.color !== armed.unit.color && hexDistanceKeys(armed.unit.key, unit.key) === 1)) this.stageUnitCast(armed.unit, armed.index, unit);
+          : unit.color !== armed.unit.color && hexDistanceKeys(armed.unit.key, unit.key) >= 1 && hexDistanceKeys(armed.unit.key, unit.key) <= (this.abilityEffects[armed.index]?.radius ?? 1))) this.stageUnitCast(armed.unit, armed.index, unit);
       this.pendingUnitCast = null;
       this.cdr.markForCheck();
       return;
@@ -3366,13 +3360,14 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * Rank gates for unit kits and skills referenced by older configs.
    */
   private vetNeeded(index: number): number {
-    return UNIT_ACTIVES.includes(this.abilityEffects[index]?.effect ?? '') ? 3
-      : UNIT_PASSIVES.includes(this.abilityEffects[index]?.effect ?? '') ? 2 : this.isPassive(index) ? this.abilityEffects[index]?.minVet ?? 1 : 2;
+    const ranks = sectionOf(this.gameState.snapshot.config, 'veterancy');
+    return UNIT_ACTIVES.includes(this.abilityEffects[index]?.effect ?? '') ? ranks.abilityUnlock
+      : UNIT_PASSIVES.includes(this.abilityEffects[index]?.effect ?? '') ? ranks.passiveUnlock : this.isPassive(index) ? this.abilityEffects[index]?.minVet ?? 1 : 2;
   }
 
   /** True when the displayed unit has earned that slot. */
   vetUnlocked(index: number): boolean {
-    return activeVet(this.displayUnit) >= this.vetNeeded(index);
+    return activeVet(this.displayUnit, undefined, this.gameState.snapshot.config) >= this.vetNeeded(index);
   }
 
   /** Limited abilities show remaining uses; others show remaining/total cooldown. */
@@ -3408,7 +3403,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   /** By id, so a saved count survives a reordered catalogue. */
   private useKey(holder: string, index: number): string {
     const phase = this.abilityEffects[index]?.usesScope === 'phase'
-      ? `|phase:${phaseIndexAt(this.gameState.snapshot.turnNumber)}` : '';
+      ? `|phase:${phaseIndexAt(this.gameState.snapshot.turnNumber, this.gameState.snapshot.config)}` : '';
     return `${holder}|${this.abilityIds[index] ?? index}${phase}`;
   }
 
@@ -3484,7 +3479,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         + `Abilities already ready stay at 0. Costs ${cost} ${this.purseName(index, cost)} even if both are ready; `
         + `cooldown ${this.cooldownOf(index)}.`;
     }
-    if (e.effect) return this.abilityConfig.catalogue?.[e.id]?.description ?? e.name;
+    if (e.effect) return abilityDescription({ ...this.abilityConfig.catalogue?.[e.id], ...e }, this.gameState.snapshot.config);
     const stats: string[] = [];
     if (e.mov) stats.push(`${this.signed(e.mov)} MOV`);
     if (e.atk) stats.push(`${this.signed(e.atk)} ATK`);
@@ -3570,7 +3565,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
 
   selectUnitAbility(index: number): void {
     const unit = this.displayUnit;
-    if (!unit || (unit.panel && !this.isPassive(index))) return;
+    if (!unit || (unit.panel && !this.isPassive(index) && !kitActive(unit, this.gameState.snapshot.config))) return;
     if (this.unitAbilityFocus?.index === index && this.unitAbilityFocus.uid === unit.uid) {
       this.unitAbilityFocus = null;
     } else {
@@ -3587,12 +3582,12 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const unit = this.displayUnit;
     // displayUnit follows the cursor, so a reserve the pointer crossed on the
     // way to the button must not be what the points are spent on.
-    if (!this.buffsBind || !focus || !unit || unit.panel || carries(this.buffs[unit.uid], 'action-lock')) return false;
+    if (!this.buffsBind || !focus || !unit || !kitActive(unit, this.gameState.snapshot.config) || carries(this.buffs[unit.uid], 'action-lock')) return false;
     if (this.isPassive(focus.index) || focus.index !== this.unitAbilityIndex(unit)) return false;
     // Cast on the unit itself, so only a friendly ability can be one; the
     // validators refuse any other (`units.<id>.ability`).
     if (this.abilityTargetMode(focus.index) !== 'friendly' && this.abilityEffects[focus.index]?.effect !== 'control') return false;
-    if (this.abilityEffects[focus.index]?.effect === 'control' && !this.canTakeBoardAction(unit.key)) return false;
+    if (this.abilityEffects[focus.index]?.effect === 'control' && !this.canTakeUnitAction(unit)) return false;
     return this.vetUnlocked(focus.index) && this.canAfford(
       this.sideOfUnit(unit), focus.index, this.unitCooldownOf(unit.uid), unit.uid);
   }
@@ -3644,13 +3639,14 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   private stageUnitCast(unit: SelectedUnit, index: number, target?: SelectedUnit): void {
     const effect = this.abilityEffects[index];
     const side = this.sideOfUnit(unit);
-    if (!this.buffsBind || unit.vet < 3 || !this.canAfford(side, index, this.unitCooldownOf(unit.uid), unit.uid)) return;
-    const standing = (this.stagedBoard ?? this.gameState.snapshot.boardState)[unit.key];
+    if (!this.buffsBind || unit.vet < sectionOf(this.gameState.snapshot.config, 'veterancy').abilityUnlock || !this.canAfford(side, index, this.unitCooldownOf(unit.uid), unit.uid)) return;
+    const standing = (this.stagedBoard ?? this.gameState.snapshot.boardState)[unit.key]
+      ?? (unit.panel ? this.boardRef?.cells.find(cell => cell.key === unit.key)?.piece : undefined);
     if (!standing || standing.uid !== unit.uid || standing.hp <= 0) return;
     const chosen = target ? (target.panel ? this.boardRef?.cells.find(cell => cell.key === target.key)?.piece
       : (this.stagedBoard ?? this.gameState.snapshot.boardState)[target.key]) : undefined;
     if (effect.effect === 'control' && (!chosen || chosen.hp <= 0 || chosen.color === standing.color
-        || !this.canTakeBoardAction(unit.key))) return;
+        || !this.canTakeUnitAction(unit))) return;
     const selectedSacrifice = effect.effect === 'sacrifice' && effect.stars !== undefined;
     if (selectedSacrifice && (!target || !chosen || chosen.hp <= 0 || chosen.color !== standing.color
         || chosen.uid === standing.uid || BASE_PANELS.has(target.panel ?? ''))) return;
@@ -3673,7 +3669,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         if (selectedSacrifice && cell.piece?.uid !== target!.uid) continue;
         const original = cell.piece!;
         const piece = selectedSacrifice ? rankedUnit(original, this.gameState.snapshot.config,
-          Math.min(3, (original.vet ?? 0) + effect.stars!), !cell.panel) : original;
+          Math.min(3, (original.vet ?? 0) + effect.stars!), kitActive({ ...original, panel: cell.panel }, this.gameState.snapshot.config)) : original;
         if (effect.effect === 'call' && effect.radius !== undefined
             && (cell.key === unit.key || hexDistanceKeys(unit.key, cell.key) > effect.radius)) continue;
         if (effect.effect === 'sacrifice' && (piece.color !== unit.color || piece.uid === unit.uid)) continue;
@@ -3691,20 +3687,20 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
             mov: friendly ? effect.mov : effect.enemyMov ?? 0, atk: friendly ? effect.atk : effect.enemyAtk ?? 0,
             def: friendly ? effect.def : effect.enemyDef ?? 0 }), unit.color, !friendly) };
       }
-      if (effect.effect === 'sacrifice') { extraDeaths.push({ key: unit.key, unit_id: unit.unitId, color: unit.color }); effects.push({ at: unit.key, uid: unit.uid, hp: 0 }); delete board[unit.key]; }
+      if (effect.effect === 'sacrifice') { extraDeaths.push({ key: unit.key, unit_id: unit.unitId, color: unit.color }); effects.push(unit.panel ? { unit: standing, panel: unit.panel, at: unit.key, hp: 0 } : { at: unit.key, uid: unit.uid, hp: 0 }); delete board[unit.key]; }
     } else if (effect.effect === 'control' && target) {
       const piece = chosen!;
       const controlled = { ...piece, owner: piece.owner ?? piece.color, color: unit.color,
         controlledUntil: this.gameState.snapshot.turnNumber + 2 * (effect.turns ?? 1), controlTurn: this.gameState.snapshot.turnNumber };
-      effects.push({ control: controlled, controlSource: unit.uid, at: target.key });
+      effects.push({ control: controlled, controlSource: unit.uid, sourcePanel: unit.panel, at: target.key });
       if (!target.panel) board[target.key] = controlled;
     } else {
       this.buffs = { ...this.buffs, [unit.uid]: stackEffect(this.buffs[unit.uid], this.effectForUnit(unit, effect), unit.color) };
     }
     const prev = [...this.boardMoves].reverse().find(step => step.to === unit.key);
-    this.stagedActions.push({ at: actionTime(), board, from: effect.effect === 'control' ? prev?.from ?? unit.key : this.lastBoardAction?.from ?? '', to: effect.effect === 'control' ? unit.key : this.lastBoardAction?.to ?? '',
+    this.stagedActions.push({ at: actionTime(), board, from: effect.effect === 'control' ? unit.panel ? '' : prev?.from ?? unit.key : this.lastBoardAction?.from ?? '', to: effect.effect === 'control' ? unit.key : this.lastBoardAction?.to ?? '',
       used: prev?.used ?? 0, attack: null, spend, priorBuffs, effects, extraDeaths, unitUid: unit.uid,
-      ...(effect.effect === 'control' ? { endsAction: true } : {}) });
+      ...(effect.effect === 'control' ? { endsAction: true, sourcePanel: unit.panel } : {}) });
     this.abilityUsed = { ...this.abilityUsed, [unit.uid]: true };
     this.markUsed(side, index);
     this.playCast(spend, visuals.length ? visuals : [{ kind: 'ability', from: unit.key,
@@ -3890,7 +3886,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     if (!focus) return '';
     if (this.unitAbilityIsPassive()) {
       const unit = this.displayUnit;
-      if (unit?.panel) return 'Inactive in base and reserve.';
+      if (unit && !kitActive(unit, this.gameState.snapshot.config)) {
+        const zones = sectionOf(this.gameState.snapshot.config, 'veterancy').kitZones as string[];
+        return zones.length === 1 && zones[0] === 'battlefield' ? 'Inactive in base and reserve.'
+          : zones.length ? `Active only in: ${zones.join(', ')}.` : 'Unit kits are disabled.';
+      }
       const stars = '★'.repeat(this.vetNeeded(focus.index));
       return unit && unit.vet >= this.vetNeeded(focus.index) ? `Available at ${stars}.` : `Inactive: needs ${stars}.`;
     }
@@ -4100,17 +4100,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * ability.
    */
   canAfford(side: 'mine' | 'opponent', index: number, cooldown: number, holder: string = side): boolean {
-    if (cooldown > 0 || !this.canUseAbilities(side, index) || this.usesLeft(holder, index) <= 0) return false;
+    if (cooldown > 0 || !this.canUseAbilities(side, holder === side ? index : undefined) || this.usesLeft(holder, index) <= 0) return false;
     return this.purseFor(side, index) >= (this.abilityCosts[index] ?? 0);
-  }
-
-  /**
-   * Abilities are a default-mode feature. A custom board can carry units the
-   * pool was never written for, so rather than offer boosts that mean nothing
-   * against them, the three panels say so and stay out of the way.
-   */
-  get abilitiesComingSoon(): boolean {
-    return this.gameMode === 'custom';
   }
 
   /** Which colour a box belongs to - 'mine' is us, whichever seat we hold. */
@@ -4178,7 +4169,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   get tollBind(): boolean {
     // Except on the finished position of a match won on points, which sits on
     // overtime's first ply without ever having been in overtime.
-    return !decidedOnPoints(this.phaseBank);
+    return !decidedOnPoints(this.phaseBank, this.gameState.snapshot.config);
   }
 
   /** Configured effects supplied by solo staging or authoritative snapshots. */
@@ -4190,7 +4181,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     unit: SelectedUnit | PieceData, effect: T,
   ): T {
     return unitEffect(effect, 'unit_id' in unit ? unit.unit_id : unit.unitId,
-      this.gameState.snapshot.config, activeVet(unit), this.buffsBind);
+      this.gameState.snapshot.config, activeVet(unit, undefined, this.gameState.snapshot.config), this.buffsBind);
   }
 
   /** Effects on a battlefield unit or the supplied panel recipient. */
@@ -4280,11 +4271,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       vet: u.vet, panel: u.panel, hp: u.hp ?? 0, max_hp: u.hpMax ?? 0 });
     const setting = stat === 'atk' || stat === 'def' || stat === 'hel' ? statSetting(this.displayBuff, stat) : undefined;
     if (stat === 'atk' || stat === 'hel') {
-      const tiers: number[] = stat === 'atk' ? attackTiers(u.unitId, this.gameState.snapshot.config, activeVet(u), this.buffsBind)
-        : unitStats(u.unitId, this.gameState.snapshot.config, activeVet(u)).heal ?? [];
+      const tiers: number[] = stat === 'atk' ? attackTiers(u.unitId, this.gameState.snapshot.config, activeVet(u, undefined, this.gameState.snapshot.config), this.buffsBind)
+        : unitStats(u.unitId, this.gameState.snapshot.config, activeVet(u, undefined, this.gameState.snapshot.config)).heal ?? [];
       if (!tiers.length) return [];
       const minimum = stat === 'atk'
-        ? unitStats(u.unitId, this.gameState.snapshot.config, activeVet(u)).attackMinRange ?? 1 : 1;
+        ? unitStats(u.unitId, this.gameState.snapshot.config, activeVet(u, undefined, this.gameState.snapshot.config)).attackMinRange ?? 1 : 1;
       return tiers.map((base, i) => ({ ring: i + minimum, now: String(capStat(setting ?? (base + add))), base: String(base) }));
     }
     const base = (stat === 'def' ? u.def : u.mv) ?? 0;
@@ -4348,8 +4339,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   /** The frozen result is pending through postmatch; a king kill can still override it. */
-  get matchVerdict(): 'white' | 'black' | 'overtime' | null {
-    return matchVerdict(this.phaseBank, this.gameState.snapshot.turnNumber);
+  get matchVerdict(): 'white' | 'black' | 'overtime' | 'draw' | null {
+    return matchVerdict(this.phaseBank, this.gameState.snapshot.turnNumber, this.gameState.snapshot.config);
   }
 
   /** The verdict in the header's own terms, or '' while nothing is settled. */
@@ -4357,6 +4348,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const verdict = this.matchVerdict;
     if (!verdict) return '';
     if (verdict === 'overtime') return 'OVERTIME';
+    if (verdict === 'draw') return 'DRAW';
     const mine = this.gameState.myColor(this.username) || 'white';
     return verdict === mine ? 'YOU WIN' : 'OPPONENT WINS';
   }
@@ -4378,7 +4370,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   get stageLabel(): string {
     const verdict = this.matchVerdict;
     if (verdict && verdict !== 'overtime') return this.verdictLabel;
-    return stageAt(this.gameState.snapshot.turnNumber).toUpperCase();
+    return stageAt(this.gameState.snapshot.turnNumber, this.gameState.snapshot.config).toUpperCase();
   }
 
   /**
@@ -4394,7 +4386,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const board = this.stagedBoard ?? snapshot.boardState ?? {};
     const history = snapshot.moveHistory;
     const turn = snapshot.turnNumber;
-    const phase = phaseIndexAt(turn);
+    const phase = phaseIndexAt(turn, this.gameState.snapshot.config);
     const cache = this.standingsCache;
     if (cache && cache.board === board && cache.history === history
         && cache.turn === turn && cache.bank === this.phaseBank && cache.config === snapshot.config) {
@@ -4417,23 +4409,23 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     //
     // The live figures are the engines' own derivations (match-score.ts), so
     // the running score and the one a phase banks are the same sum.
-    const idle = isPostmatch(turn);
+    const idle = isPostmatch(turn, this.gameState.snapshot.config);
     const radius: number = snapshot.config?.board?.radius ?? 11;
     // A turn that scores nothing shows no multiplier either: a postmatch's
     // `(0 - 0) x3 = 0` said nothing. The opening and overtime carry 1.
-    const multiplier = idle ? 1 : PHASES[phase].multiplier;
+    const multiplier = idle ? 1 : phasesOf(snapshot.config)[phase].multiplier;
     const build = (color: 'white' | 'black'): Standing => {
       const cap = idle ? 0 : capOf(board, radius, color, snapshot.config);
       const death = idle ? 0 : deathsOf(snapshot.config, history, color, phase);
-      const total = phaseTotal(cap, death, multiplier);
-      const banked = SCORING_PHASES
+      const total = phaseTotal(cap, death, multiplier, this.gameState.snapshot.config);
+      const banked = scoringPhases(snapshot.config)
         .filter(index => this.phaseBank[index])
         .map(index => this.phaseBank[index][color]);
       // The three phases are what the match is summed from. The opening banks
       // nothing, and overtime scores nothing at all: it is a decider, and what
       // it costs is a king's HP rather than a side's points. *The owner:
       // "loses just HP, if i said points i misspoke."*
-      const running = SCORING_PHASES.includes(phase) ? total : 0;
+      const running = scoringPhases(snapshot.config).includes(phase) ? total : 0;
       const match = banked.reduce((sum, value) => sum + value, 0) + running;
       return { cap, death, total, multiplier, banked, match, leading: false };
     };
@@ -4482,7 +4474,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       move.turn === snapshot.turnNumber && move.from === from && move.to === to);
     const color = this.gameState.myColor(snapshot.currentTurn);
     for (const step of this.stagedActions) {
-      if (step.refund && !committed(step.from, step.to)) {
+      if (step.refund !== undefined && !committed(step.from, step.to)) {
         const unit = step.board[step.to];
         if (unit) step.refund = withdrawalRefund(snapshot.config, unit);
         this.awardUnitPoints(step.refundColor ?? color, step.refund);
@@ -4521,14 +4513,27 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     }
     if (!color) return;
     this.buffs = advanceBuffs(this.buffs, color, this.gameState.snapshot.turnNumber);
-    if (this.isSinglePlayer && !isInitialization(this.gameState.snapshot.turnNumber)) {
+    if (this.isSinglePlayer) {
       const { config, boardState: board, turnNumber: ply } = this.gameState.snapshot;
-      for (const [at, unit] of Object.entries(board ?? {})) {
-        if (unit.color !== color) continue;
-        const passive = unitPassive(unit.unit_id, config, unit.vet);
+      const sources = new Map(this.abilityRecipients().map(cell => [cell.key, cell.piece]));
+      if (ply === 1) {
+        for (const [at, id] of Object.entries<string>(config.setup[color] ?? {})) {
+          if (!this.offBoard(at)) continue;
+          const panel = panelOfHex(at, config.board.orientation);
+          const vet = sectionOf(config, 'veterancy').startingRank;
+          const stats = unitStats(id, config, kitActive(null, config, panel) ? vet : -1);
+          sources.set(at, { unit_id: id, color: color as 'white' | 'black', uid: `${color[0]}${at}`, panel,
+            hp: stats.hp, max_hp: stats.hp, vet });
+        }
+      }
+      for (const [at, source] of sources) {
+        const unit = source.panel ? { ...source, hp: this.panelHp[source.uid!] ?? source.hp,
+          vet: Math.max(source.vet ?? 0, unitVeterancy(source.uid!, at, this.gameState.snapshot.moveHistory ?? [], ply, config.board.radius, config.board.orientation, config)) } : source;
+        if (unit.hp <= 0 || unit.color !== color) continue;
+        const passive = unitPassive(unit.unit_id, config, activeVet(unit, undefined, config));
         if (!['intimidate', 'persuade'].includes(passive?.effect)) continue;
         for (const [to, target] of Object.entries(board ?? {})) {
-          if (hexDistanceKeys(at, to) !== 1 || !target.uid
+          if (hexDistanceKeys(at, to) < 1 || hexDistanceKeys(at, to) > (passive.radius ?? 1) || !target.uid
               || (passive.effect === 'persuade') !== (target.color === color)) continue;
           this.buffs = { ...this.buffs, [target.uid]: stackEffect(this.buffs[target.uid],
             this.effectForUnit(target, { name: passive.name, mov: passive.mov ?? 0, atk: passive.atk ?? 0, def: passive.def ?? 0, turns: passive.turns }),
@@ -5238,6 +5243,17 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     return actors.size;
   }
 
+  private canTakeUnitAction(unit: SelectedUnit): boolean {
+    const cell = unit.panel ? this.boardRef?.cells.find(cell => cell.key === unit.key) : undefined;
+    return cell ? this.boardRef!.canTakePanelAction(cell) : this.canTakeBoardAction(unit.key);
+  }
+
+  get endedUnitIds(): string[] {
+    const s = this.gameState.snapshot;
+    return [...this.stagedActions.filter(step => step.endsAction && step.unitUid).map(step => step.unitUid!),
+      ...Object.entries(s.abilityState?.endedUnits ?? {}).filter(([, ply]) => ply === s.turnNumber).map(([uid]) => uid)];
+  }
+
   private canTakeBoardAction(key: string): boolean {
     const unit = (this.stagedBoard ?? this.gameState.snapshot.boardState)?.[key];
     if (!unit || carries(this.buffs[unit.uid!], 'action-lock')) return false;
@@ -5245,7 +5261,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     if (mine) return mine === this.boardMoves[this.boardMoves.length - 1] && !mine.endsAction
       && !mine.heal && (!mine.attack || this.canContinueAfterAttack(mine));
     return this.extraActionUids.includes(unit.uid ?? '')
-      || this.unitActionsSpent < boardMovesPerTurn(this.gameState.snapshot.turnNumber);
+      || this.unitActionsSpent < boardMovesPerTurn(this.gameState.snapshot.turnNumber, this.gameState.snapshot.config);
   }
 
   /** One staged battlefield action per unit, including withdrawals; casts alone do not count. */
@@ -5294,7 +5310,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    */
   get canMoveOnBoard(): boolean {
     const moves = this.boardMoves;
-    if (this.unitActionsSpent < boardMovesPerTurn(this.gameState.snapshot.turnNumber)
+    if (this.unitActionsSpent < boardMovesPerTurn(this.gameState.snapshot.turnNumber, this.gameState.snapshot.config)
         || this.extraActionUids.some(uid => !moves.some(step => this.uidOfAction(step) === uid))) return true;
     // Every move spoken for: only the unit mid-move may keep walking, and only
     // while it has not already struck.
@@ -5345,15 +5361,18 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       case 'disconnect': return `${msg.disconnectedPlayer ?? 'Your opponent'} did not reconnect in time.`;
       case 'resign':     return `${msg.resignedBy ?? 'A player'} resigned.`;
       case 'phase_result': {
-        const phase = [1, 2].find(index => this.phaseBank[index]?.pendingLoss);
-        return phase === 1 ? 'White had no eligible unit on a capture-zone hex at Phase 1 tally.'
-          : 'Black tallied zero VP in Phase 2.';
+        const phase = scoringPhases(this.gameState.snapshot.config).find(index => this.phaseBank[index]?.pendingLoss);
+        const rule = sectionOf(this.gameState.snapshot.config, 'match').winConditions.earlyPhaseLosses.find((rule: any) => rule.phase === phase && rule.side === this.phaseBank[phase ?? -1]?.pendingLoss);
+        if (!rule) return 'A phase ending condition was reached.';
+        const name = phasesOf(this.gameState.snapshot.config)[phase!].name, side = rule.side === 'white' ? 'White' : 'Black';
+        return rule.condition === 'no-eligible-capture-occupant' ? `${side} held at most ${rule.threshold} eligible capture-zone hexes at ${name} tally.` : `${side} tallied at most ${rule.threshold} VP in ${name}.`;
       }
       case 'timeout':    return 'A player ran out of time.';
       case 'elimination': return 'All units on one side were eliminated.';
       case 'regicide': return 'A commander was killed.';
-      case 'points': return 'Phase 3 ended with one side past the margin.';
-      case 'overtime': return 'Overtime ran out with both kings standing: black wins.';
+      case 'points': return `${phasesOf(this.gameState.snapshot.config).at(-2)!.name} ended with one side past the margin.`;
+      case 'overtime': return `Overtime ran out with both kings standing: ${sectionOf(this.gameState.snapshot.config, 'match').winConditions.overtimeWinner} wins.`;
+      case 'draw_overtime': return 'Overtime ended in a draw.';
       case 'draw_mutual': return 'Both sides fell in the same exchange.';
       case 'draw_agreed': return 'Both players agreed to a draw.';
       case 'draw_max_turns': return 'The turn limit was reached.';
@@ -5398,10 +5417,12 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const pathMov = this.pathMoveFor(event.from);
     const moving = (this.stagedBoard ?? this.gameState.snapshot.boardState)[event.from];
     const refundColor = moving?.owner ?? moving?.color ?? this.gameState.myColor(this.gameState.snapshot.currentTurn);
-    if (event.refund) this.awardUnitPoints(refundColor, event.refund);
+    const withdrawing = event.refund !== undefined;
+    if (withdrawing) this.awardUnitPoints(refundColor, event.refund!);
     const board = this.stagedBoard ?? this.gameState.snapshot.boardState;
     const next: Record<string, any> = { ...board };
-    next[event.to] = event.refund ? rankedUnit(next[event.from], this.gameState.snapshot.config, next[event.from].vet ?? 0, false) : next[event.from];
+    next[event.to] = withdrawing ? rankedUnit(next[event.from], this.gameState.snapshot.config, next[event.from].vet ?? 0,
+      kitActive(next[event.from], this.gameState.snapshot.config, panelOfHex(event.to, this.gameState.snapshot.config?.board?.orientation))) : next[event.from];
     delete next[event.from];
     // Steps accumulate across hops: a unit keeps walking on what is left of
     // its move until it attacks or the turn ends. Only for the same unit,
@@ -5428,8 +5449,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       } : {}),
       unitUid: moving?.uid,
       ...(moving ? { actor: { unit_id: moving.unit_id, color: moving.color, uid: moving.uid } } : {}),
-      ...(event.refund ? { refund: event.refund, refundColor } : {}),
-      ...(event.refund ? { endsAction: true } : {}),
+      ...(withdrawing ? { refund: event.refund, refundColor } : {}),
+      ...(withdrawing ? { endsAction: true } : {}),
     });
     // Each step plays as it is staged, and never blocks the next one.
     this.playSteps([{ kind: 'move', from: event.from, to: event.to, actor: this.stagedActions.at(-1)?.actor }]);
@@ -5464,12 +5485,12 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
 
     const distance = hexDistanceKeys(event.to, event.attack);
     if (event.heal) {
-      const range = unitStats(attacker.unit_id, config, attacker.vet)?.heal?.length ?? 0;
-      if (isInitialization(this.gameState.snapshot.turnNumber) || intoPanel
+      const range = unitStats(attacker.unit_id, config, activeVet(attacker, undefined, config))?.heal?.length ?? 0;
+      if (!stageRules(this.gameState.snapshot.turnNumber, config).normalHeal || intoPanel
           || this.offBoard(event.to) || this.offBoard(event.attack)
           || target.color !== attacker.color || distance < 1 || distance > range) return;
       const hel = this.buffs[attacker.uid!]?.hel ?? 0, helSet = statSetting(this.buffs[attacker.uid!], 'hel');
-      const amount = healingAmount(attacker.unit_id, target, distance, config, attacker.vet, hel, helSet);
+      const amount = healingAmount(attacker.unit_id, target, distance, config, activeVet(attacker, undefined, config), hel, helSet);
       board[event.attack] = { ...target, hp: target.hp + amount };
       const last = this.boardMoves.at(-1);
       const prev = last && last.to === event.from ? last : null;
@@ -5486,8 +5507,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       this.cdr.markForCheck();
       return;
     }
-    if (isSetupTurn(this.gameState.snapshot.turnNumber)
-        || !canAttack(attackStats(attacker.unit_id, config, attacker.vet, false, this.buffsBind, statSetting(this.buffs[attacker.uid!], 'atk')), distance, statSetting(this.buffs[attacker.uid!], 'atk') === undefined ? this.bonusFor(event.to, 'atk') : 0)) return;
+    if (!attacksAllowed(this.gameState.snapshot.turnNumber, config)
+        || !canAttack(attackStats(attacker.unit_id, config, activeVet(attacker, undefined, config), false, this.buffsBind, statSetting(this.buffs[attacker.uid!], 'atk')), distance, statSetting(this.buffs[attacker.uid!], 'atk') === undefined ? this.bonusFor(event.to, 'atk') : 0)) return;
     if (!tauntAllows({ ...Object.fromEntries((this.boardRef?.cells ?? []).filter(cell => cell.piece).map(cell => [cell.key, cell.piece!])), ...board, [event.attack]: target }, event.to, event.attack, config, this.buffs, this.buffsBind, this.bonusFor(event.to, 'atk'))) return;
     const priorBuffs = this.buffs;
     const combatBonuses: CombatBonuses = {
@@ -5517,7 +5538,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       impactTargets.push({ kind: 'ability', from: event.attack, to: event.attack, uid: target.uid,
         color: target.color, hostile: true, ...this.hpMark(exchange.targetHp - target.hp) });
       for (const [at, piece] of Object.entries({ ...Object.fromEntries((this.boardRef?.cells ?? []).filter(cell => cell.piece).map(cell => [cell.key, cell.piece!])), ...board })) {
-        if (at === event.attack || !piece || piece.color === attacker.color || hexDistanceKeys(event.to, at) !== 1) continue;
+        if (at === event.attack || !piece || piece.color === attacker.color || hexDistanceKeys(event.to, at) < 1 || hexDistanceKeys(event.to, at) > (this.abilityEffects[this.unitAbilityIndex(this.displayUnit) ?? -1]?.radius ?? config.abilities?.catalogue?.[config.units?.[attacker.unit_id]?.ability]?.radius ?? 1)) continue;
         const splash = combatExchange(attacker, piece, 1, config, { atk: combatBonuses.atk, def: 0, targetAtk: 0,
           targetDef: this.bonusFor(at, 'def', piece, true), ...combatStatuses(this.buffs[attacker.uid!], this.buffs[piece.uid!]) }, false);
         const hp = splash.targetHp;
@@ -5540,7 +5561,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     if (this.buffsBind) {
       for (const [source, recipient, alive] of [[attacker, target, hurt.hp > 0],
           [target, attacker, !!board[event.to]]] as const) {
-        const passive = unitPassive(source.unit_id, config, activeVet(source));
+        const passive = unitPassive(source.unit_id, config, activeVet(source, undefined, this.gameState.snapshot.config));
         if (passive?.effect !== 'on-hit-drain' || !alive || !recipient.uid) continue;
         this.buffs = { ...this.buffs, [recipient.uid]: stackEffect(this.buffs[recipient.uid],
           this.effectForUnit(recipient, { name: passive.name, mov: passive.mov ?? 0, atk: passive.atk ?? 0, def: passive.def ?? 0, turns: passive.turns }),
@@ -5608,7 +5629,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    */
   private canContinueAfterAttack(step: StagedAction): boolean {
     const unit = (this.stagedBoard ?? this.gameState.snapshot.boardState)[step.to];
-    return this.buffsBind && !!unit && unitPassive(unit.unit_id, this.gameState.snapshot.config, unit.vet)?.effect === 'rapid-movement';
+    return this.buffsBind && !!unit && unitPassive(unit.unit_id, this.gameState.snapshot.config, activeVet(unit, undefined, this.gameState.snapshot.config))?.effect === 'rapid-movement';
   }
 
   get attackedUnitHexes(): string[] {
@@ -5626,7 +5647,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const action = this.boardMoves.find(move => move.from === pending.from);
     if (action?.heal || (action?.attack && !this.canContinueAfterAttack(action))) return 0;
     const unit = this.stagedBoard?.[pending.to];
-    const base = unitStats(unit?.unit_id ?? '', this.gameState.snapshot.config, unit?.vet).move ?? 0;
+    const base = unitStats(unit?.unit_id ?? '', this.gameState.snapshot.config, activeVet(unit, undefined, this.gameState.snapshot.config)).move ?? 0;
     // A +MOV boost is real steps, not just a number in the panel.
     const total = capStat(base + this.moveBonusFor(pending.to));
     return Math.max(0, total - pending.used);
@@ -5651,7 +5672,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     // config default into an explicit override. Solo uses the edited config;
     // networked default games use the shared shipped config.
     const config = this.isSinglePlayer ? this.configService.getConfig() : DEFAULT_GAME_CONFIG;
-    return this.gameOptions.turnTimeLimit ?? config.rules?.turnTimeLimit ?? 0;
+    return this.gameOptions.turnTimeLimit ?? ruleOf(config, 'turnTimeLimit');
   }
 
   get formattedTurnTime(): string {
@@ -6046,7 +6067,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     }
     const undone = this.stagedActions.pop();
     // A withdrawal paid UP on the way in; taking it back takes the UP too.
-    if (undone?.refund) {
+    if (undone?.refund !== undefined) {
       this.awardUnitPoints(undone.refundColor ?? this.gameState.myColor(this.gameState.snapshot.currentTurn), -undone.refund);
     }
     // A cast took points, a cooldown, a mark and a stat stack. Popping the
@@ -6304,7 +6325,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         const attack = step.afterAttackWalk ? undefined : step.attack ?? undefined;
         const command = { type: step.intoPanel && attack ? 'panel_attack' : 'make_move', from, to: step.to,
           ...(attack ? { attack } : {}), ...(step.heal ? { heal: step.heal } : {}),
-          ...(step.refund ? { withdraw: true } : {}), more: true };
+          ...(step.refund !== undefined ? { withdraw: true } : {}), more: true };
         events.push({ at: step.at ?? 0, command });
       }
       before = step.board;
@@ -6528,7 +6549,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   get abilityBlockedNote(): string {
     if (!this.buffsBind) return ABILITIES_SOLO_ONLY;
     const ply = this.gameState.snapshot.turnNumber;
-    return isInitialization(ply)
+    return isInitialization(ply, this.gameState.snapshot.config)
       ? 'Unavailable: only CP utilities can be used during initialization.'
       : 'Unavailable: not your turn.';
   }
@@ -6566,8 +6587,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    */
   canUseAbilities(side: 'mine' | 'opponent', index?: number): boolean {
     return this.canChooseAbilities(side)
-      && (!isInitialization(this.gameState.snapshot.turnNumber)
-        || (index !== undefined && this.pathChoice(side)?.utility === index));
+      && stageRules(this.gameState.snapshot.turnNumber, this.gameState.snapshot.config)[
+        index === undefined ? 'unitAbilities' : this.pathChoice(side)?.utility === index ? 'cpUtilities'
+          : this.pathChoice(side)?.skill === index ? 'cpSkills' : this.pathChoice(side)?.ultimate === index ? 'cpUltimates' : 'poolAbilities'];
   }
 
   /** Resign the current game. */
@@ -6647,8 +6669,6 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
    * At least one other player must be present and everyone must be ready.
    */
   canStartGame(): boolean {
-    // Custom mode is a stub ("Coming Soon..."), so starting it is blocked.
-    if (this.gameMode === 'custom') return false;
     if (this.isSinglePlayer) {
       // Nobody to ready up - the placeholder seat never connects.
       return this.players.length >= 2;

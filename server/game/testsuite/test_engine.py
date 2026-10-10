@@ -13,12 +13,8 @@ from typing import Any, Dict
 
 from game.engine import economy, panels, phases
 from game.engine.board import HexBoard, coord_key, parse_coord, hex_distance
-from game.engine.config_loader import (
-    DEFAULT_CONFIG,
-    _validate_config,
-    load_config,
-    build_initial_board,
-)
+from game.engine.config_loader import _validate_config, load_config, build_initial_board
+from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG, rule_of
 from game.engine.move_validator import (
     get_legal_moves,
     is_legal_move,
@@ -206,7 +202,7 @@ class ConfigLoaderTestCase(TestCase):
 
     def test_default_config_loads(self):
         config = load_config(None)
-        self.assertEqual(config['version'], '1.0')
+        self.assertEqual(config['version'], '2.0')
         self.assertEqual(config['board']['radius'], 11)
         self.assertIn('king', config['units'])
         self.assertIn('pawn', config['units'])
@@ -228,12 +224,12 @@ class ConfigLoaderTestCase(TestCase):
         would silently get the dead matchups the floor exists to remove.
         """
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         raw = copy.deepcopy(DEFAULT_CONFIG)
         del raw['rules']['minStrikeDamage']
         loaded = load_config(raw)
         self.assertEqual(
-            loaded['rules']['minStrikeDamage'],
+            loaded['combat']['minStrikeDamage'],
             DEFAULT_CONFIG['rules']['minStrikeDamage'],
         )
 
@@ -243,13 +239,14 @@ class ConfigLoaderTestCase(TestCase):
         them loads at the numbers every game was played under.
         """
         import copy
-        from game.engine.config_loader import COUNTED_RULES, DEFAULT_CONFIG
+        from game.engine.config_loader import COUNTED_RULES
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         raw = copy.deepcopy(DEFAULT_CONFIG)
         for key in COUNTED_RULES:
             del raw['rules'][key]
         loaded = load_config(raw)
         self.assertEqual(
-            {k: loaded['rules'][k] for k in COUNTED_RULES},
+            {k: rule_of(loaded, k) for k in COUNTED_RULES},
             {'cpAtStart': 5, 'cpPhaseOffset': 10, 'upAtStart': 10, 'pointsAtStart': 10})
         for key in COUNTED_RULES:
             for value in (-1, 1.5, True, None):
@@ -267,12 +264,13 @@ class ConfigLoaderTestCase(TestCase):
         its default rather than at whatever the old one said.
         """
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG, rule_of
+        from game.engine.config_loader import rule_of
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         raw = copy.deepcopy(DEFAULT_CONFIG)
         raw['rules']['postmatchEntries'] = 5
         raw['rules']['phaseInitEntries'] = 1
         loaded = load_config(raw)
-        self.assertEqual(loaded['rules']['postmatchEntries'], 5)
+        self.assertNotIn('rules', loaded)
         # A room already playing is never loaded again: its config_snapshot is
         # read as it was stored, and that is the road a frozen room takes -
         # rule_of's fallback, not the normaliser's fill.
@@ -285,7 +283,7 @@ class ConfigLoaderTestCase(TestCase):
         subtracts it, so a blow would heal whatever it hit.
         """
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         bad = copy.deepcopy(DEFAULT_CONFIG)
         bad['rules']['minStrikeDamage'] = -1
         with self.assertRaises(ValueError):
@@ -294,9 +292,9 @@ class ConfigLoaderTestCase(TestCase):
     def test_the_default_config_round_trips_and_still_deals_its_board(self):
         """The whole config goes through the real path, floor and all."""
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         loaded = load_config(copy.deepcopy(DEFAULT_CONFIG))
-        self.assertEqual(loaded['rules']['minStrikeDamage'], 1)
+        self.assertEqual(loaded['combat']['minStrikeDamage'], 1)
         board = build_initial_board(loaded)
         self.assertEqual(len(board.to_dict()), 48)
 
@@ -308,7 +306,7 @@ class ConfigLoaderTestCase(TestCase):
 
     def test_out_of_range_attack_range_is_rejected(self):
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         bad = copy.deepcopy(DEFAULT_CONFIG)
         bad['units']['pawn']['attackRange'] = 0
         with self.assertRaises(ValueError):
@@ -447,20 +445,20 @@ class ConfigLoaderTestCase(TestCase):
         config = load_config(old)
         self.assertEqual(config['units']['king']['defense'], 0)
         # It has commanders on both sides, so regicide is what it was played as.
-        self.assertEqual(config['rules']['objective'], 'regicide')
+        self.assertEqual(config['match']['objective'], 'regicide')
 
         # One without a commander anywhere never meant regicide.
         old['units'] = {'pawn': {'id': 'pawn', 'name': 'P', 'symbol': 'P',
                                  'value': 1, 'hp': 5, 'attack': 2}}
         old['setup'] = {'white': {'0,3': 'pawn'}, 'black': {'0,-3': 'pawn'}}
-        self.assertEqual(load_config(old)['rules']['objective'], 'elimination')
+        self.assertEqual(load_config(old)['match']['objective'], 'elimination')
 
     def test_malformed_rules_is_a_config_error_not_a_crash(self):
         """`config.get('rules', {})` hands back None for an explicit null, and
         every read off it raised AttributeError straight through handlers that
         only catch ValueError - an INTERNAL_ERROR traceback for a bad paste."""
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         bad = copy.deepcopy(DEFAULT_CONFIG)
         bad['rules'] = None
         with self.assertRaises(ValueError):
@@ -675,7 +673,7 @@ class GameLogicTestCase(TestCase):
         board = HexBoard(5)
         board.set(1, 0, 'pawn', 'white', hp=pawn_hp, max_hp=pawn_hp)
         board.set(3, 0, 'king', 'black', hp=king_hp, max_hp=king_hp)
-        config['rules']['objective'] = 'elimination'
+        config['match']['objective'] = 'elimination'
 
         # White has no king but still has a unit, so it is not out yet.
         self.assertIsNone(find_defeated(board, config))
@@ -706,7 +704,7 @@ class GameLogicTestCase(TestCase):
         board = HexBoard(5)
         board.set(0, 0, 'pawn', 'white', hp=pawn_hp, max_hp=pawn_hp)
         board.set(1, 0, 'pawn', 'black', hp=pawn_hp, max_hp=pawn_hp)
-        config['rules']['objective'] = 'regicide'
+        config['match']['objective'] = 'regicide'
 
         # Neither side has a commander, so both are beaten at once.
         self.assertEqual(defeated_sides(board, config), ['white', 'black'])
@@ -743,7 +741,7 @@ class GameLogicTestCase(TestCase):
         config = copy.deepcopy(self._cfg())
         config['units']['pawn'].update(attack=5, defense=1)
         config['units']['rook'].update(attack=7, defense=1)
-        config['rules']['minStrikeDamage'] = 1  # under both blows, so it never bites
+        config['combat']['minStrikeDamage'] = 1  # under both blows, so it never bites
         board = HexBoard(5)
         board.set(0, 0, 'pawn', 'white', hp=99, max_hp=99)
         board.set(1, 0, 'rook', 'black', hp=99, max_hp=99)
@@ -818,7 +816,7 @@ class GameLogicTestCase(TestCase):
 
     def test_explicit_attack_rings_apply_to_strikes_and_counters(self):
         config = copy.deepcopy(self._cfg())
-        config['rules']['rangeFalloff'] = 1
+        config['combat']['rangeFalloff'] = 1
         # Rename the types: no engine branch may depend on the archer's id.
         config['units'] = {
             'ranger': {**config['units']['archer'], 'defense': 0},
@@ -843,7 +841,7 @@ class GameLogicTestCase(TestCase):
         Defence above attack is clamped to the configured floor and attack cap.
         """
         config = copy.deepcopy(self._cfg())
-        attack = max(2, config['rules']['minStrikeDamage'] + 1)
+        attack = max(2, config['combat']['minStrikeDamage'] + 1)
         config['units']['pawn']['attack'] = attack
         config['units']['king']['defense'] = attack + 10
         king_hp = config['units']['king']['hp']
@@ -853,7 +851,7 @@ class GameLogicTestCase(TestCase):
 
         result = resolve_combat(board, (0, 0), (1, 0), config)
 
-        expected = min(attack, config['rules']['minStrikeDamage'])
+        expected = min(attack, config['combat']['minStrikeDamage'])
         self.assertEqual(result['damage_dealt'], expected)
         self.assertEqual(result['defender_hp'], king_hp - expected)
 
@@ -990,7 +988,7 @@ class SharedDefaultConfigTestCase(TestCase):
     """
 
     def test_the_default_config_is_the_shared_file(self):
-        from game.engine.config_loader import DEFAULT_CONFIG_PATH
+        from game.engine.config_loader import DEFAULT_CONFIG_PATH, DEFAULT_CONFIG
         self.assertEqual(DEFAULT_CONFIG_PATH.parent.name, 'shared')
         with open(DEFAULT_CONFIG_PATH, encoding='utf-8') as fh:
             self.assertEqual(json.load(fh), DEFAULT_CONFIG)
@@ -1748,7 +1746,7 @@ class PanelAttackTestCase(DealtPanels, TestCase):
             unit.pop('veterancy', None)
         config['units']['pawn'].update(hp=99, attack=9, defense=2)
         config['units'][defender].update(hp=99, attack=12, defense=4)
-        config['rules']['minStrikeDamage'] = 1
+        config['combat']['minStrikeDamage'] = 1
         return config
 
     def test_a_reserve_answers_the_blow(self):
@@ -2467,9 +2465,9 @@ class PointsTestCase(TestCase):
                           economy.points_of('black', 2, [], config)], [11, 11])
         self.assertEqual(economy.points_of('white', 7, [], config), 34)
         self.assertEqual(economy.points_of('white', 73, [], config), 129)
-        config['rules']['pointsAtStart'] = 0
+        config['economy']['pointsAtStart'] = 0
         self.assertEqual(economy.points_of('white', 73, [], config), 119)
-        config['rules']['pointsAtStart'] = 250
+        config['economy']['pointsAtStart'] = 250
         self.assertEqual(economy.points_of('white', 100, [], config), 369)
 
     def test_withdrawal_refunds_use_current_wounds_floor_at_one_and_keep_owner_attribution(self):

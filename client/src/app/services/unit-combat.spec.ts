@@ -1,6 +1,7 @@
+import { sectionOf } from './game-rules';
 import { combatExchange, carries, tauntAllows } from './unit-combat';
 import { controlsAt, controlledUnit } from './unit-control';
-import { DEFAULT_GAME_CONFIG as config } from './config.service';
+import { PREVIOUS_GAME_CONFIG as config } from './config.service';
 import { stackEffect } from './ability-rules';
 
 const piece = (unit_id: string, color = 'white', hp = 20): any => ({ unit_id, color, uid: unit_id + color, hp, vet: 3, max_hp: hp });
@@ -71,6 +72,17 @@ describe('unit combat effects', () => {
     expect(tauntAllows(board, '0,0', '2,0', custom, buffs)).toBeTrue();
     board['1,0'] = { ...shield, color: 'white' };
     expect(tauntAllows(board, '0,0', '2,0', custom, buffs)).toBeTrue();
+  });
+
+  it('checks Taunt reach using active kit stats rather than earned stars', () => {
+    const custom:any=structuredClone(config);custom.version='2.0';
+    custom.veterancy={...sectionOf(undefined,'veterancy'),kitZones:['reserve']};
+    const board={'0,0':piece('king'),'2,0':piece('shieldman','black',28),'1,-1':piece('pawn','black',14)};
+    const taunt=stackEffect(undefined,{name:'Taunt',effect:'taunt',mov:0,atk:0,def:0},'black');
+    const buffs={[board['2,0'].uid]:taunt};
+    expect(tauntAllows(board,'0,0','1,-1',custom,buffs)).toBeTrue();
+    custom.veterancy.kitZones.push('battlefield');
+    expect(tauntAllows(board,'0,0','1,-1',custom,buffs)).toBeFalse();
   });
 
   it('retains original ownership, position and wounds through control expiry and reload', () => {

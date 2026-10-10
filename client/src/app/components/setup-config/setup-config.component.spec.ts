@@ -1,5 +1,5 @@
 import { Subject } from 'rxjs';
-import { ConfigService, DEFAULT_GAME_CONFIG } from '../../services/config.service';
+import { ConfigService, PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG } from '../../services/config.service';
 import { SAVE_ANSWER_MS, SetupConfigComponent } from './setup-config.component';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 

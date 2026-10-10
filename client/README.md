@@ -61,3 +61,8 @@ ability id and phase, and Undo restores the originating budget. CP utilities are
 allowed during initialization; ordinary casts remain blocked. ATK/HEL capability
 checks use the configured profile and unlocked passive, distinguishing absent stats
 from temporary numeric zero. See [AGENTS.md](../AGENTS.md) for current game rules.
+
+Match rules resolve through `game-rules.ts` and the shared draft-07 schema (`ajv`),
+mirroring Python `game_rules.py` (`jsonschema`). Format-1 imports use frozen compatibility
+data. See [CONFIGURATION.md](../CONFIGURATION.md) for parameters, migration and snapshot
+semantics. The balance revision remains null; the JSON editor is the existing setup UI.

@@ -1,8 +1,9 @@
+import { sectionOf } from '../../services/game-rules';
 import { stackEffect } from '../../services/ability-rules';
 import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { SimpleChange } from '@angular/core';
 import { GameBoardComponent, hexNumberMap } from './game-board.component';
-import { DEFAULT_GAME_CONFIG } from '../../services/config.service';
+import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG } from '../../services/config.service';
 import { OVERTIME_FIRST_PLY } from '../../services/phases';
 import { setPanelsDealt } from '../../services/hex-rules';
 import { AudioService } from '../../services/audio.service';
@@ -1078,6 +1079,30 @@ describe('GameBoardComponent reach preview', () => {
     // the class once, so the full count is also the proof they do not overlap
     // and that none of them ran off the board.
     expect(zoned.length).toBe(5 * 19);
+  });
+
+  it('reads large zone worths without rebuilding geometry per cell and refreshes after config changes', () => {
+    const config:any=structuredClone(DEFAULT_GAME_CONFIG);config.version='2.0';
+    config.scoring={...sectionOf(undefined,'scoring'),zones:[{kind:'middle',owner:'',center:[0,0],radius:50,worth:9}]};
+    fixture.componentRef.setInput('config',config);fixture.componentRef.setInput('radius',11);fixture.detectChanges();
+    const writes=spyOn(Map.prototype,'set').and.callThrough();
+    for(const cell of board.cells)expect(board.zoneWorthAt(cell)).toBe(cell.filler?0:9);
+    expect(writes).not.toHaveBeenCalled();
+    const changed=structuredClone(config);changed.scoring.zones[0].worth=2;
+    fixture.componentRef.setInput('config',changed);fixture.detectChanges();
+    expect(board.zoneWorthAt(board.cells.find(cell=>cell.key==='0,0')!)).toBe(2);
+  });
+
+  it('outlines the actual second layer of a custom capture-zone radius', () => {
+    const config:any=structuredClone(DEFAULT_GAME_CONFIG);
+    config.version='2.0';
+    config.scoring={...sectionOf(undefined,'scoring'),zones:[{kind:'middle',owner:'',center:[0,0],radius:3,worth:2}]};
+    fixture.componentRef.setInput('config',config);
+    fixture.componentRef.setInput('radius',11);
+    fixture.detectChanges();
+    expect(board.cells.filter(cell=>cell.zoneInner).length).toBe(12);
+    expect(board.cells.filter(cell=>cell.zoneInner).every(cell=>cell.zoneLayer===2)).toBeTrue();
+    expect(fixture.nativeElement.querySelectorAll('.zone-inner').length).toBe(12);
   });
 
   it('keeps a distinct centre outline on occupied zones and side-specific base blues when flipped', () => {

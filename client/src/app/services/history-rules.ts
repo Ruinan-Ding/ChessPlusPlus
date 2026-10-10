@@ -1,3 +1,4 @@
+import { sectionOf } from './game-rules';
 /**
  * What the move history says about who has already moved.
  *
@@ -14,13 +15,10 @@
  */
 
 import { ruleOf } from './config.service';
-import { capStat, capUnit, rankedUnit, unitPassive } from './unit-stats';
+import { activeVet, kitActive, capStat, capUnit, rankedUnit, unitPassive } from './unit-stats';
 import { controlledUnit, controlsAt } from './unit-control';
 import { BASE_PANELS, isInsideBoard, panelOfHex } from './hex-rules';
-import {
-  PHASES, PLIES_PER_TURN, SCORING_PHASES, phaseStartTurn,
-  boardMovesPerTurn, isInitialization, isPostmatch, isSetupTurn,
-} from './phases';
+import { phasesOf, PLIES_PER_TURN, scoringPhases, phaseStartTurn, boardMovesPerTurn, movesPerTurn, isInitialization, isPostmatch, isSetupTurn } from './phases';
 
 /**
  * A move record, as loosely as the history actually holds one: what a record
@@ -57,12 +55,13 @@ function normalizeKey(key: unknown): string | null {
  * are not counted. A unit sent home has left the board entirely.
  *
  */
-export function openingMovedHexes(history: Move[] | undefined, color: string): Set<string> {
+export function openingMovedHexes(history: Move[] | undefined, color: string, config?: any): Set<string> {
   const out = new Set<string>();
+  if (!sectionOf(config, 'stageRules').movedUnitsLockedInOpening) return out;
   for (const move of history ?? []) {
     if (!move || move.color !== color) continue;
     if (move.withdrawn || move.panelMove || move.panelEffect) continue;
-    if (move.turn == null || !isInitialization(move.turn)) continue;
+    if (move.turn == null || !isInitialization(move.turn, config)) continue;
     const key = normalizeKey(move.to);
     if (key) out.add(key);
   }
@@ -78,13 +77,13 @@ export function openingMovedHexes(history: Move[] | undefined, color: string): S
  * and only then. This turn's own walks are not a lock: a unit is walked a few
  * steps at a time, and each step is a record.
  */
-export function lockedPanelUnits(history: Move[] | undefined, ply: number): Set<string> {
+export function lockedPanelUnits(history: Move[] | undefined, ply: number, config?: any): Set<string> {
   const out = new Set<string>();
-  if (!isInitialization(ply)) return out;
+  if (!sectionOf(config, 'stageRules').movedUnitsLockedInOpening || !isInitialization(ply, config)) return out;
   for (const move of history ?? []) {
     if (!move || !(move.panelMove || move.entered || move.withdrawn)) continue;
     const turn = move.turn;
-    if (turn == null || turn >= ply || !isInitialization(turn)) continue;
+    if (turn == null || turn >= ply || !isInitialization(turn, config)) continue;
     const uid = move.unit?.uid;
     if (uid) out.add(uid);
   }
@@ -106,6 +105,9 @@ export function panelMoversAt(
   const movers = { base: new Set<string>(), reserve: new Set<string>() };
   for (const move of history ?? []) {
     if (!move || move.turn !== ply) continue;
+    if (move.controlSource && move.sourcePanel && move.color === color) {
+      movers[BASE_PANELS.has(move.sourcePanel) ? 'base' : 'reserve'].add(move.controlSource);
+    }
     const unit = move.unit ?? {};
     if (!unit.uid || unit.color !== color) continue;
     const origin = (move.entered ? panelOfHex(move.from, orientation) : move.panel)
@@ -131,7 +133,7 @@ export function panelMoverAllowed(
   if (movers.has(uid) && last?.unit?.uid !== uid) return false;
   const extra = new Set(Object.values(controlsAt(history ?? [], ply))
     .filter(unit => unit.color === color && unit.controlTurn === ply).map(unit => unit.uid));
-  return movers.has(uid) || extra.has(uid) || [...movers].filter(id => !extra.has(id)).length < boardMovesPerTurn(ply);
+  return movers.has(uid) || extra.has(uid) || [...movers].filter(id => !extra.has(id)).length < movesPerTurn(ply, base ? 'base' : 'reserve', config);
 }
 
 /** Cast and Sacrifice grant one action to their chosen unit, only on the casting ply. */
@@ -175,7 +177,7 @@ export function boardMovesAt(history: Move[] | undefined, ply: number, color: st
  * go.
  */
 export function boardMoveLandings(
-  history: Move[] | undefined, ply: number, color: string,
+  history: Move[] | undefined, ply: number, color: string,config?: any
 ): Set<string> {
   const out = new Set<string>();
   for (const move of history ?? []) {
@@ -222,19 +224,21 @@ export function homecomingsAt(
  */
 export function unitVeterancy(
   uid: string, at: string, history: Move[] | undefined, ply: number,
-  radius: number, orientation = 'edge-up',
+  radius: number, orientation = 'edge-up',config?: any
 ): number {
   const crossings = (history ?? []).filter(move => move?.unit?.uid === uid
     && (move.entered || move.withdrawn || move.panelMove)
     && Number.isInteger(move.turn) && normalizeKey(move.from) && normalizeKey(move.to));
-  const boundaries = [phaseStartTurn(1),
-    ...SCORING_PHASES.map(index => phaseStartTurn(index) + PHASES[index].turns)]
+  const settings = sectionOf(config, 'veterancy');
+  const boundaries = [...(settings.firstPhaseStartAward ? [phaseStartTurn(1, config)] : []),
+    ...scoringPhases(config).filter(index => settings.postmatchAwards && phasesOf(config)[index].postmatch)
+      .map(index => phaseStartTurn(index, config) + phasesOf(config)[index].turns)]
     .map(turn => (turn - 1) * PLIES_PER_TURN + 1);
   let where = normalizeKey(crossings[0]?.from ?? at);
   const promotions = (history ?? []).filter(move => move?.promotion?.uid === uid && Number.isInteger(move.turn)
     && Number.isInteger(move.promotion.vet)).sort((a, b) => a.turn - b.turn);
   let promoted = 0;
-  let next = 0, vet = 0;
+  let next = 0, vet = settings.startingRank;
   for (const boundary of boundaries) {
     if (boundary > ply) break;
     while (promoted < promotions.length && promotions[promoted].turn < boundary) {
@@ -246,8 +250,9 @@ export function unitVeterancy(
     }
     if (!where) continue;
     const [q, r] = where.split(',').map(Number);
-    if (isInsideBoard(q, r, radius) || !BASE_PANELS.has(panelOfHex(where, orientation))) {
-      vet = Math.min(3, vet + 1);
+    const zone = isInsideBoard(q, r, radius) ? 'battlefield' : BASE_PANELS.has(panelOfHex(where, orientation)) ? 'base' : 'reserve';
+    if (settings.awardZones.includes(zone)) {
+      vet = Math.min(3, vet + settings.award);
     }
   }
   while (promoted < promotions.length && promotions[promoted].turn <= ply) {
@@ -258,20 +263,23 @@ export function unitVeterancy(
 
 /** Phase 3 postmatch heals units that had already reached vet 3, once. */
 export function promotionHeals(config: any, board: Record<string, any>, history: Move[], ply: number): Move[] {
-  const boundary = (phaseStartTurn(3) + PHASES[3].turns - 1) * PLIES_PER_TURN + 1;
+  const settings = sectionOf(config, 'veterancy');
+  const phase = settings.fullHealPhase === 'last' ? scoringPhases(config).length : settings.fullHealPhase;
+  if (!phase || !phasesOf(config)[phase].postmatch) return [];
+  const boundary = (phaseStartTurn(phase, config) + phasesOf(config)[phase].turns - 1) * PLIES_PER_TURN + 1;
   if (ply !== boundary) return [];
   const radius = config?.board?.radius ?? 11;
   const orientation = config?.board?.orientation ?? 'edge-up';
   const veteran = (uid: string, at: string) =>
-    unitVeterancy(uid, at, history, ply - 1, radius, orientation) === 3;
-  return healVeterans(config, board, history, ply, (unit, at) => veteran(unit.uid ?? `${unit.color[0]}${at}`, at), 'promotionHeal');
+    unitVeterancy(uid, at, history, ply - 1, radius, orientation, config) >= settings.fullHealRank;
+  return healVeterans(config, board, history, ply, (unit, at) => settings.awardZones.includes(isInsideBoard(...at.split(',').map(Number) as [number, number], radius) ? 'battlefield' : BASE_PANELS.has(unit.panel) ? 'base' : 'reserve') && veteran(unit.uid ?? `${unit.color[0]}${at}`, at), 'promotionHeal');
 }
 
 export function regenerationHeals(config: any, board: Record<string, any>, history: Move[], ply: number, color: string): Move[] {
   return healVeterans(config, board, history, ply, (unit, at) => {
     const [q, r] = at.split(',').map(Number);
-    return isInsideBoard(q, r, config?.board?.radius ?? 11) && unit.color === color
-    && unitPassive(unit.unit_id, config, unit.vet)?.effect === 'regenerate';
+    return unit.color === color
+    && unitPassive(unit.unit_id, config, activeVet(unit, unit.panel, config))?.effect === 'regenerate';
   }, 'regenerationHeal');
 }
 
@@ -312,10 +320,10 @@ function healVeterans(config: any, board: Record<string, any>, history: Move[], 
   }
   const heals: Move[] = [];
   for (const { at, unit: snapshot, panel } of panels.values()) {
-    const unit = controlledUnit(rankedUnit(snapshot, config,
-      unitVeterancy(snapshot.uid, at || '0,0', history, ply, radius, orientation), false), controlsAt(history, ply), ply);
+    const unit = controlledUnit(rankedUnit({ ...snapshot, panel }, config,
+      unitVeterancy(snapshot.uid, at || '0,0', history, ply, radius, orientation, config), kitActive({ ...snapshot, panel }, config)), controlsAt(history, ply), ply);
     const full = unit.max_hp ?? config?.units?.[unit.unit_id]?.hp ?? unit.hp;
-    if (!panel || BASE_PANELS.has(panel) || unit.hp <= 0 || unit.hp >= full
+    if (!panel || unit.hp <= 0 || unit.hp >= full
         || !eligible(unit, at || '0,0')) continue;
     heals.push({
       from: '', to: '', unit_id: unit.unit_id, color: unit.color, turn: ply,

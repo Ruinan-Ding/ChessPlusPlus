@@ -10,12 +10,10 @@
   </div>
 
   <div class="config-section">
-    <!-- Placeholder for unit/ability configuration UI. As small as its words:
-         it had most of the screen, and the editor - the part that works - a
-         strip at the foot of a phone. -->
     <div class="config-ui">
-      <h3>Units & Abilities Configuration</h3>
-      <p>Coming Soon...</p>
+      <h3>Game Configuration</h3>
+      <p>Edit game rules in JSON. Saves apply to new games.</p>
+      <p *ngIf="migrationNotice" role="status">{{ migrationNotice }}</p>
     </div>
 
     <!-- JSON configuration textarea -->

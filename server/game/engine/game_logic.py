@@ -13,6 +13,7 @@ All functions are pure (no DB access) and operate on a HexBoard + config.
 """
 
 from __future__ import annotations
+from .game_rules import rule_of, section_of
 from typing import Any, Dict, List, Optional
 
 from .board import HexBoard, Coord, coord_key, hex_distance
@@ -42,7 +43,7 @@ def ranged_damage(attack: int | List[int], distance: int, config: Dict[str, Any]
 
     A list names each ring's exact attack, without percentage falloff. For a
     scalar, striking a neighbour (distance 1) costs nothing. Every further
-    ring loses ``rules.rangeFalloff`` of the stat, linearly, floored - a hit
+    ring loses ``combat.rangeFalloff`` of the stat, linearly, floored - a hit
     that lands at all always takes off at least 1.
     """
     minimum = cap_stat(minimum)
@@ -51,16 +52,9 @@ def ranged_damage(attack: int | List[int], distance: int, config: Dict[str, Any]
     attack = cap_stat(attack)
     if attack <= 0 or distance <= 1:
         return max(0, attack)
-    falloff = config.get('rules', {}).get('rangeFalloff', 0)
+    falloff = rule_of(config, 'rangeFalloff')
     scale = max(0.0, 1.0 - falloff * (distance - 1))
-    return max(1, int(attack * scale))
-
-
-#: Fallback for a config that names no floor at all. `_normalise_config` fills
-#: `rules.minStrikeDamage` in from DEFAULT_CONFIG, so this is only reached by a
-#: caller that hand-built a config dict without going through `load_config` -
-#: several tests do exactly that.
-MIN_STRIKE_DAMAGE = 1
+    return min(attack, max(section_of(config, 'combat')['minRangedDamage'], int(attack * scale)))
 
 
 def strike_damage(
@@ -73,7 +67,7 @@ def strike_damage(
     Damage one unit lands on another: the attacker's ring-scaled attack stat
     less the defender's defence.
 
-    Armour blunts a hit down to ``rules.minStrikeDamage`` but never turns it
+    Armour blunts a hit down to ``combat.minStrikeDamage`` but never turns it
     aside entirely, and never heals. At the default of 1 a blow that lands
     always takes something off; at 0 armour can absorb one whole, which is
     what left a pawn (14 attack) unable to scratch a shieldman (18 defence).
@@ -96,7 +90,7 @@ def strike_damage(
     # this clamp a large ``minStrikeDamage`` would override the attack stat
     # outright - every blow dealing the floor regardless of attack, defence or
     # ring falloff, which makes all three dead config.
-    floor = config.get('rules', {}).get('minStrikeDamage', MIN_STRIKE_DAMAGE)
+    floor = rule_of(config, 'minStrikeDamage')
     return min(attack, max(floor, attack - cap_stat(defender_def.get('defense', 0))))
 
 
@@ -191,7 +185,7 @@ def resolve_combat(
 
     # Counter-attack: the same sum in reverse, and only if the attacker is
     # inside the defender's own reach.
-    if can_attack(defender_def, distance):
+    if section_of(config, 'combat')['counterattacks'] and can_attack(defender_def, distance):
         counter = strike_damage(defender_def, attacker_def, distance, config)
         if counter > 0:
             killed = board.deal_damage(*from_coord, counter)
@@ -218,7 +212,7 @@ def resolve_heal(
             or not healer or not target or from_coord == target_coord
             or healer['color'] != target['color']):
         raise ValueError('Healing needs another friendly battlefield unit')
-    unit = unit_stats(healer['unit_id'], config, healer.get('vet', 0))
+    unit = unit_stats(healer['unit_id'], config, active_vet(healer, config))
     amounts = unit.get('heal', [])
     distance = hex_distance(from_coord, target_coord)
     if not 1 <= distance <= len(amounts):
@@ -344,11 +338,11 @@ def resolve_panel_attack(
     if ability_state is not None:
         from .unit_combat import exchange
         outcome = exchange(attacker, defender, distance, config, ability_state,
-                           not panels.is_base(panel), panels.is_base(panel), source_key=to_key, target_key=attack_key)
+                           section_of(config, 'combat')['baseCounters' if panels.is_base(panel) else 'reserveCounters'], panels.is_base(panel), source_key=to_key, target_key=attack_key)
     dealt = outcome['damage'] + outcome['second_damage'] if outcome else strike_damage(attacker_def, defender_def, distance, config)
     left = max(0, (defender.get('hp') or 0) - dealt)
     panel = defender.get('panel')
-    answers = not panels.is_base(panel)
+    answers = section_of(config, 'combat')['baseCounters' if panels.is_base(panel) else 'reserveCounters']
 
     walk_cost = 0
     if ability_state is not None and walked:
@@ -399,7 +393,7 @@ def resolve_panel_attack(
         record['attacker_eliminated'] = outcome['attacker_hp'] <= 0
         record['secondStrike'] = outcome['second_strike']
         board.deal_damage(tq, tr, outcome['counter_damage'])
-    elif left > 0 and answers and can_attack(defender_def, distance):
+    elif section_of(config, 'combat')['counterattacks'] and left > 0 and answers and can_attack(defender_def, distance):
         counter = strike_damage(defender_def, attacker_def, distance, config)
         record['counter_damage'] = counter
         if counter > 0:
@@ -410,7 +404,7 @@ def resolve_panel_attack(
             'attacker': dict(attacker), 'defender': dict(defender)}
 
 
-def opening_moved_hexes(history: List[Dict[str, Any]], color: str) -> set:
+def opening_moved_hexes(history: List[Dict[str, Any]], color: str, config=None) -> set:
     """
     Where *color*'s battlefield units that have already moved in the opening
     now stand. Mirrors ``openingMovedHexes`` in
@@ -430,13 +424,14 @@ def opening_moved_hexes(history: List[Dict[str, Any]], color: str) -> set:
     from .phases import is_initialization
 
     out = set()
+    if not section_of(config, 'stageRules')['movedUnitsLockedInOpening']: return out
     for move in history or []:
         if not isinstance(move, dict) or move.get('color') != color:
             continue
         if move.get('withdrawn') or move.get('panelMove') or move.get('panelEffect'):
             continue
         turn = move.get('turn')
-        if turn is None or not is_initialization(turn):
+        if turn is None or not is_initialization(turn, config=config):
             continue
         try:
             q_str, _, r_str = str(move.get('to', '')).partition(',')
@@ -470,7 +465,7 @@ def board_moves_at(history: List[Dict[str, Any]], ply: int, color: str) -> int:
 
 def board_move_landings(
     history: List[Dict[str, Any]], ply: int, color: str,
-) -> set:
+ config=None) -> set:
     """
     The hexes *color*'s board moves have already landed on this ply. Mirrors
     ``boardMoveLandings`` in history-rules.ts.
@@ -486,6 +481,7 @@ def board_move_landings(
     ``from`` matching an earlier landing is always a second go.
     """
     out = set()
+    if not section_of(config, 'stageRules')['movedUnitsLockedInOpening']: return out
     for move in history or []:
         if not isinstance(move, dict):
             continue
@@ -536,7 +532,7 @@ def overtime_toll(
     """
     from .phases import overtime_toll_at
 
-    toll = overtime_toll_at(ply)
+    toll = overtime_toll_at(ply, config=config)
     if not toll:
         return None
     units = config.get('units', {})
@@ -611,7 +607,7 @@ def find_defeated(board: HexBoard, config: Dict[str, Any]) -> Optional[str]:
 
 def defeated_sides(board: HexBoard, config: Dict[str, Any]) -> List[str]:
     """Every colour that has lost, in board order - both when both fell."""
-    objective = config.get('rules', {}).get('objective', 'regicide')
+    objective = rule_of(config, 'objective')
     units = config.get('units', {})
 
     out: List[str] = []

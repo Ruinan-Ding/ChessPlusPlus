@@ -1,10 +1,13 @@
 """Authoritative ability state and config-driven effects for networked turns."""
+
+from .game_rules import section_of
+from .phases import stage_rules
 from .board import coord_key, hex_distance, parse_coord
 from .config_loader import rule_of, UNIT_ACTIVES, DEFAULT_CONFIG
 from .economy import points_of, unit_points_of
-from .phases import board_moves_per_turn, is_initialization, phase_index_at, turn_of
+from .phases import moves_per_turn, board_moves_per_turn, is_initialization, phase_index_at, turn_of
 from .scoring import cp_awarded
-from .unit_stats import MAX_UNIT_STAT, active_vet, positional_bonus, cap_stat, cap_unit, ranked_unit, unit_stats
+from .unit_stats import kit_active, MAX_UNIT_STAT, active_vet, positional_bonus, cap_stat, cap_unit, ranked_unit, unit_stats
 from . import panels
 
 
@@ -34,14 +37,14 @@ def state_of(state):
 
 
 def passive(unit, config):
-    if active_vet(unit) < 2:
+    if active_vet(unit, config) < section_of(config, 'veterancy')['passiveUnlock']:
         return {}
     return ability_config(config).get('catalogue', {}).get(
         config.get('units', {}).get(unit['unit_id'], {}).get('passive'), {})
 
 
 def combat_stats(unit, config, counter=False, key=None):
-    stats = unit_stats(unit['unit_id'], config, active_vet(unit))
+    stats = unit_stats(unit['unit_id'], config, active_vet(unit, config))
     if key:
         atk = positional_bonus(unit, config, key, 'atk')
         if isinstance(stats.get('attack'), list):
@@ -66,7 +69,7 @@ def has_attack(stats):
 def unit_effect(unit, config, effect):
     out = dict(effect)
     for stat, available in (('atk', has_attack(combat_stats(unit, config))),
-                            ('hel', bool(unit_stats(unit['unit_id'], config, active_vet(unit)).get('heal')))):
+                            ('hel', bool(unit_stats(unit['unit_id'], config, active_vet(unit, config)).get('heal')))):
         if not available:
             if out.get(stat, 0) > 0:
                 out[stat] = 0
@@ -149,7 +152,7 @@ def actions_used(state, color):
     history, ply = state.move_history, state.turn_number
     acted = board_move_uids(history, ply, color)
     sources = {m['controlSource'] for m in history if m.get('turn') == ply
-               and m.get('color') == color and m.get('controlSource')
+               and m.get('color') == color and m.get('controlSource') and not m.get('sourcePanel')
                and state.ability_state.get('extraUnits', {}).get(m['controlSource']) != ply}
     return len(acted | sources)
 
@@ -181,7 +184,7 @@ class AbilityContext:
 
     def cp(self):
         return rule_of(self.config, 'cpAtStart') + cp_awarded(
-            self.state.phase_bank, self.color, rule_of(self.config, 'cpPhaseOffset')) - self.data['cpSpent'][self.color]
+            self.state.phase_bank, self.color, rule_of(self.config, 'cpPhaseOffset'), config=self.config) - self.data['cpSpent'][self.color]
 
     def pick(self, command):
         kind, ability_id = command['type'], command.get('id')
@@ -244,7 +247,7 @@ class AbilityContext:
         old = unit['hp']
         if amount < 0 and not remove and carries(self.data['buffs'].get(unit['uid']), 'invulnerable'):
             amount = 0
-        hp = cap_stat(min(unit.get('max_hp', unit_stats(unit['unit_id'], self.config, active_vet(unit)).get('hp', old)), old + amount))
+        hp = cap_stat(min(unit.get('max_hp', unit_stats(unit['unit_id'], self.config, active_vet(unit, self.config)).get('hp', old)), old + amount))
         if key in self.board:
             if hp > 0:
                 self.board[key] = {**unit, 'hp': hp}
@@ -270,18 +273,19 @@ class AbilityContext:
         path = next((p for p in ability_config(self.config).get('paths', [])
                      if p['id'] == self.data['paths'][self.color]), None)
         path_slot = bool(path and ability_id in (path.get('utility'), path.get('skill'), path.get('ultimate')))
-        unit_slot = bool(source and source_key in self.board and source['color'] == self.color
+        unit_slot = bool(source and ('battlefield' if source_key in self.board else 'base' if source.get('panel') in ('bl', 'tr') else 'reserve') in section_of(self.config, 'veterancy')['kitZones'] and source['color'] == self.color
                          and self.config['units'][source['unit_id']].get('ability') == ability_id)
-        if uid and (not unit_slot or source.get('vet', 0) < (3 if entry.get('effect') else 2)
+        if uid and (not unit_slot or source.get('vet', 0) < (section_of(self.config, 'veterancy')['abilityUnlock'] if entry.get('effect') else section_of(self.config, 'veterancy')['passiveUnlock'])
                     or carries(self.data['buffs'].get(uid), 'action-lock') or self.data['usedUnits'].get(uid) == self.ply):
             raise ValueError('This unit cannot use that ability')
         if not uid and not path_slot and ability_id not in self.data['loadouts'][self.color]:
             raise ValueError('That ability is not carried')
-        if is_initialization(self.ply) and not (path and ability_id == path.get('utility')):
-            raise ValueError('Only CP utilities can be used during initialization')
+        category = 'unitAbilities' if uid else ('cpUtilities' if ability_id == path.get('utility') else 'cpUltimates' if ability_id == path.get('ultimate') else 'cpSkills') if path_slot else 'poolAbilities'
+        if not stage_rules(self.ply, self.config)[category]:
+            raise ValueError('Only CP utilities can be used during initialization' if is_initialization(self.ply, self.config) else 'This ability is disabled in this stage')
         cooldown = self.data['unitCooldowns'].get(uid, {}).get('turns', 0) if unit_slot else self.data['cooldowns'][self.color].get(ability_id, 0)
         holder = uid if unit_slot else self.color
-        use_key = holder + '|' + ability_id + (f'|phase:{phase_index_at(self.ply)}' if entry.get('usesScope') == 'phase' else '')
+        use_key = holder + '|' + ability_id + (f'|phase:{phase_index_at(self.ply, config=self.config)}' if entry.get('usesScope') == 'phase' else '')
         limit = entry.get('uses', 1 if path and ability_id == path.get('ultimate') else None)
         if cooldown > 0 or (limit is not None and self.data['uses'].get(use_key, 0) >= limit):
             raise ValueError('That ability is cooling down or used up')
@@ -320,9 +324,12 @@ class AbilityContext:
             if self.data.get('endedUnits', {}).get(uid) == self.ply or (progress and (
                     self.data.get('activeUnit') != uid or progress.get('attacked') or progress.get('healed'))):
                 raise ValueError('The caster has finished its action')
-            if not progress and self.data.get('extraUnits', {}).get(uid) != self.ply and actions_used(self.state, self.color) >= board_moves_per_turn(self.ply):
+            if source.get('panel'):
+                if panels.panel_allowance(self.config, self.history, source, self.ply, self.data) is None:
+                    raise ValueError('No panel action remains for the caster')
+            elif not progress and self.data.get('extraUnits', {}).get(uid) != self.ply and actions_used(self.state, self.color) >= board_moves_per_turn(self.ply, config=self.config):
                 raise ValueError('No battlefield action remains for the caster')
-            if not chosen or chosen_key not in self.recipients('field-reserve') or chosen['color'] == self.color or hex_distance(parse_coord(source_key), parse_coord(chosen_key)) != 1:
+            if not chosen or chosen_key not in self.recipients('field-reserve') or chosen['color'] == self.color or not 1 <= hex_distance(parse_coord(source_key), parse_coord(chosen_key)) <= entry.get('radius', 1):
                 raise ValueError('Cast needs an adjacent battlefield or reserve enemy')
             recipients = {chosen_key: chosen}
         elif unit_slot and mode == 'sacrifice' and 'stars' in entry:
@@ -386,7 +393,7 @@ class AbilityContext:
             hostile = band != 'outer' if band else not friendly
             delta = 0
             if mode == 'promote' or (mode == 'sacrifice' and 'stars' in entry):
-                promoted = ranked_unit(unit, self.config, min(3, unit.get('vet', 0) + entry.get('stars', 1)), active=not unit.get('panel'))
+                promoted = ranked_unit(unit, self.config, min(3, unit.get('vet', 0) + entry.get('stars', 1)), active=kit_active(unit, self.config))
                 if mode == 'sacrifice':
                     promoted['hp'] = promoted['max_hp']
                     self.add_buff(promoted, entry)
@@ -437,7 +444,7 @@ class AbilityContext:
                 self.data['extraUnits'][unit['uid']] = self.ply
                 self.data['endedUnits'][uid] = self.ply
                 self.history.append({'turn': self.ply, 'color': self.color, 'control': control,
-                                     'controlSource': uid, 'at': key})
+                                     'controlSource': uid, 'at': key, **({'sourcePanel': source['panel']} if source.get('panel') else {})})
                 if key in self.board:
                     self.board[key] = control
             elif mode in ('sacrifice', 'call'):
@@ -465,7 +472,7 @@ class AbilityContext:
         self.state.board_state = self.board
 
     def end_turn(self):
-        for key, unit in self.recipients('field-reserve').items():
+        for key, unit in self.recipients('all').items():
             if unit['color'] == self.color and passive(unit, self.config).get('effect') == 'regenerate':
                 self.change_hp(key, unit, unit.get('max_hp', unit['hp']) - unit['hp'])
         self.state.board_state = self.board
@@ -491,13 +498,12 @@ class AbilityContext:
         self.data['activeUnit'] = None
         self.data['cooldowns'][color] = {k: max(0, v - 1) for k, v in self.data['cooldowns'][color].items()}
         self.color, self.ply = color, ply
-        if not is_initialization(ply):
-            for key, unit in self.board.items():
-                trait = passive(unit, self.config)
-                if unit['color'] != color or trait.get('effect') not in ('persuade', 'intimidate'):
-                    continue
-                friendly = trait['effect'] == 'persuade'
-                for at, recipient in self.board.items():
-                    if hex_distance(parse_coord(key), parse_coord(at)) == 1 and (recipient['color'] == color) == friendly:
-                        self.add_buff(recipient, trait, hostile=not friendly)
+        for key, unit in self.recipients().items():
+            trait = passive(unit, self.config)
+            if unit['color'] != color or trait.get('effect') not in ('persuade', 'intimidate'):
+                continue
+            friendly = trait['effect'] == 'persuade'
+            for at, recipient in self.board.items():
+                if 1 <= hex_distance(parse_coord(key), parse_coord(at)) <= trait.get('radius', 1) and (recipient['color'] == color) == friendly:
+                    self.add_buff(recipient, trait, hostile=not friendly)
         self.state.board_state = self.board

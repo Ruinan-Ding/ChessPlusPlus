@@ -2,7 +2,7 @@ import { BehaviorSubject, Subject, of } from 'rxjs';
 import { GameRoomComponent } from './game-room.component';
 import { GameStateService } from '../../services/game-state.service';
 import { LocalGameService } from '../../services/local-game.service';
-import { DEFAULT_GAME_CONFIG, ConfigService, ruleOf } from '../../services/config.service';
+import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG, ConfigService, ruleOf } from '../../services/config.service';
 import { advanceBuffs, stackEffect, statSetting, passiveStat } from '../../services/ability-rules';
 import { carries, combatExchange, combatStatuses } from '../../services/unit-combat';
 import { turnHeading } from '../../services/phases';

@@ -1,3 +1,4 @@
+import { ruleOf } from './config.service';
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
 import { PhaseBank } from './match-score';
@@ -160,7 +161,7 @@ export class GameStateService {
 
   /** Apply a `game_started` message. */
   applyGameStarted(msg: any): void {
-    const timeLimit = msg.config?.rules?.turnTimeLimit ?? 0;
+    const timeLimit = ruleOf(msg.config, 'turnTimeLimit');
     this.stateSubject.next({
       boardState: this.capBoard(msg.boardState ?? {}),
       currentTurn: msg.currentTurn ?? '',
@@ -237,7 +238,7 @@ export class GameStateService {
 
   /** Apply a `game_state_update` (full resync). */
   applyFullState(msg: any): void {
-    const timeLimit = msg.config?.rules?.turnTimeLimit ?? 0;
+    const timeLimit = ruleOf(msg.config, 'turnTimeLimit');
     this.stateSubject.next({
       boardState: this.capBoard(msg.boardState ?? {}),
       currentTurn: msg.currentTurn ?? '',

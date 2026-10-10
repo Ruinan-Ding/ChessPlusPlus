@@ -26,8 +26,9 @@ from game.testsuite import test_turn_drafts as draft_tests
 class OnlineAbilityRulesTests(SimpleTestCase):
     def setUp(self):
         self.config = copy.deepcopy(DEFAULT_CONFIG)
-        self.config['setup'] = {'white': {}, 'black': {}}
-        self.config['rules'].update(cpAtStart=1000, upAtStart=1000, turnTimeLimit=0)
+        self.config['setup'] = {'white': {'0,1': 'king'}, 'black': {'0,-1': 'king'}}
+        self.config['match'].update(cpAtStart=1000, turnTimeLimit=0)
+        self.config['economy']['upAtStart'] = 1000
         self.state = SimpleNamespace(config_snapshot=self.config, ability_state=initial_state(),
             turn_number=55, current_turn='alice', player_white='alice', player_black='bob',
             board_state={}, move_history=[], phase_bank={'1': {'white': 5, 'black': 5},
@@ -951,8 +952,9 @@ class OnlineAbilityDraftTests(TransactionTestCase):
     def setUp(self):
         draft_tests.TurnDraftTests.setUp(self)
         self.state.ability_state = initial_state()
-        self.state.config_snapshot['rules'].update(cpAtStart=100, upAtStart=100)
-        self.state.config_snapshot['setup'] = {'white': {}, 'black': {}}
+        self.state.config_snapshot['match']['cpAtStart'] = 100
+        self.state.config_snapshot['economy']['upAtStart'] = 100
+        self.state.config_snapshot['setup'] = {'white': {'0,1': 'king'}, 'black': {'0,-1': 'king'}}
         self.state.ability_state['pointDelta']['white'] = 100
         self.state.board_state['0,0'].update(vet=2, hp=14, max_hp=14)
         self.state.board_state['2,0'] = {'unit_id': 'pawn', 'uid': 'bp', 'color': 'black',

@@ -8,12 +8,19 @@
     "board",
     "units",
     "setup",
-    "rules"
+    "match",
+    "stageRules",
+    "economy",
+    "scoring",
+    "combat",
+    "panels",
+    "veterancy",
+    "ruleset"
   ],
   "properties": {
     "version": {
-      "type": "string",
-      "description": "Schema version for forward compatibility."
+      "const": "2.0",
+      "description": "Configuration format version. Version 1.0 imports are migrated before validation."
     },
     "board": {
       "type": "object",
@@ -304,7 +311,8 @@
                 "type": "string"
               },
               "description": {
-                "type": "string"
+                "type": "string",
+                "description": "Displayed explanation. Numeric templates resolve from this entry: {cost}, {sign:atk}, {abs:mov}, {duration}, {scope}, {radius}, {passiveUnlock}, {homeRows}, {counterProfile}. Custom literal text is kept."
               },
               "target": {
                 "enum": [
@@ -764,63 +772,1321 @@
       },
       "additionalProperties": false
     },
-    "rules": {
+    "match": {
       "type": "object",
-      "required": [
-        "maxTurns",
-        "turnTimeLimit"
-      ],
+      "description": "Schedule, clock, victory predicates and starting CP. Every match saves its resolved values.",
       "properties": {
-        "maxTurns": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "0 = unlimited turns."
-        },
-        "turnTimeLimit": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Per-turn time limit in seconds (0 = unlimited)."
-        },
-        "rangeFalloff": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1,
-          "description": "Fraction of attack damage lost per ring beyond the first, applied linearly: ring 2 deals (1 - falloff) of the attack stat, ring 3 (1 - 2*falloff), floored, never below 1."
-        },
-        "minStrikeDamage": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "The least a blow that lands may deal, after defence is subtracted. 1 (the default) means armour blunts a hit but never turns it aside: without it a pawn (14 attack) took nothing at all off a shieldman (18 defence), so whole matchups were dead on the board with no rule saying so. 0 restores that, letting armour absorb a hit entirely. An attacker with no attack stat deals 0 either way - this lifts a blow that was blunted, not one that was never thrown."
-        },
         "objective": {
-          "type": "string",
           "enum": [
             "regicide",
             "elimination"
           ],
-          "description": "Win condition. 'regicide' (the default): a side loses when it has no commander left. 'elimination': a side loses when it has no units left at all."
+          "description": "Regicide loses the side's commanders; elimination loses all surviving units, including panels."
+        },
+        "turnTimeLimit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Seconds per side's turn; 0 disables the clock. The room's clock choice overrides this when starting an online match."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Maximum individual side turns (plies), not White+Black full turns. 0 disables the limit."
         },
         "cpAtStart": {
           "type": "integer",
           "minimum": 0,
-          "description": "The CP each side starts the match with, to buy the path abilities with before the first postmatch award. Default 5."
+          "maximum": 9007199254740991,
+          "description": "Starting CP before any phase award."
         },
-        "cpPhaseOffset": {
+        "opening": {
+          "type": "object",
+          "description": "Initial deployment stage. turns counts full White-plus-Black turns.",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Displayed label; it does not select gameplay behavior."
+            },
+            "turns": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991,
+              "description": "Duration in full White-plus-Black turns (two plies). Ability effects instead count caster turns."
+            },
+            "pointsPerTurn": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Regular points credited when this side starts its own turn; phase entries use this rate after halftime, or throughout when halftime is disabled."
+            },
+            "grant": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Additional regular points on each side's first turn of this stage, once."
+            }
+          },
+          "required": [
+            "name",
+            "turns",
+            "pointsPerTurn",
+            "grant"
+          ],
+          "additionalProperties": false
+        },
+        "phases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "Full turns of play, followed by postmatchTurns. halftimeAfter=0 disables halftime; otherwise income changes after that many full turns. Phase references are one-based.",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Displayed label; it does not select gameplay behavior."
+              },
+              "turns": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991,
+                "description": "Duration in full White-plus-Black turns (two plies). Ability effects instead count caster turns."
+              },
+              "halftimeAfter": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Full turns before the halftime transition and UP snapshot; 0 disables halftime. Must not exceed turns."
+              },
+              "postmatchTurns": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Full postmatch turns after the numbered phase; 0 resolves its tally at the next phase boundary."
+              },
+              "pointsPerTurn": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Regular points on each own turn from halftime until play ends; when halftimeAfter is 0, applies throughout the phase."
+              },
+              "grant": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Additional regular points on each side's first turn of this stage, once."
+              },
+              "vpMultiplier": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Multiplier applied after capture worth minus weighted attrition, with the configured score floor."
+              },
+              "cpAward": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Fixed CP credited once with this phase's tally, in addition to the weighted score and deficit portions."
+              },
+              "pointsBeforeHalftime": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Regular points on each own turn before halftime. Ignored when halftime is disabled."
+              },
+              "postmatchPointsPerTurn": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Regular points on each own postmatch turn."
+              }
+            },
+            "required": [
+              "name",
+              "turns",
+              "halftimeAfter",
+              "postmatchTurns",
+              "pointsPerTurn",
+              "grant",
+              "vpMultiplier",
+              "cpAward",
+              "pointsBeforeHalftime",
+              "postmatchPointsPerTurn"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "description": "Ordered numbered phases; any nonempty count. Each entry specifies a complete phase."
+        },
+        "overtime": {
+          "type": "object",
+          "description": "Ordered overtime stages entered when the final points decision does not finish the match.",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Displayed label; it does not select gameplay behavior."
+            },
+            "pointsPerTurn": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Regular points credited when this side starts its own turn; phase entries use this rate after halftime, or throughout when halftime is disabled."
+            },
+            "stages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "description": "",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Displayed label; it does not select gameplay behavior."
+                  },
+                  "turns": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991,
+                    "description": "Duration in full White-plus-Black turns (two plies). Ability effects instead count caster turns."
+                  },
+                  "kingToll": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "Direct HP lost by the acting side's commanders at the end of each own overtime turn. Fortress can prevent it."
+                  },
+                  "moves": {
+                    "type": "object",
+                    "description": "Independent distinct-unit action allowances for battlefield, reserve and base. Opening arrays need one value per opening turn.",
+                    "properties": {
+                      "battlefield": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991,
+                        "description": "Distinct battlefield units allowed to act in one own turn."
+                      },
+                      "reserve": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991,
+                        "description": "Distinct green-reserve units allowed to act in one own turn."
+                      },
+                      "base": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991,
+                        "description": "Distinct red-base units allowed to act in one own turn."
+                      }
+                    },
+                    "required": [
+                      "battlefield",
+                      "reserve",
+                      "base"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "name",
+                  "turns",
+                  "kingToll",
+                  "moves"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "description": "Ordered overtime stages; any nonempty count. Each specifies its duration, king toll and all three action limits."
+            }
+          },
+          "required": [
+            "name",
+            "pointsPerTurn",
+            "stages"
+          ],
+          "additionalProperties": false
+        },
+        "winConditions": {
+          "type": "object",
+          "description": "Existing ending predicates and their numeric thresholds. This does not define new predicates.",
+          "properties": {
+            "earlyPhaseLosses": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "description": "",
+                "properties": {
+                  "phase": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991,
+                    "description": "One-based numbered phase index; must exist in match.phases."
+                  },
+                  "side": {
+                    "enum": [
+                      "white",
+                      "black"
+                    ],
+                    "description": "Side tested for this pending loss."
+                  },
+                  "condition": {
+                    "enum": [
+                      "no-eligible-capture-occupant",
+                      "vp-at-most"
+                    ],
+                    "description": "no-eligible-capture-occupant compares eligible occupied capture hex count; vp-at-most compares phase VP."
+                  },
+                  "threshold": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "Inclusive maximum occupancy or VP that triggers this pending loss."
+                  }
+                },
+                "required": [
+                  "phase",
+                  "side",
+                  "condition",
+                  "threshold"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 0,
+              "description": "Phase-specific pending losses frozen at tally and resolved after its postmatch; regicide takes priority."
+            },
+            "points": {
+              "type": "object",
+              "description": "Final cumulative VP decision after the last numbered phase's postmatch.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Whether the final VP lead can win outright; disabled always continues to overtime."
+                },
+                "leadToWin": {
+                  "type": "object",
+                  "description": "Maximum lead that still forces overtime, keyed by the leading side. A strictly larger lead wins on points.",
+                  "properties": {
+                    "white": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "White's inclusive overtime lead threshold."
+                    },
+                    "black": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "Black's inclusive overtime lead threshold."
+                    }
+                  },
+                  "required": [
+                    "white",
+                    "black"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "enabled",
+                "leadToWin"
+              ],
+              "additionalProperties": false
+            },
+            "overtimeWinner": {
+              "enum": [
+                "white",
+                "black",
+                "draw"
+              ],
+              "description": "Winner after all configured overtime turns if no earlier result: white, black or draw."
+            }
+          },
+          "required": [
+            "earlyPhaseLosses",
+            "points",
+            "overtimeWinner"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "objective",
+        "turnTimeLimit",
+        "maxTurns",
+        "cpAtStart",
+        "opening",
+        "phases",
+        "overtime",
+        "winConditions"
+      ],
+      "additionalProperties": false
+    },
+    "stageRules": {
+      "type": "object",
+      "description": "Independent permissions for each stage. A permission opens a category; its existing targeting, kit, price and action checks still apply.",
+      "properties": {
+        "opening": {
+          "type": "object",
+          "description": "Initial deployment stage. turns counts full White-plus-Black turns.",
+          "properties": {
+            "attack": {
+              "type": "boolean",
+              "description": "Allow ordinary attacks. Panel units still cannot initiate them."
+            },
+            "normalHeal": {
+              "type": "boolean",
+              "description": "Allow ordinary healing, independently of attacks. Only battlefield sources can perform normal healing."
+            },
+            "poolAbilities": {
+              "type": "boolean",
+              "description": "Allow carried regular-point abilities."
+            },
+            "unitAbilities": {
+              "type": "boolean",
+              "description": "Allow configured active unit abilities if rank, zone and action checks pass."
+            },
+            "cpUtilities": {
+              "type": "boolean",
+              "description": "Allow path utilities such as Convert, Strengthen and Recharge."
+            },
+            "cpSkills": {
+              "type": "boolean",
+              "description": "Allow path skills such as Drain, Cleave and Trap."
+            },
+            "cpUltimates": {
+              "type": "boolean",
+              "description": "Allow path ultimates such as Fortress, Ruin and Blitz."
+            },
+            "wrap": {
+              "type": "boolean",
+              "description": "Open red-base to green-reserve crossings."
+            },
+            "reserveEntry": {
+              "type": "boolean",
+              "description": "Open reserve entry into the battlefield's home rows; entry still ends that unit's action."
+            },
+            "homecoming": {
+              "type": "boolean",
+              "description": "Open battlefield withdrawals into a red base through the configured home rows and doorways."
+            },
+            "moves": {
+              "type": "object",
+              "description": "Independent distinct-unit action allowances for battlefield, reserve and base. Opening arrays need one value per opening turn.",
+              "properties": {
+                "battlefield": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": ""
+                  },
+                  "minItems": 1,
+                  "description": "Distinct battlefield units allowed to act in one own turn."
+                },
+                "reserve": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": ""
+                  },
+                  "minItems": 1,
+                  "description": "Distinct green-reserve units allowed to act in one own turn."
+                },
+                "base": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": ""
+                  },
+                  "minItems": 1,
+                  "description": "Distinct red-base units allowed to act in one own turn."
+                }
+              },
+              "required": [
+                "battlefield",
+                "reserve",
+                "base"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "attack",
+            "normalHeal",
+            "poolAbilities",
+            "unitAbilities",
+            "cpUtilities",
+            "cpSkills",
+            "cpUltimates",
+            "wrap",
+            "reserveEntry",
+            "homecoming",
+            "moves"
+          ],
+          "additionalProperties": false
+        },
+        "firstHalf": {
+          "type": "object",
+          "description": "Permissions before a numbered phase's halftime, or throughout when halftime is disabled.",
+          "properties": {
+            "attack": {
+              "type": "boolean",
+              "description": "Allow ordinary attacks. Panel units still cannot initiate them."
+            },
+            "normalHeal": {
+              "type": "boolean",
+              "description": "Allow ordinary healing, independently of attacks. Only battlefield sources can perform normal healing."
+            },
+            "poolAbilities": {
+              "type": "boolean",
+              "description": "Allow carried regular-point abilities."
+            },
+            "unitAbilities": {
+              "type": "boolean",
+              "description": "Allow configured active unit abilities if rank, zone and action checks pass."
+            },
+            "cpUtilities": {
+              "type": "boolean",
+              "description": "Allow path utilities such as Convert, Strengthen and Recharge."
+            },
+            "cpSkills": {
+              "type": "boolean",
+              "description": "Allow path skills such as Drain, Cleave and Trap."
+            },
+            "cpUltimates": {
+              "type": "boolean",
+              "description": "Allow path ultimates such as Fortress, Ruin and Blitz."
+            },
+            "wrap": {
+              "type": "boolean",
+              "description": "Open red-base to green-reserve crossings."
+            },
+            "reserveEntry": {
+              "type": "boolean",
+              "description": "Open reserve entry into the battlefield's home rows; entry still ends that unit's action."
+            },
+            "homecoming": {
+              "type": "boolean",
+              "description": "Open battlefield withdrawals into a red base through the configured home rows and doorways."
+            },
+            "moves": {
+              "type": "object",
+              "description": "Independent distinct-unit action allowances for battlefield, reserve and base. Opening arrays need one value per opening turn.",
+              "properties": {
+                "battlefield": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Distinct battlefield units allowed to act in one own turn."
+                },
+                "reserve": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Distinct green-reserve units allowed to act in one own turn."
+                },
+                "base": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Distinct red-base units allowed to act in one own turn."
+                }
+              },
+              "required": [
+                "battlefield",
+                "reserve",
+                "base"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "attack",
+            "normalHeal",
+            "poolAbilities",
+            "unitAbilities",
+            "cpUtilities",
+            "cpSkills",
+            "cpUltimates",
+            "wrap",
+            "reserveEntry",
+            "homecoming",
+            "moves"
+          ],
+          "additionalProperties": false
+        },
+        "secondHalf": {
+          "type": "object",
+          "description": "Permissions from halftime through the numbered phase's final ordinary turn.",
+          "properties": {
+            "attack": {
+              "type": "boolean",
+              "description": "Allow ordinary attacks. Panel units still cannot initiate them."
+            },
+            "normalHeal": {
+              "type": "boolean",
+              "description": "Allow ordinary healing, independently of attacks. Only battlefield sources can perform normal healing."
+            },
+            "poolAbilities": {
+              "type": "boolean",
+              "description": "Allow carried regular-point abilities."
+            },
+            "unitAbilities": {
+              "type": "boolean",
+              "description": "Allow configured active unit abilities if rank, zone and action checks pass."
+            },
+            "cpUtilities": {
+              "type": "boolean",
+              "description": "Allow path utilities such as Convert, Strengthen and Recharge."
+            },
+            "cpSkills": {
+              "type": "boolean",
+              "description": "Allow path skills such as Drain, Cleave and Trap."
+            },
+            "cpUltimates": {
+              "type": "boolean",
+              "description": "Allow path ultimates such as Fortress, Ruin and Blitz."
+            },
+            "wrap": {
+              "type": "boolean",
+              "description": "Open red-base to green-reserve crossings."
+            },
+            "reserveEntry": {
+              "type": "boolean",
+              "description": "Open reserve entry into the battlefield's home rows; entry still ends that unit's action."
+            },
+            "homecoming": {
+              "type": "boolean",
+              "description": "Open battlefield withdrawals into a red base through the configured home rows and doorways."
+            },
+            "moves": {
+              "type": "object",
+              "description": "Independent distinct-unit action allowances for battlefield, reserve and base. Opening arrays need one value per opening turn.",
+              "properties": {
+                "battlefield": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Distinct battlefield units allowed to act in one own turn."
+                },
+                "reserve": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Distinct green-reserve units allowed to act in one own turn."
+                },
+                "base": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Distinct red-base units allowed to act in one own turn."
+                }
+              },
+              "required": [
+                "battlefield",
+                "reserve",
+                "base"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "attack",
+            "normalHeal",
+            "poolAbilities",
+            "unitAbilities",
+            "cpUtilities",
+            "cpSkills",
+            "cpUltimates",
+            "wrap",
+            "reserveEntry",
+            "homecoming",
+            "moves"
+          ],
+          "additionalProperties": false
+        },
+        "postmatch": {
+          "type": "object",
+          "description": "Permissions during every numbered phase's postmatch.",
+          "properties": {
+            "attack": {
+              "type": "boolean",
+              "description": "Allow ordinary attacks. Panel units still cannot initiate them."
+            },
+            "normalHeal": {
+              "type": "boolean",
+              "description": "Allow ordinary healing, independently of attacks. Only battlefield sources can perform normal healing."
+            },
+            "poolAbilities": {
+              "type": "boolean",
+              "description": "Allow carried regular-point abilities."
+            },
+            "unitAbilities": {
+              "type": "boolean",
+              "description": "Allow configured active unit abilities if rank, zone and action checks pass."
+            },
+            "cpUtilities": {
+              "type": "boolean",
+              "description": "Allow path utilities such as Convert, Strengthen and Recharge."
+            },
+            "cpSkills": {
+              "type": "boolean",
+              "description": "Allow path skills such as Drain, Cleave and Trap."
+            },
+            "cpUltimates": {
+              "type": "boolean",
+              "description": "Allow path ultimates such as Fortress, Ruin and Blitz."
+            },
+            "wrap": {
+              "type": "boolean",
+              "description": "Open red-base to green-reserve crossings."
+            },
+            "reserveEntry": {
+              "type": "boolean",
+              "description": "Open reserve entry into the battlefield's home rows; entry still ends that unit's action."
+            },
+            "homecoming": {
+              "type": "boolean",
+              "description": "Open battlefield withdrawals into a red base through the configured home rows and doorways."
+            },
+            "moves": {
+              "type": "object",
+              "description": "Independent distinct-unit action allowances for battlefield, reserve and base. Opening arrays need one value per opening turn.",
+              "properties": {
+                "battlefield": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Distinct battlefield units allowed to act in one own turn."
+                },
+                "reserve": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Distinct green-reserve units allowed to act in one own turn."
+                },
+                "base": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Distinct red-base units allowed to act in one own turn."
+                }
+              },
+              "required": [
+                "battlefield",
+                "reserve",
+                "base"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "attack",
+            "normalHeal",
+            "poolAbilities",
+            "unitAbilities",
+            "cpUtilities",
+            "cpSkills",
+            "cpUltimates",
+            "wrap",
+            "reserveEntry",
+            "homecoming",
+            "moves"
+          ],
+          "additionalProperties": false
+        },
+        "overtime": {
+          "type": "object",
+          "description": "Ordered overtime stages entered when the final points decision does not finish the match.",
+          "properties": {
+            "attack": {
+              "type": "boolean",
+              "description": "Allow ordinary attacks. Panel units still cannot initiate them."
+            },
+            "normalHeal": {
+              "type": "boolean",
+              "description": "Allow ordinary healing, independently of attacks. Only battlefield sources can perform normal healing."
+            },
+            "poolAbilities": {
+              "type": "boolean",
+              "description": "Allow carried regular-point abilities."
+            },
+            "unitAbilities": {
+              "type": "boolean",
+              "description": "Allow configured active unit abilities if rank, zone and action checks pass."
+            },
+            "cpUtilities": {
+              "type": "boolean",
+              "description": "Allow path utilities such as Convert, Strengthen and Recharge."
+            },
+            "cpSkills": {
+              "type": "boolean",
+              "description": "Allow path skills such as Drain, Cleave and Trap."
+            },
+            "cpUltimates": {
+              "type": "boolean",
+              "description": "Allow path ultimates such as Fortress, Ruin and Blitz."
+            },
+            "wrap": {
+              "type": "boolean",
+              "description": "Open red-base to green-reserve crossings."
+            },
+            "reserveEntry": {
+              "type": "boolean",
+              "description": "Open reserve entry into the battlefield's home rows; entry still ends that unit's action."
+            },
+            "homecoming": {
+              "type": "boolean",
+              "description": "Open battlefield withdrawals into a red base through the configured home rows and doorways."
+            }
+          },
+          "required": [
+            "attack",
+            "normalHeal",
+            "poolAbilities",
+            "unitAbilities",
+            "cpUtilities",
+            "cpSkills",
+            "cpUltimates",
+            "wrap",
+            "reserveEntry",
+            "homecoming"
+          ],
+          "additionalProperties": false
+        },
+        "movedUnitsLockedInOpening": {
+          "type": "boolean",
+          "description": "Keep units that moved in any earlier opening turn unavailable for the remainder of the opening."
+        }
+      },
+      "required": [
+        "opening",
+        "firstHalf",
+        "secondHalf",
+        "postmatch",
+        "overtime",
+        "movedUnitsLockedInOpening"
+      ],
+      "additionalProperties": false
+    },
+    "economy": {
+      "type": "object",
+      "description": "Starting purses and multipliers for existing transactions. Recorded prices/refunds are not repriced later.",
+      "properties": {
+        "pointsAtStart": {
           "type": "integer",
           "minimum": 0,
-          "description": "The base of the CP each side is awarded once at the start of a phase's postmatch: Phase N's award is N times this (10, 20 and 30 at the default), plus both sides' scores for the phase, plus the gap between them for the side that scored less. Default 10."
+          "maximum": 9007199254740991,
+          "description": "Starting regular ability points, before ordinary own-turn income."
         },
         "upAtStart": {
           "type": "integer",
           "minimum": 0,
-          "description": "Unit points each side starts with; omitted means 10. UP pays unit crossings and receives unit kill rewards, homecoming refunds and halftime VP snapshots."
+          "maximum": 9007199254740991,
+          "description": "Starting unit points (UP), before deployment or unit-ability spending."
         },
-        "pointsAtStart": {
+        "killPayMultiplier": {
           "type": "integer",
           "minimum": 0,
-          "description": "Regular ability points each side starts with; omitted means 10. Added once to normal own-turn income, numbered-phase grants and overtime VP conversion."
+          "maximum": 9007199254740991,
+          "description": "UP bounty multiplier for ordinary attack/counter kills in eligible exchange zones; ability kills remain exempt."
+        },
+        "killPayZones": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "battlefield",
+              "reserve",
+              "base"
+            ],
+            "description": ""
+          },
+          "uniqueItems": true,
+          "description": "Exchange target zones eligible for UP combat bounties, including its counter casualty. Empty disables these bounties."
+        },
+        "walkHomeRefund": {
+          "type": "object",
+          "description": "Refund at withdrawal: max(minimum, unit value × valueMultiplier − fee − missing HP × missingHpMultiplier). Original owner receives it.",
+          "properties": {
+            "valueMultiplier": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Unit-value multiplier in the withdrawal refund."
+            },
+            "fee": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Fixed UP deduction from the withdrawal refund."
+            },
+            "missingHpMultiplier": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "UP deducted per currently missing HP at withdrawal."
+            },
+            "minimum": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Minimum UP refund for a withdrawal."
+            }
+          },
+          "required": [
+            "valueMultiplier",
+            "fee",
+            "missingHpMultiplier",
+            "minimum"
+          ],
+          "additionalProperties": false
+        },
+        "wrapPriceMultiplier": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "UP multiplier on unit value when crossing from red base to green reserve."
+        },
+        "halftimeUpMultiplier": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Multiplier on each side's current phase VP snapshot added to UP at halftime, once."
+        },
+        "overtimeVpToPointsMultiplier": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Multiplier on final cumulative numbered-phase VP converted to regular points on each side's first overtime turn."
+        },
+        "cpOwnScoreMultiplier": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "CP paid per own phase VP at the tally."
+        },
+        "cpOpponentScoreMultiplier": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "CP paid per opponent phase VP at the tally."
+        },
+        "cpBehindGapMultiplier": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Additional CP per VP of the deficit, only for the trailing side."
         }
       },
+      "required": [
+        "pointsAtStart",
+        "upAtStart",
+        "killPayMultiplier",
+        "killPayZones",
+        "walkHomeRefund",
+        "wrapPriceMultiplier",
+        "halftimeUpMultiplier",
+        "overtimeVpToPointsMultiplier",
+        "cpOwnScoreMultiplier",
+        "cpOpponentScoreMultiplier",
+        "cpBehindGapMultiplier"
+      ],
+      "additionalProperties": false
+    },
+    "scoring": {
+      "type": "object",
+      "description": "Capture geometry, claim reach and attrition scoring. Unit capture-tier eligibility remains in unit config.",
+      "properties": {
+        "layout": {
+          "type": "object",
+          "description": "Board-radius proportions used by named relative zone anchors; absolute centres bypass them.",
+          "properties": {
+            "columnRatio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Side anchor columns as a fraction of board radius, rounded with Math.round semantics and kept outside the zone radius."
+            },
+            "rowRatio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Home anchor rows as a fraction of board radius, rounded to whole row pairs."
+            }
+          },
+          "required": [
+            "columnRatio",
+            "rowRatio"
+          ],
+          "additionalProperties": false
+        },
+        "zones": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "base",
+                  "middle",
+                  "side"
+                ],
+                "description": "Unit capture permission tier: side/middle/base. This is independent of the geometric anchor."
+              },
+              "owner": {
+                "enum": [
+                  "",
+                  "white",
+                  "black"
+                ],
+                "description": "Home-side owner for base-tier zones; side/middle zones require the empty string."
+              },
+              "anchor": {
+                "enum": [
+                  "middle",
+                  "left",
+                  "right",
+                  "white-home",
+                  "black-home"
+                ],
+                "description": "Relative centre: middle, right, left, white-home or black-home. Supply exactly one of anchor and center."
+              },
+              "center": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": -50,
+                  "maximum": 50
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Absolute battlefield axial [q,r] centre, instead of a relative anchor."
+              },
+              "radius": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50,
+                "description": "Hex rings from the centre. Ability radius controls its existing effect footprint; 0 is centre-only where supported."
+              },
+              "worth": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "VP worth of each held hex before losses and the phase multiplier."
+              }
+            },
+            "required": [
+              "kind",
+              "owner",
+              "radius",
+              "worth"
+            ],
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "required": [
+                  "anchor"
+                ],
+                "not": {
+                  "required": [
+                    "center"
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "center"
+                ],
+                "not": {
+                  "required": [
+                    "anchor"
+                  ]
+                }
+              }
+            ]
+          },
+          "minItems": 0,
+          "description": "Capture zones; empty disables all capture scoring. Overlapping hexes use the greatest worth."
+        },
+        "floorAtZero": {
+          "type": "boolean",
+          "description": "Clamp capture worth minus weighted deaths to 0 before applying the phase multiplier; false permits negative VP."
+        },
+        "deathCostMultiplier": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Attrition VP deduction multiplier on each dead unit's configured value."
+        },
+        "deathZones": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "battlefield",
+              "reserve",
+              "base"
+            ],
+            "description": ""
+          },
+          "uniqueItems": true,
+          "description": "Victim zones whose casualties contribute attrition; empty disables the deduction. Counters use the attacker's battlefield zone."
+        },
+        "innerClaimReach": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99,
+          "description": "Claim radius for eligible units on inner layers outside the centre."
+        },
+        "outerClaimReach": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99,
+          "description": "Claim radius for eligible units on the zone's outermost layer."
+        },
+        "neutralizeReach": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99,
+          "description": "Radius in which eligible units neutralize opposing normal claims."
+        },
+        "centerControl": {
+          "type": "boolean",
+          "description": "An uncontested eligible centre occupant claims its entire zone; eligible enemies in that zone disable this bonus."
+        }
+      },
+      "required": [
+        "layout",
+        "zones",
+        "floorAtZero",
+        "deathCostMultiplier",
+        "deathZones",
+        "innerClaimReach",
+        "outerClaimReach",
+        "neutralizeReach",
+        "centerControl"
+      ],
+      "additionalProperties": false
+    },
+    "combat": {
+      "type": "object",
+      "description": "Ordinary strike scaling, damage floors and counter permissions.",
+      "properties": {
+        "rangeFalloff": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Linear loss per extra ring for scalar ATK; exact ring profiles do not use it."
+        },
+        "minStrikeDamage": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Minimum positive ordinary strike after DEF, capped by effective ATK; 0 lets armor absorb it fully."
+        },
+        "minRangedDamage": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Minimum positive scalar ATK after range falloff, capped by its original ATK."
+        },
+        "counterattacks": {
+          "type": "boolean",
+          "description": "Master counterattack permission; false suppresses all ordinary counters."
+        },
+        "baseCounters": {
+          "type": "boolean",
+          "description": "Allow red-base defenders to counter when otherwise eligible."
+        },
+        "reserveCounters": {
+          "type": "boolean",
+          "description": "Allow green-reserve defenders to counter when otherwise eligible."
+        }
+      },
+      "required": [
+        "rangeFalloff",
+        "minStrikeDamage",
+        "minRangedDamage",
+        "counterattacks",
+        "baseCounters",
+        "reserveCounters"
+      ],
+      "additionalProperties": false
+    },
+    "panels": {
+      "type": "object",
+      "description": "Crossing reach/cost and ordinary end-of-own-turn panel healing.",
+      "properties": {
+        "homeRows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 99,
+          "description": "Depth of home battlefield rows available for reserve entry, withdrawal and existing home-row positional effects."
+        },
+        "crossingStepCost": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "MOV cost of a doorway/wrap step; at least 1."
+        },
+        "baseHealPerTurn": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "HP mended at each own turn end while alive in red base, capped at current maximum HP."
+        },
+        "reserveHealPerTurn": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "HP mended at each own turn end while alive in green reserve, capped at current maximum HP."
+        }
+      },
+      "required": [
+        "homeRows",
+        "crossingStepCost",
+        "baseHealPerTurn",
+        "reserveHealPerTurn"
+      ],
+      "additionalProperties": false
+    },
+    "veterancy": {
+      "type": "object",
+      "description": "Earned-star schedule, kit unlocks and zone activation. The rank cap remains 3.",
+      "properties": {
+        "startingRank": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Stars assigned to each initially dealt unit in all zones."
+        },
+        "statUnlock": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Earned rank needed for the configured veterancy stat boost, 0–3."
+        },
+        "passiveUnlock": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Earned rank needed for the configured unit passive, 0–3."
+        },
+        "abilityUnlock": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Earned rank needed for the configured unit active ability, 0–3."
+        },
+        "award": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Stars added at each eligible award, capped at rank 3; 0 disables rank gain."
+        },
+        "fullHealRank": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Rank required before the full-heal award, so a same-boundary promotion does not newly qualify."
+        },
+        "firstPhaseStartAward": {
+          "type": "boolean",
+          "description": "Award both sides simultaneously at the first numbered phase start."
+        },
+        "postmatchAwards": {
+          "type": "boolean",
+          "description": "Award both sides simultaneously at every numbered phase's postmatch start, if that phase has a postmatch."
+        },
+        "awardZones": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "battlefield",
+              "reserve",
+              "base"
+            ],
+            "description": ""
+          },
+          "uniqueItems": true,
+          "description": "Zones eligible for natural awards and the configured final full heal."
+        },
+        "kitZones": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "battlefield",
+              "reserve",
+              "base"
+            ],
+            "description": ""
+          },
+          "uniqueItems": true,
+          "description": "Zones where earned veterancy stats, passives and unit active abilities function. Stars persist outside these zones."
+        },
+        "fullHealPhase": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Full-heal postmatch: last means the final numbered phase, an integer selects a phase, 0 disables it."
+            },
+            {
+              "enum": [
+                "last"
+              ],
+              "description": "Full-heal postmatch: last means the final numbered phase, an integer selects a phase, 0 disables it."
+            }
+          ],
+          "description": "Full-heal postmatch: last means the final numbered phase, an integer selects a phase, 0 disables it."
+        }
+      },
+      "required": [
+        "startingRank",
+        "statUnlock",
+        "passiveUnlock",
+        "abilityUnlock",
+        "award",
+        "fullHealRank",
+        "firstPhaseStartAward",
+        "postmatchAwards",
+        "awardZones",
+        "kitZones",
+        "fullHealPhase"
+      ],
+      "additionalProperties": false
+    },
+    "ruleset": {
+      "type": "object",
+      "description": "Balance preset identity independent of the config format. This is descriptive metadata, never a request to fetch current rules.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable preset label. Migrated format-1 imports use imported."
+        },
+        "revision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "null means draft. A numbered shipped preset revision requires owner approval."
+        }
+      },
+      "required": [
+        "id",
+        "revision"
+      ],
       "additionalProperties": false
     }
   },

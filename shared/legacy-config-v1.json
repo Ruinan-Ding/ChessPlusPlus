@@ -1,9 +1,5 @@
 {
-  "version": "2.0",
-  "ruleset": {
-    "id": "default",
-    "revision": null
-  },
+  "version": "1.0",
   "board": {
     "radius": 11,
     "orientation": "edge-up"
@@ -369,7 +365,7 @@
         "def": 1,
         "minVet": 0,
         "scope": "all",
-        "description": "{sign:def} DEF while receiving an attack or counterattack. Applies to {scope}; needs rank {minVet}."
+        "description": "+1 DEF while receiving a normal attack or counterattack. Applies to battlefield, reserve and base units at any rank."
       },
       "anchor": {
         "id": "anchor",
@@ -382,7 +378,7 @@
         "uses": 3,
         "setAtk": 0,
         "splashAtk": -4,
-        "description": "Choose any hex. Centre ATK/HEL becomes {setAtk}/{setHel}; through ring {splashRange}, ATK {sign:splashAtk}/HEL {sign:splashHel}; through ring {outerRange}, ATK {sign:outerAtk}/HEL {sign:outerHel}. Affects either side; boosts existing attack/heal profiles only. Lasts {duration}; costs {cost} CP; {uses} uses per match.",
+        "description": "Choose any hex, including base/reserve. Centre ATK/HEL becomes 0; ring 1 loses 4 ATK/HEL; ring 2 gains 2 ATK/HEL. Affects either side; boosts only existing attack/heal profiles. Lasts one full turn; 50 CP, one use per turn, three uses per match.",
         "setHel": 0,
         "splashHel": -4,
         "splashRange": 1,
@@ -400,7 +396,7 @@
         "turns": 1,
         "enemyDefSet": 0,
         "scope": "all",
-        "description": "Owned units in {scope} take no damage, including overtime king damage, for {duration}. Enemy DEF becomes {enemyDefSet}. Costs {cost} CP; {uses} use per match."
+        "description": "Owned battlefield, reserve and base units take no damage, including overtime king damage, for one full turn. Every enemy unit in those zones has DEF 0. Costs 250 CP; once per match."
       },
       "onslaught": {
         "id": "onslaught",
@@ -409,7 +405,7 @@
         "atk": 1,
         "minVet": 0,
         "scope": "all",
-        "description": "{sign:atk} ATK to friendly units in {scope}, including later arrivals. Needs rank {minVet}."
+        "description": "+1 ATK to every friendly battlefield, green-reserve and red-base unit, including later arrivals. No stars required."
       },
       "cleave": {
         "id": "cleave",
@@ -421,7 +417,7 @@
         "uses": 3,
         "damage": 5,
         "splashDamage": 3,
-        "description": "Choose any hex for a board-wide horizontal line. Centre takes {damage} HP damage; the nearest {splashRange} hexes on each side take {splashDamage}; farther occupants heal {heal} HP. Affects either side. Costs {cost} CP; {uses} uses per match.",
+        "description": "Choose any hex for a board-wide horizontal line, including base/reserve. Centre takes 5 HP damage; the nearest two hexes on each side take 3; farther occupants heal 1 HP. Affects either side. Costs 50 CP; one use per turn; three uses per match.",
         "area": "horizontal",
         "splashRange": 2,
         "heal": 1
@@ -436,7 +432,7 @@
         "damage": 3,
         "heal": 3,
         "scope": "all",
-        "description": "Deal {damage} HP damage to every unit in {scope}, then heal your survivors by {heal}, capped at max HP. Does not revive casualties. Costs {cost} CP; {uses} use per match."
+        "description": "Deal 3 HP damage to every unit in all zones, then heal your surviving units by 3, capped at max HP. Does not revive casualties. Costs 250 CP; once per match."
       },
       "tempo": {
         "id": "tempo",
@@ -445,7 +441,7 @@
         "mov": 1,
         "minVet": 0,
         "scope": "all",
-        "description": "{sign:mov} MOV to friendly units in {scope}, including later arrivals. Needs rank {minVet}."
+        "description": "+1 MOV to every friendly battlefield, green-reserve and red-base unit, including later arrivals. No stars required."
       },
       "surge": {
         "id": "surge",
@@ -457,7 +453,7 @@
         "turns": 1,
         "uses": 3,
         "splashMov": -4,
-        "description": "Choose any hex for a board-wide X. Centre loses positive temporary buffs and cannot move, attack, heal normally or use its unit ability; counters remain allowed. The nearest {splashRange} hexes in each diagonal direction receive {sign:splashMov} MOV; farther occupants receive {sign:outerMov} MOV. Affects either side for {duration}. Costs {cost} CP; {uses} uses per match.",
+        "description": "Choose any hex for a board-wide X, including base/reserve. Centre loses positive temporary buffs and cannot move, attack, heal normally or use its unit ability; counters remain allowed. The nearest two hexes in each diagonal direction lose 4 MOV; farther occupants gain 2 MOV. Affects either side for one full turn; 50 CP, one use per turn, three uses per match.",
         "area": "cross",
         "splashRange": 2,
         "outerMov": 2
@@ -474,7 +470,7 @@
         "atk": 2,
         "def": 2,
         "scope": "all",
-        "description": "Owned units in {scope} gain {sign:mov} MOV/{sign:atk} ATK/{sign:def} DEF; existing healers gain {sign:hel} HEL. Enemy units cannot move, attack, heal normally or use unit abilities, but may counter and use pool/CP abilities. Lasts {duration}; costs {cost} CP; {uses} use per match.",
+        "description": "Owned battlefield, reserve and base units gain +8 MOV/+2 ATK/+2 DEF; existing healers also gain +4 HEL. All enemy units cannot move, attack, heal normally or use unit abilities, but may counter and use pool/CP abilities. Lasts one full turn; costs 250 CP; once per match.",
         "hel": 4
       },
       "counter": {
@@ -485,28 +481,28 @@
         "counterAttack": [
           4
         ],
-        "description": "At rank {passiveUnlock}, counter with ATK {counterProfile} before DEF. Does not grant a normal attack."
+        "description": "At Vet 2 on the battlefield, counter at range 1 with ATK 4 before DEF. This does not grant a normal attack."
       },
       "hop": {
         "id": "hop",
         "name": "Hop",
         "target": "friendly",
         "effect": "hop",
-        "description": "At rank {passiveUnlock}, pass through consecutive enemy hexes and open panel crossings, paying normal movement costs. End on an empty hex."
+        "description": "At Vet 2, pass through consecutive enemy hexes and open panel crossings, paying one MOV per hex. End on an empty hex."
       },
       "rapid-movement": {
         "id": "rapid-movement",
         "name": "Rapid Movement",
         "target": "friendly",
         "effect": "rapid-movement",
-        "description": "At rank {passiveUnlock}, use remaining MOV after attacking."
+        "description": "At Vet 2, use remaining MOV after attacking."
       },
       "deflect": {
         "id": "deflect",
         "name": "Shove",
         "target": "friendly",
         "effect": "deflect",
-        "description": "At rank {passiveUnlock}, attack with ATK {atk} before DEF. Cannot counterattack, even with ATK buffs.",
+        "description": "At Vet 2, attack with ATK 4 before DEF. ATK buffs improve its attacks; it cannot counterattack, even with Warcry.",
         "atk": 4
       },
       "rook-bog": {
@@ -514,7 +510,7 @@
         "name": "Bog",
         "target": "friendly",
         "effect": "on-hit-drain",
-        "description": "At rank {passiveUnlock}, after each attack/counter exchange apply {sign:atk} ATK/{sign:def} DEF to the enemy for {duration}. Each exchange adds one stack; no cap.",
+        "description": "At Vet 2, after an attack/counter exchange drain enemy ATK and DEF by 1 for one full turn. Each exchange adds one stack; there is no cap.",
         "atk": -1,
         "def": -1,
         "turns": 1
@@ -524,36 +520,34 @@
         "name": "Regenerate",
         "target": "friendly",
         "effect": "regenerate",
-        "description": "At rank {passiveUnlock}, fully heal at the end of your turn in an active unit-kit zone, even without acting."
+        "description": "At Vet 2, fully heal at the end of your turn on the battlefield, even without acting."
       },
       "intimidate": {
         "id": "intimidate",
         "name": "Intimidate",
         "target": "friendly",
         "effect": "intimidate",
-        "description": "At rank {passiveUnlock}, at your turn start apply {sign:atk} ATK/{sign:def} DEF/{sign:mov} MOV to battlefield units within {radius} hex(es) of the caster: enemies for {duration}.",
+        "description": "At Vet 2, at your turn start drain adjacent battlefield enemies by 1 ATK, DEF and MOV until your next turn.",
         "atk": -1,
         "def": -1,
         "mov": -1,
-        "turns": 1,
-        "radius": 1
+        "turns": 1
       },
       "persuade": {
         "id": "persuade",
         "name": "Persuade",
         "target": "friendly",
         "effect": "persuade",
-        "description": "At rank {passiveUnlock}, at your turn start apply {sign:atk} ATK/{sign:def} DEF/{sign:mov} MOV to battlefield units within {radius} hex(es) of the caster: allies for {duration}.",
+        "description": "At Vet 2, at your turn start boost adjacent battlefield allies by 1 ATK, DEF and MOV until your next turn.",
         "atk": 1,
         "def": 1,
         "mov": 1,
-        "turns": 1,
-        "radius": 1
+        "turns": 1
       },
       "unit-sacrifice": {
         "id": "unit-sacrifice",
         "name": "Sacrifice",
-        "description": "Choose another friendly battlefield or green-reserve unit: permanently add {stars} star(s), capped at 3, fully heal and grant {sign:mov} MOV/{sign:atk} ATK/{sign:def} DEF for {duration}. Remove the caster, counting it as your loss; choose an unused friendly battlefield unit for an extra action. UP reward: {up}. Costs {cost} UP; cooldown {cooldown}.",
+        "description": "Choose another friendly battlefield or green-reserve unit: permanently add one star (max 3), fully heal it and grant +2 MOV/+6 ATK/+6 DEF for one full turn. Remove this pawn, counting it as your loss; then choose an unused friendly battlefield unit for an extra action. No UP reward.",
         "target": "friendly",
         "effect": "sacrifice",
         "cost": 24,
@@ -568,7 +562,7 @@
       "archer-bog": {
         "id": "archer-bog",
         "name": "Snare",
-        "description": "Attacks apply {sign:mov} MOV to their enemy target for {duration}; counters do not trigger it.",
+        "description": "Attacks reduce their enemy target MOV by 4 for one full turn; counters do not trigger it.",
         "target": "friendly",
         "effect": "attack-drain",
         "cost": 8,
@@ -579,7 +573,7 @@
       "shield-taunt": {
         "id": "shield-taunt",
         "name": "Taunt",
-        "description": "Enemy attacks must choose a reachable taunting unit. Moving and using abilities without attacking remain allowed.",
+        "description": "Enemy attacks must choose a reachable taunting shieldman. Moving and using abilities without attacking remain allowed.",
         "target": "friendly",
         "effect": "taunt",
         "cost": 6,
@@ -589,13 +583,12 @@
       "rook-cleave": {
         "id": "rook-cleave",
         "name": "Bash",
-        "description": "Attacks also strike enemies within {radius} hex(es) around this unit using normal ATK against each DEF; only the primary target counters.",
+        "description": "Attacks also strike adjacent enemies around this unit using normal ATK against each DEF; only the primary target counters.",
         "target": "friendly",
         "effect": "cleave",
         "cost": 16,
         "cooldown": 5,
-        "turns": 1,
-        "radius": 1
+        "turns": 1
       },
       "knight-charge": {
         "id": "knight-charge",
@@ -610,18 +603,17 @@
       "bishop-cast": {
         "id": "bishop-cast",
         "name": "Cast",
-        "description": "Choose an enemy within {radius} hex(es) on the battlefield or in green reserve. End the caster action and immediately grant that unit an extra action. Control lasts {duration}.",
+        "description": "Choose an adjacent battlefield or green reserve enemy. End the caster action and immediately grant that unit an extra action; control returns at your next turn.",
         "target": "enemy",
         "effect": "control",
         "cost": 32,
         "cooldown": 5,
-        "turns": 1,
-        "radius": 1
+        "turns": 1
       },
       "queen-nullify": {
         "id": "queen-nullify",
         "name": "Nullify",
-        "description": "Enemies attacked by this unit cannot counter for {duration}.",
+        "description": "Enemies attacked by this unit cannot counter for one full turn.",
         "target": "friendly",
         "effect": "nullify",
         "cost": 12,
@@ -631,7 +623,7 @@
       "king-call": {
         "id": "king-call",
         "name": "Call",
-        "description": "Within {radius} hex(es), friendly battlefield/reserve units heal {heal} HP and gain {sign:atk} ATK/{sign:def} DEF/{sign:mov} MOV. Enemies take {enemyDamage} HP damage and receive {sign:enemyAtk} ATK/{sign:enemyDef} DEF/{sign:enemyMov} MOV for {duration}. Excludes the caster. Costs {cost} UP; cooldown {cooldown}.",
+        "description": "Adjacent friendly battlefield and green-reserve units heal 1 HP and gain +1 ATK/DEF/MOV. Adjacent enemies in those zones take 1 HP damage and lose 1 ATK/DEF/MOV for one full turn. The king is excluded. Costs 4 UP; cooldown 1.",
         "target": "friendly",
         "effect": "call",
         "cost": 4,
@@ -654,7 +646,7 @@
         "cost": 25,
         "cooldown": 1,
         "points": 50,
-        "description": "Spend {cost} CP to gain {points} regular points. {uses} uses per phase; cooldown {cooldown}.",
+        "description": "Spend 25 CP to gain 50 regular ability points. Five uses per phase; once per turn.",
         "uses": 5,
         "usesScope": "phase"
       },
@@ -667,7 +659,7 @@
         "cooldown": 1,
         "stars": 1,
         "scope": "field-reserve",
-        "description": "Give a selected friendly unit in {scope} {stars} star(s), capped at 3. First-star HP raises current and maximum together when its kit is active. Costs {cost} CP; cooldown {cooldown}; {uses} uses per phase.",
+        "description": "Give a selected friendly battlefield or green-reserve unit one star, capped at Vet 3. First-star HP raises current and maximum together. Costs 25 CP; cooldown 1. Five uses per phase.",
         "uses": 5,
         "usesScope": "phase"
       },
@@ -679,7 +671,7 @@
         "cost": 25,
         "cooldown": 1,
         "recharge": 1,
-        "description": "Choose a carried pool pair: reduce both positive cooldowns by {recharge}, stopping at 1. Ready abilities stay at 0. Costs {cost} CP even if both are ready; cooldown {cooldown}; {uses} uses per phase.",
+        "description": "Choose a carried pool pair: reduce both positive cooldowns by 1, stopping at 1. Abilities already ready stay at 0. Costs 25 CP even if both are already ready; cooldown 1. Five uses per phase.",
         "uses": 5,
         "usesScope": "phase"
       },
@@ -688,14 +680,14 @@
         "name": "Capture",
         "target": "friendly",
         "effect": "capture",
-        "description": "At rank {passiveUnlock}, hold the capture zone you occupy, except eligible enemies keep their occupied hexes. Opposing active Capture restores normal capture rules; higher rank has no priority."
+        "description": "At Vet 2, hold the entire capture zone you occupy, except eligible enemies keep their occupied hexes. If both sides have active Capture in the zone, normal capture rules apply; Vet 3 has no priority over Vet 2."
       },
       "quick": {
         "id": "quick",
         "name": "Quick",
         "target": "friendly",
         "effect": "rapid-movement",
-        "description": "At rank {passiveUnlock}, use remaining MOV after attacking."
+        "description": "At Vet 2, use remaining MOV after attacking."
       },
       "checkmate": {
         "id": "checkmate",
@@ -705,7 +697,7 @@
         "atk": 6,
         "def": 6,
         "mov": 2,
-        "description": "At rank {passiveUnlock}, gain {sign:atk} ATK/{sign:def} DEF in the enemy’s first {homeRows} battlefield rows; lose them on leaving. An action starting there gets {sign:mov} MOV for its whole walk, including leaving; arriving does not extend the walk."
+        "description": "At Vet 2, gain +6 ATK and +6 DEF while in the enemy’s first three battlefield rows; lose them on leaving. An action starting there gets +2 MOV for its whole walk, including leaving; arriving does not extend the current walk."
       }
     },
     "pairPickDelay": 5
@@ -796,315 +788,15 @@
       "12,-9": "pawn"
     }
   },
-  "match": {
-    "objective": "regicide",
-    "turnTimeLimit": 0,
-    "maxTurns": 0,
-    "cpAtStart": 5,
-    "opening": {
-      "name": "Initialization",
-      "turns": 3,
-      "pointsPerTurn": 1,
-      "grant": 0
-    },
-    "phases": [
-      {
-        "name": "Phase 1",
-        "turns": 10,
-        "halftimeAfter": 5,
-        "postmatchTurns": 1,
-        "pointsPerTurn": 1,
-        "grant": 20,
-        "vpMultiplier": 1,
-        "cpAward": 10,
-        "pointsBeforeHalftime": 1,
-        "postmatchPointsPerTurn": 1
-      },
-      {
-        "name": "Phase 2",
-        "turns": 10,
-        "halftimeAfter": 5,
-        "postmatchTurns": 1,
-        "pointsPerTurn": 2,
-        "grant": 20,
-        "vpMultiplier": 2,
-        "cpAward": 20,
-        "pointsBeforeHalftime": 1,
-        "postmatchPointsPerTurn": 2
-      },
-      {
-        "name": "Phase 3",
-        "turns": 10,
-        "halftimeAfter": 5,
-        "postmatchTurns": 1,
-        "pointsPerTurn": 3,
-        "grant": 20,
-        "vpMultiplier": 3,
-        "cpAward": 30,
-        "pointsBeforeHalftime": 2,
-        "postmatchPointsPerTurn": 3
-      }
-    ],
-    "overtime": {
-      "name": "Overtime",
-      "pointsPerTurn": 0,
-      "stages": [
-        {
-          "name": "Overtime 1",
-          "turns": 8,
-          "kingToll": 1,
-          "moves": {
-            "battlefield": 1,
-            "reserve": 1,
-            "base": 1
-          }
-        },
-        {
-          "name": "Overtime 2",
-          "turns": 5,
-          "kingToll": 3,
-          "moves": {
-            "battlefield": 2,
-            "reserve": 2,
-            "base": 2
-          }
-        },
-        {
-          "name": "Overtime 3",
-          "turns": 1,
-          "kingToll": 5,
-          "moves": {
-            "battlefield": 3,
-            "reserve": 3,
-            "base": 3
-          }
-        }
-      ]
-    },
-    "winConditions": {
-      "earlyPhaseLosses": [
-        {
-          "phase": 1,
-          "side": "white",
-          "condition": "no-eligible-capture-occupant",
-          "threshold": 0
-        },
-        {
-          "phase": 2,
-          "side": "black",
-          "condition": "vp-at-most",
-          "threshold": 0
-        }
-      ],
-      "points": {
-        "enabled": true,
-        "leadToWin": {
-          "white": 50,
-          "black": 25
-        }
-      },
-      "overtimeWinner": "black"
-    }
-  },
-  "stageRules": {
-    "opening": {
-      "attack": false,
-      "normalHeal": false,
-      "poolAbilities": false,
-      "unitAbilities": false,
-      "cpUtilities": true,
-      "cpSkills": false,
-      "cpUltimates": false,
-      "wrap": false,
-      "reserveEntry": true,
-      "homecoming": true,
-      "moves": {
-        "battlefield": [
-          1,
-          2,
-          3
-        ],
-        "reserve": [
-          1,
-          2,
-          3
-        ],
-        "base": [
-          1,
-          2,
-          3
-        ]
-      }
-    },
-    "firstHalf": {
-      "attack": true,
-      "normalHeal": true,
-      "poolAbilities": true,
-      "unitAbilities": true,
-      "cpUtilities": true,
-      "cpSkills": true,
-      "cpUltimates": true,
-      "wrap": true,
-      "reserveEntry": false,
-      "homecoming": false,
-      "moves": {
-        "battlefield": 1,
-        "reserve": 1,
-        "base": 1
-      }
-    },
-    "secondHalf": {
-      "attack": true,
-      "normalHeal": true,
-      "poolAbilities": true,
-      "unitAbilities": true,
-      "cpUtilities": true,
-      "cpSkills": true,
-      "cpUltimates": true,
-      "wrap": false,
-      "reserveEntry": true,
-      "homecoming": false,
-      "moves": {
-        "battlefield": 1,
-        "reserve": 1,
-        "base": 1
-      }
-    },
-    "postmatch": {
-      "attack": false,
-      "normalHeal": true,
-      "poolAbilities": true,
-      "unitAbilities": true,
-      "cpUtilities": true,
-      "cpSkills": true,
-      "cpUltimates": true,
-      "wrap": false,
-      "reserveEntry": true,
-      "homecoming": true,
-      "moves": {
-        "battlefield": 3,
-        "reserve": 3,
-        "base": 3
-      }
-    },
-    "overtime": {
-      "attack": true,
-      "normalHeal": true,
-      "poolAbilities": true,
-      "unitAbilities": true,
-      "cpUtilities": true,
-      "cpSkills": true,
-      "cpUltimates": true,
-      "wrap": false,
-      "reserveEntry": false,
-      "homecoming": true
-    },
-    "movedUnitsLockedInOpening": true
-  },
-  "economy": {
-    "pointsAtStart": 10,
-    "upAtStart": 10,
-    "killPayMultiplier": 1,
-    "killPayZones": [
-      "battlefield"
-    ],
-    "walkHomeRefund": {
-      "valueMultiplier": 1,
-      "fee": 1,
-      "missingHpMultiplier": 1,
-      "minimum": 1
-    },
-    "wrapPriceMultiplier": 1,
-    "halftimeUpMultiplier": 1,
-    "overtimeVpToPointsMultiplier": 1,
-    "cpOwnScoreMultiplier": 1,
-    "cpOpponentScoreMultiplier": 1,
-    "cpBehindGapMultiplier": 1
-  },
-  "scoring": {
-    "layout": {
-      "columnRatio": 0.6363636363636364,
-      "rowRatio": 0.5454545454545454
-    },
-    "zones": [
-      {
-        "kind": "middle",
-        "owner": "",
-        "anchor": "middle",
-        "radius": 2,
-        "worth": 2
-      },
-      {
-        "kind": "side",
-        "owner": "",
-        "anchor": "right",
-        "radius": 2,
-        "worth": 1
-      },
-      {
-        "kind": "side",
-        "owner": "",
-        "anchor": "left",
-        "radius": 2,
-        "worth": 1
-      },
-      {
-        "kind": "base",
-        "owner": "black",
-        "anchor": "black-home",
-        "radius": 2,
-        "worth": 3
-      },
-      {
-        "kind": "base",
-        "owner": "white",
-        "anchor": "white-home",
-        "radius": 2,
-        "worth": 3
-      }
-    ],
-    "floorAtZero": true,
-    "deathCostMultiplier": 1,
-    "deathZones": [
-      "battlefield",
-      "reserve",
-      "base"
-    ],
-    "innerClaimReach": 1,
-    "outerClaimReach": 0,
-    "neutralizeReach": 1,
-    "centerControl": true
-  },
-  "combat": {
+  "rules": {
     "rangeFalloff": 0.25,
     "minStrikeDamage": 1,
-    "minRangedDamage": 1,
-    "counterattacks": true,
-    "baseCounters": false,
-    "reserveCounters": true
-  },
-  "panels": {
-    "homeRows": 3,
-    "crossingStepCost": 1,
-    "baseHealPerTurn": 1,
-    "reserveHealPerTurn": 0
-  },
-  "veterancy": {
-    "startingRank": 0,
-    "statUnlock": 1,
-    "passiveUnlock": 2,
-    "abilityUnlock": 3,
-    "award": 1,
-    "firstPhaseStartAward": true,
-    "postmatchAwards": true,
-    "awardZones": [
-      "battlefield",
-      "reserve"
-    ],
-    "kitZones": [
-      "battlefield"
-    ],
-    "fullHealPhase": "last",
-    "fullHealRank": 3
+    "maxTurns": 0,
+    "turnTimeLimit": 0,
+    "objective": "regicide",
+    "cpAtStart": 5,
+    "cpPhaseOffset": 10,
+    "upAtStart": 10,
+    "pointsAtStart": 10
   }
 }

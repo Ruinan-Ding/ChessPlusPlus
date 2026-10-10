@@ -2,10 +2,8 @@
 Config loader - parses a GameConfig dict (matching the shared JSON schema)
 and builds the initial HexBoard state.
 
-The only fixed game fact is the board: a hexagon with 12 cells per edge
-(axial radius 11), rendered with an edge pointing up. Even that lives in
-the default config (shared/default-config.json) rather than engine code, so
-it can change with the config.
+Shared format-2 data carries unit, ability and match parameters. Legacy imports
+resolve through frozen compatibility defaults before becoming saved snapshots.
 
 The engine reads all movement and combat behaviour from the config's units -
 none of the unit ids mean anything to the code.
@@ -19,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .board import HexBoard, parse_coord
+from .game_rules import section_of, PREVIOUS_CONFIG, domain_errors, legacy_rules, migrate_config, rule_of
 from .panels import axial_to_pixel, color_of_panel, on_battlefield, panel_of
 
 logger = logging.getLogger('game')
@@ -51,19 +50,6 @@ COUNTED_RULES = (
     'cpAtStart', 'cpPhaseOffset', 'upAtStart', 'pointsAtStart')
 
 
-def rule_of(config: Optional[Dict[str, Any]], key: str) -> Any:
-    """
-    One of *config*'s rules, or the default's when the config has none.
-
-    A room's config has been normalised by the time it is played, so the
-    fallback is for the callers that are handed no config at all.
-    """
-    rules = (config or {}).get('rules')
-    if isinstance(rules, dict) and key in rules:
-        return rules[key]
-    return DEFAULT_CONFIG['rules'][key]
-
-
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
@@ -84,21 +70,17 @@ def _normalise_config(config: Dict[str, Any]) -> None:
             if isinstance(unit, dict):
                 unit.setdefault('defense', 0)
 
+    if config.get('version') == '2.0':
+        resolved = migrate_config(config)
+        config.clear()
+        config.update(resolved)
+        return
     rules = config.get('rules')
     if rules is None and 'rules' not in config:
         rules = config['rules'] = {}
-    # Absent means the current default, not the rule that happened to be in
-    # force when the config was written.
-    #
-    # The tempting alternative - fill in 0, the old floor, so a room frozen
-    # before this existed keeps the combat it was played under - cannot tell a
-    # historical snapshot from a custom config authored today that simply did
-    # not mention the field. It would hand every new custom config the dead
-    # matchups this floor exists to remove, silently. An in-progress dev room
-    # settling its remaining blows one point differently is the cheaper of the
-    # two surprises. Read from DEFAULT_CONFIG so there is one literal.
+    # Legacy omissions use frozen format-1 defaults, never today's balance.
     if isinstance(rules, dict) and 'minStrikeDamage' not in rules:
-        rules['minStrikeDamage'] = DEFAULT_CONFIG['rules']['minStrikeDamage']
+        rules['minStrikeDamage'] = PREVIOUS_CONFIG['rules']['minStrikeDamage']
     if isinstance(rules, dict) and 'objective' not in rules:
         setup = config.get('setup') if isinstance(config.get('setup'), dict) else {}
         commanded = all(
@@ -112,7 +94,7 @@ def _normalise_config(config: Dict[str, Any]) -> None:
     # number every game was played under.
     if isinstance(rules, dict):
         for key in COUNTED_RULES:
-            rules.setdefault(key, DEFAULT_CONFIG['rules'][key])
+            rules.setdefault(key, PREVIOUS_CONFIG['rules'][key])
 
 
 #: A unit type's whole numbers besides `defense`, and the least of each.
@@ -149,8 +131,8 @@ UNIT_EFFECT_FIELDS = {
     'deflect': ['atk'],
     'on-hit-drain': ['atk', 'def', 'turns'],
     'regenerate': [],
-    'intimidate': ['atk', 'def', 'mov', 'turns'],
-    'persuade': ['atk', 'def', 'mov', 'turns'],
+    'intimidate': ['atk', 'def', 'mov', 'turns', 'radius'],
+    'persuade': ['atk', 'def', 'mov', 'turns', 'radius'],
     'capture': [],
     'checkmate': ['atk', 'def', 'mov'],
     'rapid-movement': [],
@@ -161,9 +143,9 @@ UNIT_EFFECT_FIELDS.update({
     'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up', 'stars'],
     'attack-drain': ['cost', 'cooldown', 'turns', 'mov'],
     'taunt': ['cost', 'cooldown', 'turns'],
-    'cleave': ['cost', 'cooldown', 'turns'],
+    'cleave': ['cost', 'cooldown', 'turns', 'radius'],
     'charge': ['cost', 'cooldown', 'turns'],
-    'control': ['cost', 'cooldown', 'turns'],
+    'control': ['cost', 'cooldown', 'turns', 'radius'],
     'nullify': ['cost', 'cooldown', 'turns'],
     'call': ['cost', 'cooldown', 'turns', 'heal', 'atk', 'def', 'mov', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius'],
 })
@@ -296,8 +278,8 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
             if 'scope' in entry and (entry['scope'] not in ('field-reserve', 'all') or effect == 'recharge' or not (ability_id in passives or effect in PATH_EFFECT_FIELDS
                     or ('effect' not in entry and entry.get('target') in ('friendly', 'enemy')))):
                 errors.append(f'{at}.scope is invalid')
-            if 'radius' in entry and effect != 'call':
-                errors.append(f'{at}.radius requires Call')
+            if 'radius' in entry and effect not in ('call', 'control', 'cleave', 'persuade', 'intimidate'):
+                errors.append(f'{at}.radius requires a range-aware unit effect')
             if 'minVet' in entry and (ability_id not in passives or type(entry['minVet']) is not int or not 0 <= entry['minVet'] <= 3):
                 errors.append(f'{at}.minVet is invalid')
             for field in ('stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'setHel', 'splashHel', 'hel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov'):
@@ -316,8 +298,11 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                 if field in entry and 'effect' not in entry:
                     errors.append(f'{at}.{field} requires a unit effect')
 
-    if 'version' not in config:
-        errors.append("Missing 'version'")
+    if config.get('version') == '2.0':
+        domain = domain_errors(config)
+        if domain: return errors + domain
+    elif config.get('version') != '1.0':
+        errors.append('Unsupported configuration format')
     if 'board' not in config or 'radius' not in config.get('board', {}):
         errors.append("Missing 'board.radius'")
     else:
@@ -418,7 +403,7 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
     # and every read below would raise AttributeError out of a handler that
     # only catches ValueError - an INTERNAL_ERROR traceback for what is
     # plainly a bad config.
-    rules = config.get('rules')
+    rules = legacy_rules(config)
     if not isinstance(rules, dict):
         # Normalisation supplies an absent one, so this is a malformed value:
         # an explicit null, a list, a string. Mirrors the client's
@@ -560,7 +545,7 @@ def load_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     errors = _validate_config(config)
     if errors:
         raise ValueError(f"Invalid game config: {'; '.join(errors)}")
-    return config
+    return migrate_config(config)
 
 
 def build_initial_board(config: Dict[str, Any]) -> HexBoard:
@@ -590,7 +575,9 @@ def build_initial_board(config: Dict[str, Any]) -> HexBoard:
                 )
                 continue
             unit_def = units.get(unit_id, {})
-            hp = unit_def.get('hp', 1)
+            from .unit_stats import unit_stats
+            vet = section_of(config, 'veterancy')['startingRank']
+            hp = unit_stats(unit_id, config, vet if 'battlefield' in section_of(config, 'veterancy')['kitZones'] else -1).get('hp', 1)
             # Every unit carries an identity that outlives the hex it stands
             # on. Per-unit state - veterancy, boosts, cooldowns - hangs off
             # this, so it travels with the unit instead of being re-keyed by
@@ -602,7 +589,8 @@ def build_initial_board(config: Dict[str, Any]) -> HexBoard:
                 'hp': hp,
                 'max_hp': hp,
                 'uid': f"{color[0]}{coord_str}",
-                'vet': 0,
+                'vet': vet,
+                'veterancyHpActive': 'battlefield' in section_of(config, 'veterancy')['kitZones'] and vet >= section_of(config, 'veterancy')['statUnlock'],
             })
 
     logger.info(f"Built initial board: radius={radius}, pieces={len(board.to_dict())}")

@@ -16,7 +16,8 @@ import os
 
 from django.test import SimpleTestCase
 
-from game.engine.config_loader import DEFAULT_CONFIG, build_initial_board, load_config
+from game.engine.config_loader import build_initial_board, load_config
+from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
 
 FIXTURES = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), '..', '..', '..',
@@ -60,6 +61,7 @@ class ConfigParityTestCase(SimpleTestCase):
                 load_config(config)
 
     def test_default_fallback_returns_an_independent_config(self):
+        from game.engine.config_loader import DEFAULT_CONFIG
         for raw in (None, {}):
             with self.subTest(raw=raw):
                 config = load_config(raw)
@@ -119,9 +121,14 @@ class ConfigParityTestCase(SimpleTestCase):
                 raw = _edited(edit['path'], edit['value'])
                 config = load_config(raw)
                 build_initial_board(config)
-                node, original = config, raw
-                for key in edit['path']:
-                    node, original = node[key], original[key]
+                original = raw
+                for key in edit['path']: original = original[key]
+                if edit['path'][0] == 'rules':
+                    from game.engine.game_rules import rule_of
+                    node = rule_of(config, edit['path'][1])
+                else:
+                    node = config
+                    for key in edit['path']: node = node[key]
                 self.assertEqual(node, edit['value'])
                 self.assertIs(type(node), int)
                 self.assertIs(type(original), float)

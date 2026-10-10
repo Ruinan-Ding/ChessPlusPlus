@@ -3,7 +3,7 @@ import {
   computeAttackZone, computeLegalMoves, computeMoveCosts, inHomeRows, strikeDamage, HOME_ROWS,
   MIN_STRIKE_DAMAGE, strikeFromStats,
 } from './hex-rules';
-import { DEFAULT_GAME_CONFIG } from './config.service';
+import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG } from './config.service';
 import combatParity from './combat-parity.json';
 
 describe('configured unit stats', () => {

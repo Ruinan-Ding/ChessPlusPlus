@@ -19,6 +19,12 @@ Changing the config's **shape** - adding, renaming or removing a field - touches
 | 3 | `server/game/engine/config_loader.py` | `_validate_config()` |
 | 4 | `client/src/app/services/config.service.ts` | `validateGameRules()` |
 
+Format 2.0 match-domain validation is in `game_rules.py` / `game-rules.ts`, sharing
+this schema via `jsonschema` / `ajv`; unit/catalogue checks remain in the loaders above.
+Current balance is draft (`ruleset.revision: null`); a format change never approves a
+balance release. Format-1 compatibility fixtures are immutable. New defaults must not
+change resolved started-game snapshots. See CONFIGURATION.md.
+
 ## Procedure
 
 1. **Schema first.** Add the field to `shared/game-config.schema.json`, with a description of
@@ -41,7 +47,9 @@ Changing the config's **shape** - adding, renaming or removing a field - touches
      default the server rejects breaks the setup screen with an error the user cannot act on.
    - **A refusal both must make goes in `client/src/app/services/config-parity.json`**, which
      `config.service.spec.ts` and `test_config_parity.py` both run (AGENTS.md invariant 7). So
-     does a key both must accept when absent.
+     does a key both must accept when absent. Current domain refusals use `format2Refused`;
+     legacy cases use `legacy-config-v1.json`. Include migration idempotence and snapshot
+     freezing when the shape changes.
    - **Absent and `null` are different.** Both sides fill in only a *missing* key, so never read
      a config value through `??` on the client - that turns an explicit `null` into the
      default, and the server then refuses the `null` the client let through.

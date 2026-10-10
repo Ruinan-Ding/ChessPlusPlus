@@ -4,7 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { LocalGameService, LOCAL_OPPONENT } from './local-game.service';
 import { unitPoints } from './match-score';
 import { unitStats } from './unit-stats';
-import { DEFAULT_GAME_CONFIG, ConfigService } from './config.service';
+import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG, ConfigService } from './config.service';
 
 /**
  * The offline engine is the only thing standing between the player and the
@@ -312,7 +312,7 @@ describe('LocalGameService', () => {
       expect(last('invalid_move')).toBeUndefined(); expect(g.boardState['-10,9']).toBeUndefined();
       const move = last('move_made').move;
       expect(move.withdrawn).toBeTrue(); expect(move.to).toBe('-12,9'); expect(move.unit.uid).toBe('wp');
-      expect(move.unit.hp).toBe(12); expect(unitPoints(g.config, g.moveHistory, 'white')).toBe(10 + valueOf('pawn') - (intoPanel ? 2 : 3));
+      expect(move.unit.hp).toBe(12); expect(unitPoints(g.config, g.moveHistory, 'white')).toBe(10 + valueOf('pawn') - (intoPanel ? 1 : 3));
       if (intoPanel) { expect(move.panelDefender.uid).toBe('bp'); expect(move.defenderHp).toBe(10); }
       const restored = new LocalGameService(TestBed.inject(ConfigService));
       expect((restored as any).game.moveHistory.find((m: any) => m.withdrawn).unit.hp).toBe(12);
@@ -460,6 +460,19 @@ describe('LocalGameService', () => {
     expect(g.boardState['-1,0'].max_hp).toBe(14);
   });
 
+  it('derives multiplied wrap affordability and applies the closed-window gate to free wraps', async () => {
+    const g=(service as any).game;
+    g.config.setup={white:{'0,11':'king','-12,1':'pawn'},black:{'0,-11':'king'}};
+    g.config.economy.wrapPriceMultiplier=2;g.config.economy.upAtStart=23;
+    g.turnNumber=7;g.currentTurn='Solo';g.moveHistory=[];
+    const unit={unit_id:'pawn',color:'white',uid:'w-12,1',hp:12,max_hp:12,vet:0};
+    service.send({type:'panel_move',from:'-12,1',to:'11,1',unit,panel:'bl',price:1,cost:1});await flush();
+    expect(last('invalid_move').message).toBe('Not enough UP for the crossing');expect(g.moveHistory).toEqual([]);
+    g.config.economy.wrapPriceMultiplier=0;g.turnNumber=27;
+    service.send({type:'panel_move',from:'-12,1',to:'11,1',unit,panel:'bl',price:0,cost:1});await flush();
+    expect(last('invalid_move').message).toBe('The wrap is shut');expect(g.moveHistory).toEqual([]);
+  });
+
   it('persists both halftime UP awards on moves and passes, once through reload and later board changes', async () => {
     for (const [phase, ply] of [[1, 17], [2, 39], [3, 61]]) {
       const g = (service as any).game;
@@ -491,15 +504,15 @@ describe('LocalGameService', () => {
     for (const color of ['white', 'black']) {
       g.turnNumber = color === 'white' ? 15 : 16;
       g.currentTurn = color === 'white' ? 'Solo' : LOCAL_OPPONENT;
-      g.moveHistory = []; g.config.rules.upAtStart = valueOf('pawn') - 1;
+      g.moveHistory = []; g.config.economy.upAtStart = valueOf('pawn') - 1;
       const unit = fullUnit('pawn', color, `${color}-pool`);
       replies.length = 0;
-      service.send({ type: 'panel_move', from: 'base', to: 'reserve', panel: color === 'white' ? 'bl' : 'tr',
+      service.send({ type: 'panel_move', from: color === 'white' ? '-12,1' : '11,-1', to: color === 'white' ? '11,1' : '-12,-1', panel: color === 'white' ? 'bl' : 'tr',
         cost: 1, price: 1, unit }); await flush();
       expect(last('invalid_move').message).toBe('Not enough UP for the crossing');
       expect(g.moveHistory).toEqual([]);
-      g.config.rules.upAtStart = valueOf('pawn');
-      service.send({ type: 'panel_move', from: 'base', to: 'reserve', panel: color === 'white' ? 'bl' : 'tr',
+      g.config.economy.upAtStart = valueOf('pawn');
+      service.send({ type: 'panel_move', from: color === 'white' ? '-12,1' : '11,-1', to: color === 'white' ? '11,1' : '-12,-1', panel: color === 'white' ? 'bl' : 'tr',
         cost: 1, price: 1, unit }); await flush();
       expect(unitPoints(g.config, g.moveHistory, color as 'white' | 'black')).toBe(0);
       expect(g.moveHistory[0].price).toBe(valueOf('pawn'));
@@ -628,7 +641,7 @@ describe('LocalGameService', () => {
 
     const home = fullUnit('rook', 'black', 'rtr0');
     service.send({
-      type: 'panel_attack', intoPanel: true, panel: 'tr',
+      type: 'panel_attack', intoPanel: true, panel: 'tl',
       from: attacker, attack: '-5,8', unit: home,
     });
     await flush();
@@ -639,7 +652,7 @@ describe('LocalGameService', () => {
     // The panel is carried, not derived - this engine has none to look one up
     // in - and kept, because the record is the only place it survives a
     // reload, where it says whether the wound mends.
-    expect(hit.panel).toBe('tr');
+    expect(hit.panel).toBe('tl');
     service.send({ type: 'request_game_state' });
     await flush();
     expect(last('game_state_update').moveHistory.slice(-1)[0]).toEqual(hit);
@@ -648,7 +661,7 @@ describe('LocalGameService', () => {
     expect(hit.defenderHp).toBeLessThan(home.hp);
     expect(msg.boardState['-5,8']).toBeUndefined();
     // It answers, and the answer lands on the attacker where it stands - a
-    // base unit never starts a fight but always finishes its part of one.
+    // reserve unit may counter but cannot initiate an attack.
     expect(hit.counter_damage).toBeGreaterThan(0);
     expect(msg.boardState[attacker].hp).toBeLessThan(unitStats('pawn', DEFAULT_GAME_CONFIG, 1).hp);
     expect(msg.turnNumber).toBe(opened + 1);
@@ -1314,7 +1327,7 @@ describe('LocalGameService', () => {
 
   it('hands over to nobody when a pass runs the turn limit out', async () => {
     const config = JSON.parse(JSON.stringify((service as any).game.config));
-    config.rules.maxTurns = 1;
+    config.match.maxTurns = 1;
     localStorage.setItem('cpp.localGame.v1', JSON.stringify({
       username: 'Solo', hostColor: 'white', started: true, config,
       boardState: {}, currentTurn: 'Solo', turnNumber: 1, moveHistory: [],
@@ -1401,7 +1414,7 @@ describe('LocalGameService', () => {
       // pass does not either, so the two engines would disagree about whether
       // a networked match was over.
       const config = JSON.parse(JSON.stringify((service as any).game.config));
-      config.rules = { ...config.rules, objective: 'elimination' };
+      config.match.objective = 'elimination';
       const kingHp = hpOf('king');
       const pawnHp = hpOf('pawn');
       localStorage.setItem('cpp.localGame.v1', JSON.stringify({
@@ -1815,9 +1828,9 @@ describe('LocalGameService', () => {
 
     it("reads a postmatch's entries off the game's config", async () => {
       // rules.postmatchEntries: a room that says two stops the third.
-      const rules = (service as any).game.config.rules;
-      const saved = rules.postmatchEntries;
-      rules.postmatchEntries = 2;
+      const rules = (service as any).game.config.stageRules.opening.moves;
+      const saved = rules.reserve;
+      rules.reserve = [2,2,3];
       try {
         const g = at(1);
         ['-10,9', '-8,9', '-6,9'].forEach((to, i) => g.engine.send({
@@ -1826,7 +1839,7 @@ describe('LocalGameService', () => {
         await flush();
         expect(g.refusal()).toBe('That reserve has started its units for the turn');
       } finally {
-        rules.postmatchEntries = saved;
+        rules.reserve = saved;
       }
     });
 
@@ -1851,9 +1864,9 @@ describe('LocalGameService', () => {
 
     it("reads a setup turn's walks home off the game's config", async () => {
       // rules.homecomingsPerSetupTurn: a room that says one stops the second.
-      const rules = (service as any).game.config.rules;
-      const saved = rules.homecomingsPerSetupTurn;
-      rules.homecomingsPerSetupTurn = 1;
+      const rules = (service as any).game.config.stageRules.opening.moves;
+      const saved = rules.battlefield;
+      rules.battlefield = [1,2,3];
       try {
         const g = at(1, { ...kings, ...walker('-11,11', 'w1'), ...walker('-10,11', 'w2') });
         g.engine.send({ type: 'make_move', from: '-11,11', to: '-12,11', withdraw: true });
@@ -1863,7 +1876,7 @@ describe('LocalGameService', () => {
         await flush();
         expect(g.refusal()).toBe('That side has had all 1 of its moves this turn');
       } finally {
-        rules.homecomingsPerSetupTurn = saved;
+        rules.battlefield = saved;
       }
     });
 
@@ -2192,7 +2205,7 @@ describe('LocalGameService', () => {
       const seen: any[] = [];
       engine.messages$.subscribe(m => seen.push(m));
       engine.send({
-        type: 'panel_move', from: 'bl-1', to: 'tr-1', panel: 'bl',
+        type: 'panel_move', from: '-12,1', to: '11,1', panel: 'bl',
         cost: 2, price: 5, unit: reserve('r9'),
       });
       await flush();
@@ -2230,9 +2243,9 @@ describe('LocalGameService', () => {
       // Past the setup turns first: the wrap is shut on every one of them, so
       // the crossing would be refused before its price was ever worked out.
       await pastOpening();
-      (service as any).game.config.rules.upAtStart = valueOf('pawn');
+      (service as any).game.config.economy.upAtStart = valueOf('pawn');
       service.send({
-        type: 'panel_move', from: 'bl-1', to: 'tr-1', panel: 'bl',
+        type: 'panel_move', from: '-12,1', to: '11,1', panel: 'bl',
         cost: 2, price: 1, unit: reserve('r9'),
       });
       await flush();

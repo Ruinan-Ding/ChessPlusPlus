@@ -24,7 +24,7 @@ class TurnDraftTests(TransactionTestCase):
     def setUp(self):
         self.game = GameRoom.objects.create(host='alice', opponent='bob', status='started')
         config = copy.deepcopy(DEFAULT_CONFIG)
-        config['rules']['turnTimeLimit'] = 0
+        config['match']['turnTimeLimit'] = 0
         self.state = GameState.objects.create(
             game=self.game, player_white='alice', player_black='bob', current_turn='alice',
             turn_number=7, revision=1, config_snapshot=config, turn_started_at=timezone.now(),
@@ -337,7 +337,7 @@ class TurnDraftTests(TransactionTestCase):
         king['hp'] = 1
         board['1,0'] = king
         config = copy.deepcopy(self.state.config_snapshot)
-        config['rules']['turnTimeLimit'] = 60
+        config['match']['turnTimeLimit'] = 60
         await GameState.objects.filter(pk=self.game.game_id).aupdate(board_state=board, config_snapshot=config)
         await self.consumer._start_turn_timer(self.game.game_id, 60, 7, 'alice')
         task = _pending_turn_timers[self.game.game_id]
@@ -359,7 +359,7 @@ class TurnDraftTests(TransactionTestCase):
 
     async def test_atomic_replay_allowance_is_persisted_and_not_renewed_on_resync(self):
         config = copy.deepcopy(self.state.config_snapshot)
-        config['rules']['turnTimeLimit'] = 15
+        config['match']['turnTimeLimit'] = 15
         await GameState.objects.filter(pk=self.game.game_id).aupdate(config_snapshot=config)
         now = timezone.now()
         with patch('game.consumers.GameConsumer._any_player_connected', new=AsyncMock(return_value=True)), \
@@ -400,8 +400,8 @@ class TurnDraftProtocolTests(TransactionTestCase):
         self.game, self.host, self.opponent, self.white, self.black = await _start_seated_game()
         state = await GameState.objects.aget(pk=self.game.game_id)
         config = copy.deepcopy(state.config_snapshot)
-        config['rules']['turnTimeLimit'] = 0
-        config['setup'] = {'white': {}, 'black': {}}
+        config['match']['turnTimeLimit'] = 0
+        config['setup'] = {'white': {'0,1':'king'}, 'black': {'0,-1':'king'}}
         pieces = {
             '-10,0': {'unit_id': 'king', 'color': 'white', 'uid': 'wk', 'hp': 60, 'max_hp': 60},
             '10,0': {'unit_id': 'king', 'color': 'black', 'uid': 'bk', 'hp': 60, 'max_hp': 60},
@@ -499,7 +499,7 @@ class TurnDraftProtocolTests(TransactionTestCase):
         state = await self.position(ply=27)
         config = copy.deepcopy(state.config_snapshot)
         reserve = next(at for at, gate in panels.gateway_hexes(11).items() if gate['color'] == 'white')
-        config['setup']['white'] = {reserve: 'bishop'}
+        config['setup']['white'] = {**config['setup']['white'], reserve: 'bishop'}
         occupancy = panels.panel_occupancy(config, 11, [], ply=27)
         first = next(key for key, cost in panels.panel_move_targets(config, 11, [], state.board_state,
                     reserve, 27, 10).items() if cost['price'] == 0 and cost['cost'] == 1)
@@ -591,7 +591,7 @@ class TurnDraftProtocolTests(TransactionTestCase):
                 self.assertEqual(final['revision'], state.revision + 1)
                 self.assertEqual(over['revision'], final['revision'])
             self.assertEqual(unit_points_of('white', final['moveHistory'], state.config_snapshot),
-                             state.config_snapshot['rules']['upAtStart'] + state.config_snapshot['units']['king']['value'])
+                             state.config_snapshot['economy']['upAtStart'] + state.config_snapshot['units']['king']['value'])
             await self.white.send_json_to(self.request(state, commands=commands, kind='commit_turn', sequence=3))
             duplicate = await _receive_until(self.white, 'game_state_update')
             self.assertEqual(duplicate['revision'], final['revision'])
@@ -636,7 +636,7 @@ class TurnDraftProtocolTests(TransactionTestCase):
         state = await self.position(ply=27)
         config = copy.deepcopy(state.config_snapshot)
         reserve = next(at for at, gate in panels.gateway_hexes(11).items() if gate['color'] == 'white')
-        config['setup']['white'] = {reserve: 'bishop'}
+        config['setup']['white'] = {**config['setup']['white'], reserve: 'bishop'}
         occupancy = panels.panel_occupancy(config, 11, [], ply=27)
         entry = next(iter(panels.entry_targets(config, 11, occupancy, state.board_state, reserve)))
         q, r = panels.parse_key(entry)

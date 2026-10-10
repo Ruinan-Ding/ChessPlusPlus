@@ -1,4 +1,4 @@
-import { DEFAULT_GAME_CONFIG } from './config.service';
+import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG } from './config.service';
 import {
   bankEndedPhases, capOf, cpAwarded, decidedOnPoints, deathsOf, matchVerdict, phaseTotal,
   scheduleEnding, vpAsPoints, unitPoints, halftimeUpAwards, scheduledPoints, withdrawalRefund,

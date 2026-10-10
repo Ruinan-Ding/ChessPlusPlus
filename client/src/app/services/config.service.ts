@@ -1,6 +1,8 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import SHIPPED_CONFIG from '../../../../shared/default-config.json';
+import { PREVIOUS_GAME_CONFIG, domainErrors, legacyRules, migrateConfig, ruleValue } from './game-rules';
+export { PREVIOUS_GAME_CONFIG } from './game-rules';
 
 /**
  * The shipped config: shared/default-config.json, the one file both engines
@@ -25,10 +27,7 @@ export type CountedRule = typeof COUNTED_RULES[number];
  * room's config is normalised before it is played; the fallback is for the
  * callers handed no config at all. Mirrors rule_of() in config_loader.py.
  */
-export function ruleOf(config: any, key: CountedRule): number {
-  const value = config?.rules?.[key];
-  return typeof value === 'number' ? value : DEFAULT_GAME_CONFIG.rules[key];
-}
+export function ruleOf(config: any, key: string): any { return ruleValue(config, key); }
 
 /**
  * Every field a unit type may carry. Anything else is a typo, and a typo is a
@@ -86,8 +85,8 @@ export const UNIT_EFFECT_FIELDS: Record<string, string[]> = {
   'deflect': ['atk'],
   'on-hit-drain': ['atk', 'def', 'turns'],
   'regenerate': [],
-  'intimidate': ['atk', 'def', 'mov', 'turns'],
-  'persuade': ['atk', 'def', 'mov', 'turns'],
+  'intimidate': ['atk', 'def', 'mov', 'turns', 'radius'],
+  'persuade': ['atk', 'def', 'mov', 'turns', 'radius'],
   'capture': [],
   'checkmate': ['atk', 'def', 'mov'],
   'rapid-movement': [],
@@ -98,9 +97,9 @@ Object.assign(UNIT_EFFECT_FIELDS, {
   'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up', 'stars'],
   'attack-drain': ['cost', 'cooldown', 'turns', 'mov'],
   'taunt': ['cost', 'cooldown', 'turns'],
-  'cleave': ['cost', 'cooldown', 'turns'],
+  'cleave': ['cost', 'cooldown', 'turns', 'radius'],
   'charge': ['cost', 'cooldown', 'turns'],
-  'control': ['cost', 'cooldown', 'turns'],
+  'control': ['cost', 'cooldown', 'turns', 'radius'],
   'nullify': ['cost', 'cooldown', 'turns'],
   'call': ['cost', 'cooldown', 'turns', 'heal', 'atk', 'def', 'mov', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius'],
 });
@@ -196,7 +195,7 @@ function abilityNumberErrors(abilities: any): string[] {
     if (a.scope !== undefined && (!['field-reserve', 'all'].includes(a.scope)
         || a.effect === 'recharge' || !(passives.has(id) || PATH_EFFECT_FIELDS[a.effect]
           || (a.effect === undefined && ['friendly', 'enemy'].includes(a.target))))) errors.push(`${at}.scope is invalid`);
-    if (a.radius !== undefined && a.effect !== 'call') errors.push(`${at}.radius requires Call`);
+    if (a.radius !== undefined && !['call', 'control', 'cleave', 'persuade', 'intimidate'].includes(a.effect)) errors.push(`${at}.radius requires a range-aware unit effect`);
     if (a.minVet !== undefined && (!passives.has(id) || a.minVet > 3)) errors.push(`${at}.minVet requires a path passive and must be at most 3`);
     for (const field of ['stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'setHel', 'splashHel', 'hel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov']) {
       if (a[field] !== undefined && !PATH_EFFECT_FIELDS[a.effect] && !(field === 'stars' && a.effect === 'sacrifice')) errors.push(`${at}.${field} requires a path effect`);
@@ -289,6 +288,7 @@ export class ConfigService {
         if (unit && typeof unit === 'object' && unit.defense === undefined) unit.defense = 0;
       }
     }
+    if (config?.version === '2.0') return;
     if (config && config.rules === undefined) config.rules = {};
     const rules = config?.rules;
     // Absent means the current default, not whatever floor happened to be in
@@ -298,7 +298,7 @@ export class ConfigService {
     // mention it, and filling in the old 0 would hand every new custom config
     // the dead matchups the floor exists to remove.
     if (rules && typeof rules === 'object' && rules.minStrikeDamage === undefined) {
-      rules.minStrikeDamage = DEFAULT_GAME_CONFIG.rules['minStrikeDamage'];
+      rules.minStrikeDamage = PREVIOUS_GAME_CONFIG.rules['minStrikeDamage'];
     }
     if (rules && typeof rules === 'object' && rules.objective === undefined) {
       const setup = config.setup;
@@ -313,7 +313,7 @@ export class ConfigService {
     // number every game was played under.
     if (rules && typeof rules === 'object') {
       for (const key of COUNTED_RULES) {
-        if (rules[key] === undefined) rules[key] = DEFAULT_GAME_CONFIG.rules[key];
+        if (rules[key] === undefined) rules[key] = PREVIOUS_GAME_CONFIG.rules[key];
       }
     }
   }
@@ -339,6 +339,12 @@ export class ConfigService {
     }
     if (errors.length) return { valid: false, errors };
     this.normaliseConfig(config);
+    if (!['1.0', '2.0'].includes(config.version)) return { valid: false, errors: ['Unsupported configuration format; supported formats: 1.0, 2.0'] };
+    if (config.version === '2.0') {
+      try { config = migrateConfig(config); } catch (error) { return { valid: false, errors: [String(error)] }; }
+      const problems = domainErrors(config);
+      if (problems.length) return { valid: false, errors: problems };
+    }
 
     if (!config.version) {
       errors.push('Missing "version"');
@@ -498,10 +504,11 @@ export class ConfigService {
       }
     }
 
+    const rules = legacyRules(config);
     // Rules
     // normaliseConfig supplies an absent one, so anything left that is not a
     // plain object is malformed - _validate_config says the same.
-    if (!config.rules || typeof config.rules !== 'object' || Array.isArray(config.rules)) {
+    if (!rules || typeof rules !== 'object' || Array.isArray(rules)) {
       errors.push('"rules" must be an object');
     } else {
       // **Absent and null are two different things here**, as they are to
@@ -509,7 +516,7 @@ export class ConfigService {
       // missing, and hands an explicit null on to be refused. Coalescing with
       // `??` read that null as absent, so the setup screen passed a config the
       // server then turned away - the same mistake minStrikeDamage made below.
-      const falloff = config.rules.rangeFalloff === undefined ? 0 : config.rules.rangeFalloff;
+      const falloff = rules.rangeFalloff === undefined ? 0 : rules.rangeFalloff;
       if (typeof falloff !== 'number' || falloff < 0 || falloff > 1) {
         errors.push('rules.rangeFalloff must be a number between 0 and 1');
       }
@@ -517,7 +524,7 @@ export class ConfigService {
       // Both read as whole numbers on every hand-over or clock: a null
       // maxTurns reached `None > 0` on the server and failed every move.
       for (const key of ['maxTurns', 'turnTimeLimit']) {
-        const count = config.rules[key];
+        const count = rules[key];
         if (count !== undefined && (!Number.isInteger(count) || count < 0)) {
           errors.push(`rules.${key} must be an integer >= 0`);
         }
@@ -535,13 +542,13 @@ export class ConfigService {
       // the screen had said would not happen. normaliseConfig has already
       // supplied a missing one, so anything left that is not a whole number
       // was written that way on purpose.
-      const floor = config.rules.minStrikeDamage;
+      const floor = rules.minStrikeDamage;
       if (!Number.isInteger(floor) || floor < 0) {
         errors.push('rules.minStrikeDamage must be an integer >= 0');
       }
 
       for (const key of COUNTED_RULES) {
-        const count = config.rules[key];
+        const count = rules[key];
         if (!Number.isInteger(count) || count < 0) {
           errors.push(`rules.${key} must be an integer >= 0`);
         }
@@ -551,7 +558,7 @@ export class ConfigService {
       // satisfy it is unplayable rather than merely odd: under regicide a
       // side with no commander has already lost before the first move.
       // normaliseConfig has filled in an absent one; a null is left to fail.
-      const objective = config.rules.objective;
+      const objective = rules.objective;
       if (objective !== 'regicide' && objective !== 'elimination') {
         errors.push(`rules.objective must be 'regicide' or 'elimination'`);
       } else if (objective === 'regicide' && config.setup) {
@@ -632,7 +639,7 @@ export class ConfigService {
       return gameValidation;
     }
 
-    this.configSubject.next(config);
+    this.configSubject.next(migrateConfig(config));
     return { valid: true };
   }
 }

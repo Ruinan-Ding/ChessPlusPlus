@@ -1,3 +1,4 @@
+from .engine.game_rules import rule_of
 """Server-owned clock allowance for the completed turn's automatic replay."""
 import json
 import math
@@ -57,7 +58,7 @@ def replay_milliseconds(records):
 
 def turn_clock_start(config):
     """Exclude the nonblocking turn notice, including a fresh match's first turn."""
-    notice = TIMINGS['notice'] if config.get('rules', {}).get('turnTimeLimit', 0) > 0 else 0
+    notice = TIMINGS['notice'] if rule_of(config, 'turnTimeLimit') > 0 else 0
     return timezone.now() + timedelta(milliseconds=notice)
 
 
@@ -65,7 +66,7 @@ def next_turn_started_at(state, history):
     """Persist replay time once at handover, never on reload or a client claim."""
     config = state.config_snapshot
     started = turn_clock_start(config)
-    if config.get('rules', {}).get('turnTimeLimit', 0) <= 0:
+    if rule_of(config, 'turnTimeLimit') <= 0:
         return started
     ply = state.turn_number
     records = [record for record in history if record.get('turn') == ply]
@@ -77,7 +78,7 @@ def next_turn_started_at(state, history):
     healed = any(unit['hp'] > before.get(at, {}).get('hp', unit['hp']) for at, unit in after.items())
     color = 'white' if state.current_turn == state.player_white else 'black'
     buffs = (getattr(state, 'ability_state', None) or {}).get('buffs', {})
-    toll = overtime_toll_at(ply) and any(unit.get('color') == color
+    toll = overtime_toll_at(ply, config=config) and any(unit.get('color') == color
         and config['units'].get(unit['unit_id'], {}).get('commander')
         and not carries(buffs.get(unit.get('uid')), 'invulnerable')
         for unit in state.board_state.values())

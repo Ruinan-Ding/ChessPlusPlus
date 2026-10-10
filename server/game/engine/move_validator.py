@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Set
 
 from .board import HexBoard, Coord
-from .unit_stats import cap_stat, unit_stats
+from .unit_stats import active_vet, cap_stat, unit_stats
 
 # ---------------------------------------------------------------------------
 # Core validation
@@ -46,7 +46,7 @@ def get_legal_moves(
     if not piece or piece['color'] != color:
         return []
 
-    unit_def = unit_stats(piece['unit_id'], config, piece.get('vet', 0))
+    unit_def = unit_stats(piece['unit_id'], config, active_vet(piece, config))
     if not unit_def:
         return []
 

@@ -1,4 +1,4 @@
-import { DEFAULT_GAME_CONFIG } from './config.service';
+import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG } from './config.service';
 import { computeLegalMoves, computeMoveCosts, positionalBonus, canAttack, attackTiers, healingAmount, strikeDamage } from './hex-rules';
 import { capStat, capUnit, canReceiveBoost, combatStats, unitEffect, unitPassive, rankedUnit, unitStats } from './unit-stats';
 

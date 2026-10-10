@@ -567,16 +567,6 @@
     &:disabled { background: #b3bfb6; cursor: default; }
   }
 
-  // "Coming soon", where a panel has nothing yet. One rule: it was two, the
-  // later overriding the margin and the colour of the earlier.
-  .coming-soon {
-    margin: u(0.25) 0 u(0.5);
-    padding: u(0.75) 0;
-    text-align: center;
-    color: #f1c40f;
-    font-style: italic;
-  }
-
   // A slot being taken up: a short white flash, distinct from the swell a
   // slot makes when it is used.
   .scaffold-btn.picking,

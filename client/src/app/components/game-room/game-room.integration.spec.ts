@@ -1,3 +1,5 @@
+import configuredMatch from '../../services/game-rules-parity.json';
+import { DEFAULT_GAME_CONFIG as CURRENT_GAME_CONFIG, ConfigService } from '../../services/config.service';
 import { ComponentFixture, TestBed, fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { ActivatedRoute, Router, provideRouter } from '@angular/router';
@@ -6,7 +8,7 @@ import { GameRoomComponent } from './game-room.component';
 import { GameBoardComponent } from '../game-board/game-board.component';
 import { AuthService } from '../../services/auth.service';
 import { AudioService } from '../../services/audio.service';
-import { DEFAULT_GAME_CONFIG } from '../../services/config.service';
+import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG } from '../../services/config.service';
 import { GameStateService } from '../../services/game-state.service';
 import { LocalGameService } from '../../services/local-game.service';
 import { WebsocketService } from '../../services/websocket.service';
@@ -49,7 +51,7 @@ describe('Solo game through the rendered room and real services', () => {
     finally { fixture?.destroy(); ws?.disconnect(); tick(100); }
   });
 
-  const configure = () => {
+  const configure = (config?: any) => {
     TestBed.configureTestingModule({
       imports: [GameRoomComponent],
       providers: [provideRouter([]),
@@ -57,6 +59,7 @@ describe('Solo game through the rendered room and real services', () => {
         { provide: AudioService, useValue: { volume: 0, muted: true, playTone: () => {}, playSwoosh: () => {} } },
       ],
     });
+    if (config) expect(TestBed.inject(ConfigService).updateConfig(JSON.stringify(config)).valid).toBeTrue();
     TestBed.inject(AuthService).setUsername('Flow', false);
     ws = TestBed.inject(WebsocketService);
     engine = TestBed.inject(LocalGameService);
@@ -90,8 +93,9 @@ describe('Solo game through the rendered room and real services', () => {
     element!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     settle();
   };
-  const start = (color = 'White') => {
-    configure();
+  const start = (color = 'White', config?: any) => {
+    configure(config);
+    if (config) click('#custom-mode');
     const radio = [...fixture.nativeElement.querySelectorAll('.seat-choices label')]
       .find((label: Element) => label.textContent?.trim() === color)?.querySelector('input') as HTMLInputElement;
     radio.checked = true; radio.dispatchEvent(new Event('change', { bubbles: true })); settle();
@@ -897,6 +901,151 @@ describe('Solo game through the rendered room and real services', () => {
     expect(state.snapshot.endReason).toBe('draw_agreed');
     expect(state.snapshot.winner).toBe('');
     expect(room.resultBanner).toBe('DRAW');
+  }));
+
+  it('keeps wounded enabled panel HP exact through inspection and reload', run(() => {
+    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    config.veterancy.startingRank=1;config.veterancy.kitZones=['battlefield','base','reserve'];
+    config.panels.baseHealPerTurn=0;
+    config.setup={white:{'0,11':'king','-12,11':'pawn','11,1':'pawn'},black:{'0,-11':'king'}};
+    start('White',config);
+    const g=(engine as any).game;
+    g.moveHistory=['-12,11','11,1'].map(at=>({from:'',to:'',turn:1,intoPanel:true,panelEffect:true,
+      panel:at==='11,1'?'br':'bl',attackedHex:at,defenderHp:5,
+      panelDefender:{unit_id:'pawn',color:'white',uid:`w${at}`,hp:14,max_hp:14,vet:1,veterancyHpActive:true}}));
+    writeStore('local','cpp.localGame.v1',JSON.stringify(g));
+    ws.sendMessage({type:'request_game_state'});settle();
+    for(const at of ['-12,11','11,1']) {
+      const unit=board()!.cells.find(cell=>cell.key===at)!.piece!;
+      expect([unit.hp,unit.max_hp,unit.veterancyHpActive]).toEqual([5,14,true]);
+      hex(at);expect(room.statHp).toBe('5/14');
+    }
+    reload();
+    for(const at of ['-12,11','11,1'])expect(board()!.cells.find(cell=>cell.key===at)!.piece!.hp).toBe(5);
+  }));
+
+  it('keeps multiplied wrap payments exact through staging, commit and reload', run(() => {
+    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    config.economy.upAtStart=24;config.economy.wrapPriceMultiplier=2;
+    config.setup={white:{'0,11':'king','-12,1':'pawn'},black:{'0,-11':'king'}};
+    start('White',config);
+    for(let ply=1;ply<7;ply++)finish();
+    hex('-12,1');expect(board()!.wrapTargets.get('11,1')).toBe(24);hex('11,1');
+    expect(room.myUnitPoints).toBe(0);
+    finish();
+    const crossing=(state.snapshot.moveHistory as any[]).find(move=>move.panelMove)!;
+    expect(crossing.price).toBe(24);expect(room.myUnitPoints).toBe(0);
+    reload();expect(room.myUnitPoints).toBe(0);
+  }));
+
+  it('commits a zero-refund homecoming as a withdrawal, including restored online commands', run(() => {
+    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    config.economy.walkHomeRefund={valueMultiplier:1,fee:100,missingHpMultiplier:1,minimum:0};
+    config.panels.baseHealPerTurn=0;
+    config.setup={white:{'0,11':'king','-11,11':'pawn'},black:{'0,-11':'king'}};
+    start('White',config);hex('-11,11');expect(board()!.refundTargets.get('-12,11')).toBe(0);hex('-12,11');
+    expect((room as any).onlineTurnCommands()).toContain(jasmine.objectContaining({type:'make_move',withdraw:true}));
+    expect(room.myUnitPoints).toBe(10);reload();
+    expect((room as any).onlineTurnCommands()).toContain(jasmine.objectContaining({type:'make_move',withdraw:true}));
+    finish();
+    expect(state.snapshot.boardState['-11,11']).toBeUndefined();
+    expect(state.snapshot.moveHistory).toContain(jasmine.objectContaining({withdrawn:true,refund:0}));
+    expect(board()!.cells.find(cell=>cell.key==='-12,11')!.piece!.uid).toBe('w-11,11');
+    reload();expect(room.myUnitPoints).toBe(10);
+  }));
+
+  for(const baseEnabled of [false,true])it(`keeps wounded withdrawal HP when base kits are ${baseEnabled?'enabled':'disabled'}`, run(() => {
+    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    config.veterancy.startingRank=1;config.veterancy.kitZones=baseEnabled?['battlefield','base']:['battlefield'];
+    config.panels.baseHealPerTurn=0;
+    config.setup={white:{'0,11':'king','-11,11':'pawn'},black:{'0,-11':'king'}};
+    start('White',config);
+    const g=(engine as any).game;g.boardState['-11,11'].hp=5;
+    writeStore('local','cpp.localGame.v1',JSON.stringify(g));ws.sendMessage({type:'request_game_state'});settle();
+    hex('-11,11');hex('-12,11');
+    let unit=board()!.cells.find(cell=>cell.key==='-12,11')!.piece!;
+    expect([unit.hp,unit.max_hp,unit.veterancyHpActive]).toEqual([5,baseEnabled?14:12,baseEnabled]);
+    finish();
+    const withdrawn=state.snapshot.moveHistory.find(move=>move.withdrawn)!.unit!;
+    expect([withdrawn.hp,withdrawn.max_hp,withdrawn.veterancyHpActive]).toEqual([5,baseEnabled?14:12,baseEnabled]);
+    reload();unit=board()!.cells.find(cell=>cell.key==='-12,11')!.piece!;
+    expect([unit.hp,unit.max_hp]).toEqual([5,baseEnabled?14:12]);expect(room.myUnitPoints).toBe(12);
+  }));
+
+  it('uses base healing amounts when battlefield veterancy kits are disabled', run(() => {
+    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    config.veterancy.startingRank=1;config.veterancy.kitZones=[];
+    config.stageRules.opening.normalHeal=true;
+    config.units.bishop.veterancy.heal=[20,20,20,20];config.units.pawn.hp=30;
+    config.setup={white:{'0,11':'king','0,0':'bishop','1,0':'pawn'},black:{'0,-11':'king'}};
+    start('White',config);
+    const g=(engine as any).game;g.boardState['1,0'].hp=1;
+    writeStore('local','cpp.localGame.v1',JSON.stringify(g));ws.sendMessage({type:'request_game_state'});settle();
+    hex('0,0');
+    const target=board()!.cells.find(cell=>cell.key==='1,0')!;
+    const polygon=[...fixture.nativeElement.querySelectorAll('polygon.hex-cell')]
+      .find((element:any)=>element.getAttribute('points')===target.points) as Element;
+    polygon.dispatchEvent(new MouseEvent('mouseenter',{bubbles:true}));settle();
+    expect((board() as any).forecast.targetHp).toBe(9);
+    hex('1,0');expect(room.stagedBoard!['1,0'].hp).toBe(9);
+    finish();expect(state.snapshot.boardState['1,0'].hp).toBe(9);
+    expect(state.snapshot.moveHistory.find(move=>move.healedHex)!.healed_amount).toBe(8);
+    reload();expect(state.snapshot.boardState['1,0'].hp).toBe(9);
+  }));
+
+  it('plays a custom two-phase match through the controls, reload and the configured overtime ending', run(() => {
+    start('White', configuredMatch.config);
+    for (let ply=1; ply<=18; ply++) {
+      if (ply===8) {
+        const saved=structuredClone(state.snapshot.config);
+        reload();
+        expect(state.snapshot.config).toEqual(saved);
+        expect(state.snapshot.config.ruleset.revision).toBeNull();
+      }
+      finish();
+    }
+    expect(state.snapshot.endReason).toBe('overtime');
+    expect(state.snapshot.winner).toBe('Flow');
+    expect(state.snapshot.phaseBank).toEqual(configuredMatch.bank);
+    expect(room.myCp).toBe(33);
+    expect(room.myUnitPoints).toBe(39);
+    expect(room.opponentUnitPoints).toBe(29);
+    expect(fixture.nativeElement.textContent).not.toContain('PHASE 3');
+  }));
+
+  it('applies a configured panel aura on the first turn, without waiting for stars', run(() => {
+    const config:any=structuredClone(configuredMatch.config);
+    config.veterancy.passiveUnlock=0;
+    config.veterancy.kitZones=['battlefield','base'];
+    config.setup={white:{'0,11':'king','-12,11':'queen','-11,11':'pawn'},black:{'0,-11':'king'}};
+    start('White',config);
+    expect(room.buffs['w-11,11'].atk).toBe(1);
+    expect(room.buffs['w-11,11'].mov).toBe(1);
+    reload();
+    expect(room.buffs['w-11,11'].atk).toBe(1);
+  }));
+
+  it('uses independent stage gates for unit and pool abilities in custom mode', run(() => {
+    start();
+    const g=(engine as any).game;
+    g.config.stageRules.firstHalf.poolAbilities=false;
+    g.config.stageRules.firstHalf.unitAbilities=true;
+    g.config.economy.upAtStart=100;
+    Object.assign(g,{turnNumber:7,currentTurn:'Flow',moveHistory:[],phaseBank:{},boardState:{
+      '-8,0':{unit_id:'king',color:'white',uid:'wk',hp:60,max_hp:60,vet:3},
+      '8,0':{unit_id:'king',color:'black',uid:'bk',hp:60,max_hp:60,vet:3},
+      '0,0':{unit_id:'queen',color:'white',uid:'q',hp:34,max_hp:34,vet:3,veterancyHpActive:true}}});
+    ws.sendMessage({type:'request_game_state'});settle();
+    room.gameMode='custom';fixture.detectChanges();
+    hex('0,0');
+    expect(fixture.nativeElement.textContent).not.toContain('Coming soon');
+    expect(room.canUseAbilities('mine',0)).toBeFalse();
+    click('.stats-panel .unit-ability-row button','Nullify');
+    expect(room.unitAbilityCanActivate()).toBeTrue();
+    click('.stats-panel .ability-detail-actions button','Use');
+    expect(carries(room.buffs['q'],'nullify')).toBeTrue();
+    finish();
+    expect(state.snapshot.config.stageRules.firstHalf.poolAbilities).toBeFalse();
   }));
 
 });

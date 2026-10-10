@@ -39,19 +39,19 @@ heals or the turn ends.
 
 **Attacking** is separate from moving. Reach is a band of hex-distance rings from optional
 `attackMinRange` (default 1) through `attackRange`, ignoring obstacles. Explicit attack lists
-set each ring's amount; scalar attacks use `rules.rangeFalloff`. The shipped archer attacks
+set each ring's amount; scalar attacks use `combat.rangeFalloff`. The shipped archer attacks
 only at rings 3-6, for 4, 3, 2 and 1 before defence, and cannot hit a closer target. Shieldman
 cannot initiate attacks. Its Vet 2 Counter strikes back at ring 1 with ATK 4
 before DEF; Warcry cannot grant it an initiating attack. Damage is flat and deterministic:
 
 ```
 damage = attacker ATK (at that range) - defender DEF
-         floored at rules.minStrikeDamage (default 1), capped at ATK
+         floored at combat.minStrikeDamage (default 1), capped at ATK
 ```
 
 **A blow that lands always takes something off.** Armour blunts a hit; it does not turn it
 aside. The floor used to be 0, which left some matchups unable to hurt each other. Set
-`rules.minStrikeDamage` to 0 for the old behaviour. An attacker with no ATK at all still deals
+`combat.minStrikeDamage` to 0 for the old behaviour. An attacker with no ATK at all still deals
 nothing: the floor lifts a blow that was blunted, not one that was never thrown.
 
 The defender then counters with the same sum reversed, but only if the attacker is inside *its*
@@ -83,7 +83,7 @@ veterancy and temporary boosts. Currencies and unit prices keep their existing r
 in a base never does, but it mends an HP at the end of each of its side's turns - and only while
 it stays there. A king never enters either.
 
-**Winning.** A side loses when its king dies (`rules.objective`: `regicide`, or `elimination`
+**Winning.** A side loses when its king dies (`match.objective`: `regicide`, or `elimination`
 to play until a side has no units at all). The board is asked who has lost - it is never
 inferred from whoever moved last, so a unit that kills itself on a counter-attack loses the game
 exactly as it should. Each phase is scored on five capture zones; after Phase 3 a side far enough
@@ -362,3 +362,10 @@ sends a user list, and clears dead invites on every new invite, so running it is
 tidy-up rather than a requirement. `--closed-days` and `--stale-minutes` set the two
 thresholds; `--closed-days` **deletes** rooms and their game states, so check before
 running it against a database you care about.
+
+## Match configuration
+
+All existing numerical match rules and ability values are editable in the JSON setup.
+See [CONFIGURATION.md](CONFIGURATION.md) for format 2.0, saved-game compatibility,
+variable schedules and exact fields. Balance metadata remains **default / null (draft)**.
+New defaults affect future games; started games keep complete snapshots.

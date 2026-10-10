@@ -1,12 +1,14 @@
 """Separate ability points and unit points (UP), derived from schedule and history."""
 
 from __future__ import annotations
+from .game_rules import section_of
+from .scoring import casualty_zone
 
 from typing import Any, Dict, Iterable, Optional
 
 from .config_loader import rule_of
 from .scoring import scheduled_points, unit_value
-from .unit_stats import cap_stat, unit_stats
+from .unit_stats import active_vet, cap_stat, unit_stats
 
 
 def points_of(
@@ -22,9 +24,10 @@ def points_of(
 
 def withdrawal_refund(config: Dict[str, Any], unit: Dict[str, Any]) -> int:
     """Use withdrawal HP; later healing or wounds do not reprice the refund."""
-    maximum = cap_stat(unit.get('max_hp', unit_stats(unit['unit_id'], config, unit.get('vet', 0)).get('hp', unit.get('hp', 0))))
+    maximum = cap_stat(unit.get('max_hp', unit_stats(unit['unit_id'], config, active_vet(unit, config)).get('hp', unit.get('hp', 0))))
     missing = max(0, maximum - cap_stat(unit.get('hp', maximum)))
-    return max(1, unit_value(config, unit['unit_id']) - 1 - missing)
+    settings = section_of(config, 'economy')['walkHomeRefund']
+    return max(settings['minimum'], unit_value(config, unit['unit_id']) * settings['valueMultiplier'] - settings['fee'] - missing * settings['missingHpMultiplier'])
 
 
 def unit_points_of(color: str, history: Iterable[Dict[str, Any]], config: Dict[str, Any]) -> int:
@@ -50,11 +53,11 @@ def unit_points_of(color: str, history: Iterable[Dict[str, Any]], config: Dict[s
             if move.get('refundColor', move.get('color')) == color:
                 points += move.get('refund', withdrawal_refund(config, {'unit_id': move.get('unit_id'), **(move.get('unit') or {})}))
         # A blow into a panel pays nobody, whichever side dies of it.
-        if move.get('intoPanel'):
+        if casualty_zone(move) not in section_of(config, 'economy')['killPayZones']:
             continue
         if move.get('defender_eliminated') and move.get('color') == color:
-            points += unit_value(config, move.get('captured'))
+            points += unit_value(config, move.get('captured')) * section_of(config, 'economy')['killPayMultiplier']
         # The attacker died of the counter: its worth goes to the defender.
         if move.get('attacker_eliminated') and move.get('color') == other:
-            points += unit_value(config, move.get('unit_id'))
+            points += unit_value(config, move.get('unit_id')) * section_of(config, 'economy')['killPayMultiplier']
     return points

@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { ConfigService, DEFAULT_GAME_CONFIG, COUNTED_RULES } from './config.service';
+import { ConfigService, PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG, COUNTED_RULES } from './config.service';
 import parity from './config-parity.json';
 
 /**

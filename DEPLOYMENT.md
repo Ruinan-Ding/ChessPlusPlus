@@ -33,6 +33,12 @@ That is why the split is worth it. A CDN never sleeps and costs nothing, so sing
 always instant; the backend can be a small machine that sleeps when nobody is playing against
 anybody.
 
+The backend imports the repository's `shared/` directory at runtime. Include
+`default-config.json`, `game-config.schema.json`, both `legacy-*-v1.json` files and
+playback timing data; installing `server/requirements.txt` includes the pinned
+`jsonschema` validator. The Angular build reads the same shared files and pins `ajv`.
+The proposed Docker steps below must retain this repository layout.
+
 ### The one rule that shapes everything below
 
 **The server must run as exactly one process on one machine.**

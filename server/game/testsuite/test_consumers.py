@@ -1,3 +1,4 @@
+from game.engine.config_loader import load_config
 import asyncio
 import copy
 import json
@@ -498,7 +499,7 @@ class TurnTimerLiveIntegrationTests(TransactionTestCase):
 
     async def test_real_timeout_passes_turn_and_broadcasts_to_both_players(self):
         config = copy.deepcopy(DEFAULT_CONFIG)
-        config['rules']['turnTimeLimit'] = 1  # 1 second, to keep the test fast
+        config['match']['turnTimeLimit'] = 1  # 1 second, to keep the test fast
 
         game = await GameRoom.objects.acreate(
             host='alice', opponent='bob', status='waiting',
@@ -562,7 +563,7 @@ class DisconnectGraceLiveIntegrationTests(TransactionTestCase):
 
     async def _start_game(self, grace_seconds):
         config = copy.deepcopy(DEFAULT_CONFIG)
-        config['rules']['turnTimeLimit'] = 0  # no turn timer - isolate the disconnect path
+        config['match']['turnTimeLimit'] = 0  # no turn timer - isolate the disconnect path
 
         game = await GameRoom.objects.acreate(
             host='alice', opponent='bob', status='waiting',
@@ -745,7 +746,7 @@ class DisconnectGraceLiveIntegrationTests(TransactionTestCase):
         try:
             state = await GameState.objects.aget(game_id=game.game_id)
             config = copy.deepcopy(state.config_snapshot)
-            config['rules']['turnTimeLimit'] = 1
+            config['match']['turnTimeLimit'] = 1
             started_at = timezone.now() - timedelta(seconds=3)
             await GameState.objects.filter(game_id=game.game_id).aupdate(
                 config_snapshot=config,
@@ -920,12 +921,12 @@ class CustomConfigLiveIntegrationTests(TransactionTestCase):
                     error = await _receive_until(host_comm, 'error')
                     self.assertEqual(error['code'], 'INVALID_CONFIG')
                     current = await GameRoom.objects.aget(game_id=game.game_id)
-                    self.assertEqual(current.custom_config, saved)
+                    self.assertEqual(current.custom_config, load_config(saved))
             saved['units']['pawn']['hp'] = 18
             await host_comm.send_json_to({'type': 'set_custom_config', 'config': saved})
             await _receive_until(host_comm, 'custom_config_saved')
             current = await GameRoom.objects.aget(game_id=game.game_id)
-            self.assertEqual(current.custom_config, saved)
+            self.assertEqual(current.custom_config, load_config(saved))
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
@@ -3103,7 +3104,7 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
             await self._wind_to(game, 1)
             state = await GameState.objects.aget(game_id=game.game_id)
             config = dict(state.config_snapshot)
-            config['rules'] = {**config['rules'], 'homecomingsPerSetupTurn': 1}
+            config['stageRules']['opening']['moves']['battlefield'] = [1,2,3]
             await GameState.objects.filter(game_id=game.game_id).aupdate(
                 config_snapshot=config)
             replies = []
@@ -3383,7 +3384,7 @@ class OvertimeTollLiveIntegrationTests(TransactionTestCase):
         board[king_at] = {**board[king_at], 'hp': king_hp}
         config = copy.deepcopy(state.config_snapshot)
         if objective:
-            config.setdefault('rules', {})['objective'] = objective
+            config['match']['objective'] = objective
         await GameState.objects.filter(game_id=game.game_id).aupdate(
             board_state=board, turn_number=self.OVERTIME, config_snapshot=config)
         return king_at
@@ -3987,7 +3988,7 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
                 turn_number=self.WRAP_OPEN_PLY)
             state = await GameState.objects.aget(game_id=game.game_id)
             config = state.config_snapshot
-            config['rules']['upAtStart'] = config['units']['knight']['value']
+            config['economy']['upAtStart'] = config['units']['knight']['value']
             await GameState.objects.filter(game_id=game.game_id).aupdate(config_snapshot=config)
             state = await GameState.objects.aget(game_id=game.game_id)
             radius = state.config_snapshot['board']['radius']
@@ -4043,7 +4044,7 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
         occupancy = panels.panel_occupancy(
             config, radius, state.move_history, ply=state.turn_number)
         frm = next(k for k, u in occupancy.items() if u['uid'] == uid)
-        plan = {**config, 'rules': {**config['rules'], **(plan_rules or {})}}
+        plan = copy.deepcopy(config)
         targets = panels.panel_move_targets(
             plan, radius, state.move_history, state.board_state, frm,
             state.turn_number, points=0)
@@ -4093,7 +4094,7 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
         try:
             state = await GameState.objects.aget(game_id=game.game_id)
             config = dict(state.config_snapshot)
-            config['rules'] = {**config['rules'], 'postmatchEntries': 1}
+            config['stageRules']['opening']['moves']['reserve'] = [1,2,3]
             await GameState.objects.filter(game_id=game.game_id).aupdate(
                 turn_number=1, config_snapshot=config)
 

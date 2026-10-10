@@ -112,10 +112,7 @@
           class="points">{{ abilityPurseLabel('opponent') }}<button type="button" class="tip-btn"
             aria-label="What Points and CP are" [attr.aria-expanded]="tip?.id === 'purse-opponent'"
             (click)="toggleTip('purse-opponent', $event)">?</button></span></h3>
-        <div class="panel-body" *ngIf="abilitiesComingSoon">
-          <p class="coming-soon">Coming soon.</p>
-        </div>
-        <div class="panel-body" *ngIf="!abilitiesComingSoon">
+        <div class="panel-body">
           <!-- The list stays in the layout while a detail is open, hidden
                under it: taken out, the panel collapsed by a third every time
                an ability was clicked into. -->
@@ -302,10 +299,7 @@
           class="points">{{ abilityPurseLabel('mine') }}<button type="button" class="tip-btn"
             aria-label="What Points and CP are" [attr.aria-expanded]="tip?.id === 'purse-mine'"
             (click)="toggleTip('purse-mine', $event)">?</button></span></h3>
-        <div class="panel-body" *ngIf="abilitiesComingSoon">
-          <p class="coming-soon">Coming soon.</p>
-        </div>
-        <div class="panel-body" *ngIf="!abilitiesComingSoon">
+        <div class="panel-body">
           <!-- The list stays in the layout while a detail is open, hidden
                under it: taken out, the panel collapsed by a third every time
                an ability was clicked into. -->
@@ -472,10 +466,7 @@
           <span class="unit-side">{{ unitSideLabel }}<button type="button" class="tip-btn"
             [class.idle]="!!displayUnit" aria-label="What the two counts are"
             [attr.aria-expanded]="tip?.id === 'tally'" (click)="toggleTip('tally', $event)">?</button></span></h3>
-        <div class="panel-body" *ngIf="abilitiesComingSoon">
-          <p class="coming-soon">Coming soon.</p>
-        </div>
-        <div class="panel-body" *ngIf="!abilitiesComingSoon">
+        <div class="panel-body">
           <div class="stat-grid">
             <!-- Only the current half of a boosted value waves. -->
             <div class="primary-stats">
@@ -524,7 +515,7 @@
               <strong>{{ statVet }}</strong></div>
           </div>
           <p class="veterancy-row" [class.active]="displayVeterancyActive">
-            <strong>Vet 1 · {{ displayVeterancyActive ? 'Active' : 'Not active' }}:</strong>
+            <strong>Vet {{ veterancyBonusRank }} · {{ displayVeterancyActive ? 'Active' : 'Not active' }}:</strong>
             {{ displayVeterancy || '—' }}
           </p>
           <div class="ability-detail" *ngIf="unitAbilityFocus; else unitAbilityList"
@@ -684,6 +675,7 @@
           [movesLeft]="movesLeft"
           [movesLeftFor]="pendingMove?.to ?? null"
           [actionSpent]="unitActionSpent"
+          [endedUnitIds]="endedUnitIds"
           [attackedHexes]="attackedUnitHexes"
           [boardMovesSpent]="ordinaryBoardMoves.length"
           [extraActionUids]="extraActionUids"
@@ -773,7 +765,6 @@
 
               <!-- Reveal / Fog (custom mode only, and not mid-request) -->
               <div class="custom-options" *ngIf="gameMode === 'custom'">
-                <p class="coming-soon">Coming Soon...</p>
                 <div class="checkbox-option" *ngIf="isInviter && !showRevealWaitingModal && !otherPlayerConfiguring">
                   <input
                     type="checkbox"

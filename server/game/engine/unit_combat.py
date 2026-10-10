@@ -1,4 +1,6 @@
 """Combat modifiers and veterancy traits, mirrored by unit-combat.ts."""
+
+from .game_rules import rule_of, section_of
 from .ability_rules import bonus, carries, combat_stats, has_attack, passive, setting
 from .board import hex_distance, parse_coord
 from .unit_stats import active_vet, cap_stat, cap_unit, unit_stats
@@ -28,9 +30,9 @@ def strike(source, target, distance, config, abilities, counter=False, target_ba
                      + bonus(source, config, abilities, 'atk', key=source_key))
     defense = setting(buffs.get(target.get('uid')), 'def')
     if defense is None:
-        defense = cap_stat(unit_stats(target['unit_id'], config, active_vet(target)).get('defense', 0)
+        defense = cap_stat(unit_stats(target['unit_id'], config, active_vet(target, config)).get('defense', 0)
                       + bonus(target, config, abilities, 'def', target_base, True, key=target_key))
-    return min(attack, max(config.get('rules', {}).get('minStrikeDamage', 1), attack - defense)) if attack > 0 else 0
+    return min(attack, max(rule_of(config, 'minStrikeDamage'), attack - defense)) if attack > 0 else 0
 
 
 def exchange(attacker, defender, distance, config, abilities, counters=True, target_base=False, source_key=None, target_key=None):
@@ -38,7 +40,7 @@ def exchange(attacker, defender, distance, config, abilities, counters=True, tar
     buffs = abilities.get('buffs', {})
     damage = strike(attacker, defender, distance, config, abilities, target_base=target_base, source_key=source_key, target_key=target_key)
     target_hp = max(0, defender['hp'] - damage)
-    countered = counters and target_hp > 0 and not carries(buffs.get(attacker.get('uid')), 'nullify') and attack_allowed(
+    countered = counters and section_of(config, 'combat')['counterattacks'] and target_hp > 0 and not carries(buffs.get(attacker.get('uid')), 'nullify') and attack_allowed(
         defender, distance, config, abilities, True, target_key)
     counter = strike(defender, attacker, distance, config, abilities, True, source_key=target_key, target_key=source_key) if countered else 0
     attacker_hp = max(0, attacker['hp'] - counter)
@@ -51,7 +53,6 @@ def exchange(attacker, defender, distance, config, abilities, counters=True, tar
 def taunt_allows(occupied, from_key, target_key, config, abilities):
     attacker = occupied[from_key]
     targets = [key for key, unit in occupied.items() if unit['color'] != attacker['color']
-               and not unit.get('panel')
                and carries(abilities.get('buffs', {}).get(unit.get('uid')), 'taunt')
                and attack_allowed(attacker, hex_distance(parse_coord(from_key), parse_coord(key)), config, abilities, key=from_key)]
     return not targets or target_key in targets
@@ -62,7 +63,7 @@ def after_exchange(context, from_key, target_key, attacker, defender, result):
     occupied = context.recipients()
     if carries(abilities['buffs'].get(attacker.get('uid')), 'cleave'):
         for key, unit in list(occupied.items()):
-            if key != target_key and unit['color'] != attacker['color'] and hex_distance(parse_coord(from_key), parse_coord(key)) == 1:
+            if key != target_key and unit['color'] != attacker['color'] and 1 <= hex_distance(parse_coord(from_key), parse_coord(key)) <= config['abilities']['catalogue'][config['units'][attacker['unit_id']]['ability']].get('radius', 1):
                 context.change_hp(key, unit, -strike(attacker, unit, 1, config, abilities,
                     target_base=unit.get('panel') in ('bl', 'tr'), source_key=from_key, target_key=key))
     if result['target_hp'] > 0 and carries(abilities['buffs'].get(attacker.get('uid')), 'attack-drain'):

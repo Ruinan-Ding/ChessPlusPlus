@@ -13,11 +13,12 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
 - **Repo:** https://github.com/Ruinan-Ding/ChessPlusPlus. It is a hex-grid tactics game: a Django
   Channels server in `server/`, an Angular 19 client in `client/`, and the shared config schema in
   `shared/`.
-- **Current branch:** `feature/dev23`, created from merged main `73cbd43` on 7 Oct.
+- **Current branch:** `feature/configuration`, based on published `fcb263b5` (10 Oct).
+  The format-2 parameterization work and review fixes are published in 6.134 below.
   The short ATK marker (6.105), CP positioning/pool delay (6.106), authoritative
   multiplayer abilities (6.107), board colours (6.108), manual Replay (6.109) and relocated
   Flip (6.110), review/Replay fixes (6.112-6.115), the unit-stat cap (6.116) and
-  economy rebalance (6.117-6.118), Vet 1 detail row (6.119) and CP repricing (6.120) and pool repricing (6.121), movement/stat/passive revisions (6.122), ultimate/pawn repricing (6.123), Drain rename/repricing (6.124), selected pool debuffs (6.125), adjacent Call/no Sacrifice UP reward (6.126) and selected Sacrifice (6.127) and its repricing/backend parity audit (6.128) and authoritative replay clock (6.129) and final backend/UI/documentation audit (6.130) are committed in the dev23 publication checkpoint (6.131); main remains at `73cbd43`. New games use the revised config; old catalogues retain their own rules.
+  economy rebalance (6.117-6.118), Vet 1 detail row (6.119) and CP repricing (6.120) and pool repricing (6.121), movement/stat/passive revisions (6.122), ultimate/pawn repricing (6.123), Drain rename/repricing (6.124), selected pool debuffs (6.125), adjacent Call/no Sacrifice UP reward (6.126) and selected Sacrifice (6.127) and its repricing/backend parity audit (6.128) and authoritative replay clock (6.129) and final backend/UI/documentation audit (6.130) are committed in the dev23 publication checkpoint (6.131); that publication retained main at `73cbd43`. New games use the revised config; old catalogues retain their own rules.
   The owner explicitly authorized multiplayer abilities on 7 Oct, superseding 6.15.
   Dated deferral notes below describe older checkpoints. WRITTEN, not owner-SEEN.
   **Migration 0014 is applied to the local database** (6.111), following the owner's
@@ -25,7 +26,20 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
   matches and prior application columns are preserved. Neither server was running;
   the updated backend now serves 8000 (PID 7900) and frontend 4200 (PID 23616).
   Backup: `server/backups/db-before-0014-20261008T171855Z.sqlite3`.
-  - **Current publication checkpoint (6.131), 10 Oct:** the owner requested commit
+  - **Current publication checkpoint (6.134), 10 Oct:** the owner requested
+    commit and push of format-2 configurable match rules and all six custom-config
+    review fixes (6.132-6.133). The commit is titled "Make match rules configurable
+    and fix custom-config regressions" on `feature/configuration`; use `git log -1`
+    for its SHA. This publication adds documentation only after the verified code:
+    524 backend tests, 940 client specs, production build, schema/migration checks
+    and 36 native Chrome assertions passed at 6.133. The earlier 6.132 run also
+    passed 117 live-socket and 490 layout checks; their scope remains separate.
+    [Branch CI](https://github.com/Ruinan-Ding/ChessPlusPlus/actions?query=branch%3Afeature%2Fconfiguration)
+    reports the pushed SHA. Balance revision remains null (draft). No merge,
+    balance release, owner-service restart or database write accompanies publication.
+    Dated uncommitted notes below are superseded by this record.
+    WRITTEN, not owner-SEEN; backend fixes load at its next normal restart.
+  - **Previous publication checkpoint (6.131), 10 Oct:** the owner requested commit
     and push of the verified dev23 work. The commit is titled "Implement
     multiplayer abilities and the revised game rules" and is pushed on
     `feature/dev23`; use `git log -1` for its SHA. No merge was requested.
@@ -64,6 +78,51 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
   - Every feature branch through dev21 is merged except dev9. Leave dev9 and
     `copilot/analyze-game-room-code` alone. dev19-dev21 used local `--no-ff` merges.
 - **Verification, with the scopes kept separate:**
+  - **Custom-config review fixes (6.133), 10 Oct:** resolved all six reported
+    regressions. Panel reconstruction preserves resolved HP activation/max HP before
+    overlaying wounds, while staged promotion Undo remains reversible. Withdrawals
+    use destination kit scope in both engines, including Rapid Movement. Solo wraps
+    derive their configured multiplier and gate even free crossings by geometry.
+    Zero-refund withdrawals survive staging, restored commands and commit. Ordinary
+    heal forecasts and amounts use active rank. Zone worth queries read a map rebuilt
+    with board/config inputs. Added eight client regressions and four two-seat ASGI
+    regressions. All 524 backend tests, 940 client specs, production build, schema
+    validation and migration consistency pass. 36 native Chrome assertions cover
+    solo and both online seats through real clicks, commit and reload, with no
+    browser exceptions. No template/style changes; the full layout sweep was not
+    rerun. Verification and native browser evidence are recorded in Windows
+    Temp `cpp-config-review-20261010-vq0p26sw/RESULTS.md`.
+    Shipped values/schema and draft balance revision remain unchanged. No database
+    migration, publication, owner-service restart or saved-match rewrite.
+    Uncommitted on feature/configuration; WRITTEN, not owner-SEEN.
+  - **Configurable match rules (6.132), 10 Oct:** format 2.0 adds per-match schedule,
+    stage gates/category budgets, income/refund/CP multipliers, capture geometry,
+    attrition/endings, combat floors/counters, panel rates/reach and veterancy
+    awards/unlocks/scopes. Numbered-phase and overtime counts are editable arrays.
+    Numerical ability descriptions follow the configured values. The existing
+    JSON editor remains the UI. Format version is separate from balance identity:
+    **default preset revision is null (draft), with no balance release approved**.
+    `CONFIGURATION.md` is the editing guide; CONFIG_BLUEPRINT lists real paths.
+    Format-1 migrations use immutable legacy rules/catalogue data. Complete resolved
+    snapshots, including omitted catalogues, preserve started matches through
+    reload/rejoin/default changes. Server snapshots upgrade in memory and persist
+    on the next ordinary revision-guarded write; no database migration is added.
+    Custom Mode now permits ready players to start; obsolete placeholder gates and
+    styles are removed. Custom panel/zero-star auras, kit action budgets and capture
+    layer outlines are covered. Taunt uses active-kit reach, and older withdrawal
+    records without max HP honor the configured kit scope. Shared schema validation uses pinned jsonschema/ajv.
+    **520 backend tests, 932 client specs, production build, schema validation and
+    migration consistency pass. 117 live-socket checks and 19 native Chrome
+    assertions pass**, including real JSON save/migration/refusal, solo and both
+    online seats, a full altered two-phase/two-overtime match, exact CP/UP/VP,
+    reload and retained started rules after next-game settings change.
+    Four deliberate faults are caught in disposable copies: legacy default leakage,
+    server/client income hardcoding and ignored panel auras. All **490 desktop/touch layout checks pass**. Earlier interrupted browser/layout runs
+    collided on debugging ports; final ports are separate and live reload disabled.
+    Evidence: Windows Temp `cpp-config-20261010-79l69n3y/RESULTS.md`.
+    Work is uncommitted on feature/configuration. Owner services on 8000/4200 and
+    all 107 saved matches are preserved; backend loads changes at its next normal
+    restart. WRITTEN, not owner-SEEN. These checks do not prove bug absence.
   - **Final backend/UI/metafile audit (6.130), 9 Oct:** panel walks, reserve
     entries and saved draft commands canonicalize coordinate aliases before
     lookup/persistence; browser reload restores the same private staging.

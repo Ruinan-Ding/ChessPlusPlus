@@ -1,3 +1,4 @@
+import { sectionOf } from './game-rules';
 import type { PieceData } from './game-state.service';
 
 /** Effective unit stats, including buffs, stay within the owner's 0–99 limit. */
@@ -14,14 +15,16 @@ export function capUnit<T extends { hp?: number; max_hp?: number; vet?: number }
 }
 
 /** Earned stars remain visible in panels, but their unit kit is inactive there. */
-export const activeVet = (unit: any, panel = unit?.panel): number => panel ? 0 : unit?.vet ?? 0;
+export const unitZone = (panel?: string): string => ['bl', 'tr'].includes(panel ?? '') ? 'base' : panel ? 'reserve' : 'battlefield';
+export const kitActive = (unit: any, config?: any, panel = unit?.panel): boolean => sectionOf(config, 'veterancy').kitZones.includes(unitZone(panel));
+export const activeVet = (unit: any, panel = unit?.panel, config?: any): number => kitActive(unit, config, panel) ? unit?.vet ?? 0 : -1;
 
 /** First-star stats and the hard ceiling, including older configurations. */
 export function unitStats(unitId: string, config: any, vet = 0): any {
   const unit = config?.units?.[unitId] ?? {};
   const bonus = unit.veterancy;
   const stats = { ...unit };
-  if (vet >= 1 && bonus) {
+  if (vet >= sectionOf(config, 'veterancy').statUnlock && bonus) {
     for (const key of ['hp', 'move', 'defense']) {
       if (bonus[key] !== undefined) stats[key] = (unit[key] ?? 0) + bonus[key];
     }
@@ -44,22 +47,22 @@ export function unitStats(unitId: string, config: any, vet = 0): any {
 }
 
 /** Toggle the first-star HP bonus by zone without reviving casualties. */
-export function rankedUnit<T extends PieceData>(unit: T, config: any, vet: number, active = true): T {
+export function rankedUnit<T extends PieceData>(unit: T, config: any, vet: number, active = kitActive(unit, config)): T {
   const bonus = config?.units?.[unit.unit_id]?.veterancy?.hp ?? 0;
-  const wasActive = unit.veterancyHpActive ?? (unit.vet ?? 0) >= 1;
-  const enabled = active && vet >= 1;
+  const wasActive = unit.veterancyHpActive ?? (unit.vet ?? 0) >= sectionOf(config, 'veterancy').statUnlock;
+  const enabled = active && vet >= sectionOf(config, 'veterancy').statUnlock;
   const delta = bonus * (Number(enabled) - Number(wasActive));
   return capUnit({
     ...unit, vet, hp: unit.hp > 0 ? unit.hp + Math.max(0, delta) : 0,
     max_hp: (unit.max_hp ?? config?.units?.[unit.unit_id]?.hp ?? unit.hp)
       + (!enabled && wasActive ? -Math.min(bonus, Math.max(0, (unit.max_hp ?? unit.hp) - capStat(config?.units?.[unit.unit_id]?.hp ?? 0))) : delta),
-    ...(bonus && (vet >= 1 || unit.veterancyHpActive !== undefined) ? { veterancyHpActive: enabled } : {}),
+    ...(bonus && (vet >= sectionOf(config, 'veterancy').statUnlock || unit.veterancyHpActive !== undefined) ? { veterancyHpActive: enabled } : {}),
   });
 }
 
 /** Unit ids stay opaque: earned rank unlocks the configured effect. */
 export function unitPassive(unitId: string, config: any, vet = 0): any {
-  if (vet < 2) return undefined;
+  if (vet < sectionOf(config, 'veterancy').passiveUnlock) return undefined;
   const id = config?.units?.[unitId]?.passive;
   return typeof id === 'string' ? config?.abilities?.catalogue?.[id] : undefined;
 }

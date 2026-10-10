@@ -32,7 +32,7 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (497 tests, 9 Oct 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (520 tests, 10 Oct 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
@@ -104,22 +104,38 @@ touches four places - see the `config-sync` skill:
 The server reads `shared/` from the repository root, so a deployment builds from the root
 (DEPLOYMENT.md).
 
-**Most match rules are not config yet.** The schedule, points, scoring, stage rules, combat
-switches and panel numbers are constants in both engines. `CONFIG_BLUEPRINT.md` is the owner's
-checklist of every match rule - one line each, today's value in bold, hexes by the number Show
-Hex draws - and the plan for making them config. Nothing reads it. **Keep it current**: a rule
-changed in the code changes its line there, and goes under "New since the last review".
-Units and abilities are kept out of it on purpose.
+**Match rules are configuration, format 2.0.** `match`, `stageRules`, `economy`,
+`scoring`, `combat`, `panels` and `veterancy` carry the schedule, incomes, thresholds,
+capture geometry, permissions and unit-kit activation. The phase and overtime arrays
+support variable counts. Every runtime helper receives the match config; exported default
+schedule views are for inspection/tests only. `CONFIGURATION.md` is the editing guide and
+`CONFIG_BLUEPRINT.md` lists actual supported paths and draft defaults. Keep both current.
 
-The whole-number rules a config may leave out (`cpAtStart`, `cpPhaseOffset`,
-`upAtStart`, `pointsAtStart`) are listed once per side in `COUNTED_RULES`, filled at
-shared defaults and read through `ruleOf(config, key)` / `rule_of(config, key)`.
-Battlefield, reserve and base movement limits now follow the stage schedule;
-`panelMoversPerTurn`, `postmatchEntries` and `homecomingsPerSetupTurn` are retired
-from the default/schema/normalizers. Saved rooms carrying those keys still load;
-the obsolete keys are ignored. `phaseInitEntries` and `cpPerPhase` are also
-unmigrated historical names. The overtime schedule remains mirrored code because
-its helpers take a ply rather than a room config.
+`version` is the data format, independent of `ruleset.id` / `ruleset.revision`.
+**Current balance revision is null (draft): the owner has not approved a release.**
+`game_rules.py` / `game-rules.ts` migrate format 1 using immutable
+`shared/legacy-rules-v1.json` and `shared/legacy-config-v1.json`; never update those for
+new balance edits. Present old scalar rules migrate; retired movement counts and ignored
+root extensions are discarded. Missing format-2 fields fill defaults before validation,
+while explicit null/unknown fields are refused. A match saves the complete resolved config,
+including its catalogue; reload/rejoin and later writes retain it. Importing a snapshot
+upgrades in memory and its next normal revision-guarded write persists it; no blanket
+rewrite or database migration is needed. `COUNTED_RULES` remains format-1 compatibility.
+
+Both validators use the shared draft-07 schema for these domains (Python `jsonschema`,
+client `ajv`) plus mirrored cross-field checks. `config-parity.json.format2Refused` pins
+current refusals; the original cases use the frozen format-1 fixture.
+`game-rules-parity.json` supplies hand-calculated altered schedules/economy to both suites.
+Structural interaction rules stay in code; see CONFIGURATION.md before adding a knob.
+
+Panel wounds are already resolved HP: normalize activation/max HP before overlaying
+those values, including a nonzero starting rank. Keep staged promotion rank separate
+from the roster so Undo can remove it. Withdrawals resolve kit activation from the
+destination zone; crossing between two enabled zones must not reapply an HP bonus.
+A zero refund still denotes a withdrawal (`refund !== undefined` in staging), and
+free wraps still obey the doorway schedule. Solo and server derive wrap prices as
+unit value times `economy.wrapPriceMultiplier`. The board computes zone worths during
+rebuilds, then template queries read the map; radius alone cannot key custom zones.
 
 **Combat ring eligibility is mirrored.** `canAttack` / `can_attack` checks the attack
 at the requested ring, so a positive tier elsewhere cannot arm a zero tier. Both suites
@@ -280,6 +296,15 @@ depends on the old version.
 
 Decided so far:
 
+- **Configurable match rules, 10 Oct 2026:** The owner approved parameterizing all
+  existing numerical rules, variable phase/overtime counts and existing effect values,
+  using the JSON editor. Started matches keep their rules. Config format and balance
+  identity are separate, with the current balance left unnumbered (`revision: null`).
+  Defaults retain the current gameplay. Existing effect IDs/predicates/interaction
+  algorithms stay in code; no new ability DSL or form editor. See CONFIGURATION.md
+  for complete paths, legacy compatibility and fixed invariants.
+
+
 - **Pawn/archer/shieldman passives, 9 Oct 2026:** Pawn base ATK is **6**.
   The owner’s later revision sets Checkmate to **+6 ATK/+6 DEF/+2 MOV**;
   activation timing is unchanged. Pawn's Vet 2 passive is
@@ -398,7 +423,7 @@ Decided so far:
   stats. Veterancy retains its existing cap of 3; absent ATK/HEL remains unavailable.
   This is a unit-stat limit; regular points, CP, UP, VP and prices retain their rules.
 - **8 Oct economy revision:** regular ability points start at **10** before ordinary
-  own-turn income (`rules.pointsAtStart`); each numbered phase grants **20** on
+  own-turn income (`economy.pointsAtStart`); each numbered phase grants **20** on
   each side's first turn. After the owner's latest 9 Oct revision, pool costs are
   Warcry/Bulwark 25, Sap 35, Weakening 15, Dash/Strike 20 and Mire/Mend 10
   regular points. Pawn/archer/shieldman values are
@@ -2552,7 +2577,7 @@ normal healing follows the rules in the Unit stats section above.
   The end reason names the objective (`regicide` / `elimination`); `find_defeated()` still
   answers "is it over" for callers that need nothing else.
 - **Reach** is `units.<id>.attackRange` in rings of hex distance, ignoring obstacles. A
-  scalar `attack` falls off `rules.rangeFalloff` (0.25) per ring past the first, floored,
+  scalar `attack` falls off `combat.rangeFalloff` (0.25) per ring past the first, floored,
   never under 1 — see `ranged_damage()`. An `attack` list gives exact attack per ring,
   before defence, without percentage falloff. Both validators require 1-4 nonnegative
   whole-number entries, one per ring from optional `attackMinRange` (default 1) through
@@ -2566,7 +2591,7 @@ normal healing follows the rules in the Unit stats section above.
   - **An attack of 0 stays 0.** The floor lifts a blow that was blunted, not one that was
     never thrown; without that guard a unit with no attack stat would chip a point off
     whatever it touched.
-  - **The floor is `rules.minStrikeDamage` in the config**, not a constant on each side — the
+  - **The floor is `combat.minStrikeDamage` in the config**, not a constant on each side — the
     same place and the same shape as `rangeFalloff`, read from the same config object both
     `strike_damage()` and `strikeDamage()` already receive. It started life as a hand-synced
     `MIN_STRIKE_DAMAGE` in both files guarded by prose saying "these must agree", which is
@@ -3258,7 +3283,7 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
     phase 2 is 2 points. phase 3 is 3 points"*, *"OT stops gaining points"*, and *"1x, 2x, 3x
     regular point accumation now happens at the start of half time of each phase instead of
     start of a phase."* Overtime used to pay 1, 3 and 5 a turn.
-    - **Regular points start at 10** (`rules.pointsAtStart`) before ordinary own-turn
+    - **Regular points start at 10** (`economy.pointsAtStart`) before ordinary own-turn
       income. White has 11 on its first turn; Black has 10 until its first turn begins.
     - **Each numbered phase grants 20 regular points** (`Phase.grant`) on each side's
       own first turn of that phase, on top of the rate (owner revision, 8 Oct).
@@ -3434,8 +3459,9 @@ formats them, so stat calculations never parse presentation text.
   does nothing; that path is gone for good.
 - `server/game/tests_disabled/` is **not** disabled. Its 4 tests match Django's `test*.py`
   discovery pattern and run under a bare `manage.py test` in addition to `game.testsuite`.
-- `client/src/app/components/setup-config/setup-config.component.html` is still a raw JSON
-  `<textarea>` with a "Configuration UI will be added here" placeholder.
+- `client/src/app/components/setup-config/setup-config.component.html` edits the full
+  match config through a JSON `<textarea>`, with validation and format-1 migration
+  feedback. `CONFIGURATION.md` lists the editable rules.
   - **Back keeps the way to the room until it goes.** `onBack` saves first if asked, and clears
     `returnToGameRoom` / `gameRoomToken` only when it is about to navigate. It cleared them
     before asking, so a save the validator refused left the editor open with the room
