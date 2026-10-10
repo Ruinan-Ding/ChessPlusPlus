@@ -280,8 +280,6 @@
         <button class="end-turn-btn" type="button" (click)="endTurn()" [disabled]="!canEndTurn"><span class="label">End Turn</span><span class="key-hint" *ngIf="shortcutsActive"> (TAB)</span></button>
       </div>
 
-      <!-- Two of a kind, half the row each: what the board draws on itself,
-           and which way up it draws it. -->
       <div class="view-controls">
         <button
           class="hex-numbers-btn"
@@ -292,10 +290,11 @@
         <button
           class="hex-numbers-btn"
           type="button"
-          [class.active]="flipView"
-          title="Turn the board round to read it from the other side."
-          (click)="flipView = !flipView"
-        ><span class="label">Flip</span><span class="key-hint" *ngIf="shortcutsActive"> (F)</span></button>
+          [disabled]="!canReplay"
+          [class.active]="manualReplayRunning"
+          title="Replay the last completed turn; keep your staged moves."
+          (click)="replayTurn()"
+        ><span class="label">Replay</span><span class="key-hint" *ngIf="shortcutsActive"> (Z)</span></button>
       </div>
 
       <section class="match-panel abilities-panel">
@@ -524,6 +523,10 @@
             <div class="stat-cell vet" title="Earned veterancy"><span>VET</span>
               <strong>{{ statVet }}</strong></div>
           </div>
+          <p class="veterancy-row" [class.active]="displayVeterancyActive">
+            <strong>Vet 1 · {{ displayVeterancyActive ? 'Active' : 'Not active' }}:</strong>
+            {{ displayVeterancy || '—' }}
+          </p>
           <div class="ability-detail" *ngIf="unitAbilityFocus; else unitAbilityList"
                [class.ability-disabled]="!unitAbilityIsPassive() && !unitAbilityCanActivate()">
             <div class="ability-detail-content">
@@ -659,6 +662,7 @@
           [interactive]="gameState.myColor(username) !== '' && !state.endReason && !recapRunning"
           [canMove]="canMoveOnBoard"
           [controlAllSides]="isSinglePlayer"
+          [abilitiesSupported]="buffsBind"
           [rotateBoard]="boardFlipped"
           [turnColor]="gameState.myColor(state.currentTurn)"
           [boardMoveSpent]="initBoardSpent"
@@ -666,7 +670,6 @@
           [movePoints]="movePoints"
           [theirPoints]="theirMovePoints"
           [entryBind]="entryBind"
-          [homecomingsSpent]="homecomingsSpent"
           [tollBind]="tollBind"
           [committedBoard]="state.boardState"
           [withdrawn]="withdrawnUnits"
@@ -700,6 +703,7 @@
           [playback]="playback"
           (playbackStep)="onPlaybackStep($event)"
           (playbackDone)="onPlaybackDone()"
+          (turnFrameReady)="rememberTurnFrame($event)"
           (upkeepSettled)="onUpkeepSettled($event)"
           (moveMade)="onPlayerMove($event)"
           (attackMade)="onPlayerAttack($event)"
@@ -884,35 +888,25 @@
             </div>
           </div>
 
-          <!-- Ready is pre-game only. The start button outlives it: it stays
-               on screen through the match, greyed, and becomes Restart once
-               the match is over - so the rail keeps its shape instead of
-               swapping controls in and out. Host only, either way. -->
-          <div class="ready-section" *ngIf="!gameStarted || isInviter">
+          <div class="ready-section">
+            <div class="game-actions" *ngIf="!isSinglePlayer && !gameStarted">
+              <button class="ready-btn" [class.ready-state]="isReady" (click)="toggleReady()">
+                {{ isReady ? 'Unready' : 'Ready' }}
+              </button>
+            </div>
             <div class="game-actions">
-            <button
-              *ngIf="!isSinglePlayer && !gameStarted"
-              class="ready-btn"
-              [class.ready-state]="isReady"
-              (click)="toggleReady()"
-            >
-              {{ isReady ? 'Unready' : 'Ready' }}
-            </button>
-            <button
-              *ngIf="isInviter"
-              class="start-game-btn"
-              (click)="gameOver ? restartGame() : startGame()"
-              [disabled]="startButtonDisabled"
-              [title]="startButtonHint"
-            >
-              {{ gameOver ? 'Restart Game' : 'Start Game' }}
-            </button>
-            <!-- Why it is greyed, or what it will do (startTip); its place
-                 kept when there is nothing to say, so Start does not change
-                 width. -->
-            <button *ngIf="isInviter" type="button" class="tip-btn" [class.idle]="!startTip"
-                    [attr.aria-label]="gameOver ? 'About Restart Game' : 'About Start Game'"
-                    [attr.aria-expanded]="tip?.id === 'start'" (click)="toggleTip('start', $event)">?</button>
+              <button type="button" class="flip-btn" [class.active]="flipView"
+                      [disabled]="!gameStarted" (click)="flipView = !flipView"
+                      title="Turn the board round to read it from the other side."
+              >Flip<span class="key-hint" *ngIf="shortcutsActive"> (F)</span></button>
+              <button *ngIf="isInviter" class="start-game-btn"
+                      (click)="gameOver ? restartGame() : startGame()"
+                      [disabled]="startButtonDisabled" [title]="startButtonHint">
+                {{ gameOver ? 'Restart Game' : 'Start Game' }}
+              </button>
+              <button *ngIf="isInviter" type="button" class="tip-btn" [class.idle]="!startTip"
+                      [attr.aria-label]="gameOver ? 'About Restart Game' : 'About Start Game'"
+                      [attr.aria-expanded]="tip?.id === 'start'" (click)="toggleTip('start', $event)">?</button>
             </div>
           </div>
         </div>

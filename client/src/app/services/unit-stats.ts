@@ -1,33 +1,60 @@
 import type { PieceData } from './game-state.service';
 
-/** Permanent first-star stats. Older configs without veterancy keep their original stats. */
+/** Effective unit stats, including buffs, stay within the owner's 0–99 limit. */
+export const MAX_UNIT_STAT = 99;
+export const capStat = (value: number): number => Math.max(0, Math.min(MAX_UNIT_STAT, value));
+
+/** Preserve identity/metadata while normalizing current and maximum HP. */
+export function capUnit<T extends { hp?: number; max_hp?: number; vet?: number }>(unit: T): T {
+  const next = { ...unit };
+  if (unit.vet !== undefined) next.vet = Math.min(3, capStat(unit.vet));
+  if (unit.max_hp !== undefined) next.max_hp = capStat(unit.max_hp);
+  if (unit.hp !== undefined) next.hp = Math.min(capStat(unit.hp), next.max_hp ?? MAX_UNIT_STAT);
+  return next;
+}
+
+/** Earned stars remain visible in panels, but their unit kit is inactive there. */
+export const activeVet = (unit: any, panel = unit?.panel): number => panel ? 0 : unit?.vet ?? 0;
+
+/** First-star stats and the hard ceiling, including older configurations. */
 export function unitStats(unitId: string, config: any, vet = 0): any {
   const unit = config?.units?.[unitId] ?? {};
   const bonus = unit.veterancy;
-  if (vet < 1 || !bonus) return unit;
   const stats = { ...unit };
-  for (const key of ['hp', 'move', 'defense']) {
-    if (bonus[key] !== undefined) stats[key] = (unit[key] ?? 0) + bonus[key];
+  if (vet >= 1 && bonus) {
+    for (const key of ['hp', 'move', 'defense']) {
+      if (bonus[key] !== undefined) stats[key] = (unit[key] ?? 0) + bonus[key];
+    }
+    if (bonus.attack !== undefined) {
+      stats.attack = Array.isArray(bonus.attack) ? bonus.attack
+        : Array.isArray(unit.attack) ? unit.attack.map((n: number) => n + bonus.attack)
+        : (unit.attack ?? 0) + bonus.attack;
+    }
+    for (const key of ['attackRange', 'attackMinRange', 'heal']) {
+      if (bonus[key] !== undefined) stats[key] = bonus[key];
+    }
   }
-  if (bonus.attack !== undefined) {
-    stats.attack = Array.isArray(bonus.attack) ? bonus.attack
-      : Array.isArray(unit.attack) ? unit.attack.map((n: number) => n + bonus.attack)
-      : (unit.attack ?? 0) + bonus.attack;
+  for (const key of ['hp', 'move', 'defense', 'attackRange', 'attackMinRange']) {
+    if (stats[key] !== undefined) stats[key] = capStat(stats[key]);
   }
-  for (const key of ['attackRange', 'attackMinRange', 'heal']) {
-    if (bonus[key] !== undefined) stats[key] = bonus[key];
-  }
+  if (stats.attack !== undefined) stats.attack = Array.isArray(stats.attack)
+    ? stats.attack.map(capStat) : capStat(stats.attack);
+  if (stats.heal) stats.heal = stats.heal.slice(0, MAX_UNIT_STAT).map(capStat);
   return stats;
 }
 
-/** Apply the HP increase once when the unit earns its first star; never revive a casualty. */
-export function rankedUnit<T extends PieceData>(unit: T, config: any, vet: number): T {
-  const hp = vet >= 1 && (unit.vet ?? 0) < 1 && unit.hp > 0
-    ? config?.units?.[unit.unit_id]?.veterancy?.hp ?? 0 : 0;
-  return {
-    ...unit, vet, hp: unit.hp + hp,
-    max_hp: (unit.max_hp ?? config?.units?.[unit.unit_id]?.hp ?? unit.hp) + hp,
-  };
+/** Toggle the first-star HP bonus by zone without reviving casualties. */
+export function rankedUnit<T extends PieceData>(unit: T, config: any, vet: number, active = true): T {
+  const bonus = config?.units?.[unit.unit_id]?.veterancy?.hp ?? 0;
+  const wasActive = unit.veterancyHpActive ?? (unit.vet ?? 0) >= 1;
+  const enabled = active && vet >= 1;
+  const delta = bonus * (Number(enabled) - Number(wasActive));
+  return capUnit({
+    ...unit, vet, hp: unit.hp > 0 ? unit.hp + Math.max(0, delta) : 0,
+    max_hp: (unit.max_hp ?? config?.units?.[unit.unit_id]?.hp ?? unit.hp)
+      + (!enabled && wasActive ? -Math.min(bonus, Math.max(0, (unit.max_hp ?? unit.hp) - capStat(config?.units?.[unit.unit_id]?.hp ?? 0))) : delta),
+    ...(bonus && (vet >= 1 || unit.veterancyHpActive !== undefined) ? { veterancyHpActive: enabled } : {}),
+  });
 }
 
 /** Unit ids stay opaque: earned rank unlocks the configured effect. */
@@ -41,9 +68,9 @@ export function combatStats(unitId: string, config: any, vet = 0, counter = fals
   const unit = unitStats(unitId, config, vet);
   const passive = kits ? unitPassive(unitId, config, vet) : undefined;
   if (counter && passive?.effect === 'counter') {
-    return { ...unit, attack: passive.counterAttack, attackMinRange: 1, attackRange: passive.counterAttack.length };
+    return { ...unit, attack: passive.counterAttack.slice(0, MAX_UNIT_STAT).map(capStat), attackMinRange: 1, attackRange: Math.min(MAX_UNIT_STAT, passive.counterAttack.length) };
   }
-  if (passive?.effect === 'deflect') return { ...unit, attack: counter ? 0 : passive.atk };
+  if (passive?.effect === 'deflect') return { ...unit, attack: counter ? 0 : capStat(passive.atk) };
   return unit;
 }
 

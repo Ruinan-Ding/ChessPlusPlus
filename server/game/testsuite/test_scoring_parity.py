@@ -17,6 +17,7 @@ import os
 from django.test import SimpleTestCase
 
 from game.engine import economy, phases, scoring
+from game.engine.config_loader import rule_of
 
 FIXTURES = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), '..', '..', '..',
@@ -71,11 +72,11 @@ class ScoringParityTestCase(SimpleTestCase):
                 self.assertEqual(scoring.decided_on_points(bank), expect['decided'])
                 self.assertEqual(list(ending) if ending else None, expect['ending'])
                 self.assertEqual(
-                    [scoring.cp_awarded(bank, side, 5) for side in ('white', 'black')],
+                    [scoring.cp_awarded(bank, side, rule_of(config, 'cpPhaseOffset')) for side in ('white', 'black')],
                     expect['cp'])
                 self.assertEqual(
                     [[p] + [scoring.vp_as_points(bank, side, p) for side in ('white', 'black')]
                      for p in (72, 73, 74, ply)], expect['vp'])
                 self.assertEqual(
-                    [scoring.scheduled_points(bank, side, ply) for side in ('white', 'black')],
+                    [scoring.scheduled_points(bank, side, ply, config) for side in ('white', 'black')],
                     expect['scheduled'])

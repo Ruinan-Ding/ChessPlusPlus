@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Set
 
 from .board import HexBoard, Coord
-from .unit_stats import unit_stats
+from .unit_stats import cap_stat, unit_stats
 
 # ---------------------------------------------------------------------------
 # Core validation
@@ -32,6 +32,7 @@ def get_legal_moves(
     config: Dict[str, Any],
     color: str,
     move_bonus: int = 0,
+    ability_state=None,
 ) -> List[Coord]:
     """
     Return all legal destination coordinates for the piece at *coord*.
@@ -49,7 +50,13 @@ def get_legal_moves(
     if not unit_def:
         return []
 
-    move_range = unit_def.get('move', 0) + max(0, move_bonus)
+    from .ability_rules import bonus, carries, passive
+    abilities = ability_state or {}
+    if carries(abilities.get('buffs', {}).get(piece.get('uid')), 'action-lock'):
+        return []
+    stat_bonus = bonus(piece, config, abilities, 'mov', key=f'{coord[0]},{coord[1]}')
+    hop = passive(piece, config).get('effect') == 'hop'
+    move_range = max(0, cap_stat(unit_def.get('move', 0) + stat_bonus + max(0, move_bonus)) + min(0, move_bonus))
     if move_range <= 0:
         return []
 
@@ -68,7 +75,7 @@ def get_legal_moves(
                 # pass but is not somewhere to stop, so it never limits the
                 # reach beyond it. An enemy blocks the hex and the way past.
                 blocker = board.get(nq, nr)
-                if blocker is not None and blocker['color'] != piece['color']:
+                if blocker is not None and blocker['color'] != piece['color'] and not hop:
                     continue
                 if blocker is None:
                     moves.append((nq, nr))

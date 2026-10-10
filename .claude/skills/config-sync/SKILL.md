@@ -31,7 +31,8 @@ Changing the config's **shape** - adding, renaming or removing a field - touches
 3. **Validators.** The two are not the same on purpose:
    - `validateGameRules()` (client) guards the setup screen, where a config is written today. It
      may be stricter: it refuses unknown unit and ability fields, missing unit numbers, and every
-     ability rule - abilities are the client's alone.
+     ability rule. Both engines now execute abilities; the server also checks present
+     catalogue numbers, shapes and references.
    - `_validate_config()` (server) also loads configs that rooms saved under **older builds**, so
      it refuses only what is *there and wrong* - a field of the wrong type, a value that would
      crash the engine or corrupt the board. Refusing a missing or retired field would strand

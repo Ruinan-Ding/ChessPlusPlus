@@ -38,7 +38,7 @@ import math
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .board import HEX_DIRECTIONS, coord_key, hex_distance, parse_coord
-from .panels import BASE_PANELS
+from .config_loader import rule_of
 from .phases import (
     OVERTIME_FIRST_PLY, OVERTIME_LAST_TURN, PHASES, SCORING_PHASES, hand_overs_by, is_postmatch,
     phase_index_at, phase_start_turn, PLIES_PER_TURN, turn_of, turn_points_by,
@@ -46,10 +46,9 @@ from .phases import (
 
 #: How far behind a side may finish the third phase and still force overtime,
 #: keyed by the side behind. Black is allowed the wider gap because white
-#: moves first: **white has to be more than 10 clear to take it outright,
-#: black only more than 5**. *The owner, 24 Sep 2026: "10 ahead for white and
-#: 5 ahead for black to trigger overtime"*.
-OVERTIME_MARGIN = {'white': 5, 'black': 10}
+#: moves first. The owner's 9 Oct revision allows a White lead of 50 or a
+#: Black lead of 25; larger leads settle on points after both postmatch turns.
+OVERTIME_MARGIN = {'white': 25, 'black': 50}
 
 #: How far out the outer four capture zones sit, as a share of the radius.
 ZONE_COLS = 7 / 11
@@ -179,8 +178,27 @@ def capture_claims(board_state: Dict[str, Any], radius: int, config: Optional[di
         if not enemy_present:
             for key in zone['hexes']:
                 claim(key, 'black' if center.get('color') == 'black' else 'white')
-    return {key: color for key, color in claimed.items()
+    held = {key: color for key, color in claimed.items()
             if color != 'contested' and key not in disruption['black' if color == 'white' else 'white']}
+    overrides = {}
+    catalogue = (config or {}).get('abilities', {}).get('catalogue', {})
+    for zone in zones:
+        occupants = {key: piece for key, piece in (board_state or {}).items()
+                     if piece and key in zone['hexes'] and capture_eligible(piece, zone, config)}
+        colors = {piece['color'] for piece in occupants.values() if piece.get('vet', 0) >= 2
+                  and catalogue.get((config or {}).get('units', {}).get(piece['unit_id'], {}).get('passive'), {}).get('effect') == 'capture'}
+        if len(colors) != 1:
+            continue
+        color = next(iter(colors))
+        for key in zone['hexes']:
+            owner = occupants.get(key, {}).get('color', color)
+            overrides[key] = owner if key not in overrides or overrides[key] == owner else 'contested'
+    for key, color in overrides.items():
+        if color == 'contested':
+            held.pop(key, None)
+        else:
+            held[key] = color
+    return held
 
 
 def capture_score(claims: Dict[str, str], color: str, radius: int) -> int:
@@ -232,11 +250,8 @@ def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
     The defender belongs to whoever was not moving; a counter-attack kills the
     mover's own unit.
 
-    **A unit killed in a base (the red panels, ``BASE_PANELS``) costs
-    nothing.** *The owner, 24 Sep 2026: "killing things in base (red panel)
-    should not count towards victory points"* - while one killed in a reserve
-    (green) still does. Neither pays the killer any points
-    (:func:`economy.unit_points_of`).
+    Battlefield, reserve and base deaths all count attrition VP. Panel kills
+    grant no UP bounty.
     """
     total = 0
     for move in history or []:
@@ -246,8 +261,6 @@ def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
             turn = move.get('turn')
             if not isinstance(turn, int) or phase_index_at(turn) != phase:
                 continue
-        if move.get('intoPanel') and move.get('panel') in BASE_PANELS:
-            continue
         if (move.get('abilityDeath') or {}).get('color') == color:
             total += unit_value(config, move['abilityDeath'].get('unit_id'))
         if move.get('defender_eliminated') and move.get('color') != color:
@@ -335,18 +348,10 @@ def cp_awarded(bank: Optional[Dict[str, Any]], color: str, offset: int) -> int:
     landing as the phase's postmatch begins - which is when a phase banks, so
     the bank is all this needs. CP comes from nothing else.
 
-    Phase N's award is ``N x offset`` (``rules.cpPhaseOffset``: 5, 10, 15),
-    plus both sides' scores for the phase, plus - for the side that scored
-    less - the gap between them. *The owner, 24 Sep 2026:* the side with the
-    higher total gets ``phase_x + (mine + theirs)``, the lower
-    ``phase_x + (mine + theirs) + abs(mine - theirs)``. Phase 2 banking white
-    12, black 4 awards white 10 + 16 = 26 and black 26 + 8 = 34. The 5 each
-    side starts with (``rules.cpAtStart``) is not an award and is not here.
-
-    Only the phase's own scores are compared, not the match's. A late phase
-    still awards. Nothing on the server spends CP yet - abilities are solo
-    (PUNCHLIST 6.15) - so this is the mirror the client's ``cpAwarded`` keeps
-    in step with, ready for when they are not.
+    Phase N pays N times the room's offset (10, 20, 30 by default), plus
+    both phase scores and the shortfall for the side behind. Each banked
+    phase awards once at postmatch; the room's starting CP is separate.
+    A late bank still awards, and only that phase's scores are compared.
     """
     other = 'black' if color == 'white' else 'white'
     total = 0
@@ -379,7 +384,7 @@ def vp_as_points(bank: Optional[Dict[str, Any]], color: str, ply: int) -> int:
     return sum(((bank or {}).get(str(phase)) or {}).get(color, 0) for phase in SCORING_PHASES)
 
 
-def scheduled_points(bank: Optional[Dict[str, Any]], color: str, ply: int) -> int:
+def scheduled_points(bank: Optional[Dict[str, Any]], color: str, ply: int, config: Optional[Dict[str, Any]] = None) -> int:
     """
     What the schedule has paid *color* in points by *ply*: every turn begun
     at its rate, each phase's grant (:func:`phases.turn_points_by`), and the
@@ -388,7 +393,7 @@ def scheduled_points(bank: Optional[Dict[str, Any]], color: str, ply: int) -> in
     takes away (:func:`economy.unit_points_of`). Mirrors ``scheduledPoints`` in
     match-score.ts.
     """
-    return turn_points_by(color, ply) + vp_as_points(bank, color, ply)
+    return rule_of(config, 'pointsAtStart') + turn_points_by(color, ply) + vp_as_points(bank, color, ply)
 
 
 def decided_on_points(bank: Optional[Dict[str, Any]]) -> Optional[str]:

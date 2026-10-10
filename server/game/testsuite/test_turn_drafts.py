@@ -2,7 +2,7 @@ import asyncio
 import copy
 import json
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
@@ -357,6 +357,44 @@ class TurnDraftTests(TransactionTestCase):
                 pass
 
 
+    async def test_atomic_replay_allowance_is_persisted_and_not_renewed_on_resync(self):
+        config = copy.deepcopy(self.state.config_snapshot)
+        config['rules']['turnTimeLimit'] = 15
+        await GameState.objects.filter(pk=self.game.game_id).aupdate(config_snapshot=config)
+        now = timezone.now()
+        with patch('game.consumers.GameConsumer._any_player_connected', new=AsyncMock(return_value=True)), \
+             patch.object(self.consumer, '_start_turn_timer', new=AsyncMock()) as arm, \
+             patch('game.replay.timezone.now', return_value=now):
+            commands = [{'type': 'make_move', 'from': '0,0', 'to': '1,0'},
+                        {'type': 'make_move', 'from': '1,0', 'to': '2,0'}]
+            request = self.request(commands, kind='commit_turn')
+            request.update(replayMilliseconds=600000, turnStartedAt=(now + timedelta(days=1)).isoformat())
+            await self.consumer._handle_save_turn_draft(request)
+            state = await GameState.objects.aget(pk=self.game.game_id)
+            self.assertEqual(state.turn_started_at, now + timedelta(milliseconds=1580))
+            self.assertEqual(arm.call_args.kwargs['turn_started_at'], state.turn_started_at)
+            await self.consumer._handle_request_game_state({})
+            self.assertEqual(self.messages[-1]['turnStartedAt'], state.turn_started_at.isoformat())
+            await self.consumer._handle_request_game_state({})
+            self.assertEqual(self.messages[-1]['turnStartedAt'], state.turn_started_at.isoformat())
+            self.assertEqual(arm.await_count, 1)
+
+    async def test_clock_restore_preserves_the_saved_replay_deadline(self):
+        started = timezone.now() + timedelta(milliseconds=680)
+        waits = []
+        async def sleep(seconds):
+            waits.append(seconds)
+            await asyncio.Event().wait()
+        with patch('game.consumers.asyncio.sleep', side_effect=sleep), \
+             patch('game.consumers.timezone.now', return_value=started - timedelta(milliseconds=680)):
+            await self.consumer._start_turn_timer(self.game.game_id, 15, 7, 'alice', turn_started_at=started)
+            task = _pending_turn_timers[self.game.game_id]
+            # Yield without sleeping through the patched clock wait.
+            await asyncio.wait({task}, timeout=.01)
+            self.assertEqual(waits, [15.68])
+            self.consumer._cancel_turn_timer(self.game.game_id)
+            await task
+
 class TurnDraftProtocolTests(TransactionTestCase):
     async def position(self, board=None, ply=7):
         self.game, self.host, self.opponent, self.white, self.black = await _start_seated_game()
@@ -521,10 +559,10 @@ class TurnDraftProtocolTests(TransactionTestCase):
             self.assertEqual((own['turnNumber'], own['revision']), (90, state.revision + 1))
             self.assertEqual(own['boardState']['-10,0']['hp'], 57)
             self.assertEqual(own['boardState']['10,0']['hp'], 60)
-            self.assertEqual(own['boardState']['0,0']['hp'], 11)
-            self.assertEqual(own['boardState']['0,1']['hp'], 11)
+            self.assertEqual(own['boardState']['0,0']['hp'], 10)
+            self.assertEqual(own['boardState']['0,1']['hp'], 10)
             self.assertEqual(own['boardState']['-3,0']['uid'], 'second')
-            self.assertEqual([m['counter_damage'] for m in own['moveHistory'] if m.get('attacked')], [1])
+            self.assertEqual([m['counter_damage'] for m in own['moveHistory'] if m.get('attacked')], [2])
             self.assertFalse(await TurnDraft.objects.filter(pk=self.game.game_id).aexists())
         finally:
             await self.close()

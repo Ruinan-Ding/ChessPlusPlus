@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
 import { PhaseBank } from './match-score';
+import { capUnit } from './unit-stats';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -16,11 +17,18 @@ export interface PieceData {
   uid?: string;
   /** Rank derived from phase boundaries; older snapshots may not carry it. */
   vet?: number;
+  /** Whether the first-star HP bonus is currently applied; panels disable it. */
+  veterancyHpActive?: boolean;
+  /** Current panel context; omitted after entering the battlefield. */
+  panel?: string;
   /** Solo Cast changes control while retaining the owner for regicide and refunds. */
   owner?: 'white' | 'black';
   controlledUntil?: number;
   controlTurn?: number;
 }
+
+/** Appearance and identity at the time a replay action occurred. */
+export type PieceIdentity = Pick<PieceData, 'unit_id' | 'color' | 'uid'>;
 
 /** Battlefield cells keyed by axial "q,r"; panels are derived separately. */
 export type BoardState = Record<string, PieceData>;
@@ -38,6 +46,11 @@ export interface MoveRecord {
   defender_eliminated: boolean;
   moved: boolean;
   defender_hp?: number;
+  /** Actual combat beats are independent of damage prevented by protection. */
+  countered?: boolean;
+  counterActor?: PieceIdentity;
+  secondStrike?: boolean;
+  attackFrom?: string;
   healedHex?: string;
   healed_amount?: number;
   healed_hp?: number;
@@ -64,7 +77,7 @@ export interface GameSnapshot {
   endReason: string;
   /** Seconds allowed per turn (0 = unlimited). */
   turnTimeLimit: number;
-  /** ISO timestamp when the current turn started. */
+  /** ISO clock start; online may be in the future to exclude replay/notice time. */
   turnStartedAt: string;
   /** Username of player who offered a draw, or ''. */
   drawOfferedBy: string;
@@ -76,6 +89,8 @@ export interface GameSnapshot {
    * the latest; the room shows it rather than keeping a bank of its own.
    */
   phaseBank: PhaseBank;
+  /** Present when the server owns multiplayer abilities. */
+  abilityState?: any;
 }
 
 const EMPTY_SNAPSHOT: GameSnapshot = {
@@ -129,10 +144,6 @@ export class GameStateService {
     return s.turnNumber > 0 && !s.endReason;
   }
 
-  get isMyTurn(): boolean {
-    return false; // overridden per-component via myColor
-  }
-
   /** Return 'white' | 'black' | '' for the given username. */
   myColor(username: string): 'white' | 'black' | '' {
     const s = this.snapshot;
@@ -143,11 +154,15 @@ export class GameStateService {
 
   // -- Mutation methods (called from WS handler) ----------------------
 
+  private capBoard(board: BoardState): BoardState {
+    return Object.fromEntries(Object.entries(board).map(([at, unit]) => [at, capUnit(unit)]));
+  }
+
   /** Apply a `game_started` message. */
   applyGameStarted(msg: any): void {
     const timeLimit = msg.config?.rules?.turnTimeLimit ?? 0;
     this.stateSubject.next({
-      boardState: msg.boardState ?? {},
+      boardState: this.capBoard(msg.boardState ?? {}),
       currentTurn: msg.currentTurn ?? '',
       turnNumber: msg.turnNumber ?? 1,
       playerWhite: msg.playerWhite ?? '',
@@ -161,6 +176,7 @@ export class GameStateService {
       drawOfferedBy: '',
       revision: msg.revision ?? 0,
       phaseBank: msg.phaseBank ?? {},
+      ...(msg.abilityState ? { abilityState: msg.abilityState } : {}),
     });
   }
 
@@ -170,7 +186,7 @@ export class GameStateService {
     const move: MoveRecord = msg.move;
     this.stateSubject.next({
       ...prev,
-      boardState: msg.boardState ?? prev.boardState,
+      boardState: msg.boardState ? this.capBoard(msg.boardState) : prev.boardState,
       currentTurn: msg.currentTurn ?? prev.currentTurn,
       turnNumber: msg.turnNumber ?? prev.turnNumber,
       // Casts retain their order around the move; boundary heals follow it.
@@ -179,6 +195,7 @@ export class GameStateService {
       drawOfferedBy: '',
       revision: msg.revision ?? prev.revision,
       phaseBank: msg.phaseBank ?? prev.phaseBank,
+      ...(msg.abilityState ? { abilityState: msg.abilityState } : {}),
     });
   }
 
@@ -192,7 +209,7 @@ export class GameStateService {
     const prev = this.snapshot;
     this.stateSubject.next({
       ...prev,
-      boardState: msg.boardState ?? prev.boardState,
+      boardState: msg.boardState ? this.capBoard(msg.boardState) : prev.boardState,
       currentTurn: msg.currentTurn ?? prev.currentTurn,
       turnNumber: msg.turnNumber ?? prev.turnNumber,
       // Panel casts and boundary heals share the same persistent record.
@@ -202,6 +219,7 @@ export class GameStateService {
       drawOfferedBy: '',
       revision: msg.revision ?? prev.revision,
       phaseBank: msg.phaseBank ?? prev.phaseBank,
+      ...(msg.abilityState ? { abilityState: msg.abilityState } : {}),
     });
   }
 
@@ -221,7 +239,7 @@ export class GameStateService {
   applyFullState(msg: any): void {
     const timeLimit = msg.config?.rules?.turnTimeLimit ?? 0;
     this.stateSubject.next({
-      boardState: msg.boardState ?? {},
+      boardState: this.capBoard(msg.boardState ?? {}),
       currentTurn: msg.currentTurn ?? '',
       turnNumber: msg.turnNumber ?? 0,
       playerWhite: msg.playerWhite ?? '',
@@ -235,6 +253,7 @@ export class GameStateService {
       drawOfferedBy: msg.drawOfferedBy ?? '',
       revision: msg.revision ?? this.snapshot.revision,
       phaseBank: msg.phaseBank ?? {},
+      ...(msg.abilityState ? { abilityState: msg.abilityState } : {}),
     });
   }
 

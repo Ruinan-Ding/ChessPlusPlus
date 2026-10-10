@@ -14,12 +14,12 @@
         "black": "♚"
       },
       "move": 6,
-      "value": 24,
+      "value": 64,
       "hp": 60,
-      "attack": 24,
+      "attack": 14,
       "attackRange": 1,
       "commander": true,
-      "defense": 18,
+      "defense": 8,
       "ability": "king-call",
       "captureZones": [
         "home",
@@ -29,13 +29,13 @@
       ],
       "veterancy": {
         "attack": [
-          24,
+          14,
           20
         ],
         "attackRange": 2,
         "move": 2
       },
-      "passive": "persuade"
+      "passive": "capture"
     },
     "queen": {
       "id": "queen",
@@ -46,14 +46,14 @@
         "black": "♛"
       },
       "move": 6,
-      "value": 20,
-      "hp": 30,
+      "value": 48,
+      "hp": 32,
       "attack": [
-        18,
+        16,
         12
       ],
       "attackRange": 2,
-      "defense": 12,
+      "defense": 8,
       "ability": "queen-nullify",
       "captureZones": [
         "home",
@@ -65,7 +65,7 @@
         "move": 1,
         "hp": 2
       },
-      "passive": "intimidate"
+      "passive": "persuade"
     },
     "rook": {
       "id": "rook",
@@ -76,11 +76,11 @@
         "black": "♜"
       },
       "move": 4,
-      "value": 12,
-      "hp": 40,
+      "value": 24,
+      "hp": 24,
       "attack": 12,
       "attackRange": 1,
-      "defense": 16,
+      "defense": 10,
       "ability": "rook-cleave",
       "captureZones": [
         "home",
@@ -102,11 +102,11 @@
         "black": "♝"
       },
       "move": 6,
-      "value": 16,
+      "value": 32,
       "hp": 8,
       "attack": 0,
       "attackRange": 1,
-      "defense": 4,
+      "defense": 2,
       "ability": "bishop-cast",
       "heal": [
         8,
@@ -118,6 +118,7 @@
         "side"
       ],
       "veterancy": {
+        "hp": 2,
         "heal": [
           8,
           6,
@@ -136,11 +137,11 @@
         "black": "♞"
       },
       "move": 8,
-      "value": 14,
+      "value": 30,
       "hp": 18,
       "attack": 12,
       "attackRange": 1,
-      "defense": 10,
+      "defense": 6,
       "ability": "knight-charge",
       "captureZones": [
         "home",
@@ -162,7 +163,7 @@
         "black": "🏹︎"
       },
       "move": 6,
-      "value": 8,
+      "value": 12,
       "hp": 6,
       "attack": [
         4,
@@ -171,7 +172,7 @@
         1
       ],
       "attackRange": 6,
-      "defense": 4,
+      "defense": 2,
       "ability": "archer-bog",
       "attackMinRange": 3,
       "captureZones": [
@@ -180,7 +181,7 @@
       "veterancy": {
         "move": 2
       },
-      "passive": "counter"
+      "passive": "quick"
     },
     "shieldman": {
       "id": "shieldman",
@@ -191,11 +192,11 @@
         "black": "🛡︎"
       },
       "move": 4,
-      "value": 8,
-      "hp": 30,
+      "value": 12,
+      "hp": 28,
       "attack": 0,
       "attackRange": 1,
-      "defense": 24,
+      "defense": 12,
       "ability": "shield-taunt",
       "captureZones": [
         "home"
@@ -204,7 +205,7 @@
         "defense": 2,
         "hp": 2
       },
-      "passive": "deflect"
+      "passive": "counter"
     },
     "pawn": {
       "id": "pawn",
@@ -215,11 +216,11 @@
         "black": "♟"
       },
       "move": 6,
-      "value": 8,
+      "value": 12,
       "hp": 12,
-      "attack": 8,
+      "attack": 6,
       "attackRange": 1,
-      "defense": 8,
+      "defense": 4,
       "ability": "unit-sacrifice",
       "captureZones": [
         "home"
@@ -229,7 +230,7 @@
         "attack": 2,
         "defense": 2
       },
-      "passive": "rapid-movement"
+      "passive": "checkmate"
     }
   },
   "abilities": {
@@ -248,7 +249,7 @@
       {
         "id": "bastion",
         "name": "Bastion",
-        "cost": 5,
+        "cost": 10,
         "passive": "bastion",
         "skill": "anchor",
         "ultimate": "fortress",
@@ -257,7 +258,7 @@
       {
         "id": "onslaught",
         "name": "Onslaught",
-        "cost": 10,
+        "cost": 25,
         "passive": "onslaught",
         "skill": "cleave",
         "ultimate": "ruin",
@@ -266,7 +267,7 @@
       {
         "id": "tempo",
         "name": "Sprint",
-        "cost": 20,
+        "cost": 50,
         "passive": "tempo",
         "skill": "surge",
         "ultimate": "blitz",
@@ -278,7 +279,7 @@
         "id": "warcry",
         "name": "Warcry",
         "target": "friendly",
-        "cost": 4,
+        "cost": 25,
         "cooldown": 3,
         "turns": 1,
         "atk": 8
@@ -286,17 +287,18 @@
       "sap": {
         "id": "sap",
         "name": "Sap",
-        "target": "all-enemies",
-        "cost": 5,
+        "target": "enemy",
+        "cost": 35,
         "cooldown": 5,
         "turns": 1,
-        "atk": -8
+        "atk": -8,
+        "scope": "field-reserve"
       },
       "bulwark": {
         "id": "bulwark",
         "name": "Bulwark",
         "target": "friendly",
-        "cost": 4,
+        "cost": 25,
         "cooldown": 3,
         "turns": 1,
         "def": 8
@@ -304,17 +306,18 @@
       "weakening": {
         "id": "weakening",
         "name": "Weakening",
-        "target": "all-enemies",
-        "cost": 5,
+        "target": "enemy",
+        "cost": 15,
         "cooldown": 1,
         "turns": 1,
-        "def": -8
+        "def": -8,
+        "scope": "field-reserve"
       },
       "dash": {
         "id": "dash",
         "name": "Dash",
         "target": "friendly",
-        "cost": 3,
+        "cost": 20,
         "cooldown": 4,
         "turns": 1,
         "mov": 4
@@ -322,17 +325,18 @@
       "mire": {
         "id": "mire",
         "name": "Mire",
-        "target": "all-enemies",
-        "cost": 2,
+        "target": "enemy",
+        "cost": 10,
         "cooldown": 3,
         "turns": 1,
-        "mov": -2
+        "mov": -2,
+        "scope": "field-reserve"
       },
       "mend": {
         "id": "mend",
         "name": "Mend",
         "target": "friendly",
-        "cost": 1,
+        "cost": 10,
         "cooldown": 1,
         "heal": 2
       },
@@ -340,7 +344,7 @@
         "id": "strike",
         "name": "Strike",
         "target": "enemy",
-        "cost": 3,
+        "cost": 20,
         "cooldown": 4,
         "damage": 4
       },
@@ -360,35 +364,39 @@
         "effect": "defensive-armor",
         "def": 1,
         "minVet": 0,
-        "scope": "field-reserve",
-        "description": "+1 DEF while receiving a normal attack or counterattack. Applies to battlefield and green-reserve units at any rank."
+        "scope": "all",
+        "description": "+1 DEF while receiving a normal attack or counterattack. Applies to battlefield, reserve and base units at any rank."
       },
       "anchor": {
         "id": "anchor",
-        "name": "Sap",
+        "name": "Drain",
         "target": "hex",
         "effect": "hex-sap",
-        "cost": 5,
+        "cost": 50,
         "cooldown": 1,
         "turns": 1,
         "uses": 3,
         "setAtk": 0,
         "splashAtk": -4,
-        "description": "Choose any hex. Its current occupant has ATK and HEL 0; occupants of the six adjacent hexes lose 4 ATK and HEL. Friendly units can be affected. Lasts one full turn; 5 CP, cooldown 1, three uses.",
+        "description": "Choose any hex, including base/reserve. Centre ATK/HEL becomes 0; ring 1 loses 4 ATK/HEL; ring 2 gains 2 ATK/HEL. Affects either side; boosts only existing attack/heal profiles. Lasts one full turn; 50 CP, one use per turn, three uses per match.",
         "setHel": 0,
-        "splashHel": -4
+        "splashHel": -4,
+        "splashRange": 1,
+        "outerRange": 2,
+        "outerAtk": 2,
+        "outerHel": 2
       },
       "fortress": {
         "id": "fortress",
         "name": "Fortress",
         "target": "universal",
         "effect": "fortress",
-        "cost": 25,
+        "cost": 250,
         "uses": 1,
         "turns": 1,
         "enemyDefSet": 0,
-        "scope": "field-reserve",
-        "description": "Friendly battlefield and green-reserve units take no damage, including overtime. Enemy battlefield and green-reserve DEF becomes 0. Lasts one full turn; 25 CP; once per match."
+        "scope": "all",
+        "description": "Owned battlefield, reserve and base units take no damage, including overtime king damage, for one full turn. Every enemy unit in those zones has DEF 0. Costs 250 CP; once per match."
       },
       "onslaught": {
         "id": "onslaught",
@@ -396,32 +404,35 @@
         "target": "friendly",
         "atk": 1,
         "minVet": 0,
-        "scope": "field-reserve",
-        "description": "+1 ATK to every friendly battlefield and green-reserve unit, including later arrivals. No stars required."
+        "scope": "all",
+        "description": "+1 ATK to every friendly battlefield, green-reserve and red-base unit, including later arrivals. No stars required."
       },
       "cleave": {
         "id": "cleave",
         "name": "Cleave",
         "target": "hex",
         "effect": "hex-cleave",
-        "cost": 10,
+        "cost": 50,
         "cooldown": 1,
         "uses": 3,
         "damage": 5,
         "splashDamage": 3,
-        "description": "Choose any hex: its occupant takes 5 direct HP damage; adjacent occupants take 3. Includes friendly, reserve and base units. Costs 10 CP; cooldown 1; three uses."
+        "description": "Choose any hex for a board-wide horizontal line, including base/reserve. Centre takes 5 HP damage; the nearest two hexes on each side take 3; farther occupants heal 1 HP. Affects either side. Costs 50 CP; one use per turn; three uses per match.",
+        "area": "horizontal",
+        "splashRange": 2,
+        "heal": 1
       },
       "ruin": {
         "id": "ruin",
         "name": "Ruin",
         "target": "universal",
         "effect": "ruin",
-        "cost": 25,
+        "cost": 250,
         "uses": 1,
         "damage": 3,
         "heal": 3,
         "scope": "all",
-        "description": "Deal 3 HP damage to every unit in all zones, then heal your surviving units by 3, capped at max HP. Does not revive casualties. Costs 25 CP; once per match."
+        "description": "Deal 3 HP damage to every unit in all zones, then heal your surviving units by 3, capped at max HP. Does not revive casualties. Costs 250 CP; once per match."
       },
       "tempo": {
         "id": "tempo",
@@ -429,34 +440,37 @@
         "target": "friendly",
         "mov": 1,
         "minVet": 0,
-        "scope": "field-reserve",
-        "description": "+1 MOV to every friendly battlefield and green-reserve unit, including later arrivals. No stars required."
+        "scope": "all",
+        "description": "+1 MOV to every friendly battlefield, green-reserve and red-base unit, including later arrivals. No stars required."
       },
       "surge": {
         "id": "surge",
         "name": "Trap",
         "target": "hex",
         "effect": "hex-trap",
-        "cost": 15,
+        "cost": 50,
         "cooldown": 1,
         "turns": 1,
         "uses": 3,
         "splashMov": -4,
-        "description": "Choose any hex. Its current occupant loses positive temporary buffs and cannot move, attack, heal normally or use its unit ability; counters remain allowed. Adjacent occupants lose 4 MOV. Lasts one full turn; 15 CP, cooldown 1, three uses."
+        "description": "Choose any hex for a board-wide X, including base/reserve. Centre loses positive temporary buffs and cannot move, attack, heal normally or use its unit ability; counters remain allowed. The nearest two hexes in each diagonal direction lose 4 MOV; farther occupants gain 2 MOV. Affects either side for one full turn; 50 CP, one use per turn, three uses per match.",
+        "area": "cross",
+        "splashRange": 2,
+        "outerMov": 2
       },
       "blitz": {
         "id": "blitz",
         "name": "Blitz",
         "target": "universal",
         "effect": "blitz",
-        "cost": 35,
+        "cost": 250,
         "uses": 1,
         "turns": 1,
         "mov": 8,
         "atk": 2,
         "def": 2,
-        "scope": "field-reserve",
-        "description": "Friendly battlefield and green-reserve units gain +8 MOV/+2 ATK/+2 DEF/+4 HEL. Enemy recipients cannot move, attack, heal normally or use unit abilities; counters and pool/CP casts remain allowed. Lasts one full turn; 35 CP; once per match.",
+        "scope": "all",
+        "description": "Owned battlefield, reserve and base units gain +8 MOV/+2 ATK/+2 DEF; existing healers also gain +4 HEL. All enemy units cannot move, attack, heal normally or use unit abilities, but may counter and use pool/CP abilities. Lasts one full turn; costs 250 CP; once per match.",
         "hel": 4
       },
       "counter": {
@@ -465,10 +479,9 @@
         "target": "friendly",
         "effect": "counter",
         "counterAttack": [
-          2,
-          1
+          4
         ],
-        "description": "At Vet 2, counter only at range 1 with ATK 2 or range 2 with ATK 1, before DEF. ATK buffs and drains apply."
+        "description": "At Vet 2 on the battlefield, counter at range 1 with ATK 4 before DEF. This does not grant a normal attack."
       },
       "hop": {
         "id": "hop",
@@ -507,7 +520,7 @@
         "name": "Regenerate",
         "target": "friendly",
         "effect": "regenerate",
-        "description": "At Vet 2, fully heal at the end of your turn on the battlefield or green reserve, even without acting."
+        "description": "At Vet 2, fully heal at the end of your turn on the battlefield, even without acting."
       },
       "intimidate": {
         "id": "intimidate",
@@ -534,25 +547,25 @@
       "unit-sacrifice": {
         "id": "unit-sacrifice",
         "name": "Sacrifice",
-        "description": "Remove this pawn; heal friendly battlefield and green reserve units by 1, grant +1 ATK/DEF/MOV for one full turn, gain 8 UP; the pawn counts as your loss.",
+        "description": "Choose another friendly battlefield or green-reserve unit: permanently add one star (max 3), fully heal it and grant +2 MOV/+6 ATK/+6 DEF for one full turn. Remove this pawn, counting it as your loss; then choose an unused friendly battlefield unit for an extra action. No UP reward.",
         "target": "friendly",
         "effect": "sacrifice",
-        "cost": 3,
+        "cost": 24,
         "cooldown": 5,
         "turns": 1,
-        "atk": 1,
-        "def": 1,
-        "mov": 1,
-        "heal": 1,
-        "up": 8
+        "atk": 6,
+        "def": 6,
+        "mov": 2,
+        "up": 0,
+        "stars": 1
       },
       "archer-bog": {
         "id": "archer-bog",
-        "name": "Bog",
+        "name": "Snare",
         "description": "Attacks reduce their enemy target MOV by 4 for one full turn; counters do not trigger it.",
         "target": "friendly",
         "effect": "attack-drain",
-        "cost": 3,
+        "cost": 8,
         "cooldown": 3,
         "turns": 1,
         "mov": -4
@@ -563,17 +576,17 @@
         "description": "Enemy attacks must choose a reachable taunting shieldman. Moving and using abilities without attacking remain allowed.",
         "target": "friendly",
         "effect": "taunt",
-        "cost": 1,
+        "cost": 6,
         "cooldown": 1,
         "turns": 1
       },
       "rook-cleave": {
         "id": "rook-cleave",
-        "name": "Cleave",
+        "name": "Bash",
         "description": "Attacks also strike adjacent enemies around this unit using normal ATK against each DEF; only the primary target counters.",
         "target": "friendly",
         "effect": "cleave",
-        "cost": 5,
+        "cost": 16,
         "cooldown": 5,
         "turns": 1
       },
@@ -583,7 +596,7 @@
         "description": "After an actual counter, strike again if still alive. The second strike receives no counter.",
         "target": "friendly",
         "effect": "charge",
-        "cost": 5,
+        "cost": 16,
         "cooldown": 5,
         "turns": 1
       },
@@ -593,7 +606,7 @@
         "description": "Choose an adjacent battlefield or green reserve enemy. End the caster action and immediately grant that unit an extra action; control returns at your next turn.",
         "target": "enemy",
         "effect": "control",
-        "cost": 10,
+        "cost": 32,
         "cooldown": 5,
         "turns": 1
       },
@@ -603,33 +616,37 @@
         "description": "Enemies attacked by this unit cannot counter for one full turn.",
         "target": "friendly",
         "effect": "nullify",
-        "cost": 3,
+        "cost": 12,
         "cooldown": 1,
         "turns": 1
       },
       "king-call": {
         "id": "king-call",
         "name": "Call",
-        "description": "Friendly battlefield and green reserve units heal 2 and gain +2 DEF. Enemies in those zones take 1 HP damage and lose 1 ATK/2 DEF for one full turn.",
+        "description": "Adjacent friendly battlefield and green-reserve units heal 1 HP and gain +1 ATK/DEF/MOV. Adjacent enemies in those zones take 1 HP damage and lose 1 ATK/DEF/MOV for one full turn. The king is excluded. Costs 4 UP; cooldown 1.",
         "target": "friendly",
         "effect": "call",
-        "cost": 5,
-        "cooldown": 5,
+        "cost": 4,
+        "cooldown": 1,
         "turns": 1,
-        "heal": 2,
-        "def": 2,
+        "heal": 1,
+        "def": 1,
         "enemyDamage": 1,
         "enemyAtk": -1,
-        "enemyDef": -2
+        "enemyDef": -1,
+        "atk": 1,
+        "mov": 1,
+        "enemyMov": -1,
+        "radius": 1
       },
       "convert": {
         "id": "convert",
         "name": "Convert",
         "target": "universal",
-        "cost": 3,
+        "cost": 25,
         "cooldown": 1,
-        "points": 5,
-        "description": "Convert 3 CP into 5 regular ability points. Cooldown 1. Five uses per phase.",
+        "points": 50,
+        "description": "Spend 25 CP to gain 50 regular ability points. Five uses per phase; once per turn.",
         "uses": 5,
         "usesScope": "phase"
       },
@@ -638,11 +655,11 @@
         "name": "Strengthen",
         "target": "friendly",
         "effect": "promote",
-        "cost": 5,
+        "cost": 25,
         "cooldown": 1,
         "stars": 1,
         "scope": "field-reserve",
-        "description": "Give a selected friendly battlefield or green-reserve unit one star, capped at Vet 3. First-star HP raises current and maximum together. Costs 5 CP; cooldown 1. Five uses per phase.",
+        "description": "Give a selected friendly battlefield or green-reserve unit one star, capped at Vet 3. First-star HP raises current and maximum together. Costs 25 CP; cooldown 1. Five uses per phase.",
         "uses": 5,
         "usesScope": "phase"
       },
@@ -651,14 +668,39 @@
         "name": "Recharge",
         "target": "pair",
         "effect": "recharge",
-        "cost": 5,
+        "cost": 25,
         "cooldown": 1,
         "recharge": 1,
-        "description": "Choose a carried pool pair: reduce both positive cooldowns by 1, stopping at 1. Abilities already ready stay at 0. Costs 5 CP even if both are already ready; cooldown 1. Five uses per phase.",
+        "description": "Choose a carried pool pair: reduce both positive cooldowns by 1, stopping at 1. Abilities already ready stay at 0. Costs 25 CP even if both are already ready; cooldown 1. Five uses per phase.",
         "uses": 5,
         "usesScope": "phase"
+      },
+      "capture": {
+        "id": "capture",
+        "name": "Capture",
+        "target": "friendly",
+        "effect": "capture",
+        "description": "At Vet 2, hold the entire capture zone you occupy, except eligible enemies keep their occupied hexes. If both sides have active Capture in the zone, normal capture rules apply; Vet 3 has no priority over Vet 2."
+      },
+      "quick": {
+        "id": "quick",
+        "name": "Quick",
+        "target": "friendly",
+        "effect": "rapid-movement",
+        "description": "At Vet 2, use remaining MOV after attacking."
+      },
+      "checkmate": {
+        "id": "checkmate",
+        "name": "Checkmate",
+        "target": "friendly",
+        "effect": "checkmate",
+        "atk": 6,
+        "def": 6,
+        "mov": 2,
+        "description": "At Vet 2, gain +6 ATK and +6 DEF while in the enemy’s first three battlefield rows; lose them on leaving. An action starting there gets +2 MOV for its whole walk, including leaving; arriving does not extend the current walk."
       }
-    }
+    },
+    "pairPickDelay": 5
   },
   "setup": {
     "white": {
@@ -752,11 +794,9 @@
     "maxTurns": 0,
     "turnTimeLimit": 0,
     "objective": "regicide",
-    "panelMoversPerTurn": 3,
-    "postmatchEntries": 5,
-    "homecomingsPerSetupTurn": 3,
     "cpAtStart": 5,
-    "cpPhaseOffset": 5,
-    "upAtStart": 10
+    "cpPhaseOffset": 10,
+    "upAtStart": 10,
+    "pointsAtStart": 10
   }
 }

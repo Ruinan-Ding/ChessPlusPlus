@@ -1,4 +1,5 @@
 import fixtures from './scoring-parity.json';
+import { ruleOf } from './config.service';
 import { captureClaims, captureZoneValues } from './hex-rules';
 import {
   PhaseBank, bankEndedPhases, capOf, cpAwarded, decidedOnPoints, deathsOf, phaseTotal, scheduleEnding,
@@ -56,9 +57,9 @@ describe('scoring parity with the server', () => {
         deaths: sides.map(side => [1, 2, 3, undefined].map(p => deathsOf(c.config, c.history, side, p))),
         decided: decidedOnPoints(bank),
         ending: ending ? [ending.winner, ending.reason] : null,
-        cp: sides.map(side => cpAwarded(bank, side, 5)),
+        cp: sides.map(side => cpAwarded(bank, side, ruleOf(c.config, 'cpPhaseOffset'))),
         vp: [72, 73, 74, c.ply].map(p => [p, ...sides.map(side => vpAsPoints(bank, side, p))]),
-        scheduled: sides.map(side => scheduledPoints(bank, side, c.ply)),
+        scheduled: sides.map(side => scheduledPoints(bank, side, c.ply, c.config)),
       };
       // Through JSON, as the fixture went: a bank's keys are strings there.
       expect(JSON.parse(JSON.stringify(actual))).withContext(`case ${i}`).toEqual(expected);

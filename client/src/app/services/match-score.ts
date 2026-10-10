@@ -23,7 +23,8 @@
  * so the room shows the engine's bank rather than keeping one of its own.
  */
 import { ruleOf } from './config.service';
-import { BASE_PANELS, captureClaims, captureScore, captureZones, captureEligible } from './hex-rules';
+import { capStat, unitStats } from './unit-stats';
+import { captureClaims, captureScore, captureZones, captureEligible } from './hex-rules';
 import {
   OVERTIME_FIRST_PLY, OVERTIME_LAST_TURN, PHASES, SCORING_PHASES, handOversBy, isPostmatch,
   phaseIndexAt, phaseStartTurn, PLIES_PER_TURN, turnOf, turnPointsBy,
@@ -43,11 +44,10 @@ export type PhaseBank = Record<number, { white: number; black: number; late?: bo
 /**
  * How far behind a side may finish the third phase and still force overtime,
  * keyed by the side behind. Black is allowed the wider gap because white
- * moves first: **white has to be more than 10 clear to take it outright,
- * black only more than 5**. *The owner, 24 Sep 2026: "10 ahead for white and
- * 5 ahead for black to trigger overtime"*.
+ * moves first. The owner's 9 Oct revision allows a White lead of 50 or a
+ * Black lead of 25; larger leads settle on points after both postmatch turns.
  */
-export const OVERTIME_MARGIN = { white: 5, black: 10 };
+export const OVERTIME_MARGIN = { white: 25, black: 50 };
 
 /** How a match the schedule ends was ended. Mirrors the server's reasons. */
 export type ScheduleEndReason = 'points' | 'overtime' | 'phase_result';
@@ -94,17 +94,12 @@ export function capOf(board: Record<string, any> | null | undefined, radius: num
  * The defender belongs to whoever was not moving; a counter-attack kills the
  * mover's own unit.
  *
- * **A unit killed in a base (the red panels, `BASE_PANELS`) costs nothing.**
- * *The owner, 24 Sep 2026: "killing things in base (red panel) should not
- * count towards victory points"* - while one killed in a reserve (green) still
- * does. A base never strikes back, so a blow into one only ever kills the unit
- * standing in it. Neither pays the killer any points (`points_of`).
+ * Battlefield, reserve and base deaths count attrition VP; panel kills pay no UP bounty.
  */
 export function deathsOf(config: any, history: readonly any[] | null | undefined, color: Side, phase?: number): number {
   let total = 0;
   for (const move of history ?? []) {
     if (phase !== undefined && phaseIndexAt(move.turn) !== phase) continue;
-    if (move.intoPanel && BASE_PANELS.has(move.panel)) continue;
     if (move.abilityDeath?.color === color) total += unitValue(config, move.abilityDeath.unit_id);
     if (move.defender_eliminated && move.color !== color) total += unitValue(config, move.captured);
     if (move.attacker_eliminated && move.color === color) total += unitValue(config, move.unit_id);
@@ -171,21 +166,9 @@ export function bankEndedPhases(
  * as the phase's postmatch begins - which is when a phase banks, so the bank
  * is all this needs. CP comes from nothing else.
  *
- * Phase N's award is `N x offset` (`rules.cpPhaseOffset`: 5, 10, 15), plus
- * both sides' scores for the phase, plus - for the side that scored less -
- * the gap between them. *The owner, 24 Sep 2026:* the side with the higher
- * total gets `phase_x + (mine + theirs)`, the lower
- * `phase_x + (mine + theirs) + abs(mine - theirs)` - the offset lowered to
- * 5, 10, 15 the same day. So a phase fought hard pays both sides more, and
- * the side behind is paid up to level: Phase 2 banking white 12, black 4
- * awards white 10 + 16 = 26 and black 26 + 8 = 34. Level scores award the two
- * the same. The 5 each side starts with (`rules.cpAtStart`) is the room's to
- * add; this is the awards alone.
- *
- * Only the phase's own scores are compared, not the match's - the side
- * behind in that phase is paid the gap even when it leads overall. A late
- * phase (see `bankEndedPhases`) still awards: it is shown, and its CP is
- * as real as its place in the header.
+ * Phase N pays N times the room's offset (10, 20, 30 by default), plus
+ * both phase scores and the shortfall for the side behind. Starting CP
+ * is separate. A late bank still awards; only that phase is compared.
  */
 export function cpAwarded(bank: PhaseBank | null | undefined, side: Side, offset: number): number {
   const other: Side = side === 'white' ? 'black' : 'white';
@@ -223,9 +206,16 @@ export function vpAsPoints(bank: PhaseBank | null | undefined, side: Side, ply: 
   return SCORING_PHASES.reduce((sum, phase) => sum + (bank?.[phase]?.[side] ?? 0), 0);
 }
 
-/** Regular ability points from turn income, phase grants and overtime VP conversion. */
-export function scheduledPoints(bank: PhaseBank | null | undefined, side: Side, ply: number): number {
-  return turnPointsBy(side, ply) + vpAsPoints(bank, side, ply);
+/** Regular points from the starting balance, turn income, phase grants and overtime VP conversion. */
+export function scheduledPoints(bank: PhaseBank | null | undefined, side: Side, ply: number, config?: any): number {
+  return ruleOf(config, 'pointsAtStart') + turnPointsBy(side, ply) + vpAsPoints(bank, side, ply);
+}
+
+/** Refund the unit as it stood on withdrawal; later base healing does not change the transaction. */
+export function withdrawalRefund(config: any, unit: any): number {
+  const maxHp = capStat(unit.max_hp ?? unitStats(unit.unit_id, config, unit.vet).hp ?? unit.hp ?? 0);
+  const missingHp = Math.max(0, maxHp - capStat(unit.hp ?? maxHp));
+  return Math.max(1, unitValue(config, unit.unit_id) - 1 - missingHp);
 }
 
 /** UP is independent of ability points. All committed unit transactions live in history. */
@@ -241,7 +231,7 @@ export function unitPoints(config: any, history: readonly any[], side: Side): nu
       if (move.unit?.color === side) points -= Math.trunc(Number(move.price) || 0);
       continue;
     }
-    if (move.withdrawn && (move.refundColor ?? move.color) === side) points += unitValue(config, move.unit_id);
+    if (move.withdrawn && (move.refundColor ?? move.color) === side) points += move.refund ?? withdrawalRefund(config, { unit_id: move.unit_id, ...move.unit });
     if (!move.intoPanel) {
       if (move.defender_eliminated && move.color === side) points += unitValue(config, move.captured);
       if (move.attacker_eliminated && move.color === other) points += unitValue(config, move.unit_id);

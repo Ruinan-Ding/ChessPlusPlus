@@ -4,20 +4,20 @@ import { combatExchange, CombatBonuses, attackStats, carries } from './unit-comb
 import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 import { ConfigService, ruleOf } from './config.service';
-import { rankedUnit, unitPassive, unitStats } from './unit-stats';
+import { activeVet, capStat, capUnit, rankedUnit, unitPassive, unitStats } from './unit-stats';
 import type { BoardState } from './game-state.service';
 import {
   computeLegalMoves, computeMoveCosts, canAttack, healingAmount, hexDistanceKeys, inHomeRows, isInsideBoard, panelOfHex,
 } from './hex-rules';
 import {
-  boardMoveLandings, boardMovesAt, homecomingsAt, lockedPanelUnits, openingMovedHexes,
+  boardMoveLandings, boardMovesAt, extraActionUids, lockedPanelUnits, openingMovedHexes,
   panelMoverAllowed, unitVeterancy, promotionHeals, regenerationHeals,
 } from './history-rules';
 import {
   boardMovesPerTurn, overtimeTollAt, isEntryOpen,
   isHomecomingOpen, isInitialization, isSetupTurn, isWrapOpen, noAttackMessage,
 } from './phases';
-import { PhaseBank, bankEndedPhases, halftimeUpAwards, scheduleEnding, unitPoints } from './match-score';
+import { PhaseBank, bankEndedPhases, halftimeUpAwards, scheduleEnding, withdrawalRefund, unitPoints } from './match-score';
 
 /**
  * Offline single-player engine.
@@ -315,7 +315,7 @@ export class LocalGameService {
         const [q, r] = String(coord).split(',').map(Number);
         if (!Number.isInteger(q) || !Number.isInteger(r)) continue;
         if (Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) > radius) continue;
-        const hp: number = config?.units?.[unitId as string]?.hp ?? 1;
+        const hp: number = unitStats(unitId as string, config).hp ?? 1;
         // uid mirrors build_initial_board: identity that survives moves.
         board[`${q},${r}`] = {
           unit_id: unitId, color, hp, max_hp: hp, uid: `${color[0]}${q},${r}`, vet: 0,
@@ -439,7 +439,7 @@ export class LocalGameService {
     }
     // Its HP is the client's word, like a boost - a cast may have mended or
     // hurt it in the panel - but not above what its own config allows.
-    const full = unitStats(unit.unit_id, g.config, unit.vet)?.hp ?? unit.max_hp ?? 1;
+    const full = unitStats(unit.unit_id, g.config, unit.veterancyHpActive ? unit.vet : 0)?.hp ?? unit.max_hp ?? 1;
     const hp = Math.min(full, Math.trunc(Number(unit.hp) || 0));
     // **Not back from the dead, either.** A panel unit a cast emptied is off
     // the roster the server rebuilds (`deal_panels` skips anything on 0), so
@@ -452,7 +452,9 @@ export class LocalGameService {
     // `max_hp` is taken from config too, not just `hp`. It is the ceiling
     // every later cast is clamped against (`landOnBoard`), so accepting the
     // message's word for it undoes the clamp above one mend later.
-    unit = { ...unit, hp, max_hp: full };
+    const { panel: _panel, ...fieldUnit } = unit;
+    unit = rankedUnit({ ...fieldUnit, hp, max_hp: full,
+      ...(g.config.units[unit.unit_id]?.veterancy?.hp && unit.veterancyHpActive === undefined ? { veterancyHpActive: false } : {}) }, g.config, unit.vet ?? 0);
     g.boardState = { ...g.boardState, [to]: unit };
     g.moveHistory = [...g.moveHistory, {
       from, to, unit_id: unit.unit_id, color: unit.color, turn: g.turnNumber,
@@ -566,12 +568,12 @@ export class LocalGameService {
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
+    unit = { ...unit, panel: panel ?? panelOfHex(attack, g.config?.board?.orientation) };
     const start = { ...g.boardState };
     const before = this.landEffects(start, effectsBefore);
     const attacker = start[from];
     const movingColor = this.colorOf(g.currentTurn);
-    const controls = controlsAt([...g.moveHistory, ...before.records], g.turnNumber);
-    const extraUids = Object.values(controls).filter(unit => unit.color === movingColor && unit.controlTurn === g.turnNumber).map(unit => unit.uid!);
+    const extraUids = extraActionUids([...g.moveHistory, ...before.records], g.turnNumber, movingColor);
     if (!attacker || attacker.color !== movingColor || !unit || unit.color === movingColor) {
       this.emit({ type: 'invalid_move', message: 'Nothing to attack there' });
       return;
@@ -605,7 +607,7 @@ export class LocalGameService {
       this.emit({ type: 'invalid_move', message: 'That unit has already moved this turn' });
       return;
     }
-    const holding = !!more && movesUsed + 1 < moveAllowance;
+    const holding = !!more;
     // The defender is named by the message too, so it gets the same checks the
     // walkers get, less the opening's lock - it is not the one moving.
     if (carries(g.abilityBuffs?.[attacker.uid!], 'action-lock')) {
@@ -624,7 +626,7 @@ export class LocalGameService {
     const [q, r] = String(from).split(',').map(Number);
     const bonus = extraSteps(moveBonus);
     const budget = bonus
-      ? (unitStats(attacker.unit_id, g.config, attacker.vet)?.move ?? 0) + bonus
+      ? capStat((unitStats(attacker.unit_id, g.config, attacker.vet)?.move ?? 0) + bonus)
       : undefined;
     const walked = to !== from;
     if (walked
@@ -659,9 +661,10 @@ export class LocalGameService {
       ...(attacker.uid ? { uid: attacker.uid } : {}),
       captured: exchange.targetHp <= 0 ? unit.unit_id : null, attacked: true, attackedHex: attack,
       damage_dealt: exchange.damage + exchange.secondDamage, defender_eliminated: exchange.targetHp <= 0,
-      moved: walked, counter_damage: exchange.counterDamage, attacker_eliminated: exchange.attackerHp <= 0,
+      moved: walked, counter_damage: exchange.counterDamage, countered: exchange.countered, attacker_eliminated: exchange.attackerHp <= 0,
       panelAttack: true, intoPanel: true, unit, defenderHp: exchange.targetHp,
-      ...(exchange.secondDamage ? { secondStrike: true } : {}), ...(panel ? { panel } : {}),
+      counterActor: { unit_id: unit.unit_id, color: unit.color, uid: unit.uid },
+      ...(exchange.secondStrike ? { secondStrike: true } : {}), ...(panel ? { panel } : {}),
     };
     if (exchange.attackerHp <= 0) delete board[to]; else board[to] = { ...attacker, hp: exchange.attackerHp };
     const between = this.landEffects(board, effectsAfterAttack).records;
@@ -671,7 +674,7 @@ export class LocalGameService {
     // the turn's last move - the same as a held `move`.
     if (holding) {
       g.boardState = board;
-      g.moveHistory = [...g.moveHistory, ...before.records, record, ...between];
+      g.moveHistory = [...g.moveHistory, ...before.records, record, ...between, ...this.landEffects(board, effects).records];
       this.persist();
       this.emit({ type: 'game_state_update', ...this.snapshot() });
       return;
@@ -710,9 +713,8 @@ export class LocalGameService {
    * here instead, the earlier ones go on a copy the move is measured against,
    * the later ones after it, the toll after both - and a refusal keeps none.
    *
-   * ponytail: solo only, like every other ability. A server holds no
-   * abilities, so it would take the client's word for a unit's HP - which is
-   * a free heal for anyone with a console open.
+   * Solo accepts its own UI's resolved effects. Online commands carry only
+   * intent; the server derives HP and modifiers from authoritative ability state.
    *
    * Returns the panel records, and whether a cast took a unit off the board.
    */
@@ -730,13 +732,14 @@ export class LocalGameService {
       }
       if (e.promotion?.uid) {
         const key = Object.keys(board).find(at => board[at].uid === e.promotion.uid);
-        if (key) board[key] = { ...board[key], vet: e.promotion.vet, max_hp: e.promotion.max_hp };
+        if (key) board[key] = { ...board[key], vet: e.promotion.vet, max_hp: e.promotion.max_hp, veterancyHpActive: e.promotion.veterancyHpActive };
         records.push({ turn: this.game!.turnNumber, promotion: e.promotion });
       }
       if (e.unitCast) {
         records.push({ turn: this.game!.turnNumber, castId: e.castId, unitCast: e.unitCast });
         if (this.game!.config?.abilities?.catalogue?.[e.unitCast.id]?.effect === 'sacrifice') removals.add(e.unitCast.uid);
       }
+      if (e.extraUnit) records.push({ turn: this.game!.turnNumber, extraUnit: e.extraUnit });
       if (e.control) {
         const key = Object.keys(board).find(at => board[at].uid === e.control.uid);
         if (key) board[key] = { ...board[key], ...e.control };
@@ -772,7 +775,7 @@ export class LocalGameService {
     // Clamped at both ends. The room clamps too, but this is the copy that is
     // persisted and handed back, and it should not be able to hold an HP its
     // own config says is impossible whatever it was sent.
-    const left = Math.max(0, Math.min(standing.max_hp ?? Infinity, Math.trunc(hp)));
+    const left = capStat(Math.min(standing.max_hp ?? Infinity, Math.trunc(hp)));
     if (!removal && left < standing.hp && carries(this.game?.abilityBuffs?.[standing.uid], 'invulnerable')) return false;
     if (left === standing.hp) return false;
     if (left <= 0) delete board[key];
@@ -844,8 +847,7 @@ export class LocalGameService {
     const radius: number = g.config?.board?.radius ?? 11;
     const [q, r] = String(from).split(',').map(Number);
     const movingColor = this.colorOf(g.currentTurn);
-    const controls = controlsAt([...g.moveHistory, ...before.records], g.turnNumber);
-    const extraUids = Object.values(controls).filter(unit => unit.color === movingColor && unit.controlTurn === g.turnNumber).map(unit => unit.uid!);
+    const extraUids = extraActionUids([...g.moveHistory, ...before.records], g.turnNumber, movingColor);
     const casting = unitAction && before.records.some(record => record.controlSource === piece?.uid);
 
     const relocating = to !== from;
@@ -862,7 +864,7 @@ export class LocalGameService {
     const atkUp = stat(bonuses?.atk), defUp = stat(bonuses?.def);
     const theirAtkUp = stat(bonuses?.targetAtk), theirDefUp = stat(bonuses?.targetDef);
     const budget = bonus
-      ? (unitStats(piece?.unit_id ?? '', g.config, piece?.vet).move ?? 0) + bonus
+      ? capStat((unitStats(piece?.unit_id ?? '', g.config, piece?.vet).move ?? 0) + bonus)
       : undefined;
     // Walking off the board into a base. The panels are the client's own, so
     // the walk is not re-derived here - but it has to be a walk, off the
@@ -908,13 +910,7 @@ export class LocalGameService {
         this.emit({ type: 'invalid_move', message: 'Only your own first three rows walk home' });
         return;
       }
-      if (isSetupTurn(g.turnNumber)) {
-        const gone = homecomingsAt(g.moveHistory, g.turnNumber, movingColor);
-        if (!(piece?.uid && gone.has(piece.uid)) && gone.size >= ruleOf(g.config, 'homecomingsPerSetupTurn')) {
-          this.emit({ type: 'invalid_move', message: 'That is all who may walk home this turn' });
-          return;
-        }
-      }
+
     }
     if (!piece || piece.color !== movingColor || !Number.isInteger(q) || !Number.isInteger(r)
         || (withdraw && !afterAttackTo
@@ -965,7 +961,7 @@ export class LocalGameService {
     if (extraUids.length && !extraUids.includes(piece?.uid ?? '') && movesUsed - extraUsed >= normalAllowance) {
       this.emit({ type: 'invalid_move', message: 'Only the controlled unit has an extra action' }); return;
     }
-    if (!(leaving && isSetupTurn(g.turnNumber)) && movesUsed >= moveAllowance) {
+    if (movesUsed >= moveAllowance) {
       this.emit({
         type: 'invalid_move',
         message: `That side has had all ${moveAllowance} of its moves this turn`,
@@ -976,7 +972,7 @@ export class LocalGameService {
     // another move is still to come: a `more` on the last of the allowance
     // ends the turn anyway, there being nothing left for it to hold the seat
     // open for. Mirrors `holding` in `_handle_make_move`.
-    const holding = !!more && movesUsed + 1 < moveAllowance;
+    const holding = !!more;
     // The allowance counts moves; the owner's rule counts units. Without this
     // a side with three could play A, then B, then A again - each message
     // legal on its own, so the unit covered twice its MOV in one turn.
@@ -1000,20 +996,14 @@ export class LocalGameService {
       defender_eliminated: false, moved: relocating,
       // The unit rides in the record: it is the only place it survives once
       // it is off the board, and what the base is rebuilt from on a reload.
-      ...(leaving ? { withdrawn: true, unit: piece, refundColor: piece.owner ?? piece.color } : {}),
+      ...(leaving ? { withdrawn: true, unit: rankedUnit(piece, g.config, piece.vet ?? 0, false),
+        refund: withdrawalRefund(g.config, piece), refundColor: piece.owner ?? piece.color } : {}),
     };
 
-    // **On a setup turn a walk home is deployment, not the turn's board
-    // action**, exactly as a crossing is: three go in one turn, and handing
-    // the seat over on the first would leave the other two unreachable. Sent
-    // as a state update rather than `move_made` for the same reason the
-    // server sends one - the same seat, the same ply, the same clock. Nothing
-    // above can have staged an attack or a cast here, both being refused on a
-    // setup turn, so there is nothing else left to fold in. Mirrors the split
-    // in `_handle_make_move`; overtime keeps a walk home as the turn's action.
+    // Setup withdrawals hold the seat so the remaining category actions can commit before the final pass.
     if (leaving && isSetupTurn(g.turnNumber) && !extraUids.includes(piece.uid ?? '')) {
       g.boardState = board;
-      g.moveHistory = [...g.moveHistory, record];
+      g.moveHistory = [...g.moveHistory, ...before.records, record, ...this.landEffects(board, effects).records];
       this.persist();
       this.emit({ type: 'game_state_update', ...this.snapshot() });
       return;
@@ -1053,10 +1043,11 @@ export class LocalGameService {
         ...bonuses,
         atk: atkUp, def: defUp, targetAtk: theirAtkUp, targetDef: theirDefUp, charge: bonuses?.charge, nullify: bonuses?.nullify,
       });
-      Object.assign(record, { attacked: true, attackedHex: attack, damage_dealt: exchange.damage + exchange.secondDamage,
-        counter_damage: exchange.counterDamage, attacker_eliminated: exchange.attackerHp <= 0,
+      Object.assign(record, { attacked: true, attackedHex: attack,
+        counterActor: { unit_id: target.unit_id, color: target.color, uid: target.uid }, damage_dealt: exchange.damage + exchange.secondDamage,
+        counter_damage: exchange.counterDamage, countered: exchange.countered, attacker_eliminated: exchange.attackerHp <= 0,
         defender_eliminated: exchange.targetHp <= 0,
-        ...(exchange.secondDamage ? { secondStrike: true } : {}),
+        ...(exchange.secondStrike ? { secondStrike: true } : {}),
       });
       if (exchange.targetHp <= 0) { record.captured = target.unit_id; delete board[attack]; }
       else { board[attack] = { ...target, hp: exchange.targetHp }; record.defender_hp = exchange.targetHp; }
@@ -1078,7 +1069,7 @@ export class LocalGameService {
     // so nothing else that counts turns double-counts either.
     if (holding) {
       g.boardState = board;
-      g.moveHistory = [...g.moveHistory, ...before.records, record, ...between];
+      g.moveHistory = [...g.moveHistory, ...before.records, record, ...between, ...this.landEffects(board, effects).records];
       this.persist();
       this.emit({ type: 'game_state_update', ...this.snapshot() });
       return;
@@ -1163,7 +1154,8 @@ export class LocalGameService {
     }
     if (leaving) {
       if (record.intoPanel) record.panelDefender = record.unit;
-      Object.assign(record, { withdrawn: true, unit: board[at], refundColor: unit.owner ?? unit.color });
+      Object.assign(record, { withdrawn: true, unit: rankedUnit(board[at], g.config, unit.vet ?? 0, false),
+        refund: withdrawalRefund(g.config, board[at]), refundColor: unit.owner ?? unit.color });
     } else board[to] = board[at];
     delete board[at];
     record.attackFrom = at;
@@ -1376,6 +1368,7 @@ export class LocalGameService {
 
   private snapshot(): any {
     const g = this.game!;
+    g.boardState = Object.fromEntries(Object.entries(g.boardState).map(([at, unit]) => [at, capUnit(unit)]));
     return {
       gameId: LOCAL_GAME_ID,
       boardState: g.boardState,
@@ -1441,6 +1434,8 @@ export class LocalGameService {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       this.game = raw ? JSON.parse(raw) : null;
+      if (this.game) this.game.boardState = Object.fromEntries(Object.entries(this.game.boardState)
+        .map(([at, unit]) => [at, capUnit(unit)]));
       this.rankBoard();
     } catch {
       this.game = null;

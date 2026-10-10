@@ -363,7 +363,7 @@
               },
               "testing": {
                 "type": "boolean",
-                "description": "A testing lever, not a balanced ability. Kept out of networked play: Rally hands out 300 points, which would break the wrap's price."
+                "description": "Marks a testing/catalogue entry such as Rally. The shipped pool excludes it; this marker alone does not restrict a configured custom ability online."
               },
               "effect": {
                 "type": "string",
@@ -375,6 +375,8 @@
                   "regenerate",
                   "intimidate",
                   "persuade",
+                  "capture",
+                  "checkmate",
                   "rapid-movement",
                   "sacrifice",
                   "attack-drain",
@@ -394,7 +396,7 @@
                   "ruin",
                   "blitz"
                 ],
-                "description": "Configured unit or CP path behavior. Effects execute in solo; online casting remains deferred."
+                "description": "Configured unit or CP path behavior, executed in solo and authoritative multiplayer. Capture unlocks at Vet 2: a sole capturing side holds the zone except eligible enemy occupants; opposing active Capture passives restore normal claims."
               },
               "counterAttack": {
                 "type": "array",
@@ -433,7 +435,7 @@
               "stars": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "Immediate stars granted by Strengthen, capped at vet 3."
+                "description": "Immediate permanent stars granted by Strengthen or selected Sacrifice, capped at vet 3. On Sacrifice, this opts into one friendly battlefield/green-reserve recipient, full healing, and an optional unused friendly battlefield extra actor; omission preserves legacy army-wide Sacrifice."
               },
               "recharge": {
                 "type": "integer",
@@ -468,7 +470,7 @@
                   "field-reserve",
                   "all"
                 ],
-                "description": "Path recipient zones. field-reserve excludes red bases. Passives also apply to later eligible arrivals; temporary casts capture only current recipients."
+                "description": "Recipient zones for selected friendly/enemy casts, path passives and path effects. field-reserve excludes red bases; all (or omitted scope on a selected cast) includes every zone. Passives also apply to later eligible arrivals; temporary casts capture only current recipients."
               },
               "hel": {
                 "type": "integer",
@@ -490,6 +492,48 @@
                   "phase"
                 ],
                 "description": "Scope of the uses budget. Omitted means match. Phase means initialization, each numbered phase including halftime/postmatch, or all overtime stages together; requires uses."
+              },
+              "area": {
+                "type": "string",
+                "enum": [
+                  "horizontal",
+                  "cross"
+                ],
+                "description": "Horizontal board-wide line for hex-cleave, or four diagonal rays for hex-trap. Omitted preserves the legacy radial area. The shape includes base/reserve cells and follows board orientation."
+              },
+              "splashRange": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Nearest steps receiving the splash effect; omitted means one. Line areas count cells along the line."
+              },
+              "outerRange": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Last ring reached by hex-sap, beyond splashRange. Omitted reaches only splashRange."
+              },
+              "outerAtk": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Nonnegative ATK boost to hex-sap outer-ring occupants on either side; requires outerRange."
+              },
+              "outerHel": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Nonnegative HEL boost to existing healers in hex-sap outer ring on either side; requires outerRange."
+              },
+              "outerMov": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Nonnegative MOV boost on hex-trap outer diagonal rays beyond splashRange; requires cross area."
+              },
+              "radius": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Call effect range in adjacent hex steps, excluding the caster. Omitted preserves the older army-wide Call."
+              },
+              "enemyMov": {
+                "type": "integer",
+                "description": "Temporary MOV modifier to enemy recipients of a unit Call."
               }
             },
             "additionalProperties": false,
@@ -558,9 +602,134 @@
                     "uses"
                   ]
                 }
+              },
+              {
+                "if": {
+                  "required": [
+                    "area"
+                  ],
+                  "properties": {
+                    "area": {
+                      "const": "horizontal"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "effect"
+                  ],
+                  "properties": {
+                    "effect": {
+                      "const": "hex-cleave"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "area"
+                  ],
+                  "properties": {
+                    "area": {
+                      "const": "cross"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "effect"
+                  ],
+                  "properties": {
+                    "effect": {
+                      "const": "hex-trap"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "outerRange"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "outerAtk"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "outerHel"
+                      ]
+                    }
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "effect",
+                    "outerRange"
+                  ],
+                  "properties": {
+                    "effect": {
+                      "const": "hex-sap"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "outerMov"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "area",
+                    "effect"
+                  ],
+                  "properties": {
+                    "area": {
+                      "const": "cross"
+                    },
+                    "effect": {
+                      "const": "hex-trap"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "effect",
+                    "heal"
+                  ],
+                  "properties": {
+                    "effect": {
+                      "const": "hex-cleave"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "area"
+                  ],
+                  "properties": {
+                    "area": {
+                      "const": "horizontal"
+                    }
+                  }
+                }
               }
             ]
           }
+        },
+        "pairPickDelay": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Full turns after a side first picks a pool pair before it can fill a second pair. A pick on Turn 1 with delay 5 unlocks on Turn 6. Omitted preserves immediate picking in older configs."
         }
       },
       "additionalProperties": false
@@ -631,21 +800,6 @@
           ],
           "description": "Win condition. 'regicide' (the default): a side loses when it has no commander left. 'elimination': a side loses when it has no units left at all."
         },
-        "panelMoversPerTurn": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "How many units each panel may start in one turn, counted for the base and the reserve separately. Default 3."
-        },
-        "postmatchEntries": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "How many units a side may bring out of its reserve in a phase's postmatch turn. Stands instead of panelMoversPerTurn for the reserve on that turn. Default 5."
-        },
-        "homecomingsPerSetupTurn": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "How many units a side may walk home in one setup turn. Overtime has no count; the turn's board-move allowance caps it there. Default 3."
-        },
         "cpAtStart": {
           "type": "integer",
           "minimum": 0,
@@ -654,12 +808,17 @@
         "cpPhaseOffset": {
           "type": "integer",
           "minimum": 0,
-          "description": "The base of the CP each side is awarded at the start of a phase's postmatch: Phase N's award is N times this (5, 10 and 15 at the default), plus both sides' scores for the phase, plus the gap between them for the side that scored less. Default 5."
+          "description": "The base of the CP each side is awarded once at the start of a phase's postmatch: Phase N's award is N times this (10, 20 and 30 at the default), plus both sides' scores for the phase, plus the gap between them for the side that scored less. Default 10."
         },
         "upAtStart": {
           "type": "integer",
           "minimum": 0,
           "description": "Unit points each side starts with; omitted means 10. UP pays unit crossings and receives unit kill rewards, homecoming refunds and halftime VP snapshots."
+        },
+        "pointsAtStart": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Regular ability points each side starts with; omitted means 10. Added once to normal own-turn income, numbered-phase grants and overtime VP conversion."
         }
       },
       "additionalProperties": false

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
-from game.engine.game_logic import can_attack
+from game.engine.game_logic import can_attack, strike_damage
 
 
 class CombatParityTestCase(SimpleTestCase):
@@ -13,3 +13,6 @@ class CombatParityTestCase(SimpleTestCase):
         for case in json.loads(path.read_text(encoding='utf-8')):
             with self.subTest(case=case):
                 self.assertEqual(can_attack(case['unit'], case['distance']), case['canAttack'])
+                if 'damage' in case:
+                    self.assertEqual(strike_damage(case['unit'], case['defender'], case['distance'],
+                                                   {'rules': case['rules']}), case['damage'])

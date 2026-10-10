@@ -18,6 +18,7 @@ a cell carries across moves and (de)serialisation; it only requires that
 """
 
 from __future__ import annotations
+from .unit_stats import cap_unit
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -130,7 +131,7 @@ class HexBoard:
             raise ValueError(f"Coordinate ({q},{r}) is outside radius {self.radius}")
         if 'unit_id' not in cell or 'color' not in cell:
             raise ValueError(f"Cell at ({q},{r}) is missing unit_id/color: {cell!r}")
-        self._cells[(q, r)] = dict(cell)
+        self._cells[(q, r)] = cap_unit(dict(cell))
 
     def remove(self, q: int, r: int) -> Optional[CellData]:
         """Remove and return the piece at (q, r), or None if empty."""

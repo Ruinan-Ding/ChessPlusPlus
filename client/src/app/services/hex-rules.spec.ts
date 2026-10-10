@@ -1,7 +1,7 @@
 import {
-  ZONE_WORTH, canAttack, attackTiers, captureClaims, captureScore, captureZoneHexes, captureZoneValues,
+  hexEffectBand, ZONE_WORTH, canAttack, attackTiers, captureZones, captureClaims, captureScore, captureZoneHexes, captureZoneValues,
   computeAttackZone, computeLegalMoves, computeMoveCosts, inHomeRows, strikeDamage, HOME_ROWS,
-  MIN_STRIKE_DAMAGE,
+  MIN_STRIKE_DAMAGE, strikeFromStats,
 } from './hex-rules';
 import { DEFAULT_GAME_CONFIG } from './config.service';
 import combatParity from './combat-parity.json';
@@ -10,6 +10,8 @@ describe('configured unit stats', () => {
   it('agrees with the server on attack eligibility at every ring, including zero tiers and blind spots', () => {
     for (const test of combatParity) {
       expect(canAttack(test.unit, test.distance)).withContext(JSON.stringify(test)).toBe(test.canAttack);
+      if ('damage' in test) expect(strikeFromStats(test.unit, test.defender, test.distance, { rules: test.rules }))
+        .withContext(JSON.stringify(test)).toBe(test.damage!);
     }
   });
 
@@ -422,6 +424,55 @@ describe('inHomeRows', () => {
 });
 
 
+describe('King Capture passive', () => {
+  const unit = (unit_id: string, color: string, vet: number): any => ({ unit_id, color, vet });
+
+  it('unlocks at Vet 2 anywhere in each zone and leaves eligible enemy hexes to their owner', () => {
+    for (const zone of captureZones(11)) {
+      const [q, r] = zone.center.split(',').map(Number);
+      const at = `${q + 2},${r}`, enemyAt = `${q - 1},${r}`;
+      for (const color of ['white', 'black']) {
+        const enemy = color === 'white' ? 'black' : 'white';
+        for (const vet of [0, 1, 2, 3]) {
+          const claims = captureClaims({ [at]: unit('king', color, vet), [enemyAt]: unit('queen', enemy, 0) }, 11, DEFAULT_GAME_CONFIG);
+          if (vet < 2) expect([...claims.values()].filter(c => c === color).length).toBe(1);
+          else {
+            expect([...zone.hexes].filter(k => claims.get(k) === color).length).toBe(zone.hexes.size - 1);
+            expect(claims.get(enemyAt)).toBe(enemy as 'white' | 'black');
+          }
+        }
+      }
+    }
+  });
+
+  it('restores ordinary claims for opposing active Capture at Vet 2 or 3, without rank priority', () => {
+    for (const white of [0, 1, 2, 3]) for (const black of [0, 1, 2, 3]) {
+      const board = { '2,0': unit('king', 'white', white), '-2,0': unit('king', 'black', black) };
+      const claims = captureClaims(board, 11, DEFAULT_GAME_CONFIG);
+      if ((white >= 2) === (black >= 2)) {
+        const legacy = structuredClone(DEFAULT_GAME_CONFIG); legacy.units.king.passive = 'persuade';
+        expect(claims).toEqual(captureClaims(board, 11, legacy));
+      } else {
+        const active = white >= 2 ? 'white' : 'black';
+        expect(captureScore(claims, active, 11)).toBe(36);
+        expect(captureScore(claims, active === 'white' ? 'black' : 'white', 11)).toBe(2);
+      }
+    }
+  });
+
+  it('ignores ineligible enemies, supports renamed kits and falls back as soon as Capture leaves', () => {
+    const custom: any = structuredClone(DEFAULT_GAME_CONFIG);
+    custom.units.flagbearer = { ...custom.units.king, passive: 'custom-capture', captureZones: ['middle'] };
+    custom.abilities.catalogue['custom-capture'] = { ...custom.abilities.catalogue.capture, id: 'custom-capture' };
+    const board = { '2,0': unit('flagbearer', 'white', 2), '0,0': unit('pawn', 'black', 3) };
+    expect(captureScore(captureClaims(board, 11, custom), 'white', 11)).toBe(38);
+    expect(captureClaims({ '2,0': unit('flagbearer', 'white', 2) }, 11, custom).size).toBe(19);
+    expect(captureClaims({ '9,0': unit('flagbearer', 'white', 2) }, 11, custom).size).toBe(0);
+    expect(captureClaims({ '0,0': board['0,0'] }, 11, custom).size).toBe(0);
+  });
+});
+
+
 describe('capture permissions and centre control', () => {
   const centers = ['-3,6', '0,0', '7,0', '-7,0', '3,-6'];
   const piece = (unit_id: string, color: 'white' | 'black') => ({ unit_id, color });
@@ -474,5 +525,43 @@ describe('capture permissions and centre control', () => {
     const config = { units: { custom: { captureZones: ['middle'] }, none: { captureZones: [] } } };
     expect(captureScore(captureClaims({ '0,0': piece('custom', 'black') }, 11, config), 'black', 11)).toBe(38);
     expect(captureClaims({ '0,0': piece('none', 'white') }, 11, config).size).toBe(0);
+  });
+});
+
+describe('CP hex areas', () => {
+  it('separates Sap centre, inner drain and outer boost without reaching ring 3', () => {
+    const effect = DEFAULT_GAME_CONFIG.abilities.catalogue.anchor;
+    expect(hexEffectBand('0,0', '0,0', effect)).toBe('centre');
+    expect(hexEffectBand('0,0', '1,-1', effect)).toBe('splash');
+    expect(hexEffectBand('0,0', '-2,2', effect)).toBe('outer');
+    expect(hexEffectBand('0,0', '3,-3', effect)).toBeNull();
+    expect(hexEffectBand('0,0', '2,0', {})).toBeNull();
+  });
+
+  it('extends Cleave along horizontal rows with two near cells on each side', () => {
+    const effect = { ...DEFAULT_GAME_CONFIG.abilities.catalogue.cleave, area: 'horizontal' as const };
+    for (const direction of [-1, 1]) {
+      expect(hexEffectBand('2,1', `${2 + direction},1`, effect)).toBe('splash');
+      expect(hexEffectBand('2,1', `${2 + 2 * direction},1`, effect)).toBe('splash');
+      expect(hexEffectBand('2,1', `${2 + 8 * direction},1`, effect)).toBe('outer');
+    }
+    expect(hexEffectBand('0,9', '-12,9', effect)).toBe('outer');
+    expect(hexEffectBand('2,1', '2,2', effect)).toBeNull();
+    expect(hexEffectBand('0,0', '4,-2', effect, 'vertex-up')).toBe('splash');
+    expect(hexEffectBand('0,0', '-6,3', effect, 'vertex-up')).toBe('outer');
+    expect(hexEffectBand('0,0', '1,0', effect, 'vertex-up')).toBeNull();
+  });
+
+  it('extends Trap over four diagonal rays and leaves other directions untouched', () => {
+    const effect = { ...DEFAULT_GAME_CONFIG.abilities.catalogue.surge, area: 'cross' as const };
+    for (const [dq, dr] of [[0,-1], [1,-1], [0,1], [-1,1]]) {
+      expect(hexEffectBand('0,0', `${dq},${dr}`, effect)).toBe('splash');
+      expect(hexEffectBand('0,0', `${dq * 2},${dr * 2}`, effect)).toBe('splash');
+      expect(hexEffectBand('0,0', `${dq * 8},${dr * 8}`, effect)).toBe('outer');
+    }
+    expect(hexEffectBand('0,0', '1,0', effect)).toBeNull();
+    expect(hexEffectBand('0,0', '-1,0', effect)).toBeNull();
+    expect(hexEffectBand('0,0', '1,0', effect, 'vertex-up')).toBe('splash');
+    expect(hexEffectBand('0,0', '0,1', effect, 'vertex-up')).toBeNull();
   });
 });

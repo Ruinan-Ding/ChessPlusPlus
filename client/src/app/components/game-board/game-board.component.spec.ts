@@ -57,6 +57,74 @@ describe('GameBoardComponent reach preview', () => {
     fixture.detectChanges();
   });
 
+  it('selects a newly granted extra actor for immediate attacks without stealing later selections', () => {
+    board.myColor = 'white'; board.turnColor = 'white'; board.canMove = true;
+    board.username = 'Actor'; board.currentTurn = 'Actor';
+    board.boardState = {
+      '0,0': { ...boardState['0,0'], uid: 'ordinary' },
+      '-3,0': { ...boardState['-3,0'], uid: 'extra' },
+      '-2,0': { ...boardState['3,0'], uid: 'enemy' },
+    };
+    board.extraActionUids = ['extra'];
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false),
+      extraActionUids: new SimpleChange([], board.extraActionUids, false) });
+    expect(board.selectedHex).toBe('-3,0');
+    const attack = spyOn(board.attackMade, 'emit');
+    board.onHexClick(board.cells.find(cell => cell.key === '-2,0')!);
+    expect(attack).toHaveBeenCalledWith({ from: '-3,0', to: '-3,0', attack: '-2,0' });
+    board.onHexClick(board.cells.find(cell => cell.key === '0,0')!);
+    board.extraActionUids = ['extra'];
+    board.ngOnChanges({ extraActionUids: new SimpleChange(['extra'], board.extraActionUids, false) });
+    expect(board.selectedHex).toBe('0,0');
+  });
+
+  it('caps a panel budget before subtracting spent steps and bounds older replay frames', () => {
+    const cell = board.cells.find(hex => hex.key === '0,0')!;
+    board.config = { ...config, units: { ...config.units, archer: { ...config.units.archer, move: 95 } } };
+    cell.piece = { ...cell.piece!, uid: 'capped' };
+    board.unitBuffs = { capped: { mov: 20, atk: 0, def: 0 } };
+    (board as any).panelMoved.set('capped', 95);
+    expect((board as any).budgetFor(cell)).toBe(4);
+    const frame = board.cells.map(hex => hex.key === '0,0' ? { ...hex,
+      piece: { ...hex.piece!, hp: 150, max_hp: 180 }, stats: { ...hex.stats!, hp: 150, atk: '150', def: 150 } } : hex);
+    board.replayFrame(frame, []);
+    const bounded = board.cells.find(hex => hex.key === '0,0')!;
+    expect([bounded.piece!.hp, bounded.piece!.max_hp, bounded.stats!.hp, bounded.stats!.atk, bounded.stats!.def])
+      .toEqual([99, 99, 99, '99', 99]);
+    board.restoreReplayFrame(); expect(frame.find(hex => hex.key === '0,0')!.piece!.hp).toBe(150);
+  });
+
+  it('refreshes a stationary hover when control or HP changes under the pointer', () => {
+    board.onHexHover(board.cells.find(c => c.key === '3,0')!);
+    const emitted = spyOn(board.hexHovered, 'emit');
+    board.boardState = { ...boardState, '3,0': { ...boardState['3,0'], color: 'white', hp: 2 } };
+    board.ngOnChanges({ boardState: new SimpleChange(boardState, board.boardState, false) });
+    expect(emitted).toHaveBeenCalledWith(jasmine.objectContaining({ color: 'white', hp: 2 }));
+    const next = { ...board.boardState }; delete next['3,0']; board.boardState = next;
+    board.ngOnChanges({ boardState: new SimpleChange(null, next, false) });
+    expect(emitted.calls.mostRecent().args[0]).toBeNull();
+    expect(board.hoveredHex).toBeNull();
+  });
+
+  it('shows the whole replay then restores the staged board and its prior zoom', () => {
+    board.boardZoom = 2; (board as any).zoomCenter = { x: 0, y: 0 };
+    (board as any).autoZoomed = true; (board as any).applyZoom();
+    const view = board.shownViewBox, state = board.boardState;
+    board.movementArrows = [{ from: '0,0', to: '1,0' }];
+    board.attackMarkers = [{ from: '0,0', to: '3,0' }];
+    board.unitBuffs = { archer: { mov: 0, atk: 8, up: true } };
+    board.replayFrame(board.cells.map(cell => ({ ...cell, piece: null, stats: null })), []);
+    expect(board.boardZoom).toBe(1); expect(board.cells.every(cell => !cell.piece)).toBeTrue();
+    expect(board.movementArrowSegments).toEqual([]); expect(board.attackStrikes.swords).toEqual([]);
+    expect(board.hasLift('archer')).toBeFalse();
+    board.restoreReplayFrame();
+    expect(board.movementArrowSegments.length).toBe(1); expect(board.attackStrikes.swords.length).toBe(1);
+    expect(board.hasLift('archer')).toBeTrue();
+    expect(board.boardState).toBe(state); expect(board.cells.some(cell => cell.piece)).toBeTrue();
+    expect(board.boardZoom).toBe(2); expect(board.shownViewBox).toBe(view);
+    expect((board as any).autoZoomed).toBeTrue();
+  });
+
   // `config` is shared by every spec in this file, so anything a spec adds
   // to it has to come back off - including when that spec fails partway.
   afterEach(() => { delete (config.units as any).archer.commander; });
@@ -151,6 +219,24 @@ describe('GameBoardComponent reach preview', () => {
     expect(board.previewMoves.size).toBe(0); expect(board.previewAttacks.size).toBe(0); expect(board.previewHeals.size).toBe(0);
   });
 
+  it('previews harmful and beneficial bands from empty targeting hexes and clears them on mouseleave', () => {
+    board.abilityMode = 'hex';
+    board.abilityEffect = DEFAULT_GAME_CONFIG.abilities.catalogue.anchor;
+    board.onHexHover(cell('1,0'));
+    expect(board.isAbilityTarget(cell('1,0'), 'enemy')).toBeTrue();
+    expect(board.isAbilityTarget(cell('2,0'), 'enemy')).toBeTrue();
+    expect(board.isAbilityTarget(cell('3,0'), 'friendly')).toBeTrue();
+    expect(board.isAbilityTarget(cell('4,0'), 'friendly')).toBeFalse();
+    board.abilityEffect = DEFAULT_GAME_CONFIG.abilities.catalogue.cleave;
+    expect(board.isAbilityTarget(cell('-2,0'), 'friendly')).toBeTrue();
+    expect(board.isAbilityTarget(cell('1,1'), 'enemy')).toBeFalse();
+    board.abilityEffect = DEFAULT_GAME_CONFIG.abilities.catalogue.surge;
+    expect(board.isAbilityTarget(cell('1,2'), 'enemy')).toBeTrue();
+    expect(board.isAbilityTarget(cell('-2,3'), 'friendly')).toBeTrue();
+    expect(board.isAbilityTarget(cell('2,0'), 'enemy')).toBeFalse();
+    board.onHexHover(null); expect(board.isAbilityTarget(cell('1,0'), 'enemy')).toBeFalse();
+  });
+
   it('reverts staged reserve promotion metadata on Undo and preserves later wounds', () => {
     setPanelsDealt(false); board.config = structuredClone(DEFAULT_GAME_CONFIG); board.radius = 11; board.turnNumber = 1;
     board.config.setup = { white: {}, black: {} };
@@ -160,10 +246,10 @@ describe('GameBoardComponent reach preview', () => {
     const uid = 'w' + green;
     board.panelHp = { [uid]: 5 };
     board.ngOnChanges({ config: new SimpleChange(null, board.config, false), panelHp: new SimpleChange(null, board.panelHp, false) });
-    const promoted = { ...cell(green).piece!, hp: 7, max_hp: 14, vet: 1 };
-    board.unitPromotions = { [uid]: promoted }; board.panelHp = { [uid]: 7 };
+    const promoted = { ...cell(green).piece!, hp: 5, max_hp: 12, vet: 1, veterancyHpActive: false };
+    board.unitPromotions = { [uid]: promoted }; board.panelHp = { [uid]: 5 };
     board.ngOnChanges({ unitPromotions: new SimpleChange(null, board.unitPromotions, false), panelHp: new SimpleChange(null, board.panelHp, false) });
-    expect(cell(green).piece).toEqual(jasmine.objectContaining({ hp: 7, max_hp: 14, vet: 1 }));
+    expect(cell(green).piece).toEqual(jasmine.objectContaining({ hp: 5, max_hp: 12, vet: 1, veterancyHpActive: false }));
     board.panelHp = { [uid]: 3 }; board.ngOnChanges({ panelHp: new SimpleChange(null, board.panelHp, false) });
     expect(cell(green).piece!.hp).toBe(3);
     board.unitPromotions = {}; board.panelHp = { [uid]: 5 };
@@ -214,7 +300,7 @@ describe('GameBoardComponent reach preview', () => {
     expect(board.previewAttacks.size).toBe(0);
   });
 
-  it('keeps unavailable attack dashed, enables Shove attacks at Vet 2 and suppresses drained attacks', () => {
+  it('keeps counter-only attack dashed at Vet 2 and suppresses drained normal attacks', () => {
     board.config = structuredClone(DEFAULT_GAME_CONFIG);
     board.radius = 11; board.interactive = true;
     board.controlAllSides = true; board.turnColor = 'white';
@@ -231,7 +317,7 @@ describe('GameBoardComponent reach preview', () => {
     board.onHexClick(cell('0,0')); board.onHexHover(cell('1,0'));
     expect(board.attackTargets.has('1,0')).toBeTrue();
     expect(board.forecastDamage('0,0')).toBeNull();
-    expect(cell('1,0').stats!.atk).toBe('—');
+    expect(cell('1,0').stats!.atk).toBe('-');
     board.unitBuffs = { own: { atk: -10, mov: -2 } }; rebuild();
     board.onHexClick(cell('0,0')); board.onHexHover(cell('0,0'));
     expect(board.attackTargets.size).toBe(0);
@@ -243,8 +329,34 @@ describe('GameBoardComponent reach preview', () => {
     expect(board.attackTargets.has('0,0')).toBeFalse();
     board.boardState['1,0'] = { ...board.boardState['1,0'], vet: 2 }; rebuild();
     board.onHexClick(cell('1,0'));
-    expect(board.attackTargets.has('0,0')).toBeTrue();
-    expect(cell('1,0').stats!.atk).toBe('12');
+    expect(board.attackTargets.has('0,0')).toBeFalse();
+    expect(cell('1,0').stats!.atk).toBe('-');
+  });
+
+  it('keeps a committed reserve entrant gray and unable to act again until its next turn', () => {
+    board.turnNumber = 21; board.controlAllSides = true; board.turnColor = 'white';
+    const piece = { ...boardState['0,0'], uid: 'entrant' };
+    board.boardState = { '0,0': piece };
+    board.moveHistory = [{ entered: true, turn: 21, color: 'white', from: '3,9', to: '0,0', unit: piece }];
+    board.ngOnChanges({ boardState: new SimpleChange(null, board.boardState, false), moveHistory: new SimpleChange([], board.moveHistory, false) });
+    expect(board.drivable(cell('0,0'))).toBeFalse(); expect(board.isPanelSpent(cell('0,0'))).toBeTrue();
+    board.onHexClick(cell('0,0')); expect(board.legalTargets.size).toBe(0); expect(board.attackTargets.size).toBe(0);
+    board.turnNumber = 23; board.ngOnChanges({ turnNumber: new SimpleChange(21, 23, false) });
+    expect(board.drivable(cell('0,0'))).toBeTrue(); expect(board.isPanelSpent(cell('0,0'))).toBeFalse();
+  });
+
+  it('highlights selected enemy debuffs on battlefield and reserve but excludes red bases', () => {
+    board.config = structuredClone(DEFAULT_GAME_CONFIG);
+    board.abilityMode = 'enemy'; board.abilityCasterColor = 'white';
+    board.abilityEffect = DEFAULT_GAME_CONFIG.abilities.catalogue.sap;
+    const target: any = { ...board.cells[0], panel: '', vet: 1,
+      piece: { unit_id: 'pawn', color: 'black', uid: 'enemy', hp: 12 } };
+    expect(board.isAbilityTarget(target, 'enemy')).toBeTrue();
+    expect(board.isAbilityTarget({ ...target, panel: 'tl' }, 'enemy')).toBeTrue();
+    expect(board.isAbilityTarget({ ...target, panel: 'tr' }, 'enemy')).toBeFalse();
+    expect(board.isAbilityTarget({ ...target, piece: { ...target.piece, color: 'white' } }, 'enemy')).toBeFalse();
+    board.abilityEffect = { ...board.abilityEffect, scope: 'all' };
+    expect(board.isAbilityTarget({ ...target, panel: 'tr' }, 'enemy')).toBeTrue();
   });
 
   it('uses earned first-star profiles for Unit inspection, reach, forecasts and wounded reserves', () => {
@@ -265,19 +377,19 @@ describe('GameBoardComponent reach preview', () => {
       turnNumber: new SimpleChange(20, 7, false) });
     const selected = jasmine.createSpy('selected'); board.hexSelected.subscribe(selected);
     board.onHexClick(cell('0,0'));
-    expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ atk: [24, 20], mv: 8, vet: 1 }));
+    expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ atk: [14, 20], mv: 8, vet: 1 }));
     expect(cell('0,0').stats!.rangeHigh).toBe(2);
     expect(board.attackTargets.has('2,0')).toBeTrue();
     board.onHexHover(cell('2,0'));
-    expect(board.forecastDamage('2,0')).toBe('-10');
+    expect(board.forecastDamage('2,0')).toBe('-14');
     expect(board.forecastDamage('0,0')).toBeNull();
     board.onHexClick(cell('-3,0'));
     expect([...board.healTargets].sort()).toEqual(['-1,0', '0,0']);
     board.onHexHover(cell('-1,0'));
     expect(board.forecastDamage('-1,0')).toBe('+6');
-    expect(cell('11,1').piece).toEqual(jasmine.objectContaining({ hp: 7, max_hp: 14, vet: 1 }));
+    expect(cell('11,1').piece).toEqual(jasmine.objectContaining({ hp: 7, max_hp: 12, vet: 1 }));
     board.onHexClick(cell('11,1'));
-    expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ hp: 7, hpMax: 14, atk: [10], def: 10, vet: 1 }));
+    expect(selected).toHaveBeenCalledWith(jasmine.objectContaining({ hp: 7, hpMax: 12, atk: [6], def: 4, vet: 1 }));
   });
 
   it('offers a healer only other friendly battlefield units, previews HP and confirms touch healing', () => {
@@ -736,6 +848,39 @@ describe('GameBoardComponent reach preview', () => {
     // A universal ability shines in the panel alone.
     expect(() => (board as any).popUnit('', false, 400)).not.toThrow();
     expect(fixture.nativeElement.querySelectorAll('[data-pop] ').length).toBeGreaterThan(0);
+  });
+
+  it('draws moved and killed replay actors without hiding a replacement occupant', async () => {
+    const actor = { unit_id: 'archer', color: 'white' as const, uid: 'actor' };
+    const counterActor = { unit_id: 'guard', color: 'black' as const, uid: 'dead' };
+    board.boardState = { '1,1': { ...boardState['0,0'], ...actor },
+      '3,0': { ...boardState['-3,0'], uid: 'replacement' } };
+    board.ngOnChanges({ boardState: new SimpleChange(boardState, board.boardState, false) });
+    const state = JSON.stringify(board.boardState);
+    let frame!: FrameRequestCallback;
+    spyOn(window, 'requestAnimationFrame').and.callFake(callback => { frame = callback; return 1; });
+    const clock = spyOn(performance, 'now').and.returnValue(0);
+    spyOn<any>(board, 'flash').and.returnValue(Promise.resolve());
+    for (const step of [
+      { kind: 'move', from: '0,0', to: '1,0', actor },
+      { kind: 'attack', from: '1,0', to: '3,0', actor },
+      { kind: 'counter', from: '3,0', to: '1,0', actor: counterActor },
+    ]) {
+      clock.and.returnValue(0);
+      const done = (board as any).playStep(step);
+      frame(0);
+      expect(board.mover?.symbol).toBe(step.actor === actor ? 'A' : 'G');
+      expect(board.mover?.dark).toBe(step.actor === counterActor);
+      expect(board.isMoving('1,1')).toBe(step.actor === actor);
+      expect(board.isMoving('3,0')).toBeFalse();
+      const anchor = cell(step.kind === 'move' ? step.to : step.from);
+      expect(board.moverAnchor).toEqual({ x: anchor.cx, y: anchor.cy });
+      clock.and.returnValue(1000); frame(1000); await Promise.resolve();
+      if (step.kind !== 'move') { clock.and.returnValue(2000); frame(2000); }
+      await done;
+      expect(board.mover).toBeNull(); expect(board.isMoving('1,1')).toBeFalse();
+      expect(JSON.stringify(board.boardState)).toBe(state);
+    }
   });
 
   describe('asked for less motion', () => {
@@ -1597,7 +1742,7 @@ describe('GameBoardComponent reach preview', () => {
       ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('bl').add(uid));
       expect(board.isPanelSpent(cell)).toBeTrue();
       // Three is rules.panelMoversPerTurn, not the board's own number.
-      board.config = { ...config, rules: { ...(config as any).rules, panelMoversPerTurn: 4 } };
+      anyBoard().panelMovers.clear();
       expect(board.isPanelSpent(cell)).toBeFalse();
       board.config = config;
 
@@ -1879,7 +2024,7 @@ describe('GameBoardComponent reach preview', () => {
       const doom = (hp: number, ply: number) => {
         fixture.componentRef.setInput('turnNumber', ply);
         anyBoard().boardState = {
-          '0,0': { unit_id: 'guard', color: 'white', hp, max_hp: 9, uid: 'wking' },
+          '0,0': { unit_id: 'guard', color: 'white', hp, max_hp: 99, uid: 'wking' },
         };
         anyBoard().buildCells();
         return board.doomState(anyBoard().cellsByKey.get('0,0'));
@@ -2156,9 +2301,8 @@ describe('GameBoardComponent reach preview', () => {
         expect(paid.length).toBeGreaterThan(0);
         // Only ever into its own base - never the enemy's, and never a reserve.
         expect(paid.every(k => anyBoard().cellsByKey.get(k).panel === 'bl')).toBeTrue();
-        // Coming home pays the unit's own worth, which is what the wrap
-        // charged to send one out.
-        expect([...board.refundTargets.values()].every(v => v === 7)).toBeTrue();
+        // Full-health units lose one UP on withdrawal.
+        expect([...board.refundTargets.values()].every(v => v === 6)).toBeTrue();
       });
 
       /**
@@ -2183,7 +2327,7 @@ describe('GameBoardComponent reach preview', () => {
         // ...and nothing else is: anywhere on the battlefield would be a
         // second board move, which the turn has not got.
         expect([...board.legalTargets]
-          .every(k => !!anyBoard().cellsByKey.get(k)?.panel)).toBeTrue();
+          .some(k => !anyBoard().cellsByKey.get(k)?.panel)).toBeTrue();
       });
 
       it('and the lock still holds everywhere else', () => {
@@ -2205,7 +2349,7 @@ describe('GameBoardComponent reach preview', () => {
         setUp();
         board.movesLeftFor = '0,0';
         board.movesLeft = 2;
-        board.homecomingsSpent = 3;
+        board.boardMovesSpent = 3;
 
         const cell = anyBoard().cellsByKey.get(beside);
         expect(board.drivable(cell)).toBeFalse();
@@ -2213,14 +2357,14 @@ describe('GameBoardComponent reach preview', () => {
         expect(board.legalTargets.size).toBe(0);
       });
 
-      it("reads the turn's count off the game's config", () => {
+      it("uses the third battlefield slot for a walk home", () => {
         // rules.homecomingsPerSetupTurn: a room that allows four lets a
         // fourth unit set out after three have gone.
         setUp();
         board.config = { ...board.config, rules: { homecomingsPerSetupTurn: 4 } };
         board.movesLeftFor = '0,0';
         board.movesLeft = 2;
-        board.homecomingsSpent = 3;
+        board.boardMovesSpent = 2;
 
         const cell = anyBoard().cellsByKey.get(beside);
         expect(board.drivable(cell)).toBeTrue();
@@ -2276,7 +2420,7 @@ describe('GameBoardComponent reach preview', () => {
 
         expect(moves.length).toBe(1);
         expect(moves[0].to).toBe('-12,11');
-        expect(moves[0].refund).toBe(7);
+        expect(moves[0].refund).toBe(6);
       });
 
       it('turns its labels back upright on a flipped board', () => {
@@ -2685,6 +2829,7 @@ describe('GameBoardComponent reach preview', () => {
     });
 
     it('lets more than one unit through in a turn', () => {
+      board.turnNumber = 3;
       const gates = onGates(2);
       const landed = gates.map(cross);
 
@@ -2701,6 +2846,7 @@ describe('GameBoardComponent reach preview', () => {
     });
 
     it('takes a crossing back, newest first', () => {
+      board.turnNumber = 3;
       const gates = onGates(2);
       const landed = gates.map(cross);
 
@@ -2769,6 +2915,7 @@ describe('GameBoardComponent reach preview', () => {
       // is nothing left to plot - and nothing to swing at on the way in.
       expect(board.legalTargets.size).toBe(0);
       expect(board.attackTargets.size).toBe(0);
+      expect(board.isPanelSpent(anyBoard().cellsByKey.get(to))).toBeTrue();
     });
   });
 
@@ -2852,57 +2999,33 @@ describe('GameBoardComponent reach preview', () => {
       enterTurn(1, 55);
       ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('br').add(uid));
       const controlled = { ...reserveCell(), panel: 'tl', piece: { ...reserveCell().piece, uid: 'controlled', color: 'white' } };
-      expect(anyBoard().panelCanMove(controlled)).toBeTrue();
+      expect(anyBoard().panelCanMove(controlled)).toBeFalse();
       ['x', 'y', 'z'].forEach(uid => anyBoard().moversIn('tl').add(uid));
       expect(anyBoard().panelCanMove(controlled)).toBeFalse();
       expect(anyBoard().panelCanMove(reserveCell())).toBeFalse();
     });
 
-    it('lets five out of the reserve on a postmatch', () => {
-      // The engines raise the reserve's allowance to five there. The board
-      // kept its own copy of the three and never heard about it, so the fourth
-      // and fifth were refused by the only thing the player can click.
+    it('allows three reserve and three base units at postmatch', () => {
       enterTurn(1, 27);
       const res = reserveCell();
-      ['a', 'b', 'c'].forEach(uid => anyBoard().moversIn('br').add(uid));
-      board.onHexClick(res);
+      ['a', 'b'].forEach(uid => anyBoard().moversIn('br').add(uid));
+      board.onHexClick(res); expect(board.legalTargets.size).toBeGreaterThan(0);
+      anyBoard().moversIn('br').add('c'); board.selectedHex = null;
+      board.onHexClick(res); expect(board.legalTargets.size).toBe(0);
+      board.selectedHex = null; board.onHexClick(baseCell());
       expect(board.legalTargets.size).toBeGreaterThan(0);
-
-      // The base keeps its three, though: nothing in that allowance was
-      // about the base.
       ['d', 'e', 'f'].forEach(uid => anyBoard().moversIn('bl').add(uid));
-      board.onHexClick(baseCell());
+      board.selectedHex = null; board.onHexClick(baseCell());
       expect(board.legalTargets.size).toBe(0);
-
-      // And five is still a cap.
-      ['d', 'e'].forEach(uid => anyBoard().moversIn('br').add(uid));
-      board.onHexClick(res);
-      expect(board.legalTargets.size).toBe(0);
-
-      // Five is rules.postmatchEntries, not the board's own number: a room
-      // that allows six lets a sixth set out.
-      board.config = { ...config, rules: { ...(config as any).rules, postmatchEntries: 6 } };
-      board.selectedHex = null;
-      board.onHexClick(res);
-      expect(board.legalTargets.size).toBeGreaterThan(0);
-      board.config = config;
     });
 
-    it('holds the reserve to three on the turns either side of a postmatch', () => {
-      // Five is the postmatch's and nobody else's: turn 13 is the last of
-      // Phase 1's play and turn 15 the first of Phase 2's, and turn 4 - the
-      // turn that used to be Phase 1's own setup turn - plays now as well.
+    it('allows one reserve unit on normal phase turns', () => {
       for (const ply of [7, 26, 29]) {
         enterTurn(1, ply);
-        // Two started leaves one to go, so the cell has somewhere to walk -
-        // without that, the nought below would prove nothing about the cap.
-        ['a', 'b'].forEach(uid => anyBoard().moversIn('br').add(uid));
-        board.onHexClick(reserveCell());
-        expect(board.legalTargets.size).withContext(`ply ${ply}, two started`).toBeGreaterThan(0);
-        anyBoard().moversIn('br').add('c');
-        board.selectedHex = null;
-        board.onHexClick(reserveCell());
-        expect(board.legalTargets.size).withContext(`ply ${ply}`).toBe(0);
+        board.selectedHex = null; board.onHexClick(reserveCell());
+        expect(board.legalTargets.size).withContext(`ply ${ply}`).toBeGreaterThan(0);
+        anyBoard().moversIn('br').add('a'); board.selectedHex = null;
+        board.onHexClick(reserveCell()); expect(board.legalTargets.size).toBe(0);
       }
     });
 
@@ -3119,7 +3242,7 @@ describe('GameBoardComponent setup deal', () => {
     });
   });
 
-  it("shows every configured unit's full stats to the room", () => {
+  it("caps every configured unit's stats for the hex and room", () => {
     setPanelsDealt(false);
     for (const [unitId, definition] of Object.entries(DEFAULT_GAME_CONFIG.units)) {
       const config: any = structuredClone(DEFAULT_GAME_CONFIG);
@@ -3153,9 +3276,9 @@ describe('GameBoardComponent setup deal', () => {
       fixture.detectChanges();
       const hex = board.cellsByKey.get('0,0');
       const seen = board.describe(hex);
-      expect(seen.hp).withContext(unitId).toBe(115);
-      expect(seen.hpMax).withContext(unitId).toBe(changed.hp);
-      expect(seen.mv).withContext(unitId).toBe(changed.move);
+      expect(seen.hp).withContext(unitId).toBe(99);
+      expect(seen.hpMax).withContext(unitId).toBe(99);
+      expect(seen.mv).withContext(unitId).toBe(99);
       expect(seen.atk).withContext(unitId).toEqual([77, 57, 38]);
       expect(seen.def).withContext(unitId).toBe(changed.defense);
       expect(seen.points).withContext(unitId).toBe(changed.value);

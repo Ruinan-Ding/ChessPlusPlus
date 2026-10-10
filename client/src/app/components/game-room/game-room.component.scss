@@ -604,8 +604,8 @@
   .path-choices {
     grid-column: 1 / -1;
     display: grid;
-    grid-template-columns: repeat(3, auto);
-    gap: u(0.375);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: u(0.125);
     margin-top: u(0.375);
     // As tall as the two rows each one opens into - passive, then the pair -
     // so choosing one changes what is in the panel, never how much room it
@@ -618,24 +618,24 @@
   .path-pair {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: u(0.375);
+    gap: u(0.125);
   }
 
   .path-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: u(0.25);
+    gap: u(0.125);
     min-width: 0;
     // Full height of the row it sits in - which is as tall as the rows it
     // opens into, so choosing one shifts nothing.
     height: 100%;
-    padding: u(0.25) u(0.125);
+    padding: u(0.25) u(0.0625);
     border: 1px dashed #b39ddb;
     border-radius: 6px;
     background: #f6f2fc;
     color: #4a3c68;
-    font-size: t(0.8);
+    font-size: t(0.75);
     font-weight: 700;
     white-space: nowrap;
     overflow: hidden;
@@ -791,6 +791,17 @@
   // The unit panel itself does not scroll - the effects box does, and it is
   // the only part of it that can outgrow the panel.
   .stats-panel .panel-body { overflow: hidden; }
+
+  .veterancy-row {
+    flex: 0 0 auto;
+    min-height: 2.4em;
+    margin: 0;
+    font-size: t(0.75);
+    line-height: 1.2;
+    color: #6b7280;
+
+    &.active { color: #15803d; }
+  }
 
   .effects-box {
     display: flex;
@@ -1237,9 +1248,7 @@
     width: 100%;
     flex-shrink: 0;
 
-    // One shape for every control in these rows, so the pre-game pair
-    // (You: White / Start Game) is the same size as Resign / Offer Draw.
-    // The per-button rules below carry colour only.
+    // Shared sizing for Flip / Start Game and Resign / Offer Draw.
     > button {
       flex: 1 1 0;
       min-width: 0;
@@ -1687,11 +1696,13 @@
         }
       }
       
-      .start-game-btn {
+      .start-game-btn, .flip-btn {
+        padding-inline: u(0.375);
+        white-space: nowrap;
         background-color: #3498db;
         color: white;
         
-        &:hover {
+        &:hover, &.active {
           background-color: #2980b9;
         }
         

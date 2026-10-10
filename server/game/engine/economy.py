@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from .config_loader import rule_of
 from .scoring import scheduled_points, unit_value
+from .unit_stats import cap_stat, unit_stats
 
 
 def points_of(
@@ -15,8 +16,15 @@ def points_of(
     config: Dict[str, Any],
     bank: Optional[Dict[str, Any]] = None,
 ) -> int:
-    """Regular ability points: scheduled income; online casts remain deferred."""
-    return scheduled_points(bank, color, ply)
+    """Scheduled ability income; the authoritative ability state records cast spending."""
+    return scheduled_points(bank, color, ply, config)
+
+
+def withdrawal_refund(config: Dict[str, Any], unit: Dict[str, Any]) -> int:
+    """Use withdrawal HP; later healing or wounds do not reprice the refund."""
+    maximum = cap_stat(unit.get('max_hp', unit_stats(unit['unit_id'], config, unit.get('vet', 0)).get('hp', unit.get('hp', 0))))
+    missing = max(0, maximum - cap_stat(unit.get('hp', maximum)))
+    return max(1, unit_value(config, unit['unit_id']) - 1 - missing)
 
 
 def unit_points_of(color: str, history: Iterable[Dict[str, Any]], config: Dict[str, Any]) -> int:
@@ -40,7 +48,7 @@ def unit_points_of(color: str, history: Iterable[Dict[str, Any]], config: Dict[s
             continue
         if move.get('withdrawn'):
             if move.get('refundColor', move.get('color')) == color:
-                points += unit_value(config, move.get('unit_id'))
+                points += move.get('refund', withdrawal_refund(config, {'unit_id': move.get('unit_id'), **(move.get('unit') or {})}))
         # A blow into a panel pays nobody, whichever side dies of it.
         if move.get('intoPanel'):
             continue

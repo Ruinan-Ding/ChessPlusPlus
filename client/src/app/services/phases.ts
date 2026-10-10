@@ -55,12 +55,9 @@ export interface Phase {
    */
   points: number;
   /**
-   * Points a side is handed as the phase begins, on top of the turn's rate -
-   * paid on its own first turn of the phase, the way a turn's point is: 10
-   * for Phase 1, 20 for Phase 2, 30 for Phase 3, nothing for the opening or
-   * overtime. *The owner, 24 Sep 2026: "at the start of each phase (not start
-   * of each postmatch), +10 regular points for phase 1, 20 for phase 2, 30 for
-   * phase 3."*
+   * Twenty points on each side's first turn of each numbered phase,
+   * on top of normal turn income. Opening and overtime have no phase grant.
+   * Owner revision, 8 Oct 2026.
    */
   grant: number;
   /**
@@ -83,9 +80,9 @@ export function turnOf(ply: number): number {
 
 export const PHASES: Phase[] = [
   { name: 'Initialization', turns: 3, points: 1, grant: 0, multiplier: 1 },
-  { name: 'Phase 1', turns: 10, halftime: true, postmatch: true, points: 1, grant: 10, multiplier: 1 },
+  { name: 'Phase 1', turns: 10, halftime: true, postmatch: true, points: 1, grant: 20, multiplier: 1 },
   { name: 'Phase 2', turns: 10, halftime: true, postmatch: true, points: 2, grant: 20, multiplier: 2 },
-  { name: 'Phase 3', turns: 10, halftime: true, postmatch: true, points: 3, grant: 30, multiplier: 3 },
+  { name: 'Phase 3', turns: 10, halftime: true, postmatch: true, points: 3, grant: 20, multiplier: 3 },
   { name: 'Overtime', turns: Infinity, points: 0, grant: 0, multiplier: 1 },
 ];
 
@@ -139,8 +136,8 @@ export const OVERTIME_FIRST_PLY = PHASES
 
 /**
  * The opening turns, where nobody attacks and both sides are still setting
- * out: three base units and three reserve units a turn, one battlefield unit
- * for the whole of it, and a unit that has been moved is done for the phase.
+ * out: 1/2/3 different units per category on its three turns. Each moved unit
+ * stays done for the rest of Initialization.
  *
  * **The opening only** - not a numbered phase's postmatch, which is one turn
  * with its own allowances (`isPostmatch`). Widening this to mean "any setup
@@ -220,9 +217,6 @@ export function noAttackMessage(ply: number): string {
   return '';
 }
 
-// How many units a side may bring out of its reserve in a postmatch, and walk
-// home in a setup turn, are config: rules.postmatchEntries and
-// rules.homecomingsPerSetupTurn (see ruleOf).
 
 /**
  * Overtime's three stretches, and what each takes off a commander at the end
@@ -348,6 +342,8 @@ export const BOARD_MOVES_PER_TURN = 1;
 
 /** How many board moves the side playing `ply` may make. */
 export function boardMovesPerTurn(ply: number): number {
+  if (isInitialization(ply)) return turnOf(ply);
+  if (isPostmatch(ply)) return 3;
   return overtimeStageAt(ply)?.moves ?? BOARD_MOVES_PER_TURN;
 }
 

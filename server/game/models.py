@@ -192,6 +192,8 @@ class GameState(models.Model):
     # than derived: a phase's score reads the board as its play ended, and no
     # board but the current one is stored.
     phase_bank = models.JSONField(default=dict, blank=True)
+    # Authoritative loadouts, paths, costs, cooldowns and UID-bound effects.
+    ability_state = models.JSONField(default=dict, blank=True)
     # Bumped by every accepted write to the fields above, and what a write is
     # conditional on. turn_number cannot be: a deployment or a held overtime
     # move changes the board without handing the turn over, so two writes in
@@ -199,8 +201,8 @@ class GameState(models.Model):
     revision = models.PositiveIntegerField(default=0)
     # Draw offer tracking
     draw_offered_by = models.CharField(max_length=MAX_USERNAME_LENGTH, blank=True, default='')
-    # When the current turn started - persisted so reconnect resyncs report the
-    # real turn clock instead of fabricating "now"
+    # Clock start, after the server-owned automatic replay allowance. Persisted
+    # so reconnects/restores preserve the deadline rather than granting time.
     turn_started_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

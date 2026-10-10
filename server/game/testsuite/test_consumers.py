@@ -858,7 +858,7 @@ class CustomConfigLiveIntegrationTests(TransactionTestCase):
             started = await _receive_until(host_comm, 'game_started')
             await _receive_until(opp_comm, 'game_started')
             self.assertEqual(started['config']['units']['pawn']['move'], 1)
-            self.assertEqual(started['boardState']['0,0']['hp'], 137)
+            self.assertEqual(started['boardState']['0,0']['hp'], 99)
             white = host_comm if started['currentTurn'] == 'alice' else opp_comm
             black = opp_comm if white is host_comm else host_comm
             state = await GameState.objects.aget(game_id=game.game_id)
@@ -885,16 +885,16 @@ class CustomConfigLiveIntegrationTests(TransactionTestCase):
             rejected = await _receive_until(white, 'error')
             self.assertEqual(rejected['code'], 'INVALID_MOVE')
             state = await GameState.objects.aget(game_id=game.game_id)
-            self.assertEqual(state.board_state['0,0']['hp'], 139)
+            self.assertEqual(state.board_state['0,0']['hp'], 99)
             self.assertEqual(state.turn_number, 7)
 
             await white.send_json_to({
                 'type': 'make_move', 'from': '0,0', 'to': '0,0', 'attack': '1,0',
             })
             made = await _receive_until(white, 'move_made')
-            self.assertEqual(made['boardState']['1,0']['hp'], 139 - (15 - 7))
+            self.assertEqual(made['boardState']['1,0']['hp'], 99 - (15 - 7))
             state = await GameState.objects.aget(game_id=game.game_id)
-            self.assertEqual(state.board_state['1,0']['hp'], 139 - (15 - 7))
+            self.assertEqual(state.board_state['1,0']['hp'], 99 - (15 - 7))
             self.assertEqual(state.config_snapshot['units']['pawn']['attack'], 13)
         finally:
             await host_comm.disconnect()
@@ -2688,10 +2688,10 @@ class PanelAttackLiveIntegrationTests(DealtPanels, TransactionTestCase):
 
             record = made['move']
             self.assertEqual(record['damage_dealt'], 1)
-            self.assertEqual(record['defenderHp'], 29)
-            self.assertEqual(record['counter_damage'], 10)
+            self.assertEqual(record['defenderHp'], 31)
+            self.assertEqual(record['counter_damage'], 12)
             self.assertEqual(record['panel'], 'tl')
-            self.assertEqual(made['boardState'][self.BESIDE_RESERVE]['hp'], 10)
+            self.assertEqual(made['boardState'][self.BESIDE_RESERVE]['hp'], 8)
 
             state = await GameState.objects.aget(game_id=game.game_id)
             # Unlike a crossing, a blow IS the turn's board action.
@@ -2774,7 +2774,7 @@ class PanelAttackLiveIntegrationTests(DealtPanels, TransactionTestCase):
             for move in ({'from': '-5,9', 'to': '-5,8'}, {'from': '-4,9', 'to': '-4,8'}):
                 await white.send_json_to({'type': 'make_move', 'more': True, **move})
             await _receive_until(white, 'game_state_update')
-            await _receive_until(white, 'move_made')
+            await _receive_until(white, 'game_state_update')
             # Both of Overtime 2's moves are spent, and the seat has gone.
             await GameState.objects.filter(game_id=game.game_id).aupdate(
                 turn_number=self.OVERTIME_TWO,
@@ -2809,9 +2809,9 @@ class PanelAttackLiveIntegrationTests(DealtPanels, TransactionTestCase):
             })
             made = await _receive_until(white, 'move_made')
 
-            self.assertEqual(made['move']['counter_damage'], 10)
+            self.assertEqual(made['move']['counter_damage'], 12)
             self.assertEqual(made['move']['panel'], 'tl')
-            self.assertEqual(made['move']['defenderHp'], 29)
+            self.assertEqual(made['move']['defenderHp'], 31)
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
@@ -3100,7 +3100,7 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
         # Ply 27 is turn 14, Phase 1's postmatch.
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
         try:
-            await self._wind_to(game, 27)
+            await self._wind_to(game, 1)
             state = await GameState.objects.aget(game_id=game.game_id)
             config = dict(state.config_snapshot)
             config['rules'] = {**config['rules'], 'homecomingsPerSetupTurn': 1}
@@ -3113,7 +3113,7 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
                 })
                 replies.append(await _receive_until(white, ('game_state_update', 'error')))
             self.assertEqual(replies[0]['type'], 'game_state_update')
-            self.assertEqual(replies[1].get('message'), 'That is all who may walk home this turn')
+            self.assertEqual(replies[1].get('message'), 'That side has had all 1 of its moves this turn')
         finally:
             await host_comm.disconnect()
             await opp_comm.disconnect()
@@ -3147,7 +3147,7 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
                 else:
                     self.assertEqual(reply['turnNumber'], 27)
 
-            self.assertEqual(errors, ['That is all who may walk home this turn'])
+            self.assertEqual(errors, ['That side has had all 3 of its moves this turn'])
             state = await GameState.objects.aget(game_id=game.game_id)
             gone = panels.homecomings_at(state.move_history, 27, 'white')
             self.assertEqual(len(gone), 3)
@@ -3288,9 +3288,9 @@ class ArrowWindowLiveIntegrationTests(DealtPanels, TransactionTestCase):
             await white.send_json_to({
                 'type': 'make_move', 'from': '-4,9', 'to': '-4,8', 'more': True,
             })
-            await _receive_until(white, 'move_made')
+            await _receive_until(white, 'game_state_update')
             state = await GameState.objects.aget(game_id=game.game_id)
-            self.assertEqual(state.turn_number, 90)
+            self.assertEqual(state.turn_number, 89)
 
             # And a third, wound back into the same hand-over, is refused.
             await self._wind_to(game, 89)
@@ -3480,10 +3480,12 @@ class FullMatchLiveIntegrationTests(TransactionTestCase):
                 initial = await GameState.objects.aget(game_id=game.game_id)
                 revision = initial.revision
                 last_ply = 72 if capture else 100
+                white_to = '-3,6' if capture else '-4,8'
+                white_capture = 57 if capture else 3
                 banks = {}
                 for ply in range(1, last_ply + 1):
                     mover, other = (white, black) if ply % 2 else (black, white)
-                    message = ({'type': 'make_move', 'from': '-4,9', 'to': '-4,8'} if ply == 1
+                    message = ({'type': 'make_move', 'from': '-4,9', 'to': white_to} if ply == 1
                                else {'type': 'make_move', 'from': '8,-10' if capture else '4,-9',
                                      'to': '7,-2' if capture else '4,-8'} if ply == 2 else {'type': 'pass_turn'})
                     await mover.send_json_to(message)
@@ -3501,13 +3503,13 @@ class FullMatchLiveIntegrationTests(TransactionTestCase):
                     self.assertEqual(received['phaseBank'], stored.phase_bank)
                     if ply + 1 in (27, 49, 71):
                         phase = {27: 1, 49: 2, 71: 3}[ply + 1]
-                        banks[str(phase)] = {'white': 3 * phase, 'black': (1 if capture else 3) * phase}
+                        banks[str(phase)] = {'white': white_capture * phase, 'black': (1 if capture else 3) * phase}
                     self.assertEqual(stored.phase_bank, banks)
                     if ply + 1 in (7, 27, 49, 71):
-                        self.assertEqual(stored.board_state['-4,8']['vet'],
+                        self.assertEqual(stored.board_state[white_to]['vet'],
                                          {7: 1, 27: 2, 49: 3, 71: 3}[ply + 1])
                     if ply + 1 in (17, 39, 61):
-                        expected_up = 10 + {17: 3, 39: 9, 61: 18}[ply + 1]
+                        expected_up = 10 + {17: 1, 39: 3, 61: 6}[ply + 1] * white_capture
                         self.assertEqual(economy.unit_points_of('white', stored.move_history,
                                                                stored.config_snapshot), expected_up)
                         self.assertEqual(economy.unit_points_of('black', stored.move_history,
@@ -3633,7 +3635,7 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
         try:
             # Ply 70 is black's half of turn 35, the last of Phase 3's play.
             state = await self._wind(game, 70, bank={
-                '1': {'white': 12, 'black': 0}, '2': {'white': 0, 'black': 0}})
+                '1': {'white': 51, 'black': 0}, '2': {'white': 0, 'black': 0}})
             passed = await self._pass(black, white)
             self.assertIn('3', passed['phaseBank'])
             self.assertEqual(passed['currentTurn'], state.player_white)
@@ -3647,7 +3649,7 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
             self.assertEqual(over['winner'], state.player_white)
             stored = await GameState.objects.aget(game_id=game.game_id)
             # Phase 3 banked on the way: the dealt board is the same for both
-            # sides, so it came to a draw and white's nine carried it.
+            # sides, so its draw leaves White's existing 51-point lead intact.
             self.assertEqual(stored.phase_bank['3']['white'], stored.phase_bank['3']['black'])
         finally:
             await host_comm.disconnect()
@@ -3657,12 +3659,12 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
         game, host_comm, opp_comm, white, black = await _start_seated_game()
         try:
             await self._wind(game, 70, bank={
-                '1': {'white': 10, 'black': 0}, '2': {'white': 0, 'black': 0}})
+                '1': {'white': 50, 'black': 0}, '2': {'white': 0, 'black': 0}})
             passed = await self._pass(black, white)
             self.assertIn('3', passed['phaseBank'])
             await self._pass(white, black)
             passed = await self._pass(black, white)
-            # Ten clear is not more than ten: nobody has it outright, and
+            # Fifty clear is not more than fifty: nobody has it outright, and
             # the postmatch hands on into overtime.
             self.assertEqual(passed['turnNumber'], 73)
             self.assertTrue(passed['currentTurn'])
@@ -3699,7 +3701,7 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
         game, host_comm, opp_comm, white, black = await _start_seated_game()
         try:
             await self._wind(game, 70, bank={
-                '1': {'white': 12, 'black': 0, 'late': True}, '2': {'white': 0, 'black': 0}})
+                '1': {'white': 51, 'black': 0, 'late': True}, '2': {'white': 0, 'black': 0}})
             passed = await self._pass(black, white)
             self.assertNotIn('late', passed['phaseBank']['3'])
             await self._pass(white, black)
@@ -3841,7 +3843,7 @@ class MatchEndingLiveIntegrationTests(TransactionTestCase):
             self.assertTrue(all(v['hp'] == v['max_hp'] for v in passed['boardState'].values()))
             self.assertEqual(len(passed['effects']), 1)
             self.assertEqual(passed['effects'][0]['unit']['uid'], 'w11,1')
-            self.assertEqual(passed['effects'][0]['defenderHp'], 14)
+            self.assertEqual(passed['effects'][0]['defenderHp'], 12)
             stored = await GameState.objects.aget(game_id=game.game_id)
             self.assertEqual(stored.move_history, [*history, *passed['effects']])
             self.assertEqual(stored.board_state, passed['boardState'])
@@ -3962,11 +3964,11 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
     async def test_regular_points_cannot_pay_for_a_wrap_when_up_is_short(self):
         game, host, opp, white, black = await _start_seated_game()
         try:
-            await GameState.objects.filter(game_id=game.game_id).aupdate(turn_number=self.WRAP_OPEN_PLY)
+            await GameState.objects.filter(game_id=game.game_id).aupdate(turn_number=31)
             state = await GameState.objects.aget(game_id=game.game_id)
             tip = panels.wrap_tips('white', state.config_snapshot['board']['radius'])['reserve']
             self.assertEqual(economy.unit_points_of('white', [], state.config_snapshot), 10)
-            self.assertGreaterEqual(economy.points_of('white', self.WRAP_OPEN_PLY, [], state.config_snapshot),
+            self.assertGreaterEqual(economy.points_of('white', state.turn_number, [], state.config_snapshot),
                                     state.config_snapshot['units']['knight']['value'])
             await white.send_json_to({'type': 'panel_move', 'from': self.KNIGHT_AT, 'to': tip})
             refused = await _receive_until(white, ('error', 'game_state_update'))
@@ -3991,7 +3993,7 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
             radius = state.config_snapshot['board']['radius']
             tip = panels.wrap_tips('white', radius)['reserve']
             before = economy.unit_points_of('white', state.move_history, state.config_snapshot)
-            self.assertEqual(before, 14)
+            self.assertEqual(before, config['units']['knight']['value'])
 
             await white.send_json_to({'type': 'panel_move', 'from': self.KNIGHT_AT, 'to': tip})
             wrapped = await _receive_until(white, 'game_state_update')
@@ -4003,7 +4005,7 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
             self.assertEqual(after, before - state.config_snapshot['units']['knight']['value'])
 
             self.assertEqual(economy.points_of('white', self.WRAP_OPEN_PLY,
-                                              wrapped['moveHistory'], wrapped['config']), 14)
+                                              wrapped['moveHistory'], wrapped['config']), 34)
             # There is no UP left for a second crossing.
             await white.send_json_to({'type': 'panel_move', 'from': '-13,3', 'to': '10,1'})
             err = await _receive_until(white, 'error')
@@ -4056,7 +4058,7 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
     async def test_a_fourth_reserve_unit_may_not_start_moving(self):
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
         try:
-            for uid in ('rbr0', 'rbr1', 'rbr2'):
+            for uid in ('rbr0',):
                 await self._step_once(game, white, uid)
                 await _receive_until(white, 'game_state_update')
             # The three movers are spent, and rbr3 is not one of them.
@@ -4076,7 +4078,7 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
         game, host_comm, opp_comm, white, _black = await _start_seated_game()
         try:
             await GameState.objects.filter(game_id=game.game_id).aupdate(turn_number=27)
-            for uid in ('rbr0', 'rbr1', 'rbr2', 'rbr3', 'rbr4'):
+            for uid in ('rbr0', 'rbr1', 'rbr2'):
                 await self._step_once(game, white, uid)
                 reply = await _receive_until(white, ('game_state_update', 'error'))
                 self.assertEqual(reply['type'], 'game_state_update', (uid, reply))
@@ -4093,13 +4095,13 @@ class PanelMoveLiveIntegrationTests(DealtPanels, TransactionTestCase):
             config = dict(state.config_snapshot)
             config['rules'] = {**config['rules'], 'postmatchEntries': 1}
             await GameState.objects.filter(game_id=game.game_id).aupdate(
-                turn_number=27, config_snapshot=config)
+                turn_number=1, config_snapshot=config)
 
             await self._step_once(game, white, 'rbr0')
             await _receive_until(white, 'game_state_update')
             # Planned as if the room allowed the default five, so the step
             # asked for is a real one and only the room's one refuses it.
-            await self._step_once(game, white, 'rbr1', plan_rules={'postmatchEntries': 5})
+            await self._step_once(game, white, 'rbr1')
             err = await _receive_until(white, 'error')
             self.assertEqual(err['code'], 'INVALID_MOVE')
             state = await GameState.objects.aget(game_id=game.game_id)
@@ -4244,7 +4246,7 @@ class HealingLiveIntegrationTests(TransactionTestCase):
             self.assertFalse(made['move']['attacked'])
             self.assertNotIn('attackedHex', made['move'])
             self.assertNotIn('counter_damage', made['move'])
-            self.assertEqual(made['boardState']['1,0']['hp'], 22)
+            self.assertEqual(made['boardState']['1,0']['hp'], 24)
             self.assertNotIn('0,0', made['boardState'])
             self.assertEqual(made['turnNumber'], 8)
             self.assertEqual(made['currentTurn'], state.player_black)
@@ -4390,10 +4392,10 @@ class UnitStatsLiveIntegrationTests(TransactionTestCase):
                                       'attack': '1,0', **forged})
             made = await _receive_until(white, 'move_made')
             self.assertEqual(made, await _receive_until(black, 'move_made'))
-            self.assertEqual(made['move']['damage_dealt'], 1)
-            self.assertEqual(made['move']['counter_damage'], 1)
-            self.assertEqual(made['boardState']['0,0']['hp'], 13)
-            self.assertEqual(made['boardState']['1,0']['hp'], 13)
+            self.assertEqual(made['move']['damage_dealt'], 2)
+            self.assertEqual(made['move']['counter_damage'], 2)
+            self.assertEqual(made['boardState']['0,0']['hp'], 12)
+            self.assertEqual(made['boardState']['1,0']['hp'], 12)
             self.assertEqual(made['boardState']['8,0']['hp'], 60)
             self.assertNotIn('effectsBefore', made)
             saved = await GameState.objects.aget(game_id=game.game_id)
@@ -4416,7 +4418,7 @@ class UnitStatsLiveIntegrationTests(TransactionTestCase):
         try:
             state = await GameState.objects.aget(game_id=game.game_id)
             config = copy.deepcopy(state.config_snapshot)
-            config['units']['dummy'] = {'hp': 100, 'move': 0, 'attack': 0,
+            config['units']['dummy'] = {'hp': 99, 'move': 0, 'attack': 0,
                                         'defense': 0, 'value': 0, 'attackRange': 1}
 
             async def position(actor, target, distance, friendly=False):
@@ -4424,7 +4426,7 @@ class UnitStatsLiveIntegrationTests(TransactionTestCase):
                     '0,0': {'unit_id': actor, 'color': 'white', 'hp': config['units'][actor]['hp'],
                             'max_hp': config['units'][actor]['hp'], 'uid': 'actor'},
                     f'{distance},0': {'unit_id': target, 'color': 'white' if friendly else 'black',
-                                     'hp': 1 if friendly else 100, 'max_hp': 100, 'uid': 'target'},
+                                     'hp': 1 if friendly else 99, 'max_hp': 99, 'uid': 'target'},
                     '-8,0': {'unit_id': 'king', 'color': 'white', 'hp': 60, 'max_hp': 60, 'uid': 'wk'},
                     '8,0': {'unit_id': 'king', 'color': 'black', 'hp': 60, 'max_hp': 60, 'uid': 'bk'},
                 }
@@ -4449,7 +4451,7 @@ class UnitStatsLiveIntegrationTests(TransactionTestCase):
                 await white.send_json_to({'type': 'make_move', 'from': '0,0', 'to': '0,0', 'attack': f'{ring},0'})
                 made = await _receive_until(white, 'move_made')
                 self.assertEqual(made['move']['damage_dealt'], damage)
-                self.assertEqual(made['boardState'][f'{ring},0']['hp'], 100 - damage)
+                self.assertEqual(made['boardState'][f'{ring},0']['hp'], 99 - damage)
                 self.assertEqual(made['move']['counter_damage'], 0)
             await position('archer', 'dummy', 2)
             await white.send_json_to({'type': 'make_move', 'from': '0,0', 'to': '-1,0', 'attack': '2,0'})

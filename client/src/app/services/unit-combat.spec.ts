@@ -6,14 +6,34 @@ import { stackEffect } from './ability-rules';
 const piece = (unit_id: string, color = 'white', hp = 20): any => ({ unit_id, color, uid: unit_id + color, hp, vet: 3, max_hp: hp });
 const bonuses = { atk: 0, def: 0, targetAtk: 0, targetDef: 0 };
 describe('unit combat effects', () => {
+  it('caps ATK and DEF before damage, fixed stats and HP before an exchange', () => {
+    const custom: any = { units: { attacker: { attack: 95, attackRange: 1, defense: 0 },
+      defender: { attack: 0, defense: 95, attackRange: 1 } }, rules: { minStrikeDamage: 1 } };
+    const attacker = { unit_id: 'attacker', color: 'white', hp: 200, max_hp: 250 };
+    const defender = { unit_id: 'defender', color: 'black', hp: 200, max_hp: 250 };
+    expect(combatExchange(attacker, defender, 1, custom, { ...bonuses, atk: 20, targetDef: 10 }))
+      .toEqual(jasmine.objectContaining({ damage: 1, attackerHp: 99, targetHp: 98, countered: false }));
+    expect(combatExchange(attacker, defender, 1, custom, { ...bonuses, atkSet: 150, targetDefSet: 0 }))
+      .toEqual(jasmine.objectContaining({ damage: 99, attackerHp: 99, targetHp: 0 }));
+    expect(attacker.hp).toBe(200); expect(defender.hp).toBe(200);
+  });
+
   it('charges only after an actual counter while alive, with no second counter', () => {
     const knight = piece('knight'), pawn = piece('pawn', 'black', 14);
     const exchange = combatExchange(knight, pawn, 1, config, { ...bonuses, charge: true });
-    expect([exchange.targetHp, exchange.attackerHp, exchange.counterDamage, exchange.secondDamage]).toEqual([6, 19, 1, 4]);
+    expect([exchange.targetHp, exchange.attackerHp, exchange.counterDamage, exchange.secondDamage]).toEqual([0, 18, 2, 8]);
     expect(combatExchange({ ...knight, hp: 1 }, pawn, 1, config, { ...bonuses, charge: true }).secondDamage).toBe(0);
-    expect(combatExchange(knight, piece('shieldman', 'black', 32), 1, config, { ...bonuses, charge: true }).secondDamage).toBe(0);
+    expect(combatExchange(knight, { ...piece('shieldman', 'black', 28), vet: 1 }, 1, config, { ...bonuses, charge: true }).secondDamage).toBe(0);
     const nullified = combatExchange(knight, pawn, 1, config, { ...bonuses, charge: true, nullify: true });
     expect([nullified.countered, nullified.attackerHp, nullified.secondDamage]).toEqual([false, 20, 0]);
+  });
+  it('records a Charge strike even when Fortress prevents all its damage', () => {
+    const knight = piece('knight'), rook = piece('rook', 'black', 40);
+    const exchange = combatExchange(knight, rook, 1, config, { ...bonuses, charge: true, targetImmune: true });
+    expect(exchange).toEqual(jasmine.objectContaining({ damage: 0, secondDamage: 0, countered: true, secondStrike: true }));
+    expect(exchange.targetHp).toBe(40);
+    expect(combatExchange(knight, rook, 1, config, { ...bonuses, charge: true, targetImmune: true, nullify: true }))
+      .toEqual(jasmine.objectContaining({ secondStrike: false, countered: false }));
   });
   it('allows any reachable taunter and releases other targets when none can be reached', () => {
     const board = { '0,0': piece('pawn'), '1,0': piece('shieldman', 'black', 32), '0,1': piece('shieldman', 'black', 32), '1,-1': piece('pawn', 'black', 14) };
@@ -31,9 +51,9 @@ describe('unit combat effects', () => {
     const killed = combatExchange(knight, pawn, 1, config, { ...bonuses, charge: true });
     expect([killed.targetHp, killed.attackerHp, killed.countered, killed.counterDamage, killed.secondDamage])
       .toEqual([0, 20, false, 0, 0]);
-    const disabled = combatExchange(knight, { ...pawn, hp: 14 }, 1, config, { ...bonuses, charge: true }, false);
+    const disabled = combatExchange(knight, { ...pawn, hp: 14, max_hp: 14 }, 1, config, { ...bonuses, charge: true }, false);
     expect([disabled.targetHp, disabled.attackerHp, disabled.countered, disabled.secondDamage])
-      .toEqual([10, 20, false, 0]);
+      .toEqual([6, 20, false, 0]);
   });
 
   it('bases Taunt eligibility on the exact attack ring and ATK buffs, ignoring dead or friendly taunters', () => {

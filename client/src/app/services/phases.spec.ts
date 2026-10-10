@@ -390,21 +390,21 @@ describe("overtime's three stretches", () => {
     expect([20, 25, 27, 30].map(pay)).toEqual([2, 2, 2, 2]);
     expect([31, 36].map(pay)).toEqual([3, 3]);
     expect([37, 44, 45, 50, 500].map(pay)).toEqual([0, 0, 0, 0, 0]);
-    // And a phase's first turn carries its grant on top: 10, 20, 30.
-    expect([4, 15, 26].map(pay)).toEqual([1 + 10, 1 + 20, 2 + 30]);
+    // And a phase's first turn carries its grant on top: 20 in each phase.
+    expect([4, 15, 26].map(pay)).toEqual([1 + 20, 1 + 20, 2 + 20]);
   });
 
   it("adds a side's turns up at the rate each one paid", () => {
     // The rates: 19 at one apiece, 11 x 2 (to 41), 6 x 3 (to 59). The grants,
-    // as each phase begins: 10 on turn 4, 20 on turn 15, 30 on turn 26. And
+    // as each phase begins: 20 on turns 4, 15 and 26. And
     // not a point more through overtime.
     expect([3, 4, 8, 9, 14, 15, 19, 20, 26, 30, 31, 36, 37, 50].map(t => turnPointsBy('white', ply(t))))
-      .toEqual([3, 14, 18, 19, 24, 45, 49, 51, 93, 101, 104, 119, 119, 119]);
+      .toEqual([3, 24, 28, 29, 34, 55, 59, 61, 93, 101, 104, 119, 119, 119]);
     // A side is paid its grant on its OWN first turn of the phase.
     expect(turnPointsBy('black', ply(4))).toBe(3);
-    expect(turnPointsBy('black', ply(4, 'black'))).toBe(14);
-    expect(turnPointsBy('black', ply(19, 'black'))).toBe(49);
-    expect(turnPointsBy('black', ply(20, 'black'))).toBe(51);
+    expect(turnPointsBy('black', ply(4, 'black'))).toBe(24);
+    expect(turnPointsBy('black', ply(19, 'black'))).toBe(59);
+    expect(turnPointsBy('black', ply(20, 'black'))).toBe(61);
     // A side is paid at the START of its own turn, so black has nothing until
     // its first hand-over - the rule the flat version already kept.
     expect(turnPointsBy('black', 1)).toBe(0);

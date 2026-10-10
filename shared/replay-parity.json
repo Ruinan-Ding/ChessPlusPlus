@@ -1,0 +1,242 @@
+[
+  {
+    "name": "empty pass",
+    "records": [],
+    "kinds": [],
+    "milliseconds": 533
+  },
+  {
+    "name": "collapsed battlefield walk",
+    "records": [
+      {
+        "unit_id": "custom-unit",
+        "uid": "one",
+        "color": "white",
+        "moved": true,
+        "from": "0,0",
+        "to": "1,0"
+      },
+      {
+        "unit_id": "custom-unit",
+        "uid": "one",
+        "color": "white",
+        "moved": true,
+        "from": "1,0",
+        "to": "2,0"
+      }
+    ],
+    "kinds": [
+      "move"
+    ],
+    "milliseconds": 680
+  },
+  {
+    "name": "independent panel walks",
+    "records": [
+      {
+        "unit_id": "custom-unit",
+        "uid": "one",
+        "color": "white",
+        "moved": true,
+        "from": "11,1",
+        "to": "12,0",
+        "panelMove": true
+      },
+      {
+        "unit_id": "custom-unit",
+        "uid": "two",
+        "color": "white",
+        "moved": true,
+        "from": "-11,-1",
+        "to": "-12,0",
+        "panelMove": true,
+        "unit": {
+          "uid": "two"
+        }
+      }
+    ],
+    "kinds": [
+      "move",
+      "move"
+    ],
+    "milliseconds": 1360
+  },
+  {
+    "name": "attack counter second strike remaining walk",
+    "records": [
+      {
+        "unit_id": "custom-unit",
+        "uid": "one",
+        "color": "white",
+        "moved": true,
+        "from": "0,0",
+        "to": "1,1",
+        "attackFrom": "1,0",
+        "attacked": true,
+        "attackedHex": "2,0",
+        "countered": true,
+        "secondStrike": true
+      }
+    ],
+    "kinds": [
+      "move",
+      "attack",
+      "counter",
+      "attack",
+      "move"
+    ],
+    "milliseconds": 4123
+  },
+  {
+    "name": "simultaneous cast recipients",
+    "records": [
+      {
+        "abilityChoice": {
+          "type": "select_pair",
+          "id": "pair"
+        }
+      },
+      {
+        "abilityCast": {
+          "id": "spell",
+          "targets": [
+            {
+              "at": "0,0",
+              "uid": "0"
+            },
+            {
+              "at": "1,0",
+              "uid": "1"
+            },
+            {
+              "at": "2,0",
+              "uid": "2"
+            },
+            {
+              "at": "3,0",
+              "uid": "3"
+            },
+            {
+              "at": "4,0",
+              "uid": "4"
+            },
+            {
+              "at": "5,0",
+              "uid": "5"
+            },
+            {
+              "at": "6,0",
+              "uid": "6"
+            },
+            {
+              "at": "7,0",
+              "uid": "7"
+            },
+            {
+              "at": "8,0",
+              "uid": "8"
+            },
+            {
+              "at": "9,0",
+              "uid": "9"
+            },
+            {
+              "at": "10,0",
+              "uid": "10"
+            },
+            {
+              "at": "11,0",
+              "uid": "11"
+            }
+          ]
+        }
+      }
+    ],
+    "kinds": [
+      "pick",
+      "ability"
+    ],
+    "milliseconds": 1640
+  },
+  {
+    "name": "heal and nonvisual metadata",
+    "records": [
+      {
+        "unit_id": "custom-unit",
+        "uid": "one",
+        "color": "white",
+        "moved": false,
+        "from": "0,0",
+        "to": "0,0",
+        "healedHex": "1,0",
+        "healed_amount": 4
+      },
+      {
+        "panelEffect": true,
+        "unit_id": "custom-unit",
+        "from": "1,0",
+        "to": "1,0"
+      },
+      {
+        "abilityChoice": {
+          "type": "reset_pair"
+        }
+      }
+    ],
+    "kinds": [
+      "heal"
+    ],
+    "milliseconds": 920
+  },
+  {
+    "name": "cast between linked walk segments",
+    "records": [
+      {
+        "unit_id": "custom-unit",
+        "uid": "one",
+        "color": "white",
+        "moved": true,
+        "from": "0,0",
+        "to": "1,0"
+      },
+      {
+        "abilityCast": {
+          "id": "spell"
+        }
+      },
+      {
+        "unit_id": "custom-unit",
+        "uid": "one",
+        "color": "white",
+        "moved": true,
+        "from": "1,0",
+        "to": "2,0"
+      }
+    ],
+    "kinds": [
+      "move",
+      "ability"
+    ],
+    "milliseconds": 1600
+  },
+  {
+    "name": "explicit no counter takes precedence",
+    "records": [
+      {
+        "unit_id": "custom-unit",
+        "uid": "one",
+        "color": "white",
+        "moved": false,
+        "from": "0,0",
+        "to": "0,0",
+        "attacked": true,
+        "countered": false,
+        "counter_damage": 2
+      }
+    ],
+    "kinds": [
+      "attack"
+    ],
+    "milliseconds": 921
+  }
+]

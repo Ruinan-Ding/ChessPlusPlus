@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { ConfigService, DEFAULT_GAME_CONFIG } from './config.service';
+import { ConfigService, DEFAULT_GAME_CONFIG, COUNTED_RULES } from './config.service';
 import parity from './config-parity.json';
 
 /**
@@ -112,6 +112,30 @@ describe('ConfigService validation, against the server\'s', () => {
     }
   });
 
+  it('accepts integer-valued JSON floats in the same shared cases as the backend', () => {
+    for (const { path, value } of parity.accepted) {
+      expect(service.validateGameRules(edited(path, value)).valid)
+        .withContext(`${path.join('.')} = ${value}`).toBeTrue();
+    }
+  });
+
+  it('ships distinct display names for every ability in the catalogue', () => {
+    const names = Object.values(DEFAULT_GAME_CONFIG.abilities.catalogue).map(entry => entry.name.trim().toLowerCase());
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('accepts zero pair delay and older radial CP skills without the new area fields', () => {
+    const config: any = structuredClone(DEFAULT_GAME_CONFIG);
+    config.abilities.pairPickDelay = 0;
+    for (const id of ['anchor', 'cleave', 'surge']) {
+      for (const field of ['area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov']) delete config.abilities.catalogue[id][field];
+    }
+    delete config.abilities.catalogue.cleave.heal;
+    expect(service.validateGameRules(config).valid).toBeTrue();
+    delete config.abilities.pairPickDelay;
+    expect(service.validateGameRules(config).valid).toBeTrue();
+  });
+
   it('accepts an explicit empty capture permission list', () => {
     expect(service.validateGameRules(edited(['units', 'pawn', 'captureZones'], [])).valid).toBeTrue();
   });
@@ -190,14 +214,12 @@ describe('ConfigService validation, against the server\'s', () => {
     // them is read at the numbers every game was played under.
     const config: any = minimal();
     expect(service.validateGameRules(config).valid).toBeTrue();
-    expect(config.rules.panelMoversPerTurn).toBe(3);
-    expect(config.rules.postmatchEntries).toBe(5);
-    expect(config.rules.homecomingsPerSetupTurn).toBe(3);
     expect(config.rules.cpAtStart).toBe(5);
-    expect(config.rules.cpPhaseOffset).toBe(5);
+    expect(config.rules.cpPhaseOffset).toBe(10);
     expect(config.rules.upAtStart).toBe(10);
+    expect(config.rules.pointsAtStart).toBe(10);
 
-    for (const key of ['panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart', 'cpPhaseOffset', 'upAtStart']) {
+    for (const key of COUNTED_RULES) {
       const bad: any = minimal();
       bad.rules[key] = -1;
       expect(service.validateGameRules(bad).valid).withContext(key).toBeFalse();
@@ -216,7 +238,7 @@ describe('ConfigService validation, against the server\'s', () => {
     const config: any = minimal();
     config.rules.phaseInitEntries = 2;
     expect(service.validateGameRules(config).valid).toBeTrue();
-    expect(config.rules.postmatchEntries).toBe(5);
+    expect(config.rules.postmatchEntries).toBeUndefined();
   });
 
   it('refuses an explicit null floor, the way load_config does', () => {

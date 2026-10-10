@@ -45,23 +45,10 @@ def _read_default_config() -> Dict[str, Any]:
 
 DEFAULT_CONFIG: Dict[str, Any] = _read_default_config()
 
-#: The rules a config may leave out and be read at their default. Each is a
-#: whole number >= 0, filled in by _normalise_config and read by rule_of.
-#:
-#: postmatchEntries was phaseInitEntries while the extra turn opened a phase
-#: rather than closing it. Nothing migrates the old key: neither runtime
-#: validator (_validate_config here, validateGameRules in the client) refuses
-#: a rule it does not know, so a room snapshot that still carries
-#: phaseInitEntries loads, ignores it, and reads postmatchEntries at its
-#: default. The schema's additionalProperties would refuse it, but nothing
-#: runs the schema at runtime.
-#:
-#: cpPhaseOffset replaced cpPerPhase - a flat 100 at the start of every phase -
-#: when CP became something a phase's play earns. The same holds: a snapshot
-#: still carrying cpPerPhase loads and ignores it.
+#: Optional whole-number economy rules, filled by both normalizers.
+#: Retired movement keys remain readable in old rooms but do not set stage limits.
 COUNTED_RULES = (
-    'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart',
-    'cpPhaseOffset', 'upAtStart')
+    'cpAtStart', 'cpPhaseOffset', 'upAtStart', 'pointsAtStart')
 
 
 def rule_of(config: Optional[Dict[str, Any]], key: str) -> Any:
@@ -137,8 +124,7 @@ def _unit_ability_errors(unit_id: str, ability: Any, abilities: Any) -> List[str
     """
     What is wrong with a unit type's own ability (``units.<id>.ability``),
     cast from the Unit panel onto the unit itself. Mirrors unitAbilityErrors
-    in config.service.ts. The server casts nothing, but it validates the
-    units it plays, so the two reject the same configs.
+    in config.service.ts. Both engines execute these configured effects and reject invalid kits.
     """
     at = f"units.{unit_id}.ability"
     if not isinstance(ability, str):
@@ -165,19 +151,21 @@ UNIT_EFFECT_FIELDS = {
     'regenerate': [],
     'intimidate': ['atk', 'def', 'mov', 'turns'],
     'persuade': ['atk', 'def', 'mov', 'turns'],
+    'capture': [],
+    'checkmate': ['atk', 'def', 'mov'],
     'rapid-movement': [],
 }
 UNIT_PASSIVES = tuple(UNIT_EFFECT_FIELDS)
 UNIT_ACTIVES = ('sacrifice', 'attack-drain', 'taunt', 'cleave', 'charge', 'control', 'nullify', 'call')
 UNIT_EFFECT_FIELDS.update({
-    'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up'],
+    'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up', 'stars'],
     'attack-drain': ['cost', 'cooldown', 'turns', 'mov'],
     'taunt': ['cost', 'cooldown', 'turns'],
     'cleave': ['cost', 'cooldown', 'turns'],
     'charge': ['cost', 'cooldown', 'turns'],
     'control': ['cost', 'cooldown', 'turns'],
     'nullify': ['cost', 'cooldown', 'turns'],
-    'call': ['cost', 'cooldown', 'turns', 'heal', 'def', 'enemyDamage', 'enemyAtk', 'enemyDef'],
+    'call': ['cost', 'cooldown', 'turns', 'heal', 'atk', 'def', 'mov', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius'],
 })
 
 
@@ -185,9 +173,9 @@ PATH_EFFECT_FIELDS = {
     'defensive-armor': ['def', 'minVet'],
     'promote': ['cost', 'cooldown', 'uses', 'stars'],
     'recharge': ['cost', 'cooldown', 'uses', 'recharge'],
-    'hex-sap': ['cost', 'cooldown', 'uses', 'turns', 'setAtk', 'splashAtk', 'setHel', 'splashHel'],
-    'hex-cleave': ['cost', 'cooldown', 'uses', 'damage', 'splashDamage'],
-    'hex-trap': ['cost', 'cooldown', 'uses', 'turns', 'splashMov'],
+    'hex-sap': ['cost', 'cooldown', 'uses', 'turns', 'setAtk', 'splashAtk', 'setHel', 'splashHel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel'],
+    'hex-cleave': ['cost', 'cooldown', 'uses', 'damage', 'splashDamage', 'splashRange', 'heal'],
+    'hex-trap': ['cost', 'cooldown', 'uses', 'turns', 'splashMov', 'splashRange', 'outerMov'],
     'fortress': ['cost', 'cooldown', 'uses', 'turns', 'enemyDefSet'],
     'ruin': ['cost', 'cooldown', 'uses', 'damage', 'heal'],
     'blitz': ['cost', 'cooldown', 'uses', 'turns', 'mov', 'atk', 'def', 'hel'],
@@ -200,6 +188,16 @@ PATH_TARGETS = {
 }
 
 
+ABILITY_NUMBERS = (
+    ('cost', 0), ('cooldown', 0), ('turns', 1), ('uses', 1),
+    ('mov', None), ('atk', None), ('def', None), ('damage', 0), ('heal', 0), ('points', 0),
+    ('up', 0), ('enemyDamage', 0), ('enemyAtk', None), ('enemyDef', None), ('enemyMov', None), ('radius', 1), ('minVet', 0),
+    ('stars', 1), ('recharge', 0), ('splashDamage', 0), ('splashAtk', None), ('splashMov', None),
+    ('setAtk', 0), ('enemyDefSet', 0), ('hel', None), ('setHel', 0), ('splashHel', None),
+    ('splashRange', 1), ('outerRange', 1), ('outerAtk', 0), ('outerHel', 0), ('outerMov', 0),
+)
+
+
 def _validate_config(config: Dict[str, Any]) -> List[str]:
     """
     Light validation of a config dict.
@@ -208,6 +206,43 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
 
     abilities = config.get('abilities')
+    if 'abilities' in config and not isinstance(abilities, dict):
+        errors.append('abilities must be an object')
+    if isinstance(abilities, dict):
+        catalogue = abilities.get('catalogue', {})
+        pool = abilities.get('pool', [])
+        paths = abilities.get('paths', [])
+        if not isinstance(catalogue, dict):
+            errors.append('abilities.catalogue must be an object')
+            catalogue = {}
+        if not isinstance(pool, list) or len(pool) % 2:
+            errors.append('abilities.pool must be an even array of catalogue ids')
+            pool = []
+        if not isinstance(paths, list):
+            errors.append('abilities.paths must be an array')
+            paths = []
+        if 'slots' in abilities and (type(abilities['slots']) is not int or abilities['slots'] < 0 or abilities['slots'] % 2):
+            errors.append('abilities.slots must be an even nonnegative integer')
+        references = list(pool)
+        for path in paths:
+            if not isinstance(path, dict) or not isinstance(path.get('id'), str) or not path['id']:
+                errors.append('abilities.paths entries need a path id')
+                continue
+            if type(path.get('cost')) is not int or path['cost'] < 0:
+                errors.append('abilities.paths.cost must be a nonnegative integer')
+            references.extend(path.get(slot) for slot in ('passive', 'skill', 'ultimate'))
+            if 'utility' in path:
+                references.append(path['utility'])
+        named = set()
+        for ref in references:
+            if not isinstance(ref, str) or ref not in catalogue:
+                errors.append('abilities must reference existing catalogue ids')
+            elif ref in named:
+                errors.append('abilities names an ability in more than one slot')
+            else:
+                named.add(ref)
+    if isinstance(abilities, dict) and 'pairPickDelay' in abilities and (type(abilities['pairPickDelay']) is not int or abilities['pairPickDelay'] < 0):
+        errors.append('abilities.pairPickDelay must be a nonnegative integer')
     catalogue = abilities.get('catalogue') if isinstance(abilities, dict) else None
     paths = abilities.get('paths', []) if isinstance(abilities, dict) else []
     passives = {p.get('passive') for p in paths if isinstance(p, dict) and isinstance(p.get('passive'), str)} if isinstance(paths, list) else set()
@@ -218,8 +253,14 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
     if isinstance(catalogue, dict):
         for ability_id, entry in catalogue.items():
             if not isinstance(entry, dict):
+                errors.append(f'abilities.catalogue.{ability_id} must be an object')
                 continue
             at = f'abilities.catalogue.{ability_id}'
+            if entry.get('id') != ability_id:
+                errors.append(f'{at} must carry its own id')
+            for field, least in ABILITY_NUMBERS:
+                if field in entry and (type(entry[field]) is not int or (least is not None and entry[field] < least)):
+                    errors.append(f'{at}.{field} must be an integer')
             if 'target' in entry and entry['target'] not in ('friendly', 'enemy', 'universal', 'all-enemies', 'hex', 'pair'):
                 errors.append(f'{at}.target is invalid')
             if 'usesScope' in entry and entry['usesScope'] not in ('match', 'phase'):
@@ -231,21 +272,36 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                     errors.append(f'{at}.effect is unknown')
                 if entry.get('target') != PATH_TARGETS.get(entry.get('effect') if isinstance(entry.get('effect'), str) else '', 'enemy' if entry.get('effect') == 'control' else 'friendly'):
                     errors.append(f'{at}.target must be friendly for a unit passive')
-                for field in ('cost', 'cooldown', 'turns', 'uses', 'mov', 'atk', 'def', 'damage', 'heal', 'points', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'minVet', 'stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'hel', 'setHel', 'splashHel'):
+                for field in ('cost', 'cooldown', 'turns', 'uses', 'mov', 'atk', 'def', 'damage', 'heal', 'points', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius', 'minVet', 'stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'hel', 'setHel', 'splashHel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov'):
                     if field in entry:
                         if field not in (EFFECT_FIELDS.get(entry['effect'], ()) if isinstance(entry['effect'], str) else ()):
                             errors.append(f'{at}.{field} does nothing on a unit passive')
-                        elif type(entry[field]) is not int or (field in ('cost', 'cooldown', 'damage', 'heal', 'up', 'enemyDamage', 'minVet', 'recharge', 'splashDamage', 'setAtk', 'enemyDefSet', 'setHel') and entry[field] < 0) or (field in ('turns', 'uses', 'stars') and entry[field] < 1):
+                        elif type(entry[field]) is not int or (field in ('cost', 'cooldown', 'damage', 'heal', 'up', 'enemyDamage', 'minVet', 'recharge', 'splashDamage', 'setAtk', 'enemyDefSet', 'setHel', 'outerAtk', 'outerHel', 'outerMov') and entry[field] < 0) or (field in ('turns', 'uses', 'stars', 'splashRange', 'outerRange', 'radius') and entry[field] < 1):
                             errors.append(f'{at}.{field} must be an integer')
             effect = entry.get('effect') if isinstance(entry.get('effect'), str) else ''
+            if 'area' in entry and entry['area'] != {'hex-cleave': 'horizontal', 'hex-trap': 'cross'}.get(effect):
+                errors.append(f'{at}.area does not match its hex effect')
+            if 'area' in entry and entry['area'] is None:
+                errors.append(f'{at}.area must name a hex area')
+            if any(field in entry for field in ('outerAtk', 'outerHel')) and 'outerRange' not in entry:
+                errors.append(f'{at}.outerRange is required for outer-ring boosts')
+            if type(entry.get('outerRange')) is int and type(entry.get('splashRange', 1)) is int and entry['outerRange'] <= entry.get('splashRange', 1):
+                errors.append(f'{at}.outerRange must exceed splashRange')
+            if 'outerMov' in entry and entry.get('area') != 'cross':
+                errors.append(f'{at}.outerMov requires a cross area')
+            if effect == 'hex-cleave' and 'heal' in entry and entry.get('area') != 'horizontal':
+                errors.append(f'{at}.heal requires a horizontal area')
             if entry.get('target') in ('hex', 'pair') and effect not in PATH_EFFECT_FIELDS:
                 errors.append(f'{at}.target requires a path effect')
-            if 'scope' in entry and (entry['scope'] not in ('field-reserve', 'all') or effect == 'recharge' or not (ability_id in passives or effect in PATH_EFFECT_FIELDS)):
+            if 'scope' in entry and (entry['scope'] not in ('field-reserve', 'all') or effect == 'recharge' or not (ability_id in passives or effect in PATH_EFFECT_FIELDS
+                    or ('effect' not in entry and entry.get('target') in ('friendly', 'enemy')))):
                 errors.append(f'{at}.scope is invalid')
+            if 'radius' in entry and effect != 'call':
+                errors.append(f'{at}.radius requires Call')
             if 'minVet' in entry and (ability_id not in passives or type(entry['minVet']) is not int or not 0 <= entry['minVet'] <= 3):
                 errors.append(f'{at}.minVet is invalid')
-            for field in ('stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'setHel', 'splashHel', 'hel'):
-                if field in entry and effect not in PATH_EFFECT_FIELDS:
+            for field in ('stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'setHel', 'splashHel', 'hel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov'):
+                if field in entry and effect not in PATH_EFFECT_FIELDS and not (field == 'stars' and effect == 'sacrifice'):
                     errors.append(f'{at}.{field} requires a path effect')
             if 'counterAttack' in entry:
                 profile = entry['counterAttack']
@@ -256,7 +312,7 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                 errors.append(f'{at}.counterAttack is required')
             if entry.get('effect') == 'deflect' and 'atk' not in entry:
                 errors.append(f'{at}.atk is required')
-            for field in ('up', 'enemyDamage', 'enemyAtk', 'enemyDef'):
+            for field in ('up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov'):
                 if field in entry and 'effect' not in entry:
                     errors.append(f'{at}.{field} requires a unit effect')
 
@@ -472,6 +528,15 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _integer_numbers(value):
+    """JSON Schema integers include 5.0; normalize before Python range/arithmetic."""
+    if isinstance(value, dict):
+        return {key: _integer_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_integer_numbers(item) for item in value]
+    return int(value) if type(value) is float and value.is_integer() else value
+
+
 def load_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Normalise and validate a config dict.
@@ -490,7 +555,7 @@ def load_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if not isinstance(unit, dict):
             raise ValueError(f'Invalid game config: units.{unit_id} must be an object')
 
-    config = copy.deepcopy(raw)
+    config = _integer_numbers(copy.deepcopy(raw))
     _normalise_config(config)
     errors = _validate_config(config)
     if errors:

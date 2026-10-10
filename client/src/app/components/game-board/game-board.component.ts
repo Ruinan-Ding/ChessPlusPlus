@@ -1,3 +1,5 @@
+import playbackTimings from '../../../../../shared/playback-timings.json';
+import { actionTime } from '../../services/action-time';
 import { controlledUnit } from '../../services/unit-control';
 import { combatExchange, tauntAllows, carries, attackStats, combatStatuses } from '../../services/unit-combat';
 import {
@@ -18,8 +20,8 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
-  attackTiers, captureClaims, captureZones, captureZoneValues, computeAttackZone,
-  computeMoveCosts, canAttack, healingAmount, hexDistanceKeys, inHomeRows, isInsideBoard,
+  positionalBonus, attackTiers, captureClaims, captureZones, captureZoneValues, computeAttackZone,
+  computeMoveCosts, canAttack, healingAmount, hexDistanceKeys, hexEffectBand, inHomeRows, isInsideBoard,
   BASE_PANELS, HEX_DIRS, PANELS_DEALT,
 } from '../../services/hex-rules';
 import {
@@ -29,10 +31,11 @@ import {
 } from '../../services/phases';
 import { passiveStat, statSetting, PathPassive } from '../../services/ability-rules';
 import { ruleOf } from '../../services/config.service';
-import { canReceiveBoost, unitPassive, unitStats } from '../../services/unit-stats';
+import { withdrawalRefund } from '../../services/match-score';
+import { activeVet, capStat, capUnit, rankedUnit, canReceiveBoost, unitPassive, unitStats } from '../../services/unit-stats';
 import { AudioService } from '../../services/audio.service';
-import { unitVeterancy } from '../../services/history-rules';
-import type { BoardState, PieceData } from '../../services/game-state.service';
+import { boardMoveUids, panelMoversAt, unitVeterancy } from '../../services/history-rules';
+import type { BoardState, PieceData, PieceIdentity } from '../../services/game-state.service';
 export { panelOfHex } from '../../services/hex-rules';
 
 // ---------------------------------------------------------------------------
@@ -78,6 +81,8 @@ export interface AnimStep {
   to: string;
   /** All recipients of one cast share one animation beat. */
   targets?: AnimStep[];
+  /** Draws actors that moved again or died before the completed frame. */
+  actor?: PieceIdentity;
   /** For an ability beat: which slot cast it, so its button can pop too. */
   index?: number;
   /** Whose panel that slot is in. Both sides draw the same indices. */
@@ -221,27 +226,26 @@ const FACE_SCALE = 0.9;
  * How fast a committed turn plays back. Every beat below is written at its
  * 1x length and divided by this, so the recap keeps its shape and only its
  * pace changes - one dial rather than seven numbers to keep in step.
- * ponytail: the owner's dial - "about 50% faster".
  */
-const PLAYBACK_SPEED = 1.5;
+const PLAYBACK_SPEED = playbackTimings.speed;
 const beat = (ms: number) => Math.round(ms / PLAYBACK_SPEED);
 
 /** How long each beat of a committed turn takes to play. */
-const MOVE_MS = beat(840);
-const STRIKE_MS = beat(340);
-const HIT_MS = beat(520);
-const GLOW_MS = beat(2000);
+const MOVE_MS = beat(playbackTimings.move);
+const STRIKE_MS = beat(playbackTimings.strike);
+const HIT_MS = beat(playbackTimings.hit);
+const GLOW_MS = beat(playbackTimings.glow);
 /** The same beat in the end-of-turn recap, where there may be several. */
-const GLOW_BRIEF_MS = beat(1200);
+const GLOW_BRIEF_MS = beat(playbackTimings.glowBrief);
 /** A slot being taken up - shorter than using one, and board-less. */
-const PICK_MS = beat(900);
+const PICK_MS = beat(playbackTimings.pick);
 /** Blank frame between beats, so each one starts its animation over. */
-const BEAT_GAP_MS = beat(180);
+const BEAT_GAP_MS = beat(playbackTimings.gap);
 /**
  * A commit that moved nothing still plays: long enough for the board's amber
  * commit wash to be read as a thing that happened, not a dropped frame.
  */
-const COMMIT_MS = beat(620);
+const COMMIT_MS = beat(playbackTimings.commit);
 
 /**
  * The beat a turn that did nothing plays. Every commit is watched - a turn
@@ -251,9 +255,9 @@ const COMMIT_MS = beat(620);
  */
 const COMMIT_STEP: AnimStep = { kind: 'commit', from: '', to: '' };
 /** The turn's last beat: the base's mending, and overtime's toll with it. */
-const UPKEEP_MS = beat(760);
+const UPKEEP_MS = beat(playbackTimings.upkeep);
 /** How long an end-of-turn `+1` / `-1` stays legible after its swell. */
-const MARK_FADE_MS = beat(2200);
+const MARK_FADE_MS = beat(playbackTimings.markFade);
 
 /**
  * How many of its own turns a king is warned before overtime's toll kills it.
@@ -304,19 +308,14 @@ function hexPoints(cx: number, cy: number, orientation: BoardOrientation, size =
   return pts.join(' ');
 }
 
-/** Stats render in two digits at most - clamp rather than overflow the hex. */
-function twoDigits(v: number | null | undefined): number | null {
-  return v === null || v === undefined ? null : Math.min(99, wholeStat(v)!);
-}
-
-/** A stat as a whole number, never negative - the real one, for the Unit panel and the room. */
+/** The same bounded whole stat is used by the hex, Unit panel and room. */
 function wholeStat(v: number | null | undefined): number | null {
-  return v === null || v === undefined ? null : Math.max(0, Math.trunc(v));
+  return v === null || v === undefined ? null : capStat(Math.trunc(v));
 }
 
 function attackCellText(unitId: string, config: any, bonus = 0, vet = 0, kits = false, setting?: number): string {
   const tiers = attackTiers(unitId, config, vet, kits);
-  return tiers.length ? String(twoDigits(setting ?? (tiers[0] + bonus))) : '—';
+  return tiers.length ? String(wholeStat(setting ?? (tiers[0] + bonus))) : '-';
 }
 
 /** The far end of the unit's attack or healing reach. */
@@ -331,7 +330,7 @@ function rangeLow(unitId: string, config: any, vet = 0): number {
   return unit?.heal?.length ? 1 : unit?.attackMinRange ?? 1;
 }
 
-/** Stat as drawn on the hex: plain digits, two at most (see twoDigits). */
+/** Stat as drawn on the hex: plain digits, two at most (see wholeStat). */
 function statText(v: number | null | undefined): string {
   return v === null || v === undefined ? '' : String(v);
 }
@@ -1121,7 +1120,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
     }
 
     .hex-cell {
-      fill: #f0d9b5;
+      fill: #d3bc96;
       stroke: #b58863;
       stroke-width: 1;
       cursor: pointer;
@@ -1142,8 +1141,8 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
        uses, and both pale enough that a piece still reads on top of them.
        Declared above .zone so a capture zone wins where the two overlap: the
        zone is the one that scores, and it is the one that carries a wash. */
-    .home-mine { fill: #d7ecd9; }
-    .home-theirs { fill: #f0d7d7; }
+    .home-mine { fill: #bfd6c1; }
+    .home-theirs { fill: #d7bcbc; }
 
     /* Base zones have their side's blue; middle and side zones keep the
        shared blue. The wash above the resting fill survives a hex
@@ -1201,7 +1200,7 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
     }
 
     .hex-cell:not(.hex-filler):hover {
-      fill: #e8cf9f;
+      fill: #c9ae82;
     }
 
     /* The bases and reserves share the grid outside the radius-N battlefield. */
@@ -1223,8 +1222,8 @@ function gridCoords(radius: number, orientation: BoardOrientation) {
          top-left     = black's right  -> dark green */
     .panel-bl { fill: #9e3b3b; stroke: #ecc4ba; stroke-width: 1.25; }
     .panel-br { fill: #4e9c72; stroke: #153b2a; stroke-width: 1.25; }
-    .panel-tr { fill: #4f2020; stroke: #c98c83; stroke-width: 1.25; }
-    .panel-tl { fill: #1c4632; stroke: #79ac90; stroke-width: 1.25; }
+    .panel-tr { fill: #763939; stroke: #c98c83; stroke-width: 1.25; }
+    .panel-tl { fill: #32664b; stroke: #79ac90; stroke-width: 1.25; }
 
     .hex-selected {
       fill: #ffff66 !important;
@@ -2028,7 +2027,6 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    *
    * Only a setup turn counts them. Overtime opens the doorways with no cap.
    */
-  @Input() homecomingsSpent = 0;
 
   /**
    * Whether overtime's toll is in play: the red `-1` on a king at the end of
@@ -2133,6 +2131,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   @Output() playbackStep = new EventEmitter<AnimStep>();
   /** Nothing left to play - the room starts its clock again. */
   @Output() playbackDone = new EventEmitter<void>();
+  @Output() turnFrameReady = new EventEmitter<{ ply: number; cells: GameBoardComponent['cells'] }>();
+  private manualReplay = false;
+  private replayBuffs: GameBoardComponent['unitBuffs'] = {};
+  private get displayBuffs(): GameBoardComponent['unitBuffs'] { return this.manualReplay ? this.replayBuffs : this.unitBuffs; }
+  private replayView: { zoom: number; center: { x: number; y: number }; auto: boolean } | null = null;
   /**
    * The turn's last beat as it lands (`settleUpkeep`), so the room can sound
    * it: whether overtime's toll struck a king, and whether anything in a base
@@ -2141,7 +2144,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   @Output() upkeepSettled = new EventEmitter<{ toll: boolean; heal: boolean }>();
 
   /** The unit in flight: a copy drawn over the board while its hex is empty. */
-  mover: { points: string; symbol: string; dark: boolean; x: number; y: number } | null = null;
+  mover: { points: string; symbol: string; dark: boolean; x: number; y: number; anchor: { x: number; y: number } } | null = null;
   /** Whose piece is hidden while the copy above stands in for it. */
   private moverHex = '';
   /** Hexes flashing a hit, and one glowing from an ability. */
@@ -2164,6 +2167,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   @Input() showNumbers = false;
   /** Solo play: this client drives both sides, not just its own colour. */
   @Input() controlAllSides = false;
+  @Input() abilitiesSupported = false;
+  get kitsEnabled(): boolean { return this.controlAllSides || this.abilitiesSupported; }
   /** Rotate the rendered board for a solo player choosing Black. */
   @Input() rotateBoard = false;
   /** Colour of whoever's turn it is - what controlAllSides selects with. */
@@ -2228,7 +2233,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * with a boosted attack and a sapped defence shows both at once.
    */
   statWave(hex: HexCell, stat: 'atk' | 'def' | 'mov'): string {
-    const moved = this.unitBuffs[this.uidOf(hex)]?.[stat] ?? 0;
+    const moved = this.displayBuffs[this.uidOf(hex)]?.[stat] ?? 0;
     return moved > 0 ? 'wave-up' : moved < 0 ? 'wave-down' : '';
   }
 
@@ -2240,7 +2245,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   get movWave(): string {
     const key = this.hoveredHex ?? this.selectedHex;
     const cell = key ? this.cellsByKey.get(key) : null;
-    const mov = cell ? (this.unitBuffs[this.uidOf(cell)]?.mov ?? 0) : 0;
+    const mov = cell ? (this.displayBuffs[this.uidOf(cell)]?.mov ?? 0) : 0;
     return mov > 0 ? 'up' : mov < 0 ? 'down' : '';
   }
 
@@ -2298,12 +2303,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     const pc = hex.piece;
     if (!pc) return '';
     if (hex.key === this.movesLeftFor && this.movesLeft != null) {
-      return statText(twoDigits(this.movesLeft));
+      return statText(wholeStat(this.movesLeft));
     }
-    const base = unitStats(pc.unit_id, this.config, pc.vet)?.move ?? 0;
-    if (carries(this.unitBuffs[this.uidOf(hex)], 'action-lock')) return '0';
+    const base = unitStats(pc.unit_id, this.config, activeVet(pc, hex.panel))?.move ?? 0;
+    if (carries(this.displayBuffs[this.uidOf(hex)], 'action-lock')) return '0';
     const bonus = this.statBonus(hex, 'mov');
-    return statText(twoDigits(Math.max(0, base + bonus)));
+    return statText(wholeStat(Math.max(0, base + bonus)));
   }
 
   /** Has spent an ability this turn - its face pulses to its own colour. */
@@ -2318,7 +2323,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   }
 
   hasPositiveEffect(uid?: string): boolean {
-    const effect = uid ? this.unitBuffs[uid] : undefined;
+    const effect = uid ? this.displayBuffs[uid] : undefined;
     return !!effect && [effect.mov, effect.atk, effect.def].some(value => (value ?? 0) > 0);
   }
 
@@ -2327,7 +2332,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   }
 
   hasNegativeEffect(uid?: string): boolean {
-    const effect = uid ? this.unitBuffs[uid] : undefined;
+    const effect = uid ? this.displayBuffs[uid] : undefined;
     return !!effect && [effect.mov, effect.atk, effect.def].some(value => (value ?? 0) < 0);
   }
 
@@ -2338,17 +2343,17 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * numbers at all.
    */
   hasLift(uid?: string): boolean {
-    const effect = uid ? this.unitBuffs[uid] : undefined;
+    const effect = uid ? this.displayBuffs[uid] : undefined;
     return !!effect?.up || this.hasPositiveEffect(uid);
   }
 
   hasDrag(uid?: string): boolean {
-    const effect = uid ? this.unitBuffs[uid] : undefined;
+    const effect = uid ? this.displayBuffs[uid] : undefined;
     return !!effect?.down || this.hasNegativeEffect(uid);
   }
 
   get movementArrowSegments(): Array<{ x1: number; y1: number; x2: number; y2: number }> {
-    return this.movementArrows.flatMap(arrow => {
+    return (this.manualReplay ? [] : this.movementArrows).flatMap(arrow => {
       const from = this.cellsByKey.get(arrow.from);
       const to = this.cellsByKey.get(arrow.to);
       return from && to && from.key !== to.key
@@ -2358,7 +2363,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   }
 
   get attackStrikes(): StrikeMarks {
-    return this.strikeMarks(this.attackMarkers);
+    return this.strikeMarks(this.manualReplay ? [] : this.attackMarkers);
   }
 
   get opponentAttackStrikes(): StrikeMarks {
@@ -2393,7 +2398,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   @Input() killMarkers: FallenUnit[] = [];
 
   get killMarkerPositions(): FallenDrawing[] {
-    return this.fallenDrawings(this.killMarkers);
+    return this.fallenDrawings(this.manualReplay ? [] : this.killMarkers);
   }
 
   /**
@@ -2412,8 +2417,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         symbol: this.getPieceSymbol({ unit_id: unit.unit_id, color: unit.color } as PieceData),
         // Its own numbers, unbuffed - whatever it was carrying died with it.
         atk: attackCellText(unit.unit_id, this.config),
-        def: twoDigits(this.config?.units?.[unit.unit_id]?.defense),
-        mov: twoDigits(this.config?.units?.[unit.unit_id]?.move),
+        def: wholeStat(this.config?.units?.[unit.unit_id]?.defense),
+        mov: wholeStat(this.config?.units?.[unit.unit_id]?.move),
         rangeLow: rangeLow(unit.unit_id, this.config),
         rangeHigh: rangeHigh(unit.unit_id, this.config),
         dark: unit.color === 'black',
@@ -2547,6 +2552,40 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     this.glowTargets.clear();
   }
 
+  replayFrame(cells: GameBoardComponent['cells'], steps: AnimStep[], buffs: GameBoardComponent['unitBuffs'] = {}): void {
+    this.stopPlayback();
+    this.clearMarks();
+    this.manualReplay = true; this.replayBuffs = buffs;
+    this.replayView = { zoom: this.boardZoom, center: { ...this.zoomCenter }, auto: this.autoZoomed };
+    this.fitBoard();
+    cells = cells.map(cell => ({ ...cell, vet: Math.min(3, capStat(cell.vet)), piece: cell.piece ? capUnit(cell.piece) : null,
+      stats: cell.stats ? { ...cell.stats, hp: wholeStat(cell.stats.hp), def: wholeStat(cell.stats.def),
+        ...(cell.stats.rangeHigh !== undefined ? { rangeHigh: capStat(cell.stats.rangeHigh) } : {}),
+        ...(cell.stats.rangeLow !== undefined ? { rangeLow: capStat(cell.stats.rangeLow) } : {}),
+        atk: Number.isFinite(Number(cell.stats.atk)) ? String(capStat(Number(cell.stats.atk))) : cell.stats.atk } : null }));
+    this.cells = cells;
+    this.cellsByKey = new Map(cells.map(cell => [cell.key, cell]));
+    this.captureClaim = captureClaims(Object.fromEntries(cells.filter(cell => cell.piece && !cell.filler)
+      .map(cell => [cell.key, cell.piece!])), this.radius, this.config);
+    this.replaying = true;
+    this.runTimer = setTimeout(() => this.runPlayback(steps), 0);
+    this.cdr.markForCheck();
+  }
+
+  restoreReplayFrame(): void {
+    if (!this.manualReplay) return;
+    this.manualReplay = false;
+    this.stopPlayback();
+    this.clearMarks();
+    this.buildCells();
+    if (this.replayView) {
+      this.boardZoom = this.replayView.zoom; this.zoomCenter = this.replayView.center;
+      this.autoZoomed = this.replayView.auto; this.replayView = null; this.applyZoom();
+    }
+    this.refreshTargets();
+    this.cdr.markForCheck();
+  }
+
   /** The hex a flying copy stands in for: its own piece is not drawn. */
   isMoving(key: string): boolean {
     return !!this.mover && this.moverHex === key;
@@ -2648,7 +2687,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
 
     switch (step.kind) {
       case 'move':
-        return this.slide(to, from, to, MOVE_MS);
+        return this.slide(to, from, to, MOVE_MS, step.actor);
       case 'attack':
       case 'counter': {
         // Asked for less motion there is no lunge: the hex the blow lands on
@@ -2659,9 +2698,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         // A lunge, not a walk: part way in and back, then the hex it landed on
         // flashes. The counter is the same beat with the two ends swapped.
         const lunge = { cx: from.cx + (to.cx - from.cx) * 0.45, cy: from.cy + (to.cy - from.cy) * 0.45 };
-        await this.slide(from, from, lunge, STRIKE_MS);
+        await this.slide(from, from, lunge, STRIKE_MS, step.actor);
         if (token !== this.playbackToken) return;
-        await this.slide(from, lunge, from, STRIKE_MS);
+        await this.slide(from, lunge, from, STRIKE_MS, step.actor);
         if (token !== this.playbackToken) return;
         if (step.targets) await this.flashTargets(step.targets, HIT_MS);
         else await this.flash('hitHex', step.to, HIT_MS);
@@ -2729,10 +2768,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     start: { cx: number; cy: number },
     end: { cx: number; cy: number },
     ms: number,
+    actor?: PieceIdentity,
   ): Promise<void> {
-    const piece = cell.piece;
+    const piece = actor ?? cell.piece;
     if (!piece) return Promise.resolve();
-    this.moverHex = cell.key;
+    const present = piece.uid ? this.cells.find(hex => hex.piece?.uid === piece.uid)
+      : cell.piece?.unit_id === piece.unit_id && cell.piece.color === piece.color ? cell : null;
+    this.moverHex = present?.key ?? '';
     const jump = this.reducedMotion;
     return new Promise<void>(resolve => {
       const began = performance.now();
@@ -2744,6 +2786,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         const t = jump ? (run < 0.5 ? 0 : 1) : run;
         this.mover = {
           points: cell.innerPoints,
+          anchor: { x: cell.cx, y: cell.cy },
           symbol: this.getPieceSymbol(piece),
           dark: piece.color === 'black',
           // The copy is drawn at the hex's own coordinates and pushed by a
@@ -2776,7 +2819,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     });
   }
 
-  readonly turnAnnouncementMs = 900;
+  readonly turnAnnouncementMs = playbackTimings.notice;
   turnAnnouncement: { turn: number; stage: string; color: 'white' | 'black' } | null = null;
   private pendingTurnAnnouncement: GameBoardComponent['turnAnnouncement'] = null;
   private turnAnnouncementTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2796,6 +2839,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   }
 
   ngOnChanges(changes: SimpleChanges): void {
+    if (this.manualReplay && ['boardState', 'turnNumber', 'moveHistory', 'unitBuffs', 'config'].some(key => changes[key])) {
+      this.restoreReplayFrame();
+      this.playbackDone.emit();
+    }
     const turn = changes['turnNumber'];
     if (turn && turn.previousValue !== turn.currentValue) {
       clearTimeout(this.turnAnnouncementTimer);
@@ -2828,7 +2875,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         || changes['withdrawn'] || changes['departedUids'] || changes['committedBoard']
         || changes['panelPositions'] || changes['moveHistory'] || changes['unitControls']
         || changes['panelHp'] || changes['unitPromotions']
-        || changes['whitePathPassive'] || changes['blackPathPassive']) {
+        || changes['whitePathPassive'] || changes['blackPathPassive']
+        || changes['abilitiesSupported'] || changes['controlAllSides']) {
       this.buildCells();
     }
     // A move ends the ability to move again, but the selection itself sticks
@@ -2870,10 +2918,30 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       this.hexSelected.emit(cell?.piece ? this.describe(cell) : null);
     }
     // A boost landing mid-turn widens the reach of a unit already selected.
-    if (changes['boardState'] || changes['config'] || changes['radius'] || changes['unitBuffs']) {
+    if (changes['boardState'] || changes['config'] || changes['radius'] || changes['unitBuffs']
+        || changes['canMove'] || changes['interactive']) {
       this.invalidatePreview();
       // A staged step moved the unit: its remaining reach moved with it.
       this.refreshTargets();
+    }
+    if (changes['extraActionUids']) {
+      const previous: string[] = changes['extraActionUids'].previousValue ?? [];
+      const uid = this.extraActionUids.filter(uid => !previous.includes(uid)).at(-1);
+      const cell = uid && this.cells.find(cell => cell.piece?.uid === uid);
+      if (cell && cell.piece?.color === this.activeColor) {
+        this.selectedHex = cell.key;
+        this.refreshTargets();
+        this.invalidatePreview();
+        this.hexSelected.emit(this.describe(cell));
+      }
+    }
+    if (this.hoveredHex && (changes['boardState'] || changes['turnNumber'] || changes['moveHistory']
+        || changes['unitControls'] || changes['unitBuffs'] || changes['config'])) {
+      this.onHexHover(this.cellsByKey.get(this.hoveredHex) ?? null);
+    }
+    if ((changes['turnNumber'] || changes['moveHistory']) && this.turnNumber > 1) {
+      const frame = { ply: this.turnNumber, cells: this.cells };
+      queueMicrotask(() => this.turnFrameReady.emit(frame));
     }
     // Last, and deliberately: a staged step arrives as a new board and a new
     // step list in the same pass, and the flying copy is read out of the
@@ -3329,16 +3397,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       zone.add(`${c.q},${c.r}`);
     }
     this.buildReserves();
-    for (const [at, raw] of Object.entries(this.reserves)) {
-      const piece = raw;
-      const vet = Math.max(piece.vet ?? 0, this.unitPromotions[piece.uid ?? '']?.vet ?? 0, unitVeterancy(piece.uid ?? `${piece.color[0]}${at}`, at,
-        this.moveHistory, this.turnNumber, this.radius, orientation));
-      this.reserves[at] = { ...piece, vet: piece.vet ?? 0, max_hp: unitStats(piece.unit_id, this.config, vet).hp ?? piece.max_hp };
-    }
     this.woundReserves();
     this.absorbWithdrawn();
     this.placeRecorded();
-    if (this.controlAllSides) for (const [at, piece] of Object.entries(this.reserves)) {
+    if (this.kitsEnabled) for (const [at, piece] of Object.entries(this.reserves)) {
       this.reserves[at] = controlledUnit(piece, this.unitControls, this.turnNumber);
     }
     // A reserve that has stepped onto the battlefield is no longer in its
@@ -3375,8 +3437,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       const vet = raw ? Math.max(raw.vet ?? 0, this.unitPromotions[raw.uid ?? '']?.vet ?? 0,
         unitVeterancy(raw.uid ?? `${raw.color[0]}${key}`, committedLocations.get(raw.uid ?? '') ?? key,
           this.moveHistory, this.turnNumber, this.radius, orientation)) : 0;
-      const piece = raw ? { ...raw, vet, ...(this.unitPromotions[raw.uid ?? ''] ? { max_hp: this.unitPromotions[raw.uid ?? ''].max_hp } : {}) } : null;
-      const def = piece ? unitStats(piece.unit_id, this.config, vet) : null;
+      const piece = raw ? rankedUnit({ ...raw, ...(this.unitPromotions[raw.uid ?? ''] ?? {}),
+        ...(!c.onBattlefield ? { panel: panelOf(c.x, c.y), hp: raw.hp } : {}) }, this.config, vet, c.onBattlefield) : null;
+      const statVet = c.onBattlefield ? vet : 0;
+      const def = piece ? unitStats(piece.unit_id, this.config, statVet) : null;
       return {
         q: c.q,
         r: c.r,
@@ -3391,13 +3455,15 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         piece,
         stats: piece
           ? {
-              hp: twoDigits(piece.hp),
-              atk: attackCellText(piece.unit_id, this.config, (this.unitBuffs[piece.uid ?? '']?.atk ?? 0)
-                + passiveStat(piece.color === 'white' ? this.whitePathPassive : this.blackPathPassive, 'atk', vet, !c.onBattlefield && BASE_PANELS.has(panelOf(c.x, c.y))), vet, this.controlAllSides,
-                statSetting(this.unitBuffs[piece.uid ?? ''], 'atk')),
-              def: twoDigits(statSetting(this.unitBuffs[piece.uid ?? ''], 'def') ?? ((def?.defense ?? 0) + (this.unitBuffs[piece.uid ?? '']?.def ?? 0))),
-              rangeLow: rangeLow(piece.unit_id, this.config, piece.vet),
-              rangeHigh: rangeHigh(piece.unit_id, this.config, piece.vet),
+              hp: wholeStat(piece.hp),
+              atk: attackCellText(piece.unit_id, this.config, (this.displayBuffs[piece.uid ?? '']?.atk ?? 0)
+                + (this.kitsEnabled ? positionalBonus(piece, key, 'atk', this.config, this.radius) : 0)
+                + passiveStat(piece.color === 'white' ? this.whitePathPassive : this.blackPathPassive, 'atk', vet, !c.onBattlefield && BASE_PANELS.has(panelOf(c.x, c.y))), statVet, this.kitsEnabled,
+                statSetting(this.displayBuffs[piece.uid ?? ''], 'atk')),
+              def: wholeStat(statSetting(this.displayBuffs[piece.uid ?? ''], 'def') ?? ((def?.defense ?? 0) + (this.displayBuffs[piece.uid ?? '']?.def ?? 0)
+                + (this.kitsEnabled ? positionalBonus(piece, key, 'def', this.config, this.radius) : 0))),
+              rangeLow: rangeLow(piece.unit_id, this.config, statVet),
+              rangeHigh: rangeHigh(piece.unit_id, this.config, statVet),
             }
           : null,
         vet,
@@ -3526,7 +3592,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         // nothing at 0 is dealt at all - that is what killed in a panel means.
         const left = this.panelHp[uid] ?? hp;
         if (left <= 0) return;
-        this.reserves[at] = { unit_id: id, color, hp: left, max_hp: hp, uid };
+        this.reserves[at] = { unit_id: id, color, hp: left, max_hp: hp, uid, vet: 0 };
       });
     }
   }
@@ -3567,7 +3633,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         // deal, and nothing at 0 is dealt at all.
         const left = this.panelHp[uid] ?? hp;
         if (left <= 0) continue;
-        this.reserves[at] = { unit_id: unitId, color, hp: left, max_hp: hp, uid };
+        this.reserves[at] = { unit_id: unitId, color, hp: left, max_hp: hp, uid, vet: 0 };
       }
     }
   }
@@ -3939,7 +4005,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     const king = this.cells.find(cell => !cell.panel && cell.piece?.color === color
       && this.config?.units?.[cell.piece.unit_id]?.commander);
     if (king?.piece) {
-      if (carries(this.unitBuffs[this.uidOf(king)], 'invulnerable')) return;
+      if (carries(this.displayBuffs[this.uidOf(king)], 'invulnerable')) return;
       this.oweMark(this.uidOf(king), `-${toll}`);
       return;
     }
@@ -4060,7 +4126,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     return color && color !== this.activeColor ? this.theirPoints : this.movePoints;
   }
 
-  /** Configured UP value, charged on a wrap and refunded on withdrawal. */
+  /** Configured UP value charged on a base-to-reserve crossing. */
   private wrapCost(cell: HexCell): number {
     return this.config?.units?.[cell.piece?.unit_id ?? '']?.value ?? 0;
   }
@@ -4097,7 +4163,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * walk off it.
    */
   private canHop(cell: HexCell): boolean {
-    return this.controlAllSides && unitPassive(cell.piece?.unit_id ?? '', this.config, cell.vet)?.effect === 'hop';
+    return this.kitsEnabled && unitPassive(cell.piece?.unit_id ?? '', this.config, activeVet(cell.piece, cell.panel))?.effect === 'hop';
   }
 
   private addBaseEntry(cell: HexCell, key: string, budget: number | undefined): void {
@@ -4109,10 +4175,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // Three a turn while setting out, and the unit already on its way counts
     // as one of them. Overtime has no count: the turn's own move allowance is
     // the only cap a walk home needs there.
-    if (isSetupTurn(this.turnNumber)
-        && this.homecomingsSpent >= ruleOf(this.config, 'homecomingsPerSetupTurn')) return;
-    const refund = this.wrapCost(cell);
-    const mov = budget ?? unitStats(cell.piece?.unit_id ?? '', this.config, cell.vet)?.move ?? 0;
+
+    const refund = withdrawalRefund(this.config, cell.piece);
+    const mov = budget ?? unitStats(cell.piece?.unit_id ?? '', this.config, activeVet(cell.piece, cell.panel))?.move ?? 0;
     for (const [gate, arrow] of baseGatewayHexes(this.radius)) {
       if (arrow.color !== color) continue;
       // An enemy in the doorway shuts it; one of your own is stepped over.
@@ -4153,7 +4218,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       const onward = { ...this.occupancy, [gate]: cell.piece! };
       delete onward[key];
       for (const [hex, cost] of computeMoveCosts(
-        onward, gq, gr, this.config, this.radius, left, zone, undefined, this.controlAllSides,
+        onward, gq, gr, this.config, this.radius, left, zone, undefined, this.kitsEnabled,
       )) {
         const total = spent + cost;
         if (total >= (this.moveCosts.get(hex) ?? Infinity)) continue;
@@ -4198,7 +4263,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // for this", and saying it to someone who could not have crossed with the
     // money in hand points at the wrong thing.
     const spent = toTip + 1;
-    const left = (budget ?? unitStats(cell.piece?.unit_id ?? '', this.config, cell.vet)?.move ?? 0) - spent;
+    const left = (budget ?? unitStats(cell.piece?.unit_id ?? '', this.config, activeVet(cell.piece, cell.panel))?.move ?? 0) - spent;
     if (left < 0) return;
     const price = this.wrapCost(cell);
     if (price > this.pointsOf(cell.piece?.color)) {
@@ -4227,7 +4292,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     delete onward[key];
     const [wq, wr] = tips.reserve.split(',').map(Number);
     const beyond = computeMoveCosts(
-      onward, wq, wr, this.config, this.radius, left, zone, undefined, this.controlAllSides,
+      onward, wq, wr, this.config, this.radius, left, zone, undefined, this.kitsEnabled,
     );
     for (const [hex, cost] of beyond) {
       const total = spent + cost;
@@ -4257,7 +4322,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     if (!this.entryOpen) return;
 
     const color = cell.panel[0] === 'b' ? 'white' : 'black';
-    const mov = budget ?? unitStats(cell.piece?.unit_id ?? '', this.config, cell.vet)?.move ?? 0;
+    const mov = budget ?? unitStats(cell.piece?.unit_id ?? '', this.config, activeVet(cell.piece, cell.panel))?.move ?? 0;
     // Both pictures at once - see committedBoard. A hex the turn's move has
     // vacated stays shut to a crossing until that move has actually landed.
     const blocked = { ...this.occupancy, ...this.committedBoard };
@@ -4297,7 +4362,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
         const onward = { ...blocked, [entry]: cell.piece! };
         delete onward[key];
         for (const [hex, cost] of computeMoveCosts(
-          onward, eq, er, this.config, this.radius, left, undefined, undefined, this.controlAllSides,
+          onward, eq, er, this.config, this.radius, left, undefined, undefined, this.kitsEnabled,
         )) {
           if (!inHomeRows(color, Number(hex.split(',')[1]), this.radius)) continue;
           const total = spent + cost;
@@ -4318,8 +4383,10 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * puts it back with no second stack to unwind.
    */
   private enterBoard(from: string, to: string): void {
-    const piece = this.reserves[from];
-    if (!piece) return;
+    const raw = this.reserves[from];
+    if (!raw) return;
+    const { panel: _panel, ...fieldUnit } = raw;
+    const piece = rankedUnit(fieldUnit, this.config, raw.vet ?? 0);
     const uid = this.uidOf(this.cellsByKey.get(from) ?? ({ piece, key: from } as HexCell));
     const cost = this.moveCosts.get(to) ?? 1;
     // A crossing is a reserve's move, not the turn's one board action - so it
@@ -4328,7 +4395,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     this.entered[to] = piece;
     this.panelMoved.set(uid, (this.panelMoved.get(uid) ?? 0) + cost);
     this.moversIn(this.cellsByKey.get(from)!.panel).add(uid);
-    this.panelHistory.push({ from, to, uid, cost, price: 0, at: Date.now(), entry: true, panel: this.cellsByKey.get(from)!.panel });
+    this.panelHistory.push({ from, to, uid, cost, price: 0, at: actionTime(), entry: true, panel: this.cellsByKey.get(from)!.panel });
     this.selectedHex = null;
     this.clearTargets();
     this.buildCells();
@@ -4383,6 +4450,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       }
     }
     return out;
+  }
+
+  get timedPanelSteps(): Array<{ at: number; command: any }> {
+    return this.panelHistory.map(step => ({ at: step.at, command: {
+      type: step.entry ? 'enter_board' : 'panel_move', from: step.from, to: step.to,
+    } }));
   }
 
   /**
@@ -4456,30 +4529,23 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     return isSetupTurn(this.turnNumber);
   }
 
-  /**
-   * Whether this panel unit may still be walked this turn: one already among
-   * the turn's movers may carry on spending what is left of its MOV, but a
-   * fresh one cannot start once the allowance is used up - and through the
-   * initialization one that moved on an earlier turn cannot start at all.
-   *
-   * Both panels carry the cap, all match, and each carries its own: three
-   * out of the base and three out of the reserve, never three between them.
-   *
-   * **A phase's postmatch raises the reserve's to five**
-   * (`rules.postmatchEntries`) - the same number `panelMoverAllowed` and
-   * `panel_allowance` raise it to, and the board must raise it too or the
-   * fourth and fifth are offered by neither engine's rule but refused by the
-   * screen. The base keeps its three: nothing in that allowance was about the
-   * base.
-   */
+  /** Each category follows the stage limit; switching units ends the previous walk. */
   private panelCanMove(cell: HexCell): boolean {
     const uid = this.uidOf(cell);
-    if (this.lockedUnits.has(uid) || carries(this.unitBuffs[uid], 'action-lock')) return false;
+    if (this.lockedUnits.has(uid) || carries(this.displayBuffs[uid], 'action-lock')) return false;
     const base = BASE_PANELS.has(cell.panel);
-    const movers = this.moversIn(cell.panel);
-    const cap = ruleOf(this.config, !base && isPostmatch(this.turnNumber)
-      ? 'postmatchEntries' : 'panelMoversPerTurn');
-    return movers.has(uid) || movers.size < cap;
+    const movers = new Set([...this.panelMovers].filter(([panel]) => BASE_PANELS.has(panel) === base)
+      .flatMap(([, uids]) => [...uids]));
+    const committed = panelMoversAt(this.moveHistory, this.turnNumber, this.activeColor,
+      undefined, this.config?.board?.orientation)[base ? 'base' : 'reserve'];
+    const started = movers.has(uid) || committed.has(uid);
+    const last = this.panelHistory.filter(step => BASE_PANELS.has(step.panel ?? '') === base).at(-1);
+    const latest = last?.uid ?? this.moveHistory.filter(move => move?.turn === this.turnNumber
+      && move.unit?.color === this.activeColor && (move.entered || move.panelMove)
+      && BASE_PANELS.has(move.entered ? '' : move.panel) === base).at(-1)?.unit?.uid;
+    if (started && latest !== uid) return false;
+    return started || new Set([...movers, ...committed].filter(id => !this.extraActionUids.includes(id))).size < boardMovesPerTurn(this.turnNumber)
+      || this.extraActionUids.includes(uid);
   }
 
   /**
@@ -4491,6 +4557,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * would allow. Only the side whose turn it is greys out; the opponent's
    * panels are not the player's to move either way.
    */
+  private enteredThisTurn(hex: HexCell): boolean {
+    return !!this.entered[hex.key] || this.moveHistory.some(move => move?.entered
+      && move.turn === this.turnNumber && (move.unit?.uid ? move.unit.uid === hex.piece?.uid : move.to === hex.key));
+  }
+
   isPanelSpent(hex: HexCell): boolean {
     if (!hex.piece) return false;
     // A battlefield unit greys only through the initialization, where the
@@ -4499,8 +4570,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       if (hex.piece.color !== this.activeColor) return false;
       // Either this turn's board move is gone, or this particular unit has
       // had the one move the opening gives it.
-      return this.initializing
-        && (this.boardMoveSpent || this.initMoved.includes(hex.key));
+      return this.enteredThisTurn(hex) || (this.initializing && (this.boardMoveSpent || this.initMoved.includes(hex.key)))
+        || this.movedHexes.includes(hex.key) || (hex.key !== this.movesLeftFor && !this.movesToSpare);
     }
     if (hex.piece.color !== this.activeColor) return false;
     // A unit that has just walked home is done: it stands in a panel on the
@@ -4529,6 +4600,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     piece?: PieceData;
     panel?: string;
   }> = [];
+
+  /** Last staged reserve action; base shuffles do not end a battlefield action. */
+  get lastReserveMove(): number {
+    return this.panelHistory.filter(step => !BASE_PANELS.has(step.panel ?? '')).at(-1)?.at ?? 0;
+  }
 
   /** When the last panel walk was taken, or 0 if none this turn. */
   get lastPanelMove(): number {
@@ -4559,6 +4635,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       this.panelMoved.delete(last.uid);
       for (const movers of this.panelMovers.values()) movers.delete(last.uid);
     }
+    this.panelMovers.clear();
+    for (const step of this.panelHistory) this.moversIn(step.panel ?? '').add(step.uid);
     this.selectedHex = null;
     this.clearTargets();
     this.buildCells();
@@ -4590,7 +4668,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       this.panelMoved.set(uid, (this.panelMoved.get(uid) ?? 0) + cost);
       this.moversIn(moving.panel).add(uid);
       this.panelHistory.push({
-        from, to, uid, cost, price, at: Date.now(),
+        from, to, uid, cost, price, at: actionTime(),
         piece: this.reserves[from], panel: moving.panel,
       });
     }
@@ -4607,8 +4685,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
 
   /** Where the flying copy's own glyph sits - the hex it came from. */
   get moverAnchor(): { x: number; y: number } {
-    const cell = this.cellsByKey.get(this.moverHex);
-    return { x: cell?.cx ?? 0, y: cell?.cy ?? 0 };
+    return this.mover?.anchor ?? { x: 0, y: 0 };
   }
 
   /** Two-character stat, exposed for the template. */
@@ -4616,6 +4693,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
 
   /** Hex currently under the cursor, for the hover shadow. */
   hoveredHex: string | null = null;
+  private abilityHoverHex: string | null = null;
 
   /**
    * The selection's own layers - legal moves, attackable enemies, the dots -
@@ -4643,9 +4721,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // it while setting out, so it keeps its colours - being told it is dead to
     // the turn when it can still be sent home is the lie this whole change
     // exists to stop telling.
-    if (this.movesLeftFor && key !== this.movesLeftFor && !this.movesToSpare && !this.extraActionUids.includes(cell?.piece?.uid ?? '')) {
-      return !(this.settingOut && cell && this.canWalkHome(cell));
-    }
+    if (cell?.panel) return !this.panelCanMove(cell);
+    if (key !== this.movesLeftFor && !this.movesToSpare && !this.extraActionUids.includes(cell?.piece?.uid ?? '')) return true;
     if (this.movesLeftFor) return false;
     const piece = cell?.piece;
     return !piece || piece.color !== this.activeColor || !this.canDriveNow();
@@ -4934,7 +5011,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   keyWordsFor(cell: HexCell): string {
     const where = `Hex ${cell.num}` + (cell.panel ? `, ${BASE_PANELS.has(cell.panel) ? 'base' : 'reserve'}` : '');
     const pc = cell.piece;
-    const def = pc ? unitStats(pc.unit_id, this.config, pc.vet) : null;
+    const def = pc ? unitStats(pc.unit_id, this.config, activeVet(pc, cell.panel)) : null;
     const max = pc ? (pc.max_hp ?? def?.hp) : null;
     const unit = pc ? `${pc.color} ${def?.name ?? pc.unit_id}, HP ${pc.hp}${max != null ? ` of ${max}` : ''}` : 'empty';
     const offer = cell.key === this.selectedHex ? 'selected'
@@ -5168,6 +5245,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
 
   /** Hovering previews a unit in the Unit panel without selecting it. */
   onHexHover(hex: HexCell | null): void {
+    this.abilityHoverHex = hex?.key ?? null;
     this.hoveredHex = hex && hex.piece ? hex.key : null;
     this.refreshForecast();
     this.hexHovered.emit(hex && hex.piece ? this.describe(hex) : null);
@@ -5203,12 +5281,12 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     const key = this.selectedHex;
     if (!key || !this.config) return;
     const cell = this.cellsByKey.get(key);
-    if (!cell?.piece || cell.piece.color !== this.activeColor || carries(this.unitBuffs[this.uidOf(cell)], 'action-lock')) return;
+    if (!cell?.piece || cell.piece.color !== this.activeColor || carries(this.displayBuffs[this.uidOf(cell)], 'action-lock')) return;
     // A crossing is plotted in one go - the whole reach through the gap is
     // offered before it is taken - so a unit that has come through is done.
     // ponytail: whatever MOV it did not spend on the way in is forfeit. Give
     // it the panel's step-at-a-time treatment if that ever grates.
-    if (this.entered[key]) return;
+    if (this.enteredThisTurn(cell)) return;
     // And so is one that has walked home: it stands in a panel on the staged
     // board, where the click handler would take any further step for a board
     // move - skipping the wrap's price and every panel allowance with it.
@@ -5219,9 +5297,6 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // Testing canDrive above this froze the panels the moment the turn's unit
     // swung, which is exactly what the branch below exists to prevent.
     const zone = cell.panel ? this.panelZones.get(cell.panel) : undefined;
-    // Set when the staging lock has refused this unit the turn's move but a
-    // setup turn's walk home is still open to it - see below.
-    let homeOnly = false;
     if (zone) {
       if (!this.controlAllSides && !this.isMyTurn) return;
       // Only so many of a panel's units move in a turn. A fourth one on a
@@ -5246,16 +5321,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       // through on the strength of a move meant for somebody else.
       if (key === this.movesLeftFor && this.actionSpent) return;
       if (this.movedHexes.includes(key) && key !== this.movesLeftFor) return;
-      if (this.movesLeftFor && key !== this.movesLeftFor && !this.movesToSpare && !this.extraActionUids.includes(cell?.piece?.uid ?? '')) {
-        // Except for a walk home while setting out. Three of them may go in a
-        // turn and none is the turn's board action - the room stages them as
-        // deployments and sends each as its own message, the way a crossing
-        // goes - so the turn's move being spoken for does not reach them. The
-        // unit is offered its own doorways and nothing else: anywhere else on
-        // the board would be a second board move.
-        if (!this.settingOut) return;
-        homeOnly = true;
-      }
+      if (key !== this.movesLeftFor && !this.movesToSpare && !this.extraActionUids.includes(cell.piece.uid ?? '')) return;
     }
 
     const [sq, sr] = key.split(',').map(Number);
@@ -5263,15 +5329,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     this.passableCosts = new Map();
     this.moveCosts = computeMoveCosts(
       this.occupancy, sq, sr, this.config, this.radius, budget, zone,
-      this.passableCosts, this.controlAllSides,
+      this.passableCosts, this.kitsEnabled,
     );
-    // The flood fill is what `addBaseEntry` reads to price its doorways, so it
-    // has to run first and be taken away after rather than skipped.
-    const plain = homeOnly ? [...this.moveCosts.keys()] : null;
     if (BASE_PANELS.has(cell.panel)) this.addWrap(cell, key, budget);
     else if (cell.panel) this.addGateway(cell, key, budget);
     else this.addBaseEntry(cell, key, budget);
-    if (plain) for (const hex of plain) this.moveCosts.delete(hex);
     this.legalTargets = new Set(this.moveCosts.keys());
 
     // **Only the battlefield starts a fight.** Neither panel ever does - a
@@ -5281,8 +5343,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // running on into the panel beside it.
     // The opening and postmatch forbid attacks. Postmatch still permits
     // healing, within the normal range and action budget.
-    const setting = statSetting(this.unitBuffs[this.uidOf(cell)], 'atk');
-    const unit = attackStats(cell.piece.unit_id, this.config, cell.vet, false, this.controlAllSides, setting);
+    const setting = statSetting(this.displayBuffs[this.uidOf(cell)], 'atk');
+    const unit = attackStats(cell.piece.unit_id, this.config, activeVet(cell.piece, cell.panel), false, this.kitsEnabled, setting);
     const heals = (unit?.heal?.length ?? 0) > 0;
     if (!cell.panel && !this.initializing && !this.attackedHexes.includes(key) && (heals || !this.settingOut)) {
       const range: number = heals ? unit.heal.length : unit?.attackRange ?? 1;
@@ -5306,7 +5368,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       }
     }
     for (const target of this.attackTargets) {
-      if (!tauntAllows(this.occupancy, key, target, this.config, this.unitBuffs, this.controlAllSides, this.buffOf(key, 'atk'))) this.attackTargets.delete(target);
+      if (!tauntAllows(this.occupancy, key, target, this.config, this.displayBuffs, this.kitsEnabled, this.buffOf(key, 'atk'))) this.attackTargets.delete(target);
     }
     this.refreshForecast();
   }
@@ -5316,7 +5378,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * own move stat plus any boost. `undefined` lets the rules read the stat.
    */
   private budgetFor(cell: HexCell): number | undefined {
-    if (carries(this.unitBuffs[this.uidOf(cell)], 'action-lock')) return 0;
+    if (carries(this.displayBuffs[this.uidOf(cell)], 'action-lock')) return 0;
     if (cell.key === this.movesLeftFor) return this.movesLeft ?? undefined;
     const bonus = this.statBonus(cell, 'mov');
     // A panel unit - base or reserve - gets its MOV for the turn and no more,
@@ -5325,11 +5387,11 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // stands: a unit that crossed onto the board keeps spending the same MOV.
     const walked = this.panelMoved.get(this.uidOf(cell)) ?? 0;
     if (cell.panel || walked) {
-      const base = unitStats(cell.piece?.unit_id ?? '', this.config, cell.vet)?.move ?? 0;
-      return Math.max(0, base + bonus - walked);
+      const base = unitStats(cell.piece?.unit_id ?? '', this.config, activeVet(cell.piece, cell.panel))?.move ?? 0;
+      return Math.max(0, capStat(base + bonus) - walked);
     }
-    const base = unitStats(cell.piece?.unit_id ?? '', this.config, cell.vet)?.move ?? 0;
-    return Math.max(0, base + bonus);
+    const base = unitStats(cell.piece?.unit_id ?? '', this.config, activeVet(cell.piece, cell.panel))?.move ?? 0;
+    return capStat(base + bonus);
   }
 
   /** A unit's identity, falling back to its hex for boards without one. */
@@ -5358,14 +5420,14 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     this.previewDenied = new Map();
     this.previewRefund = new Map();
     this.previewEntry = new Set();
-    if (!key || !this.config || !cell?.piece || carries(this.unitBuffs[this.uidOf(cell)], 'action-lock')) return;
+    if (!key || !this.config || !cell?.piece || carries(this.displayBuffs[this.uidOf(cell)], 'action-lock')) return;
     const [q, r] = key.split(',').map(Number);
     const zone = cell.panel ? this.panelZones.get(cell.panel) : undefined;
     // Costs rather than a plain set, because the three crossing helpers walk
     // outward from what the flood already reached.
     const passable = new Map<string, number>();
     const costs = computeMoveCosts(
-      this.occupancy, q, r, this.config, this.radius, budget, zone, passable, this.controlAllSides,
+      this.occupancy, q, r, this.config, this.radius, budget, zone, passable, this.kitsEnabled,
     );
 
     // The crossings, worked out by the very helpers that do it for a unit you
@@ -5407,7 +5469,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // edge reaches into the panel beside it, and the overlay has to say so.
     // Left to its own bound the zone stops dead at the hexagon's rim, which
     // reads as the range ending there when it does not.
-    const healRange = unitStats(cell.piece.unit_id, this.config, cell.vet)?.heal?.length ?? 0;
+    const healRange = unitStats(cell.piece.unit_id, this.config, activeVet(cell.piece, cell.panel))?.heal?.length ?? 0;
     if (healRange) {
       const fieldMoves = new Set([...this.previewMoves].filter(hex => {
         const [q, r] = hex.split(',').map(Number);
@@ -5416,13 +5478,13 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
       this.previewHeals = computeAttackZone(
         key, fieldMoves, this.config, cell.piece.unit_id, this.radius, undefined, healRange, 1,
       );
-    } else if (!this.settingOut && canAttack(attackStats(cell.piece.unit_id, this.config, cell.vet, false, this.controlAllSides, statSetting(this.unitBuffs[this.uidOf(cell)], 'atk')),
-                         unitStats(cell.piece.unit_id, this.config, cell.vet)?.attackMinRange ?? 1,
-                         statSetting(this.unitBuffs[this.uidOf(cell)], 'atk') === undefined ? this.buffOf(key, 'atk') : 0)) {
+    } else if (!this.settingOut && canAttack(attackStats(cell.piece.unit_id, this.config, activeVet(cell.piece, cell.panel), false, this.kitsEnabled, statSetting(this.displayBuffs[this.uidOf(cell)], 'atk')),
+                         unitStats(cell.piece.unit_id, this.config, activeVet(cell.piece, cell.panel))?.attackMinRange ?? 1,
+                         statSetting(this.displayBuffs[this.uidOf(cell)], 'atk') === undefined ? this.buffOf(key, 'atk') : 0)) {
       this.previewAttacks = computeAttackZone(
         key, this.previewMoves, this.config, cell.piece.unit_id, this.radius,
-        this.strikeBounds[cell.piece.color], unitStats(cell.piece.unit_id, this.config, cell.vet).attackRange ?? 1,
-        unitStats(cell.piece.unit_id, this.config, cell.vet).attackMinRange ?? 1,
+        this.strikeBounds[cell.piece.color], unitStats(cell.piece.unit_id, this.config, activeVet(cell.piece, cell.panel)).attackRange ?? 1,
+        unitStats(cell.piece.unit_id, this.config, activeVet(cell.piece, cell.panel)).attackMinRange ?? 1,
       );
     }
   }
@@ -5437,8 +5499,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   /** A one-turn boost on the unit standing on `key`, or 0. */
   private statBonus(cell: HexCell, stat: 'mov' | 'atk' | 'def', defending = false): number {
     const passive = cell.piece?.color === 'white' ? this.whitePathPassive : this.blackPathPassive;
-    return (this.unitBuffs[this.uidOf(cell)]?.[stat] ?? 0)
-      + passiveStat(passive, stat, cell.vet, BASE_PANELS.has(cell.panel), defending);
+    return (this.displayBuffs[this.uidOf(cell)]?.[stat] ?? 0)
+      + passiveStat(passive, stat, cell.vet, BASE_PANELS.has(cell.panel), defending)
+      + (this.kitsEnabled ? positionalBonus(cell.piece, cell.key, stat, this.config, this.radius) : 0);
   }
 
   private buffOf(key: string, stat: 'atk' | 'def'): number {
@@ -5459,25 +5522,25 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     const distance = hexDistanceKeys(from, to);
     if (this.healTargets.has(to)) {
       this.forecast = {
-        target: to, targetHp: them.hp + healingAmount(me.unit_id, them, distance, this.config, me.vet, (this.unitBuffs[me.uid!]?.hel ?? 0), statSetting(this.unitBuffs[me.uid!], 'hel')),
+        target: to, targetHp: them.hp + healingAmount(me.unit_id, them, distance, this.config, me.vet, (this.displayBuffs[me.uid!]?.hel ?? 0), statSetting(this.displayBuffs[me.uid!], 'hel')),
         attacker: from, attackerHp: me.hp,
       };
       return;
     }
-    const exchange = combatExchange(me, them, distance, this.config, {
+    const exchange = combatExchange(me, { ...them, panel: this.cellsByKey.get(to)?.panel }, distance, this.config, {
       atk: this.buffOf(from, 'atk'), def: this.buffOf(from, 'def'),
       targetAtk: this.buffOf(to, 'atk'), targetDef: this.buffOf(to, 'def'),
-      charge: this.controlAllSides && carries(this.unitBuffs[me.uid!], 'charge'),
-      nullify: this.controlAllSides && carries(this.unitBuffs[me.uid!], 'nullify'),
-      ...combatStatuses(this.unitBuffs[me.uid!], this.unitBuffs[them.uid!]),
-    }, !BASE_PANELS.has(this.cellsByKey.get(to)?.panel ?? ''), this.controlAllSides);
+      charge: this.kitsEnabled && carries(this.displayBuffs[me.uid!], 'charge'),
+      nullify: this.kitsEnabled && carries(this.displayBuffs[me.uid!], 'nullify'),
+      ...combatStatuses(this.displayBuffs[me.uid!], this.displayBuffs[them.uid!]),
+    }, !BASE_PANELS.has(this.cellsByKey.get(to)?.panel ?? ''), this.kitsEnabled);
     const splash: Record<string, number> = {};
-    if (this.controlAllSides && carries(this.unitBuffs[me.uid!], 'cleave')) {
+    if (this.kitsEnabled && carries(this.displayBuffs[me.uid!], 'cleave')) {
       for (const cell of this.cells) {
         const piece = cell.piece;
         if (!piece || cell.key === to || piece.color === me.color || hexDistanceKeys(from, cell.key) !== 1) continue;
-        splash[cell.key] = combatExchange(me, piece, 1, this.config, { atk: this.buffOf(from, 'atk'), def: 0, targetAtk: 0,
-          targetDef: this.buffOf(cell.key, 'def'), ...combatStatuses(this.unitBuffs[me.uid!], this.unitBuffs[piece.uid!]) }, false, this.controlAllSides).targetHp;
+        splash[cell.key] = combatExchange(me, { ...piece, panel: cell.panel }, 1, this.config, { atk: this.buffOf(from, 'atk'), def: 0, targetAtk: 0,
+          targetDef: this.buffOf(cell.key, 'def'), ...combatStatuses(this.displayBuffs[me.uid!], this.displayBuffs[piece.uid!]) }, false, this.kitsEnabled).targetHp;
       }
     }
     this.forecast = { target: to, targetHp: exchange.targetHp, attacker: from, attackerHp: exchange.attackerHp, splash };
@@ -5487,17 +5550,6 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   forecastDamage(key: string): string | null {
     const f = this.forecast;
     if (!f) return null;
-    // The unit's real HP, not the `twoDigits` one the hex draws. Both sides of
-    // this subtraction used to be clamped to 99, so on a config with units
-    // above that the whole blow vanished: 120 HP struck for 21 is 99 before
-    // and 99 after, a delta of nothing, drawn as a bounce. The readout is
-    // capped because three digits do not fit on a hex; the damage is not, and
-    // saying `0` over a blow that lands is the worse of the two lies.
-    // No `stats.hp` fallback: `stats` is built alongside `piece`, so it is
-    // non-null exactly when `piece` is, and the only way past the first term
-    // is an undefined `piece.hp` - where `stats.hp` is `twoDigits(undefined)`,
-    // i.e. null, and no more use. It would only ever put the 99 clamp this
-    // comment is about back into the subtraction.
     const hp = this.cellsByKey.get(key)?.piece?.hp ?? 0;
     const after = key === f.target ? f.targetHp : key === f.attacker ? f.attackerHp : f.splash?.[key] ?? null;
     if (after === null) return null;
@@ -5554,7 +5606,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // Not in a panel. `overtimeToll()` searches the *board* alone. A king is
     // never in one - he never walks home - so this only keeps a hand-built
     // board from warning about a toll that would never come.
-    if (hex.panel || carries(this.unitBuffs[this.uidOf(hex)], 'invulnerable')) return '';
+    if (hex.panel || carries(this.displayBuffs[this.uidOf(hex)], 'invulnerable')) return '';
     if (!this.config?.units?.[hex.piece.unit_id]?.commander) return '';
     const hp = hex.piece.hp ?? 0;
     // *His* next toll, not the mover's. White pays at the end of an odd
@@ -5609,23 +5661,19 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     this.refreshPreview();
   }
 
-  private describe(hex: HexCell): SelectedUnit {
+  describe(hex: HexCell): SelectedUnit {
     const pc = hex.piece!;
-    const def = unitStats(pc.unit_id, this.config, pc.vet);
+    const def = unitStats(pc.unit_id, this.config, activeVet(pc, hex.panel));
     return {
       key: hex.key,
       uid: this.uidOf(hex),
       unitId: pc.unit_id,
       name: def?.name ?? pc.unit_id,
       color: pc.color,
-      // The real numbers, not the hex's two digits: the room writes `hp` and
-      // `hpMax` back as a panel unit's HP when a cast lands on it, and a
-      // clamp here cut a 120-HP unit to 99 for good. Only the hex is short of
-      // room for a third digit.
       hp: wholeStat(pc.hp),
       hpMax: wholeStat(pc.max_hp ?? def?.hp),
       hpAfter: this.forecastHpAfter(hex.key),
-      atk: attackTiers(pc.unit_id, this.config, pc.vet, this.controlAllSides).map(d => wholeStat(d)!),
+      atk: attackTiers(pc.unit_id, this.config, activeVet(pc, hex.panel), this.kitsEnabled).map(d => wholeStat(d)!),
       def: wholeStat(def?.defense),
       mv: wholeStat(def?.move),
       points: def?.value ?? 0,
@@ -5648,9 +5696,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   drivable(hex: HexCell): boolean {
     if (!hex.piece || hex.piece.color !== this.activeColor) return false;
     if (!this.canDriveNow()) return false;
-    if (this.entered[hex.key]) return false;
+    if (this.enteredThisTurn(hex)) return false;
     if (hex.panel && this.boardState[hex.key]) return false;
-    if (carries(this.unitBuffs[this.uidOf(hex)], 'action-lock')) return false;
+    if (carries(this.displayBuffs[this.uidOf(hex)], 'action-lock')) return false;
     if (hex.panel) return this.panelCanMove(hex) && this.budgetFor(hex) !== 0;
     if (this.initializing
         && (this.boardMoveSpent || this.initMoved.includes(hex.key))) return false;
@@ -5660,9 +5708,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // so it is drivable exactly when one of them is really open to it.
     if (hex.key === this.movesLeftFor && this.actionSpent) return false;
     if (this.movedHexes.includes(hex.key) && hex.key !== this.movesLeftFor) return false;
-    if (this.movesLeftFor && hex.key !== this.movesLeftFor && !this.movesToSpare && !this.extraActionUids.includes(hex.piece.uid ?? '')) {
-      return this.settingOut && this.canWalkHome(hex);
-    }
+    if (hex.key !== this.movesLeftFor && !this.movesToSpare && !this.extraActionUids.includes(hex.piece.uid ?? '')) return false;
     return true;
   }
 
@@ -5683,27 +5729,9 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // unlocks the whole board behind a turn that is already spoken for - the
     // count and the lock are two answers to one question and must not be able
     // to disagree.
-    const spent = Math.max(this.boardMovesSpent, this.movesLeftFor ? 1 : 0);
+    const committed = boardMoveUids(this.moveHistory, this.turnNumber, this.activeColor);
+    const spent = committed.size + Math.max(this.boardMovesSpent, this.movesLeftFor ? 1 : 0);
     return spent < boardMovesPerTurn(this.turnNumber);
-  }
-
-  /**
-   * Whether a walk home is open to this unit at all: the doorway rules that
-   * `addBaseEntry` enforces, asked without plotting a path.
-   *
-   * Only the cheap ones - the schedule, the king, its own first three rows and
-   * the turn's three - because this is read for every unit on the board on
-   * every change-detection pass, and whether a doorway is reachable within its
-   * MOV needs the flood fill that `refreshTargets` runs for the one unit
-   * actually selected. A unit that can reach none is drivable with nowhere to
-   * go, which is the state the doc comment above already allows for.
-   */
-  private canWalkHome(hex: HexCell): boolean {
-    if (!this.entryBind || !this.homecomingOpen) return false;
-    if (this.config?.units?.[hex.piece?.unit_id ?? '']?.commander) return false;
-    const color = hex.piece?.color ?? 'white';
-    if (!inHomeRows(color, Number(hex.key.split(',')[1]), this.radius)) return false;
-    return this.homecomingsSpent < ruleOf(this.config, 'homecomingsPerSetupTurn');
   }
 
   /** Hand the game room what its Unit panel shows for the hex just clicked. */
@@ -5714,7 +5742,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   }
 
   /** Glyph comes from the unit's config entry - nothing is hardcoded per unit. */
-  getPieceSymbol(piece: PieceData): string {
+  getPieceSymbol(piece: Pick<PieceData, 'unit_id' | 'color'>): string {
     const unitDef = this.config?.units?.[piece.unit_id];
     return unitDef?.display?.[piece.color]
         ?? unitDef?.symbol
@@ -5773,10 +5801,17 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     // Panels included: an ability reaches any unit, so the ring that says
     // "this one" has to be drawable over one standing in a panel. Without
     // this a base unit was a legal target with nothing on screen saying so.
-    if (this.abilityMode === 'hex') return target === 'enemy' && !!this.hoveredHex && hexDistanceKeys(this.hoveredHex, hex.key) <= 1;
-    if (!this.abilityMode || !this.abilityCasterColor || !hex.piece) return false;
+    if (this.abilityMode === 'hex') {
+      const origin = this.abilityHoverHex;
+      if (!origin) return false;
+      const band = hexEffectBand(origin, hex.key, this.abilityEffect ?? {}, this.orientation);
+      return band !== null && target === (band === 'outer' ? 'friendly' : 'enemy');
+    }
+    if (!this.abilityMode || !this.abilityCasterColor || !hex.piece
+        || (this.abilityEffect?.scope === 'field-reserve' && BASE_PANELS.has(hex.panel))) return false;
+    if (this.abilityEffect?.targetUids && !this.abilityEffect.targetUids.includes(hex.piece.uid)) return false;
     const isFriendly = hex.piece.color === this.abilityCasterColor;
-    if (target === 'friendly' && !canReceiveBoost(this.abilityEffect, hex.piece.unit_id, this.config, hex.vet, this.controlAllSides)) return false;
+    if (target === 'friendly' && !canReceiveBoost(this.abilityEffect, hex.piece.unit_id, this.config, hex.vet, this.kitsEnabled)) return false;
     return target === 'friendly' ? this.abilityMode === 'friendly' && isFriendly
       : this.abilityMode === 'enemy' && !isFriendly;
   }

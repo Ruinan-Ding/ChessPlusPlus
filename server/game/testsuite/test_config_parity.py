@@ -74,6 +74,17 @@ class ConfigParityTestCase(SimpleTestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 load_config(config)
 
+    def test_zero_pair_delay_and_older_radial_skills_remain_valid(self):
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['abilities']['pairPickDelay'] = 0
+        for ability in ('anchor', 'cleave', 'surge'):
+            for field in ('area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov'):
+                config['abilities']['catalogue'][ability].pop(field, None)
+        config['abilities']['catalogue']['cleave'].pop('heal', None)
+        build_initial_board(load_config(config))
+        del config['abilities']['pairPickDelay']
+        build_initial_board(load_config(config))
+
     def test_every_refused_edit_is_refused(self):
         for case in self.fixtures['refused']:
             with self.subTest(path=case['path'], value=case['value']):
@@ -101,3 +112,16 @@ class ConfigParityTestCase(SimpleTestCase):
             (color, key) for color in ('white', 'black')
             for key in config['setup'][color] if key in board]
         self.assertEqual(len(board), len(on_board))
+
+    def test_integer_valued_json_floats_are_accepted_and_normalized_before_engine_use(self):
+        for edit in self.fixtures['accepted']:
+            with self.subTest(edit=edit):
+                raw = _edited(edit['path'], edit['value'])
+                config = load_config(raw)
+                build_initial_board(config)
+                node, original = config, raw
+                for key in edit['path']:
+                    node, original = node[key], original[key]
+                self.assertEqual(node, edit['value'])
+                self.assertIs(type(node), int)
+                self.assertIs(type(original), float)

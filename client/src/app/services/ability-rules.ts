@@ -1,3 +1,5 @@
+import { capStat } from './unit-stats';
+
 // Effect updates leave inputs unchanged so Undo snapshots remain valid.
 
 /** Board totals plus individual effects for display and expiry. */
@@ -133,8 +135,8 @@ export function statSetting(buff: EffectView | undefined | null, stat: 'atk' | '
   for (let i = effects.length - 1; i >= 0; i--) {
     const setting = effects[i][field];
     if (setting === undefined) continue;
-    if (stat === 'def') return setting;
-    return Math.max(0, setting + effects.slice(i + 1).reduce((sum, effect) => sum + (effect[stat] ?? 0), 0));
+    if (stat === 'def') return capStat(setting);
+    return capStat(setting + effects.slice(i + 1).reduce((sum, effect) => sum + (effect[stat] ?? 0), 0));
   }
   return undefined;
 }

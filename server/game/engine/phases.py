@@ -56,10 +56,8 @@ PLIES_PER_TURN = 2
 #: points"*, and *"1x, 2x, 3x regular point accumation now happens at the
 #: start of half time of each phase instead of start of a phase."*
 #:
-#: ``grant`` is what a side is handed as the phase begins, on top of the
-#: rate - paid on its own first turn of the phase: 10, 20, 30 for Phases 1-3.
-#: *The owner, 24 Sep 2026: "at the start of each phase (not start of each
-#: postmatch), +10 regular points for phase 1, 20 for phase 2, 30 for phase 3."*
+#: ``grant`` pays 20 regular points on each side's first turn of each
+#: numbered phase, on top of the rate (owner revision, 8 Oct 2026).
 #:
 #: ``multiplier`` is what the phase's victory points are multiplied by as it
 #: scores (:func:`scoring.phase_total`): 1, 2, 3 for Phases 1-3, and 1 on the
@@ -69,18 +67,15 @@ PHASES: List[Dict] = [
     {'name': 'Initialization', 'turns': 3, 'halftime': False, 'postmatch': False,
      'points': 1, 'grant': 0, 'multiplier': 1},
     {'name': 'Phase 1', 'turns': 10, 'halftime': True, 'postmatch': True,
-     'points': 1, 'grant': 10, 'multiplier': 1},
+     'points': 1, 'grant': 20, 'multiplier': 1},
     {'name': 'Phase 2', 'turns': 10, 'halftime': True, 'postmatch': True,
      'points': 2, 'grant': 20, 'multiplier': 2},
     {'name': 'Phase 3', 'turns': 10, 'halftime': True, 'postmatch': True,
-     'points': 3, 'grant': 30, 'multiplier': 3},
+     'points': 3, 'grant': 20, 'multiplier': 3},
     {'name': 'Overtime', 'turns': math.inf, 'halftime': False, 'postmatch': False,
      'points': 0, 'grant': 0, 'multiplier': 1},
 ]
 
-# How many units a side may bring out of its reserve in a postmatch, and walk
-# home in a setup turn, are config: rules.postmatchEntries and
-# rules.homecomingsPerSetupTurn.
 
 
 def phase_span(phase: Dict) -> float:
@@ -121,8 +116,8 @@ SCORING_PHASES = [1, 2, 3]
 #: ``moves`` is how many units a side may move on the MAIN BOARD in one of its
 #: turns, in place of :data:`BOARD_MOVES_PER_TURN`. Each is a whole board action
 #: - a walk and, if it ends in reach, a swing - so a stretch that allows three
-#: allows three blows. Panel deployments are not counted: a crossing, a walk
-#: inside a panel and a setup turn's walk home have allowances of their own.
+#: allows three blows. Base/reserve actions have independent allowances following
+#: the same stage count; walking home consumes a battlefield action.
 OVERTIME_STAGES: List[Dict] = [
     {'name': 'Overtime 1', 'turns': 8, 'toll': 1, 'moves': 1},
     {'name': 'Overtime 2', 'turns': 5, 'toll': 3, 'moves': 2},
@@ -208,6 +203,10 @@ def overtime_toll_at(ply: int) -> int:
 
 def board_moves_per_turn(ply: int) -> int:
     """How many board moves the side playing *ply* may make."""
+    if is_initialization(ply):
+        return turn_of(ply)
+    if is_postmatch(ply):
+        return 3
     stage = overtime_stage_at(ply)
     return stage['moves'] if stage else BOARD_MOVES_PER_TURN
 
@@ -294,8 +293,8 @@ def is_setup_turn(ply: int) -> bool:
 
     Both forbid normal attacks. Postmatch permits abilities and healing;
     the opening forbids both. Their movement allowances differ - the opening
-    gives a battlefield unit one move for the whole phase, a postmatch gives five crossings and
-    three walks home for the one turn - so anything about how much may move
+    uses 1/2/3 distinct units per category in the opening and three per category
+    at postmatch, with an opening-only once-per-unit lock - so anything about how much may move
     asks the narrower predicate.
     """
     return is_initialization(ply) or is_postmatch(ply)

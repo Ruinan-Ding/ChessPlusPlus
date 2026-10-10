@@ -31,6 +31,7 @@ from .models import (
     GameDisconnect,
     TurnDraft,
 )
+from .replay import next_turn_started_at, turn_clock_start
 from .validators import (
     ValidationError, GAME_OPTION_KEYS, validate_required_fields, username_with_tripcode, name_key,
     validate_status, validate_game_mode, validate_game_options,
@@ -43,6 +44,8 @@ from .utils import (
 from .engine import load_config, build_initial_board, DEFAULT_CONFIG
 from .engine.config_loader import rule_of
 from .engine import economy, panels
+from .engine.ability_rules import AbilityContext, actions_used, initial_state, bonus, carries, passive, state_of
+from .engine.unit_combat import attack_allowed, after_exchange, taunt_allows
 from .engine.board import HexBoard, parse_coord, hex_distance
 from .engine.game_logic import (
     board_move_landings,
@@ -61,7 +64,7 @@ from .engine.phases import (
     is_homecoming_open, is_initialization, is_setup_turn, no_attack_message,
 )
 from .engine.scoring import bank_ended_phases, halftime_up_awards, schedule_ending
-from .engine.unit_stats import ranked_unit, unit_stats
+from .engine.unit_stats import cap_stat, cap_unit, ranked_unit, unit_stats
 
 logger = logging.getLogger('game')
 
@@ -176,7 +179,7 @@ def _settle_hand_over(state, board, history, beaten) -> HandOver:
     for at, unit in board_state.items():
         vet = panels.unit_veterancy(
             unit.get('uid', f"{unit['color'][0]}{at}"), at, history, next_ply, radius, orientation)
-        board_state[at] = ranked_unit(unit, config, vet)
+        board_state[at] = ranked_unit(unit, config, max(unit.get('vet', 0), vet))
     effects = panels.promotion_heals(config, board_state, history, next_ply)
     effects.extend(halftime_up_awards(config, board_state, history, next_ply))
     history.extend(effects)
@@ -190,6 +193,11 @@ def _settle_hand_over(state, board, history, beaten) -> HandOver:
     max_turns = config.get('rules', {}).get('maxTurns', 0)
     if not end_reason and max_turns > 0 and state.turn_number >= max_turns:
         end_reason = 'draw_max_turns'
+    if getattr(state, 'ability_state', None):
+        ctx = AbilityContext(state, board_state, history)
+        next_color = 'black' if state.current_turn == state.player_white else 'white'
+        ctx.begin_turn(next_color, next_ply)
+        board_state = ctx.board
     return HandOver(board_state, bank, winner, end_reason, effects)
 
 
@@ -214,8 +222,12 @@ def _settle_pass(state) -> HandOver:
     mover_color = 'white' if state.current_turn == state.player_white else 'black'
     board = HexBoard.from_dict(radius, state.board_state)
 
-    felled = overtime_toll(board, config, mover_color, state.turn_number)
-    beaten = [felled] if felled and felled in defeated_sides(board, config) else []
+    if getattr(state, 'ability_state', None):
+        ctx = AbilityContext(state)
+        ctx.end_turn()
+        board = HexBoard.from_dict(radius, ctx.board)
+    felled = overtime_toll(board, config, mover_color, state.turn_number, getattr(state, 'ability_state', None))
+    beaten = defeated_sides(board, config) if getattr(state, 'ability_state', None) else ([felled] if felled and felled in defeated_sides(board, config) else [])
     # A pass can be the hand-over that closes a phase, or turn 50: it banks and
     # ends the match on the same terms a move does.
     return _settle_hand_over(state, board, list(state.move_history), beaten)
@@ -1590,7 +1602,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             else:
                 p_white, p_black = game.opponent, game.host
 
-            turn_started_dt = timezone.now()
+            turn_started_dt = turn_clock_start(config)
             started_state = await self._create_game_state(
                 game_id=game_id,
                 board_state=board.to_dict(),
@@ -1614,7 +1626,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
                 'type': 'game_started',
-                'turnDraftsSupported': True,
+                'turnDraftsSupported': True, 'abilitiesSupported': True, 'abilityState': started_state.ability_state,
                 'gameId': game_id,
                 'boardState': board.to_dict(),
                 'currentTurn': p_white,
@@ -1629,7 +1641,8 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             time_limit = config.get('rules', {}).get('turnTimeLimit', 0)
             if time_limit > 0:
-                await self._start_turn_timer(game_id, time_limit, turn_number=1, current_turn=p_white)
+                await self._start_turn_timer(game_id, time_limit, turn_number=1, current_turn=p_white,
+                                             turn_started_at=turn_started_dt)
 
             logger.info(f"Game {game_id} started immediately: {p_white} (white) vs {p_black} (black)")
         except ValidationError as e:
@@ -1704,7 +1717,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     # same terms include overtime's toll: a king on his last HP
                     # must not be able to sit out the clock instead of paying it.
                     settled = _settle_pass(state)
-                    turn_started_dt = timezone.now()
+                    turn_started_dt = next_turn_started_at(state, [*state.move_history, *settled.effects])
                     applied = await self._update_game_state(
                         game_id=game_id,
                         board_state=settled.board_state,
@@ -1716,7 +1729,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                         expected_turn_number=state.turn_number,
                         expected_revision=state.revision,
                         turn_started_at=turn_started_dt,
-                        phase_bank=settled.phase_bank,
+                        phase_bank=settled.phase_bank, ability_state=state.ability_state,
                         require_no_draft=True,
                     )
                     if applied:
@@ -1733,6 +1746,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'phaseBank': settled.phase_bank,
                     **({'effects': settled.effects} if settled.effects else {}),
                     'revision': state.revision + 1,
+                    'abilitiesSupported': True, 'abilityState': state.ability_state,
                 })
                 if settled.end_reason:
                     await self._broadcast_game_over(
@@ -1756,6 +1770,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self._start_turn_timer(
                     game_id, time_limit, turn_number=state.turn_number + 1,
                     current_turn=next_player, idle_passes=idle_passes + 1,
+                    turn_started_at=turn_started_dt,
                 )
                 logger.info(f"Turn timer expired in game {game_id}; turn passed")
             except asyncio.CancelledError:
@@ -2059,6 +2074,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             try:
                 fq, fr = parse_coord(from_coord)
                 tq, tr = parse_coord(to_coord)
+                from_coord = panels.coord_key(fq, fr)
+                to_coord = panels.coord_key(tq, tr)
             except ValueError:
                 await send_error(self, 'INVALID_MOVE', 'Malformed move coordinates')
                 return
@@ -2071,6 +2088,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             my_color = 'white' if mover == state.player_white else 'black'
             if piece['color'] != my_color:
                 await send_error(self, 'INVALID_MOVE', 'That piece is not yours')
+                return
+            if state.ability_state and (carries(state.ability_state.get('buffs', {}).get(piece.get('uid')), 'action-lock')
+                    or state.ability_state.get('endedUnits', {}).get(piece.get('uid')) == state.turn_number):
+                await send_error(self, 'INVALID_MOVE', 'That unit cannot take another action')
                 return
 
             # The setup turns' rules. The board enforced these in its click
@@ -2095,7 +2116,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     await send_error(
                         self, 'INVALID_MOVE', no_attack_message(state.turn_number))
                     return
-            if is_initialization(state.turn_number):
+            if is_initialization(state.turn_number) and not state.ability_state.get('unitProgress', {}).get(piece.get('uid')):
                 if panels.coord_key(fq, fr) in opening_moved_hexes(
                         list(state.move_history), my_color):
                     await send_error(
@@ -2134,14 +2155,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if not is_homecoming_open(state.turn_number):
                     await send_error(self, 'INVALID_MOVE', 'The way home is shut')
                     return
-                if is_setup_turn(state.turn_number):
-                    gone = panels.homecomings_at(
-                        list(state.move_history), state.turn_number, my_color)
-                    if piece.get('uid') not in gone and len(gone) >= rule_of(
-                            config, 'homecomingsPerSetupTurn'):
-                        await send_error(
-                            self, 'INVALID_MOVE', 'That is all who may walk home this turn')
-                        return
                 # Said by name, before the generic refusal below can swallow
                 # it. `homecoming_targets` returns nothing at all for a unit
                 # standing too far up the board, and "cannot walk home there"
@@ -2156,9 +2169,13 @@ class GameConsumer(AsyncWebsocketConsumer):
                 to_key = panels.coord_key(tq, tr)
                 orientation = config.get('board', {}).get('orientation', 'edge-up')
                 occupancy = panels.panel_occupancy(
-                    config, radius, list(state.move_history), orientation)
+                    config, radius, list(state.move_history), orientation, ply=state.turn_number, ability_state=state.ability_state or None)
                 home = panels.homecoming_targets(
-                    config, radius, occupancy, board.to_dict(), from_key, orientation)
+                    config, radius, occupancy, board.to_dict(), from_key, orientation,
+                    moves_left=max(0, cap_stat(unit_stats(piece['unit_id'], config, piece.get('vet', 0)).get('move', 0)
+                                            + bonus(piece, config, state.ability_state, 'mov', key=from_key))
+                                      - state.ability_state.get('unitProgress', {}).get(piece.get('uid'), {}).get('spent', 0)) if state.ability_state else None,
+                    hop=bool(state.ability_state and passive(piece, config).get('effect') == 'hop'))
                 if to_key not in home:
                     await send_error(self, 'INVALID_MOVE', 'That unit cannot walk home there')
                     return
@@ -2179,20 +2196,11 @@ class GameConsumer(AsyncWebsocketConsumer):
                     # once it is off the board this record is the only place it
                     # survives, and what the base is rebuilt from on a reload.
                     'withdrawn': True,
-                    'unit': dict(leaving),
+                    'unit': ranked_unit(dict(leaving), config, leaving.get('vet', 0), active=False),
+                    'refund': economy.withdrawal_refund(config, leaving),
+                    'refundColor': leaving.get('owner', leaving['color']),
                 }
-                # **On a setup turn a walk home is deployment, not the turn's
-                # board action**, for the same reason a crossing is: three may
-                # go in one turn, and committing the turn on the first would
-                # hand the seat over with the other two unreachable - the
-                # allowance checked above would be a count that never counted.
-                # Overtime keeps it as the turn's action, which is what the
-                # window there is for: the toll is running and the turn's own
-                # move allowance is the only cap a walk home needs.
-                #
-                # `holding` covers the other way a walk home is not the turn's
-                # last act: in Overtime 2 a side may walk one home and still
-                # move another unit, and the first message must not hand over.
+                # Setup withdrawals hold the seat for remaining category actions and the final pass.
                 if is_setup_turn(state.turn_number) or holding:
                     if not await self._commit_deployment(
                             state, board.to_dict(), move_record, 'walk home'):
@@ -2207,22 +2215,27 @@ class GameConsumer(AsyncWebsocketConsumer):
                     f"Withdrawal in game {self.game_id}: {from_key}->{to_key} by {self.username}")
                 return
 
+            walk_cost = 0
             # A turn is "walk, then optionally swing": `to` is where the unit
             # ends up (possibly where it already stands) and `attack` names a
             # hex it strikes from there.
             attack_coord = data.get('attack')
             heal_coord = data.get('heal')
             # A message may also carry moveBonus/bonuses - one-turn ability
-            # boosts. They are ignored here: abilities live on the client, so
-            # honouring them would hand a free stat upgrade to anyone willing
-            # to edit a message. The browser engine that runs solo play takes
-            # them, having nobody to cheat.
+            # boosts. Ignore those outcomes; only persisted server ability
+            # state can change a networked unit's stats.
             if (tq, tr) != (fq, fr):
+                spent = state.ability_state.get('unitProgress', {}).get(piece.get('uid'), {}).get('spent', 0)
                 legal_dests = get_legal_moves_filtered(
-                    board, (fq, fr), config, my_color)
+                    board, (fq, fr), config, my_color, -spent, ability_state=state.ability_state or None)
                 if (tq, tr) not in legal_dests:
                     await send_error(self, 'INVALID_MOVE', 'Illegal move for this piece')
                     return
+                if state.ability_state:
+                    limit = max(0, cap_stat(unit_stats(piece['unit_id'], config, piece.get('vet', 0)).get('move', 0) + bonus(piece, config, state.ability_state, 'mov', key=from_coord)) - spent)
+                    costs, _ = panels.move_costs(board.to_dict(), fq, fr, config, radius, limit,
+                        hop=passive(piece, config).get('effect') == 'hop')
+                    walk_cost = costs.get(to_coord, 0)
             elif not attack_coord and not heal_coord:
                 await send_error(self, 'INVALID_MOVE', 'A move must change hexes')
                 return
@@ -2232,7 +2245,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     hq, hr = parse_coord(heal_coord)
                     if (tq, tr) != (fq, fr):
                         board.move(fq, fr, tq, tr)
-                    combat = resolve_heal(board, (tq, tr), (hq, hr), config)
+                    combat = resolve_heal(board, (tq, tr), (hq, hr), config, state.ability_state or None)
                     combat['moved'] = (tq, tr) != (fq, fr)
                 except ValueError as e:
                     await send_error(self, 'INVALID_MOVE', str(e))
@@ -2243,6 +2256,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     return
                 try:
                     aq, ar = parse_coord(attack_coord)
+                    attack_coord = panels.coord_key(aq, ar)
                 except ValueError:
                     await send_error(self, 'INVALID_MOVE', 'Malformed attack coordinate')
                     return
@@ -2251,15 +2265,21 @@ class GameConsumer(AsyncWebsocketConsumer):
                     await send_error(self, 'INVALID_MOVE', 'No enemy unit on the attacked hex')
                     return
                 unit_def = unit_stats(piece['unit_id'], config, piece.get('vet', 0))
-                if not can_attack(unit_def, hex_distance((tq, tr), (aq, ar))):
+                if not (attack_allowed(piece, hex_distance((tq, tr), (aq, ar)), config, state.ability_state, key=to_coord) if state.ability_state else can_attack(unit_def, hex_distance((tq, tr), (aq, ar)))):
                     await send_error(self, 'INVALID_MOVE', 'That hex is out of attack range')
                     return
+                if state.ability_state:
+                    occupied = AbilityContext(state).recipients()
+                    occupied[to_coord] = piece
+                    if not taunt_allows(occupied, to_coord, attack_coord, config, state.ability_state):
+                        await send_error(self, 'INVALID_MOVE', 'Attack a reachable taunting unit')
+                        return
                 if (tq, tr) != (fq, fr):
                     board.move(fq, fr, tq, tr)
-                combat = resolve_combat(board, (tq, tr), (aq, ar), config)
+                combat = resolve_combat(board, (tq, tr), (aq, ar), config, state.ability_state or None)
                 combat['moved'] = (tq, tr) != (fq, fr)
             else:
-                combat = resolve_combat(board, (fq, fr), (tq, tr), config)
+                combat = resolve_combat(board, (fq, fr), (tq, tr), config, state.ability_state or None)
 
             next_player = state.player_black if mover == state.player_white else state.player_white
             next_color = 'black' if my_color == 'white' else 'white'
@@ -2267,7 +2287,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             move_record: dict = {
                 'from': from_coord,
                 'to': to_coord,
-                'unit_id': piece['unit_id'],
+                'unit_id': piece['unit_id'], 'uid': piece.get('uid'), 'steps': walk_cost,
                 'color': my_color,
                 'turn': state.turn_number,
                 'captured': combat['captured_unit']['unit_id'] if combat['captured_unit'] else None,
@@ -2279,12 +2299,26 @@ class GameConsumer(AsyncWebsocketConsumer):
             if attack_coord:
                 move_record['attackedHex'] = attack_coord
                 move_record['counter_damage'] = combat.get('counter_damage', 0)
+                move_record['countered'] = combat.get('countered', combat.get('counter_damage', 0) > 0)
+                target = combat.get('defender_before')
+                if target:
+                    move_record['counterActor'] = {key: target.get(key) for key in ('unit_id', 'color', 'uid')}
                 move_record['attacker_eliminated'] = combat.get('attacker_eliminated', False)
             if heal_coord:
                 for key in ('healedHex', 'healed_amount', 'healed_hp', 'healed_unit'):
                     move_record[key] = combat[key]
             if combat['defender_hp'] is not None:
                 move_record['defender_hp'] = combat['defender_hp']
+
+            if state.ability_state and combat.get('attacker_before'):
+                ctx = AbilityContext(state, board.to_dict(), list(state.move_history))
+                after_exchange(ctx, to_coord, attack_coord or to_coord, combat['attacker_before'], combat['defender_before'],
+                               {'target_hp': combat.get('defender_hp') or 0, 'attacker_hp': combat.get('attacker_hp') or 0})
+                state.move_history = ctx.history
+                board = HexBoard.from_dict(radius, ctx.board)
+                if combat.get('second_strike'):
+                    move_record['secondStrike'] = True
+                move_record['uid'] = piece.get('uid')
 
             # Not the turn's last move: the same seat, the same ply, the same
             # clock, and the next message plays the next unit. The turn ends on
@@ -2306,46 +2340,37 @@ class GameConsumer(AsyncWebsocketConsumer):
             await send_error(self, 'INTERNAL_ERROR', 'Failed to process move')
 
     async def _claim_board_move(self, state, color, from_key, data) -> Optional[bool]:
-        """
-        Whether *color* may make one more of the turn's board moves from
-        *from_key*, and whether this message holds the seat for another.
+        """Claim a battlefield slot, allowing only the current unit to continue.
 
-        Returns that `holding` flag, or None having refused the message. Asked
-        by every message that is one of the turn's board moves - a move, a walk
-        home that is the turn's action, a blow into a panel - so the rule is
-        written once. The blow into a panel used to skip it and end the turn
-        outright, which dropped whatever else an overtime turn had staged.
-
-        **How many board moves this side still has.** One everywhere the
-        schedule is running; two in Overtime 2 and three in Overtime 3
-        (`board_moves_per_turn`). Counted off the record rather than inferred
-        from "has the turn ended yet", because the moves arrive as separate
-        messages and only the last of them ends it - and a client that set
-        `more` on all of them could otherwise play the whole game inside one
-        hand-over.
-
-        `more` is the client saying "this is not my last": hold the seat and
-        let the next message in. Honoured only while a move is still to come
-        after this one - a `more` on the last of the allowance ends the turn
-        anyway, since there is nothing it could be holding the seat open for.
-
-        **The allowance counts moves; the owner's rule counts units.** A side
-        with three moves could otherwise play A, then B, then A again - each
-        message legal on its own, judged from where the unit stands with a full
-        MOV, so the unit covered twice its budget in one turn. A unit
-        continuing a walk it began arrives as ONE message carrying the origin
-        it really set out from, so a `from` that matches an earlier landing is
-        always a second go.
+        `more` holds the seat for independent panel actions, even when the
+        battlefield allowance is full; an explicit pass finishes an atomic batch.
         """
         history = list(state.move_history)
-        uid = state.board_state.get(from_key, {}).get('uid')
+        piece = state.board_state.get(from_key, {})
+        uid = piece.get('uid')
         if uid and any(move.get('entered') and move.get('turn') == state.turn_number
                        and move.get('color') == color and (move.get('unit') or {}).get('uid') == uid
                        for move in history if isinstance(move, dict)):
             await send_error(self, 'INVALID_MOVE', 'That unit has crossed onto the board this turn')
             return None
+        if state.ability_state:
+            progress = state.ability_state.get('unitProgress', {}).get(uid, {})
+            if state.ability_state.get('endedUnits', {}).get(uid) == state.turn_number or progress.get('ended'):
+                await send_error(self, 'INVALID_MOVE', 'That unit has already moved this turn')
+                return None
+            if progress:
+                rapid = passive(piece, state.config_snapshot).get('effect') == 'rapid-movement'
+                if state.ability_state.get('activeUnit') != uid or progress.get('healed') or (
+                        progress.get('attacked') and (not rapid or data.get('attack') or data.get('heal'))):
+                    await send_error(self, 'INVALID_MOVE', 'That unit has already moved this turn')
+                    return None
+                return bool(data.get('more'))
+            if state.ability_state.get('extraUnits', {}).get(uid) == state.turn_number:
+                return bool(data.get('more'))
         moves_allowed = board_moves_per_turn(state.turn_number)
         moves_used = board_moves_at(history, state.turn_number, color)
+        if state.ability_state:
+            moves_used = actions_used(state, color)
         if moves_used >= moves_allowed:
             await send_error(
                 self, 'INVALID_MOVE',
@@ -2355,7 +2380,24 @@ class GameConsumer(AsyncWebsocketConsumer):
             await send_error(
                 self, 'INVALID_MOVE', 'That unit has already moved this turn')
             return None
-        return bool(data.get('more')) and moves_used + 1 < moves_allowed
+        return bool(data.get('more'))
+
+    @staticmethod
+    def _record_unit_progress(state, record):
+        if not state.ability_state or record.get('panelMove') or record.get('entered'):
+            return
+        uid = record.get('uid') or (record.get('unit') or {}).get('uid')
+        if not uid:
+            return
+        existing = uid in state.ability_state.get('unitProgress', {})
+        if existing:
+            record['continuedAction'] = True
+        progress = state.ability_state.setdefault('unitProgress', {}).setdefault(uid, {'spent': 0, 'origin': record.get('from')})
+        progress['spent'] += record.get('steps', record.get('cost', 0))
+        progress['attacked'] = progress.get('attacked', False) or record.get('attacked', False)
+        progress['healed'] = progress.get('healed', False) or bool(record.get('healedHex'))
+        progress['ended'] = bool(record.get('withdrawn') or record.get('entered'))
+        state.ability_state['activeUnit'] = uid
 
     async def _commit_turn(self, state, board, move_record, config, next_player) -> bool:
         """
@@ -2370,6 +2412,9 @@ class GameConsumer(AsyncWebsocketConsumer):
         Returns False, having told the client, if a concurrent write won - a
         turn timer that ended the game while this move was in flight.
         """
+        self._record_unit_progress(state, move_record)
+        if state.ability_state and state.ability_state.get('extraUnits', {}).get(move_record.get('uid') or (move_record.get('unit') or {}).get('uid')) == state.turn_number:
+            move_record['extraAction'] = True
         new_history = list(state.move_history) + [move_record]
 
         # Overtime's toll, as the last thing the turn does to the board: after
@@ -2377,7 +2422,11 @@ class GameConsumer(AsyncWebsocketConsumer):
         # so a king the toll kills loses the match in the message that killed
         # him. Only the side that just played pays.
         mover_color = 'white' if state.current_turn == state.player_white else 'black'
-        overtime_toll(board, config, mover_color, state.turn_number)
+        if state.ability_state:
+            ctx = AbilityContext(state, board.to_dict(), new_history)
+            ctx.end_turn()
+            board = HexBoard.from_dict(board.radius, ctx.board)
+        overtime_toll(board, config, mover_color, state.turn_number, state.ability_state or None)
 
         # Who lost is a property of the board, not of who moved: a
         # counter-attack can kill the attacker's commander on their own turn.
@@ -2391,7 +2440,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         # state.turn_number and unfinished, so a turn timer that already
         # ended the game while this move was in flight can't be clobbered.
         next_turn_number = state.turn_number + 1
-        turn_started_dt = timezone.now()
+        turn_started_dt = next_turn_started_at(state, new_history)
         applied = await self._update_game_state(
             game_id=self.game_id,
             board_state=board_state,
@@ -2403,7 +2452,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             expected_turn_number=state.turn_number,
             expected_revision=state.revision,
             turn_started_at=turn_started_dt,
-            phase_bank=bank,
+            phase_bank=bank, ability_state=state.ability_state,
         )
         if not applied:
             await self._refuse_lost_write('move')
@@ -2419,6 +2468,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'phaseBank': bank,
             **({'effects': settled.effects} if settled.effects else {}),
             'revision': state.revision + 1,
+            'abilitiesSupported': True, 'abilityState': state.ability_state,
         })
 
         if end_reason:
@@ -2430,6 +2480,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self._start_turn_timer(
                     self.game_id, time_limit,
                     turn_number=next_turn_number, current_turn=next_player,
+                    turn_started_at=turn_started_dt,
                 )
         return True
 
@@ -2495,20 +2546,29 @@ class GameConsumer(AsyncWebsocketConsumer):
             # turn outright threw away every other move an overtime turn had
             # staged alongside it.
             try:
-                from_norm = panels.coord_key(*panels.parse_key(from_key))
+                from_key, to_key, attack_key = [panels.coord_key(*panels.parse_key(key))
+                                                for key in (from_key, to_key, attack_key)]
             except ValueError:
                 await send_error(self, 'INVALID_MOVE', 'Malformed move coordinates')
                 return
-            holding = await self._claim_board_move(state, my_color, from_norm, data)
+            holding = await self._claim_board_move(state, my_color, from_key, data)
             if holding is None:
                 return
 
             outcome = resolve_panel_attack(
                 board, config, list(state.move_history),
-                from_key, to_key, attack_key, my_color, state.turn_number, orientation)
+                from_key, to_key, attack_key, my_color, state.turn_number, orientation, state.ability_state or None)
             if 'error' in outcome:
                 await send_error(self, 'INVALID_MOVE', outcome['error'])
                 return
+
+            if state.ability_state and outcome.get('exchange'):
+                ctx = AbilityContext(state, board.to_dict(), list(state.move_history) + [outcome['record']])
+                after_exchange(ctx, to_key, attack_key, outcome['attacker'], outcome['defender'], outcome['exchange'])
+                state.move_history = [m for m in ctx.history if m is not outcome['record']]
+                # The primary record is already in history when splash panel wounds are resolved.
+                board = HexBoard.from_dict(radius, ctx.board)
+                outcome['record']['uid'] = outcome['attacker'].get('uid')
 
             next_player = state.player_black if mover == state.player_white else state.player_white
             if holding:
@@ -2565,8 +2625,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'NOT_YOUR_TURN', 'It is not your turn')
                 return
 
-            from_key = str(data['from'])
-            to_key = str(data['to'])
+            try:
+                from_key = panels.coord_key(*parse_coord(data['from']))
+                to_key = panels.coord_key(*parse_coord(data['to']))
+            except ValueError:
+                await send_error(self, 'INVALID_MOVE', 'Malformed panel coordinates')
+                return
             config = state.config_snapshot
             board_cfg = config.get('board', {})
             radius = board_cfg.get('radius', DEFAULT_CONFIG['board']['radius'])
@@ -2575,7 +2639,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             history = list(state.move_history)
             occupancy = panels.panel_occupancy(
-                config, radius, history, orientation, ply=state.turn_number)
+                config, radius, history, orientation, ply=state.turn_number, ability_state=state.ability_state or None)
             unit = occupancy.get(from_key)
             if not unit:
                 await send_error(self, 'INVALID_MOVE', 'Nothing is standing there')
@@ -2593,11 +2657,11 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             # A crossing is a reserve unit's move, so it is held to the same
             # allowance as a walk inside the panel: not locked out of the
-            # opening, one of at most three reserve movers this turn - five in a
-            # postmatch - and only on what it has not already walked.
+            # opening, within this stage's reserve allowance, and only on what
+            # it has not already walked.
             # Without this a unit shuffled to the gateway first crossed on a
             # full MOV it had half spent.
-            allowance = panels.panel_allowance(config, history, unit, state.turn_number)
+            allowance = panels.panel_allowance(config, history, unit, state.turn_number, state.ability_state or None)
             if allowance is None:
                 await send_error(self, 'INVALID_MOVE', 'That unit cannot move again this turn')
                 return
@@ -2605,20 +2669,13 @@ class GameConsumer(AsyncWebsocketConsumer):
             board_state = dict(state.board_state)
             targets = panels.entry_targets(
                 config, radius, occupancy, board_state, from_key, orientation,
-                moves_left=allowance)
+                moves_left=allowance, hop=bool(state.ability_state and passive(unit, config).get('effect') == 'hop'))
             if to_key not in targets:
                 await send_error(self, 'INVALID_MOVE', 'Nothing may enter there')
                 return
 
             # The unit the SERVER derived, not the one the wire offered.
-            entering = {
-                'unit_id': unit['unit_id'],
-                'color': unit['color'],
-                'hp': unit['hp'],
-                'max_hp': unit['max_hp'],
-                'uid': unit['uid'],
-                'vet': unit['vet'],
-            }
+            entering = ranked_unit({k: v for k, v in unit.items() if k != 'panel'}, config, unit.get('vet', 0))
             board = HexBoard.from_dict(radius, board_state)
             eq, er = panels.parse_key(to_key)
             board.set_cell(eq, er, entering)
@@ -2639,7 +2696,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 # of its panel for good, and `unit` carries the uid saying
                 # which one. Drop either and the panel re-deals it at home,
                 # alive and ready to cross again.
-                'entered': True,
+                'entered': True, 'panel': unit.get('panel'),
                 'unit': entering,
             }
             if not await self._commit_deployment(state, board.to_dict(), move_record, 'crossing'):
@@ -2667,6 +2724,9 @@ class GameConsumer(AsyncWebsocketConsumer):
         turn-ending action: two copies of one rule drift. Returns False, having
         told the client, if a concurrent write won.
         """
+        self._record_unit_progress(state, move_record)
+        if state.ability_state and state.ability_state.get('extraUnits', {}).get(move_record.get('uid') or (move_record.get('unit') or {}).get('uid')) == state.turn_number:
+            move_record['extraAction'] = True
         new_history = list(state.move_history) + [move_record]
         applied = await self._update_game_state(
             game_id=self.game_id,
@@ -2678,7 +2738,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             end_reason=state.end_reason,
             expected_turn_number=state.turn_number,
             expected_revision=state.revision,
-            turn_started_at=state.turn_started_at,
+            turn_started_at=state.turn_started_at, ability_state=state.ability_state,
         )
         if not applied:
             await self._refuse_lost_write(what)
@@ -2700,6 +2760,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'drawOfferedBy': '',
             'phaseBank': state.phase_bank or {},
             'revision': state.revision + 1,
+            'abilitiesSupported': True, 'abilityState': state.ability_state,
         })
         return True
 
@@ -2738,8 +2799,12 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await send_error(self, 'NOT_YOUR_TURN', 'It is not your turn')
                 return
 
-            from_key = str(data['from'])
-            to_key = str(data['to'])
+            try:
+                from_key = panels.coord_key(*parse_coord(data['from']))
+                to_key = panels.coord_key(*parse_coord(data['to']))
+            except ValueError:
+                await send_error(self, 'INVALID_MOVE', 'Malformed panel coordinates')
+                return
             config = state.config_snapshot
             board_cfg = config.get('board', {})
             radius = board_cfg.get('radius', DEFAULT_CONFIG['board']['radius'])
@@ -2748,7 +2813,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             ply = state.turn_number
             history = list(state.move_history)
 
-            occupancy = panels.panel_occupancy(config, radius, history, orientation, ply=ply)
+            occupancy = panels.panel_occupancy(config, radius, history, orientation, ply=ply, ability_state=state.ability_state or None)
             unit = occupancy.get(from_key)
             if not unit:
                 await send_error(self, 'INVALID_MOVE', 'Nothing is standing there')
@@ -2760,7 +2825,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             unit_points = economy.unit_points_of(my_color, history, config)
             targets = panels.panel_move_targets(
                 config, radius, history, dict(state.board_state), from_key, ply, unit_points,
-                orientation)
+                orientation, ability_state=state.ability_state or None)
             step = targets.get(to_key)
             if not step:
                 await send_error(self, 'INVALID_MOVE', 'That unit cannot walk there')
@@ -2785,13 +2850,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'panel': unit.get('panel'),
                 'cost': step['cost'],
                 'price': step['price'],
-                'unit': {
-                    'unit_id': unit['unit_id'],
-                    'color': unit['color'],
-                    'hp': unit.get('hp'),
-                    'max_hp': unit.get('max_hp'),
-                    'uid': unit.get('uid'),
-                },
+                'unit': {k: v for k, v in unit.items() if k != 'panel'},
             }
             # Nothing on the board moves: both ends are panel hexes.
             if not await self._commit_deployment(
@@ -2837,7 +2896,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             winner, end_reason = settled.winner, settled.end_reason
 
             next_turn_number = state.turn_number + 1
-            turn_started_dt = timezone.now()
+            turn_started_dt = next_turn_started_at(state, [*state.move_history, *settled.effects])
             applied = await self._update_game_state(
                 game_id=self.game_id,
                 board_state=board_state,
@@ -2849,7 +2908,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 expected_turn_number=state.turn_number,
                 expected_revision=state.revision,
                 turn_started_at=turn_started_dt,
-                phase_bank=bank,
+                phase_bank=bank, ability_state=state.ability_state,
             )
             if not applied:
                 await self._refuse_lost_write('pass')
@@ -2868,6 +2927,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'phaseBank': bank,
                 **({'effects': settled.effects} if settled.effects else {}),
                 'revision': state.revision + 1,
+                'abilitiesSupported': True, 'abilityState': state.ability_state,
             })
 
             if end_reason:
@@ -2879,6 +2939,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     await self._start_turn_timer(
                         self.game_id, time_limit,
                         turn_number=next_turn_number, current_turn=next_player,
+                        turn_started_at=turn_started_dt,
                     )
 
             logger.info(f"Turn passed in game {self.game_id} by {mover}")
@@ -2996,6 +3057,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     'accepted': False,
                     'declinedBy': self.username,
                     'revision': state.revision + 1,
+                    'abilitiesSupported': True, 'abilityState': state.ability_state,
                 })
                 logger.info(f"Draw declined by {self.username} in game {self.game_id}")
         except ValidationError as e:
@@ -3008,24 +3070,45 @@ class GameConsumer(AsyncWebsocketConsumer):
     def _draft_commands(raw):
         if not isinstance(raw, list):
             raise ValidationError('INVALID_DRAFT', 'Moves must be a list')
-        allowed = {'make_move', 'enter_board', 'panel_move', 'panel_attack', 'pass_turn'}
+        allowed = {'make_move', 'enter_board', 'panel_move', 'panel_attack', 'pass_turn', 'cast_ability', 'pick_pair', 'reset_pair', 'pick_path'}
         commands = []
         for command in raw:
             if not isinstance(command, dict) or not isinstance(command.get('type'), str) or command['type'] not in allowed:
                 raise ValidationError('INVALID_DRAFT', 'Unknown draft move')
             # The existing handlers derive costs, units, combat and HP themselves.
-            commands.append({key: value for key, value in command.items()
-                             if key in ('type', 'from', 'to', 'attack', 'heal', 'withdraw', 'more')})
+            cleaned = {key: value for key, value in command.items()
+                       if key in ('type', 'from', 'to', 'attack', 'heal', 'withdraw', 'more', 'id', 'unitUid', 'targetUid', 'extraUid', 'hex', 'pairId')}
+            fields = ('hex',) if command['type'] == 'cast_ability' else (
+                ('from', 'to', 'attack', 'heal') if command['type'] in ('make_move', 'panel_move', 'panel_attack', 'enter_board') else ())
+            for field in fields:
+                if field in cleaned and cleaned[field] is not None:
+                    try:
+                        cleaned[field] = panels.coord_key(*parse_coord(cleaned[field]))
+                    except ValueError as error:
+                        raise ValidationError('INVALID_DRAFT', 'Malformed move coordinates') from error
+            commands.append(cleaned)
         return commands
 
     async def _preview_turn(self, state, commands):
         preview = _TurnPreview(state)
+        preview.defer_handover = True
+        state_of(preview.state)
         for command in commands:
             if preview.state.is_finished:
                 break
             if preview.state.turn_number != state.turn_number:
                 raise ValidationError('INVALID_DRAFT', 'The turn ended before its remaining moves')
-            await getattr(preview, '_handle_' + command['type'])(command)
+            if command['type'] in ('cast_ability', 'pick_pair', 'reset_pair', 'pick_path'):
+                try:
+                    ctx = AbilityContext(preview.state)
+                    if command['type'] == 'cast_ability':
+                        ctx.cast(command)
+                    else:
+                        ctx.pick(command)
+                except ValueError as error:
+                    raise ValidationError('INVALID_MOVE', str(error)) from error
+            else:
+                await getattr(preview, '_handle_' + command['type'])(command)
             if preview.errors:
                 error = preview.errors[-1]
                 raise ValidationError(error.get('code', 'INVALID_MOVE'), error.get('message', 'Invalid move'))
@@ -3043,7 +3126,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'config': state.config_snapshot,
             'turnStartedAt': (state.turn_started_at or timezone.now()).isoformat(),
             'drawOfferedBy': state.draw_offered_by or '', 'phaseBank': state.phase_bank or {},
-            'revision': state.revision, 'turnDraftsSupported': True,
+            'revision': state.revision, 'turnDraftsSupported': True, 'abilitiesSupported': True, 'abilityState': state.ability_state,
         }
 
     async def _handle_save_turn_draft(self, data):
@@ -3079,12 +3162,13 @@ class GameConsumer(AsyncWebsocketConsumer):
         except ValidationError:
             # A newer draft can arrive during validation; retry instead of passing over it.
             return False if await self._discard_turn_draft(draft) else None
+        result.turn_started_at = next_turn_started_at(state, result.move_history)
         applied = await self._update_game_state(
             game_id=state.game_id, board_state=result.board_state, current_turn=result.current_turn,
             turn_number=result.turn_number, move_history=result.move_history, winner=result.winner,
             end_reason=result.end_reason, expected_turn_number=state.turn_number,
             expected_revision=state.revision, turn_started_at=result.turn_started_at,
-            phase_bank=result.phase_bank, draft_sequence=draft.sequence)
+            phase_bank=result.phase_bank, ability_state=result.ability_state, draft_sequence=draft.sequence)
         if not applied:
             return None
         result.revision = state.revision + 1
@@ -3101,7 +3185,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             idle = idle_passes + 1 if not any(c['type'] != 'pass_turn' for c in draft.commands) else 0
             if limit > 0 and idle < IDLE_PASS_LIMIT and await self._any_player_connected([state.player_white, state.player_black]):
                 await self._start_turn_timer(state.game_id, limit, turn_number=result.turn_number,
-                                             current_turn=result.current_turn, idle_passes=idle)
+                                             current_turn=result.current_turn, idle_passes=idle,
+                                             turn_started_at=result.turn_started_at)
         return True
 
     @database_sync_to_async
@@ -3632,7 +3717,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'turn_started_at': turn_started_at or timezone.now(),
                 # A rematch reuses the row, and must not inherit the last
                 # match's phases.
-                'phase_bank': {},
+                'phase_bank': {}, 'ability_state': initial_state(),
                 'updated_at': timezone.now(),
             }
         if expected_revision is None:
@@ -3659,14 +3744,16 @@ class GameConsumer(AsyncWebsocketConsumer):
     def _get_game_state(self, game_id):
         """Retrieve the GameState for a game, or None."""
         try:
-            return GameState.objects.get(game_id=game_id)  # type: ignore
+            state = GameState.objects.get(game_id=game_id)  # type: ignore
+            state.board_state = {at: cap_unit(unit) for at, unit in state.board_state.items()}
+            return state
         except GameState.DoesNotExist:  # type: ignore
             return None
 
     @database_sync_to_async
     def _update_game_state(self, game_id, board_state, current_turn, turn_number, move_history,
                             winner='', end_reason='', expected_turn_number=None, turn_started_at=None,
-                            phase_bank=None, expected_revision=None, draft_sequence=None, require_no_draft=False):
+                            phase_bank=None, expected_revision=None, draft_sequence=None, require_no_draft=False, ability_state=None):
         """Update the mutable fields of a GameState after a move or game end.
 
         If expected_turn_number is given, the write is conditional: it only
@@ -3715,6 +3802,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             update_fields['turn_started_at'] = turn_started_at
         if phase_bank is not None:
             update_fields['phase_bank'] = phase_bank
+        if ability_state is not None:
+            update_fields['ability_state'] = ability_state
         if draft_sequence is None and not require_no_draft:
             return qs.update(**update_fields) > 0
         with transaction.atomic():
@@ -3892,17 +3981,24 @@ class _TurnPreview(GameConsumer):
         self.errors = []
 
     async def _get_game_state(self, game_id):
-        return copy.deepcopy(self.state)
+        state = copy.deepcopy(self.state)
+        state.board_state = {at: cap_unit(unit) for at, unit in state.board_state.items()}
+        return state
 
     async def _update_game_state(self, **values):
         if values.get('expected_revision') != self.state.revision:
             return False
         for key in ('board_state', 'current_turn', 'turn_number', 'move_history', 'winner',
-                    'end_reason', 'turn_started_at', 'phase_bank'):
+                    'end_reason', 'turn_started_at', 'phase_bank', 'ability_state'):
             if key in values:
                 setattr(self.state, key, values[key])
         self.state.revision += 1
         return True
+
+    async def _commit_turn(self, state, board, move_record, config, next_player):
+        if not getattr(self, 'defer_handover', False):
+            return await super()._commit_turn(state, board, move_record, config, next_player)
+        return await self._commit_deployment(state, board.to_dict(), move_record, 'action')
 
     async def group_send(self, group, message):
         pass

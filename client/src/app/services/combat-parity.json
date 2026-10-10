@@ -249,5 +249,70 @@
     },
     "distance": 1,
     "canAttack": false
+  },
+  {
+    "unit": {
+      "attack": 150,
+      "attackRange": 1
+    },
+    "distance": 1,
+    "canAttack": true,
+    "defender": {
+      "defense": 150
+    },
+    "rules": {
+      "minStrikeDamage": 1
+    },
+    "damage": 1
+  },
+  {
+    "unit": {
+      "attack": 150,
+      "attackRange": 2
+    },
+    "distance": 2,
+    "canAttack": true,
+    "defender": {
+      "defense": 12
+    },
+    "rules": {
+      "rangeFalloff": 0.25,
+      "minStrikeDamage": 1
+    },
+    "damage": 62
+  },
+  {
+    "unit": {
+      "attack": [
+        120,
+        150
+      ],
+      "attackMinRange": 98,
+      "attackRange": 99
+    },
+    "distance": 99,
+    "canAttack": true,
+    "defender": {
+      "defense": 150
+    },
+    "rules": {
+      "minStrikeDamage": 1
+    },
+    "damage": 1
+  },
+  {
+    "unit": {
+      "attack": 150,
+      "attackRange": 150
+    },
+    "distance": 100,
+    "canAttack": false,
+    "defender": {
+      "defense": 0
+    },
+    "rules": {
+      "minStrikeDamage": 1
+    },
+    "damage": 0
   }
 ]

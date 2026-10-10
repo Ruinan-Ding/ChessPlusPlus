@@ -11,23 +11,47 @@ rule that is right. Where one is wrong, change the number or write a note under 
 - **A plan, not a config file.** Nothing reads this document. Units and abilities are kept
   separate and are not in it.
 
-Last updated 7 Oct 2026.
+Last updated 9 Oct 2026.
 
 ---
 
 ## New since the last review
+
+- 9 Oct: automatic end-of-turn replay pauses solo and online timers. Online uses a
+  server-derived, persisted allowance from the completed turn and shared animation
+  timings; the 900 ms nonblocking turn notice is excluded too, including a fresh
+  match's first turn. Reload grants no additional time. Manual Replay (Z) keeps counting.
+
+- 9 Oct: independent battlefield/base/reserve allowances follow 1/2/3 Initialization,
+  one normal, three postmatch and 1/2/3 Overtime; switching units ends the earlier
+  category walk until Undo. Walks home consume battlefield actions; reserve entries end their action.
+- 9 Oct: red-base deaths now count attrition VP, with no panel UP bounty.
+
+- [ ] **Phase 3 overtime margins are White 50, Black 25**, inclusive; larger
+  leads end on points after both postmatch turns. Owner revision, 9 Oct 2026.
+
+- [ ] **Regular points start at 10**, before normal own-turn income; each numbered
+  phase grants **20** on each side's first turn. Owner revision, 8 Oct 2026.
+
+- [ ] **Unit stats have a hard maximum of 99:** current/max HP, MOV, DEF, each ATK/HEL
+  tier and unit ranges, including veterancy and temporary effects in every zone.
+  Cap full MOV before deducting steps already spent. Prices, points, CP, UP and VP
+  retain their existing rules. Fixed limit specified 8 Oct 2026.
 
 - [ ] **Early phase losses freeze at tally and resolve after both postmatch turns:**
   Phase 1 checks White's eligible capture-zone occupancy; Phase 2 checks Black's zero
   phase VP. Regicide takes priority. Live, 7 Oct 2026.
 
 - [ ] **Initialization permits CP utilities only**; other casts and ordinary healing
-  remain blocked. Owner phase-use revision, 7 Oct 2026. Online casts remain deferred.
+  remain blocked. Owner phase-use revision, 7 Oct 2026. The same gates apply to authoritative online casts.
 
 - [ ] **Timed solo turns automatically commit all staged work at expiry**, or pass if
   empty. Five final-second warnings and a hard expiry beep. Online, the server commits
   the latest validated saved draft, including during disconnect grace; a timer/browser
-  race commits once. Owner confirmed, 7 Oct 2026.
+  race commits once. Automatic replay and the 900 ms turn notice pause both
+  modes; the notice leaves controls playable. Online allowance is
+  server-derived and persisted across reconnects. Manual Replay counts. Owner
+  confirmed expiry on 7 Oct and replay timing on 9 Oct 2026.
 
 - [ ] **UP is separate from ability points:** start with **10**, spend unit value on the
   base-to-reserve crossing, receive battlefield attack/counter kill value and homecoming
@@ -36,7 +60,7 @@ Last updated 7 Oct 2026.
 
 - [ ] **Every postmatch permits abilities and normal unit healing; normal attacks remain
   forbidden.** This includes both sides' turns and all ability categories, with their usual
-  costs, cooldowns and target rules. Online casts remain deferred. Live, 4 Oct 2026.
+  costs, cooldowns and target rules. The same gates apply to authoritative online casts. Live, 4 Oct 2026.
 
 - [ ] **Capture and neutralization use each unit's cumulative zone permissions.** Permissions
   are in the shared unit config: home 3x, middle 2x, sides 1x and enemy 3x. Live, 4 Oct 2026.
@@ -55,10 +79,14 @@ Last updated 7 Oct 2026.
   26 Sep 2026: "worth 3 a hex"**). Live in the game. (See [Victory points](#6-victory-points).)
 - [ ] **The opening shows capture points but counts none of them.** The header shows what each
   side holds during turns 1-3; none of it reaches the match total or gets banked. Live.
-- [ ] **CP: one award number per phase** (5, 10, 15) instead of 5 times the phase number.
-  Planned; the numbers come out the same today.
+- [ ] **Fixed CP portions are 10, 20 and 30** at the three postmatch starts,
+  doubling the old fixed portion; VP totals and the shortfall bonus remain.
 
-Screen only, not rules: a blue line marks where the bases and reserves meet the
+Screen only, not rules: **Replay (Z)** replaces the visible Flip button, preserves staged
+moves and zoom, and keeps the turn timer running. Flip sits to the left of Start Game;
+its button and F shortcut work after the match starts, and the button is grey beforehand.
+The Room tab gives its controls up to 32px more height on short portrait phones. Black panels
+are lighter and ordinary battlefield hexes darker. A blue line marks where the bases and reserves meet the
 battlefield; black's 3x zone is dark blue, white's light blue, and each capture centre
 has a gold inset outline, with dashed outlines on the six inner-ring hexes. A gold outline
 traces the outer hex edges of the complete grid, including panels; both sides' base/reserve hex edges have stronger
@@ -123,14 +151,15 @@ White's, by hex. Black's is the mirror. `setup`
   `match.phases[].postmatch`
 - [ ] **Overtime** runs in 3 stages of **8, 5 and 1** turns: 37-44, 45-49 and 50.
   `match.overtime.stages[].turns`
-- [ ] A side moves **1** unit on the battlefield a turn; in overtime **1, 2, then 3**.
-  `match.boardMovesPerTurn`, `match.overtime.stages[].boardMoves`
-- [ ] In overtime 2 and 3, **moving another unit ends the first unit's move**.
+- [ ] Battlefield, base and reserve each allow **1/2/3** units in Initialization turns 1/2/3,
+  **1** in normal play, **3** at postmatch and **1/2/3** in Overtime stages.
+  `match.boardMovesPerTurn`, `match.overtime.stages[].boardMoves`, `stageRules`
+- [ ] **Moving another unit in the same category ends the first unit’s move until Undo**.
   `match.overtime.switchingUnitsEndsMove`
 - [ ] In the opening, **a battlefield unit moves once**: it can move or walk home, not both.
   `stageRules.opening.movedUnitsLocked`
-- [ ] A panel may start **3** units moving a turn, counted separately for the base and the
-  reserve (a postmatch lets **5** out of the reserve). `panels.moversPerTurn`
+- [ ] Base and reserve use **independent stage allowances**, separate from battlefield actions.
+  `panels.moversPerTurn`
 - [ ] Turn timer **off** (0) and no turn limit (0) unless the room sets one.
   `match.turnTimeLimit`, `match.maxTurns`
 
@@ -138,14 +167,14 @@ White's, by hex. Black's is the mirror. `setup`
 
 `stageRules`
 
-- [ ] **Opening (1-3):** CP utilities only; no attacks, other casts or normal healing; no wrap. Up to **3** units out of the
-  reserve and **3** walks home a turn.
+- [ ] **Opening (1-3):** CP utilities only; no attacks, other casts or normal healing; no wrap. Each category allows **1/2/3** units in turns 1/2/3.
+  Walking home consumes a normal battlefield action.
 - [ ] **First half (4-8, 15-19, 26-30):** attacks, abilities and **the wrap**. Nothing out of
   the reserve and no walking home.
-- [ ] **Second half (9-13, 20-24, 31-35):** attacks and abilities. Up to **3** units out of
-  the reserve a turn. No wrap and no walking home.
-- [ ] **Postmatch (14, 25, 36):** abilities and normal healing, no normal attacks, no wrap. Up to **5** units out of
-  the reserve and **3** walks home.
+- [ ] **Second half (9-13, 20-24, 31-35):** attacks and abilities. Up to **1** unit out of
+  the reserve a turn; entry ends its action without attacking. No wrap and no walking home.
+- [ ] **Postmatch (14, 25, 36):** abilities and normal healing, no normal attacks, no wrap. Each category allows **3** units;
+  walking home shares the battlefield movement allowance.
 - [ ] **Overtime (37-50):** attacks and abilities. **Walking home is allowed**, within the
   turn's battlefield moves. Nothing out of the reserve and no wrap.
 
@@ -153,10 +182,11 @@ White's, by hex. Black's is the mirror. `setup`
 
 What pool abilities are paid with. Unit transactions use UP below.
 
+- [ ] Each side starts with **10 regular points**. `rules.pointsAtStart` is shared config.
 - [ ] **1** point a turn in the opening. `match.opening.pointsPerTurn`
 - [ ] **1, 2 and 3** points a turn in Phases 1, 2 and 3, each new rate starting at the phase's
   **halftime** (turns 9, 20, 31). `match.phases[].pointsPerTurn`
-- [ ] A **grant of 10, 20 and 30** on each side's first turn of Phases 1, 2 and 3.
+- [ ] A **grant of 20** on each side's first turn of Phases 1, 2 and 3.
   `match.phases[].grant`
 - [ ] **0** points a turn in overtime. `match.overtime.pointsPerTurn`
 - [ ] When overtime starts, **all** of a side's banked victory points become points.
@@ -169,7 +199,7 @@ What pool abilities are paid with. Unit transactions use UP below.
 - [ ] A battlefield attack/counter kill pays **the dead unit's value in UP**. `economy.killPay`
   A counter kill pays **the defender**. `economy.counterKillPays`
 - [ ] Ability kills and kills in either panel pay **no UP**. `economy.panelKillsPay`
-- [ ] Walking home **refunds the unit's value in UP**. `economy.walkHomeRefund`
+- [ ] Walking home refunds **`max(1, unit value - 1 - current missing HP)` UP** at departure. `economy.walkHomeRefund`
 - [ ] The base-to-reserve wrap **costs the unit's value in UP**. `economy.wrapPrice`
 
 ## 6. Victory points
@@ -200,7 +230,7 @@ The score. `scoring`
 - [ ] A hex **both sides reach counts for neither**. `scoring.contestedIsNeutral`
 - [ ] A death costs its side **the dead unit's value**, in the phase it happened.
   `scoring.deathCost`
-- [ ] A unit killed **in a base costs nothing**; one killed in a reserve costs its value.
+- [ ] A unit killed **in a base or reserve costs its value in attrition VP**; panel deaths grant no UP bounty.
   `scoring.baseDeathsCount`, `scoring.reserveDeathsCount`
 - [ ] A phase scores **(worth held − deaths), never below 0, times 1, 2 or 3** for Phases 1,
   2 and 3. `scoring.floorAtZero`, `match.phases[].vpMultiplier`
@@ -213,8 +243,8 @@ The score. `scoring`
 ## 7. CP
 
 - [ ] Each side **starts with 5** CP. `match.cpAtStart`
-- [ ] After each phase, each side gets **5, 10 and 15** for Phases 1, 2 and 3 (planned as one
-  number per phase; today it is 5 times the phase number). `match.phases[].cpAward`
+- [ ] After each phase, each side gets **10, 20 and 30** for Phases 1, 2 and 3 (planned as one
+  number per phase; today it is 10 times the phase number). `match.phases[].cpAward`
 - [ ] ...plus **both sides' scores** for that phase. `match.cpIncludesBothScores`
 - [ ] ...plus, for the side that scored less, **the gap** between them.
   `match.cpBehindGetsGap`
@@ -229,7 +259,7 @@ The score. `scoring`
   the loser at tally; a king kill during postmatch takes priority. *fixed*
 
 - [ ] A side **loses when its king dies**. `match.objective` (regicide)
-- [ ] After Phase 3, **white wins on points if more than 10 ahead**, **black if more than 5
+- [ ] After Phase 3, **white wins on points if more than 50 ahead**, **black if more than 25
   ahead**. Anything closer goes to overtime. `match.leadToWin`
 - [ ] **Phase 3's postmatch is still played** when the match is already won on points.
   `match.lastPostmatchAlwaysPlayed`
@@ -299,8 +329,7 @@ Where today's `rules` section goes:
 | In `rules` today | Moves to |
 |---|---|
 | `rangeFalloff`, `minStrikeDamage` | `combat` |
-| `panelMoversPerTurn` | `panels.moversPerTurn` |
-| `postmatchEntries`, `homecomingsPerSetupTurn` | `stageRules` (the postmatch's 5 out of the reserve, and 3 walks home) |
+| Retired `panelMoversPerTurn`, `postmatchEntries`, `homecomingsPerSetupTurn` | Mirrored stage-based category allowances; obsolete saved keys ignored |
 | `cpAtStart` | `match.cpAtStart` |
 | `cpPhaseOffset` | `match.phases[].cpAward` |
 | `objective`, `maxTurns`, `turnTimeLimit` | `match` |

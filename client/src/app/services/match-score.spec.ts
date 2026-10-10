@@ -1,7 +1,7 @@
 import { DEFAULT_GAME_CONFIG } from './config.service';
 import {
   bankEndedPhases, capOf, cpAwarded, decidedOnPoints, deathsOf, matchVerdict, phaseTotal,
-  scheduleEnding, vpAsPoints, unitPoints, halftimeUpAwards,
+  scheduleEnding, vpAsPoints, unitPoints, halftimeUpAwards, scheduledPoints, withdrawalRefund,
 } from './match-score';
 import { captureZoneHexes, captureZones } from './hex-rules';
 
@@ -57,6 +57,32 @@ describe('match-score', () => {
     expect(unitPoints(config, [], 'white')).toBe(0);
   });
 
+  it('adds the configured starting points once for both sides and preserves an explicit zero', () => {
+    const config = { rules: { pointsAtStart: 10 } };
+    expect([scheduledPoints({}, 'white', 0, config), scheduledPoints({}, 'black', 1, config)]).toEqual([10, 10]);
+    expect([scheduledPoints({}, 'white', 1, config), scheduledPoints({}, 'black', 2, config)]).toEqual([11, 11]);
+    expect(scheduledPoints({}, 'white', 7, config)).toBe(34);
+    expect(scheduledPoints({}, 'white', 73, config)).toBe(129);
+    expect(scheduledPoints({}, 'white', 73, { rules: { pointsAtStart: 0 } })).toBe(119);
+    expect(scheduledPoints({}, 'white', 100, { rules: { pointsAtStart: 250 } })).toBe(369);
+  });
+
+  it('refunds withdrawal wounds with a one-UP floor and never reprices later panel healing', () => {
+    const config = { units: { pawn: { value: 12, hp: 12 }, shield: { value: 12, hp: 30 }, rich: { value: 250, hp: 99 } }, rules: { upAtStart: 10 } };
+    const unit = { unit_id: 'pawn', color: 'white', uid: 'p', hp: 9, max_hp: 14, vet: 1 };
+    expect(withdrawalRefund(config, { ...unit, hp: 14 })).toBe(11);
+    expect(withdrawalRefund(config, unit)).toBe(6);
+    expect(withdrawalRefund(config, { unit_id: 'shield', hp: 2, max_hp: 30 })).toBe(1);
+    expect(withdrawalRefund(config, { unit_id: 'rich', hp: 95, max_hp: 99 })).toBe(245);
+    const old = { units: { pawn: { value: 16, hp: 12 } } };
+    expect(withdrawalRefund(old, { unit_id: 'pawn', hp: 12 })).toBe(15);
+    expect(withdrawalRefund(old, { unit_id: 'pawn', hp: 7 })).toBe(10);
+    const record = { withdrawn: true, color: 'white', refundColor: 'black', unit_id: 'pawn', unit };
+    const history = [record, { panelEffect: true, unit: { ...unit, hp: 14 }, defenderHp: 14 }];
+    expect([unitPoints(config, history, 'white'), unitPoints(config, history, 'black')]).toEqual([10, 16]);
+    expect(unitPoints(config, [{ color: 'black', unit_id: 'pawn', attacker_eliminated: true }], 'white')).toBe(22);
+  });
+
   it('makes five zones of nineteen hexes on the shipped board', () => {
     const zone = captureZoneHexes(11);
     expect(zone.size).toBe(95);
@@ -97,7 +123,7 @@ describe('match-score', () => {
       intoPanel: true, panelAttack: true, color: 'white', unit_id: 'pawn', captured: 'pawn',
       defender_eliminated: true, turn: 8,
     };
-    expect(deathsOf(PAWN, [{ ...blow, panel: 'tr' }], 'black', 1)).toBe(0);
+    expect(deathsOf(PAWN, [{ ...blow, panel: 'tr' }], 'black', 1)).toBe(5);
     expect(deathsOf(PAWN, [{ ...blow, panel: 'tl' }], 'black', 1)).toBe(5);
     // A reserve's counter that kills the attacker counts against the attacker.
     const counter = {
@@ -189,13 +215,13 @@ describe('match-score', () => {
   });
 
   it('converts the victory points at overtime, but never after a points win', () => {
-    const close = { 1: { white: 10, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+    const close = { 1: { white: 50, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
     expect(vpAsPoints(close, 'white', 72)).toBe(0);
-    expect(vpAsPoints(close, 'white', 73)).toBe(10);
+    expect(vpAsPoints(close, 'white', 73)).toBe(50);
     expect(vpAsPoints(close, 'black', 73)).toBe(0);
     expect(vpAsPoints(close, 'black', 74)).toBe(0);   // black banked nothing
     // Won on points, the match ends ON hand-over 73 and never reaches overtime.
-    const won = { ...close, 1: { white: 30, black: 0 } };
+    const won = { ...close, 1: { white: 51, black: 0 } };
     expect(vpAsPoints(won, 'white', 73)).toBe(0);
   });
 
@@ -203,17 +229,19 @@ describe('match-score', () => {
     const settle = (white: number, black: number) => decidedOnPoints({
       1: { white, black }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 },
     });
-    // White has to be more than 10 clear; black only more than 5.
-    expect(settle(11, 0)).toBe('white');
-    expect(settle(10, 0)).toBeNull();
-    expect(settle(0, 6)).toBe('black');
-    expect(settle(0, 5)).toBeNull();
+    expect(settle(51, 0)).toBe('white');
+    expect(settle(50, 0)).toBeNull();
+    expect(settle(0, 26)).toBe('black');
+    expect(settle(0, 25)).toBeNull();
+    expect(settle(0, 0)).toBeNull();
+    expect(decidedOnPoints({ 1: { white: 20, black: 0 }, 2: { white: 20, black: 0 },
+      3: { white: 11, black: 0 } })).toBe('white');
     // Nothing is decided on two phases of three.
     expect(decidedOnPoints({ 1: { white: 99, black: 0 } })).toBeNull();
   });
 
   it("ends on points once Phase 3's postmatch is played, and for black once turn 50 is", () => {
-    const clear = { 1: { white: 12, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
+    const clear = { 1: { white: 51, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 } };
     const level = { ...clear, 1: { white: 0, black: 0 } };
     // All three in and white past the margin: known from the hand-over into
     // Phase 3's postmatch (ply 71), and named in the header from there - but
@@ -242,7 +270,7 @@ describe('match-score', () => {
     // it reads - and a late Phase 1 spoils an on-time Phase 3. The header
     // reads it the same way the engine ends on it.
     const clearButLate = {
-      1: { white: 12, black: 0, late: true }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 },
+      1: { white: 51, black: 0, late: true }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 },
     };
     expect(decidedOnPoints(clearButLate)).toBeNull();
     expect(scheduleEnding(clearButLate, 73)).toBeNull();
@@ -255,7 +283,7 @@ describe('match-score', () => {
   it('reads a bank that went through JSON the same', () => {
     // Keys arrive as strings off the wire.
     const wire = JSON.parse(JSON.stringify({
-      1: { white: 12, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 },
+      1: { white: 51, black: 0 }, 2: { white: 0, black: 0 }, 3: { white: 0, black: 0 },
     }));
     expect(Object.keys(wire)).toEqual(['1', '2', '3']);
     expect(decidedOnPoints(wire)).toBe('white');
