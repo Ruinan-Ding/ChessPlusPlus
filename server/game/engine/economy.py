@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from .config_loader import rule_of
 from .scoring import scheduled_points, unit_value
-from .unit_stats import active_vet, cap_stat, unit_stats
+from .unit_stats import active_vet, cap_stat, kit_active, ranked_unit, unit_stats
 
 
 def points_of(
@@ -27,7 +27,16 @@ def withdrawal_refund(config: Dict[str, Any], unit: Dict[str, Any]) -> int:
     maximum = cap_stat(unit.get('max_hp', unit_stats(unit['unit_id'], config, active_vet(unit, config)).get('hp', unit.get('hp', 0))))
     missing = max(0, maximum - cap_stat(unit.get('hp', maximum)))
     settings = section_of(config, 'economy')['walkHomeRefund']
-    return max(settings['minimum'], unit_value(config, unit['unit_id']) * settings['valueMultiplier'] - settings['fee'] - missing * settings['missingHpMultiplier'])
+    rank = unit.get('vet', 0)
+    tiers = settings.get('veterancy', [])
+    factors = tiers[rank - 1] if 0 < rank <= len(tiers) else settings
+    return max(settings['minimum'], unit_value(config, unit['unit_id']) * factors['valueMultiplier'] - factors['fee'] - missing * factors['missingHpMultiplier'])
+
+
+def withdrawn_unit(config, unit, panel):
+    """Resolve destination HP after the refund's original rank has been priced."""
+    vet = 0 if section_of(config, 'economy')['walkHomeRefund'].get('resetVeterancy', False) else unit.get('vet', 0)
+    return ranked_unit(unit, config, vet, active=kit_active({**unit, 'panel': panel}, config))
 
 
 def unit_points_of(color: str, history: Iterable[Dict[str, Any]], config: Dict[str, Any]) -> int:
@@ -43,6 +52,9 @@ def unit_points_of(color: str, history: Iterable[Dict[str, Any]], config: Dict[s
         # never paid for a kill made that way - only the turn's own action.
         if (move.get('unitCast') or {}).get('color') == color:
             points += int(move['unitCast'].get('gain') or 0) - int(move['unitCast'].get('cost') or 0)
+        cast = move.get('abilityCast') or {}
+        if move.get('color') == color and cast.get('row') != 'unit':
+            points += int(cast.get('up') or 0)
         if move.get('panelEffect') or move.get('entered') or move.get('abilityDeath'):
             continue
         if move.get('panelMove'):

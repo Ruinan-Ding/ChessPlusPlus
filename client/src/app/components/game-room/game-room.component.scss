@@ -1069,10 +1069,30 @@
   .ability-detail {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
     gap: u(0.5);
   }
 
+  .unit-kit-stack {
+    position: relative;
+    flex: 1 1 0;
+    min-height: u(7);
+
+    > .ability-detail { position: absolute; inset: 0; }
+    > .unit-kit-content {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      &.behind { visibility: hidden; }
+    }
+  }
+
   .ability-detail-content {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: row;
     align-items: baseline;
@@ -1080,11 +1100,14 @@
     flex-wrap: wrap;
 
     p {
+      min-width: 0;
+      overflow-wrap: anywhere;
       margin: 0;
     }
   }
 
   .ability-detail-actions {
+    flex: 0 0 auto;
     display: flex;
     flex-direction: row;
     gap: u(0.375);
@@ -2081,3 +2104,29 @@
 .scaffold-btn.cooling, .scaffold-btn.cooling:hover:not(:disabled) {
   background: #8d98a3 !important; color: #17212b !important; animation: none !important;
 }
+
+.replay-controls {
+  display: flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 4px;
+  font-size: 12px; white-space: nowrap;
+  button { min-width: 24px; min-height: 24px; font: inherit; padding: 2px 6px; }
+  .replay-position { margin-left: auto; }
+}
+.replay-notice {
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  font-size: 12px; background: #fff2cf; color: #553600;
+  span { flex: 1; }
+  button { min-height: 24px; font: inherit; }
+}
+
+.game-room-container .game-board-panel.replay-view {
+  display: flex; flex-direction: column;
+  app-game-board { position: relative; inset: auto; flex: 1; min-height: 0; }
+}
+
+.ai-choice { background: transparent; border: 0; color: inherit; font: inherit; opacity: 0.5; cursor: pointer; min-height: 24px; }
+
+.ai-choice input { pointer-events: none; }
+
+.cpu-options .radio-option { min-height: 24px; min-width: 24px; white-space: nowrap; }
+
+.ai-choice button { min-width: 24px; min-height: 24px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }

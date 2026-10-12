@@ -5,7 +5,7 @@ import { statSetting, EffectView } from './ability-rules';
 
 export interface CombatBonuses {
   atk: number; def: number; targetAtk: number; targetDef: number;
-  charge?: boolean; nullify?: boolean;
+  charge?: boolean; targetCharge?: boolean; nullify?: boolean; leech?: boolean;
   atkSet?: number; defSet?: number; targetAtkSet?: number; targetDefSet?: number;
   immune?: boolean; targetImmune?: boolean;
   hel?: number; helSet?: number;
@@ -25,6 +25,8 @@ export function combatStatuses(attacker?: EffectView, defender?: EffectView): Pa
   const values = { atkSet: statSetting(attacker, 'atk'), defSet: statSetting(attacker, 'def'),
     targetAtkSet: statSetting(defender, 'atk'), targetDefSet: statSetting(defender, 'def'),
     ...(carries(attacker, 'invulnerable') ? { immune: true } : {}),
+    ...(carries(attacker, 'leech') ? { leech: true } : {}),
+    ...(defender?.effects?.some(effect => effect.effect === 'charge' && effect.secondCounter) ? { targetCharge: true } : {}),
     ...(carries(defender, 'invulnerable') ? { targetImmune: true } : {}),
   };
   return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
@@ -46,13 +48,23 @@ export function combatExchange(attacker: any, defender: any, distance: number, c
     && canAttack(attackStats(defender.unit_id, config, activeVet(defender, undefined, config), true, kits, bonuses.targetAtkSet), distance, bonuses.targetAtkSet === undefined ? bonuses.targetAtk : 0);
   const counterDamage = countered ? hit(defender, attacker, true, bonuses.targetAtk, bonuses.def,
     bonuses.targetAtkSet, bonuses.defSet, bonuses.immune) : 0;
-  const attackerHp = Math.max(0, attacker.hp - counterDamage);
+  const healedHp = bonuses.leech ? Math.min(attacker.max_hp ?? 99, attacker.hp + Math.min(defender.hp, damage)) : attacker.hp;
+  let attackerHp = Math.max(0, healedHp - counterDamage);
+  let leechHeal = healedHp - attacker.hp;
   const secondStrike = !!bonuses.charge && countered && attackerHp > 0;
   const secondDamage = secondStrike
     ? hit(attacker, defender, false, bonuses.atk, bonuses.targetDef,
       bonuses.atkSet, bonuses.targetDefSet, bonuses.targetImmune) : 0;
+  if (bonuses.leech && secondStrike) {
+    const healed = Math.min(attacker.max_hp ?? 99, attackerHp + Math.min(targetHp, secondDamage)) - attackerHp;
+    attackerHp += healed; leechHeal += healed;
+  }
   targetHp = Math.max(0, targetHp - secondDamage);
-  return { damage, counterDamage, countered, secondStrike, secondDamage, targetHp, attackerHp };
+  const secondCounter = secondStrike && targetHp > 0 && !!bonuses.targetCharge;
+  const secondCounterDamage = secondCounter ? hit(defender, attacker, true, bonuses.targetAtk, bonuses.def,
+    bonuses.targetAtkSet, bonuses.defSet, bonuses.immune) : 0;
+  attackerHp = Math.max(0, attackerHp - secondCounterDamage);
+  return { damage, counterDamage, countered, secondStrike, secondDamage, secondCounter, secondCounterDamage, targetHp, attackerHp, leechHeal };
 }
 
 /** Taunt restricts a chosen attack, without forcing a unit to attack. */

@@ -393,6 +393,7 @@
                   "charge",
                   "control",
                   "nullify",
+                  "leech",
                   "call",
                   "defensive-armor",
                   "promote",
@@ -402,7 +403,9 @@
                   "hex-trap",
                   "fortress",
                   "ruin",
-                  "blitz"
+                  "blitz",
+                  "offensive-power",
+                  "mobility-economy"
                 ],
                 "description": "Configured unit or CP path behavior, executed in solo and authoritative multiplayer. Capture unlocks at Vet 2: a sole capturing side holds the zone except eligible enemy occupants; opposing active Capture passives restore normal claims."
               },
@@ -419,7 +422,7 @@
               "up": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "UP granted by Sacrifice, independently of its UP cost."
+                "description": "UP granted by a unit active, independently of its UP cost, or immediately by a non-unit universal cast. Omission grants no UP."
               },
               "enemyDamage": {
                 "type": "integer",
@@ -443,7 +446,7 @@
               "stars": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "Immediate permanent stars granted by Strengthen or selected Sacrifice, capped at vet 3. On Sacrifice, this opts into one friendly battlefield/green-reserve recipient, full healing, and an optional unused friendly battlefield extra actor; omission preserves legacy army-wide Sacrifice."
+                "description": "Immediate permanent stars granted by Strengthen or selected Sacrifice, capped at vet 3. On Sacrifice, this opts into one friendly battlefield/green-reserve recipient and full healing. battlefieldActions grants general battlefield slots; its omission retains an optional nominated unused extra actor. Omission of stars preserves legacy army-wide Sacrifice."
               },
               "recharge": {
                 "type": "integer",
@@ -542,6 +545,39 @@
               "enemyMov": {
                 "type": "integer",
                 "description": "Temporary MOV modifier to enemy recipients of a unit Call."
+              },
+              "baseMov": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Additional red-base MOV from the mobility-economy path passive, on top of its normal MOV bonus."
+              },
+              "costReduction": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Discount to this path owner's pool, unit UP and CP ability casts in their respective currency. Excludes path activation and panel crossing prices."
+              },
+              "minimumCost": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Minimum discounted ability cost; omitted is 1."
+              },
+              "battlefieldActions": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Extra general battlefield unit-action slots granted this casting turn by selected Sacrifice. Each slot is for an unused unit and cannot reopen a finished action. If absent, preserves legacy nominated-extra-unit behavior."
+              },
+              "secondCounter": {
+                "type": "boolean",
+                "description": "On Charge, permit one second counter after an opposing Charge second strike, if the defender survives. No further strikes follow. Omission or false preserves older Charge without a second counter."
+              },
+              "freeOrder": {
+                "type": "boolean",
+                "description": "On rapid-movement, permit movement, the unit ability and attack in any order within the unit’s total MOV budget. Omission or false retains legacy movement after attacking only."
+              },
+              "refundMultiplier": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Recharge only: for each carried pair member already at cooldown 0 or 1 before the cast, grant this multiple of its configured base regular-point cost, without changing that cooldown. Higher cooldowns only decrease. Omitted or zero preserves cooldown-only Recharge; Sprint discounts do not reduce the payout."
               }
             },
             "additionalProperties": false,
@@ -730,6 +766,23 @@
                     }
                   }
                 }
+              },
+              {
+                "if": {
+                  "required": [
+                    "refundMultiplier"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "effect"
+                  ],
+                  "properties": {
+                    "effect": {
+                      "const": "recharge"
+                    }
+                  }
+                }
               }
             ]
           }
@@ -737,7 +790,7 @@
         "pairPickDelay": {
           "type": "integer",
           "minimum": 0,
-          "description": "Full turns after a side first picks a pool pair before it can fill a second pair. A pick on Turn 1 with delay 5 unlocks on Turn 6. Omitted preserves immediate picking in older configs."
+          "description": "Full turns after a side first picks a pool pair before it can fill a second pair. A pick on Turn 1 with delay 3 unlocks on Turn 4. Omitted preserves immediate picking in older configs."
         }
       },
       "additionalProperties": false
@@ -1613,7 +1666,7 @@
         },
         "walkHomeRefund": {
           "type": "object",
-          "description": "Refund at withdrawal: max(minimum, unit value × valueMultiplier − fee − missing HP × missingHpMultiplier). Original owner receives it.",
+          "description": "Refund using earned rank and pre-withdrawal HP; original owner receives it. Rank overrides replace the base factors; minimum always applies.",
           "properties": {
             "valueMultiplier": {
               "type": "integer",
@@ -1638,6 +1691,44 @@
               "minimum": 0,
               "maximum": 9007199254740991,
               "description": "Minimum UP refund for a withdrawal."
+            },
+            "veterancy": {
+              "type": "array",
+              "maxItems": 3,
+              "description": "Optional factor overrides for earned Vet 1, 2 and 3, in order. Missing entries retain base factors; omitted preserves old refunds.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "valueMultiplier": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "Unit-value multiplier in the withdrawal refund."
+                  },
+                  "fee": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "Fixed UP deduction from the withdrawal refund."
+                  },
+                  "missingHpMultiplier": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "UP deducted per currently missing HP at withdrawal."
+                  }
+                },
+                "required": [
+                  "valueMultiplier",
+                  "fee",
+                  "missingHpMultiplier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "resetVeterancy": {
+              "type": "boolean",
+              "description": "Reset earned veterancy to zero after pricing a withdrawal. Omitted is false, preserving older saved matches."
             }
           },
           "required": [

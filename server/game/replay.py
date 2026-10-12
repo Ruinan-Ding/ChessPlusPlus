@@ -45,7 +45,7 @@ def replay_milliseconds(records):
                 countered = record.get('countered')
                 if countered is None:
                     countered = record.get('counter_damage', 0) > 0
-                strikes = 1 + bool(countered) + bool(record.get('secondStrike'))
+                strikes = 1 + bool(countered) + bool(record.get('secondStrike')) + bool(record.get('secondCounter'))
                 durations.extend([2 * beat('strike') + beat('hit')] * strikes)
             if record.get('attackFrom') and destination != landing and record.get('moved'):
                 durations.append(beat('move'))

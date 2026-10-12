@@ -32,13 +32,14 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (520 tests, 10 Oct 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (563 tests, 11 Oct 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
 python scripts/e2e/match.py    # one full match: lobby, invite, room, moves, rejoin, resign
 python scripts/e2e/edges.py    # races, second tab, token lifetime, disconnect after the result (~90s)
 python scripts/e2e/drafts.py   # private staging, Undo, atomic commits, disconnected-player expiry (~15s)
+python scripts/e2e/recording.py # complete recorded match; REPLAY_OUTPUT exports a browser fixture
 python scripts/e2e/endings.py  # four matches: early phase losses, points and overtime (~1 min)
 python scripts/e2e/panels.py   # crossings, walks home, blows into a panel - needs the server
                                # started with CPP_DEAL_PANELS=1, or it fails for want of panel units
@@ -296,6 +297,171 @@ depends on the old version.
 
 Decided so far:
 
+- **CP utilities, 12 Oct 2026:** Swap the complete utilities, including their
+  names: Bastion now carries **Strengthen** (selected +1 Vet), and Onslaught
+  carries **Convert** (25 CP grants **50 UP**, not regular ability points).
+  Costs, cooldown 1, five uses per phase and Strengthen's existing recipient
+  scope stay unchanged. Sprint's **Recharge** reduces each selected pair
+  member's cooldown above 1 by 1, with a floor of 1. Each member already at
+  **0 or 1 CD before Recharge** instead pays its full configured base regular-
+  point cost and keeps that cooldown. Sprint's price discount does not reduce
+  this payout. A used 1-CD ability remains unavailable; no free or 1-point
+  temporary cast price is granted. One-turn pool descriptions explain this.
+  Optional `refundMultiplier: 1` configures the payout; omission/zero retains
+  older cooldown-only Recharge. Existing saved catalogues and path references
+  keep their own rules; Convert's recorded UP reward is not repriced on reload.
+
+- **Starting UP confirmed, 11 Oct 2026:** Keep **10 UP** at game start.
+  Initialization rotation pays the existing **1-UP** walking-home fee before
+  buying the replacement; full-health rank-zero 12-UP units refund 11 UP.
+  This closes the earlier starting-UP question after the unit repricing.
+
+- **Opposing Charge, 11 Oct 2026:** If both combatants have active Charge,
+  the exchange is attack → counter → second attack → second counter, subject
+  to the usual range, counter eligibility and survival checks at each strike.
+  The defender's Charge permits one counter to the attacker's second strike;
+  no third strike follows. This supersedes the earlier prohibition on a second
+  counter for this case. Without defender Charge, the second attack still has
+  no counter. Passive damage/healing and casualties follow the actual strikes.
+
+- **Sacrifice action allowance, 11 Oct 2026:** New defaults grant **+1 general
+  battlefield unit action this casting turn**, alongside the selected recipient's
+  existing buff, permanent promotion and full heal. The extra action is usable by
+  any unused friendly battlefield unit, without nominating a second recipient.
+  It never reopens a finished action or changes base/reserve movement allowances.
+  `battlefieldActions` configures the number; zero grants none and omission retains
+  the older nominated-extra-actor workflow for frozen saved configurations.
+  Switching to another battlefield unit's UP ability also closes the previous
+  battlefield actor, including in Overtime 2/3; Undo restores that actor.
+  Base, reserve and battlefield retain independent actors and budgets; actions
+  in another category never close this category’s actor. Within a category,
+  switching actors closes the prior unit until Undo; inspection and pool/CP
+  casts do not switch actors. Every unit UP cast consumes its source category’s
+  unit-action slot, sharing it with that unit’s movement and attack. A stationary
+  Sacrifice spends the pawn’s battlefield slot before granting +1 slot.
+  Active Archer Withdraw permits movement, one unit ability and one attack in
+  any order, splitting movement while retaining its single total MOV budget.
+  It may cast after attacking even though Snare cannot debuff a past attack.
+  All three gates (wrap, reserve entry, homecoming) are open in Initialization
+  and every postmatch; prices, occupancy, MOV and home-row restrictions remain.
+  `quick.freeOrder: true` configures this Archer exception; omission retains older
+  post-attack-only ordering. `knight-charge.secondCounter: true` configures the
+  opposing Charge reply; omission retains the earlier single-counter exchange.
+  Implemented in both engines (6.142): 1,036 client specs, 567 backend tests
+  (563 canonical plus four legacy), production build, schema/migration checks,
+  all 490 layouts, 31 native Chrome assertions and 14 live-socket checks pass.
+  Three deliberate private-source faults are caught and restored. No balance
+  release, migration, publication or owner-service restart accompanies this work.
+
+- **CPU opponent, 11 Oct 2026:** In solo setup, Opponent appears below Me with
+  Myself (default), CPU and an unavailable AI radio. AI stays unselected and
+  its explanation says it is not implemented. CPU offers Easy/Normal/Hard,
+  default Normal, and takes the other seat. The browser owns the saved match;
+  `/ws/cpu/` reconstructs its semantic history and searches through the same
+  Python turn handlers, without database writes or trained models. Numeric
+  balance changes are read from the frozen match config. Q preserves the
+  previous turn as staging and pauses automatic CPU control for R edits;
+  End Turn resumes it. CPU thinking consumes normal turn time; automatic
+  playback does not. A connection failure pauses the pending CPU clock and
+  offers Retry, Back to Lobby or Continue as Myself, preserving the position.
+  Ordinary solo saves without CPU metadata remain Myself; imported replays
+  stay manually controlled. New ability mechanics may need candidate support.
+  Solo command batches stop at the first engine refusal; CPU/replay interpreters
+  restore the saved core and UI, including already accepted panel steps.
+
+- **Sacrifice, refunds and paths, 11 Oct 2026:** Repeated Sacrifice casts on one
+  recipient refresh its temporary +2 MOV/+6 ATK/+6 DEF without stacking. Each
+  cast still grants the permanent +1 Vet (cap 3), full heal and an extra
+  battlefield action; different recipients can each hold the buff. New defaults
+  use the general allowance above; older configurations retain actor nomination.
+  Walking-home refunds use earned rank and missing HP before entering the base:
+  Vet 0 keeps the fee and wound deductions; Vet 1 waives the fee; Vet 2 also
+  waives the wound deduction; Vet 3 refunds exactly 3× full unit value even when
+  wounded. Every withdrawal then resets Vet to 0. Undo restores the departure
+  rank and refund; committed reset events discard earlier promotion/award history,
+  so later eligible awards start again from zero. HP activation follows the new
+  rank and destination kit rules, including custom configs with enabled base kits.
+  `economy.walkHomeRefund.veterancy` configures rank-specific factors and
+  `resetVeterancy` enables the reset; omitting either retains older saved rules.
+  Bastion activation costs 5 CP and retains its defensive +1 DEF. Onslaught costs
+  50 CP, grants +2 ATK only on initiated strikes (including second strikes/splash,
+  never counters) and +2 HEL to existing healers. Sprint costs 100 CP, keeps +1
+  MOV in every zone and grants an additional +4 MOV in red bases. Its owner's
+  pool, unit UP and CP ability casts cost 3 less in their respective currencies,
+  minimum 1; path activation and panel crossing prices are unaffected. Sprint
+  does not heal. Numeric passives/discounts live in the shared catalogue. Earlier
+  started/custom catalogues retain their saved effects and prices; the current
+  balance remains draft, with no new release.
+
+- **11 Oct 2026 unit ordering and Leech:** A unit action follows
+  move → Vet 3 UP ability → attack; each step is optional. Using a unit ability
+  ends movement; an initiating attack blocks later unit abilities. Pool and CP
+  casts remain separate. Archer's active Withdraw is the exception: it may
+  partition/reorder its own movement, attack and unit ability, including casting
+  after attacking, without increasing any of their budgets.
+  Queen's Vet 3 ability is now Leech: 8 UP, 3 CD, +4 ATK/+2 DEF for one full
+  turn. Each normal strike heals the actual HP damage dealt, capped at maximum
+  HP, immediately before a possible counter. Counterattacks never trigger the
+  heal. Saved/custom configurations retain their previous abilities.
+
+- **11 Oct 2026 choice Undo:** R/Undo reverses uncommitted pool-pair purchases,
+  CP-path purchases and pair returns in chronological order with battlefield,
+  panel and cast actions. It restores payment, loadout/path, first-pick unlock
+  clock, cooldowns and pick markers, including after solo reload or Q. Saved
+  choices without prior-state metadata cannot fabricate an Undo. Online autosave
+  replaces the private command batch after Undo; committed picks remain final.
+
+- **Portable replay files, 10 Oct 2026:** Finished solo/online matches recorded
+  from their initial position can export a versioned file of config, display
+  names and accepted action intents. Older incomplete matches cannot export.
+  Load Replay opens a separate offline session, preserving the ordinary solo
+  save. Viewing and branches have no clock. `<`/`>` navigate individual actions
+  (attack and automatic counters together); `<<`/`>>` navigate to completed
+  staging before a turn's End Turn. Autoplay uses the existing yellow animation.
+  Explicit Branch here warns before discarding future actions. After branching,
+  forward controls and autoplay are disabled; both sides can edit, R undoes
+  staging, and a new replay can be saved including an unfinished turn.
+  Validate the file/config upfront and actions at runtime using normal rules.
+  A rejected compound action rolls back, shows Move corrupted and is skipped;
+  later actions may continue. Never import resolved stats, costs or effects.
+  File limits: 20 MiB, 100,000 actions, nesting 64. Runtime playback limits
+  computed frames to 8 MiB and cached frames to 16 MiB/12 entries, warning and
+  rolling back an oversized action like a corrupt move. Each import receives
+  its own IndexedDB session ID; header and initial state are written atomically.
+  Snapshots share the validated config rather than copying it or solo Q state.
+  Canonical command fields live in `shared/replay-command-fields.json`, read by
+  both writers/readers. Match balance revision remains draft.
+
+- **Solo whole-turn rewind, 10 Oct 2026:** In single player, Offer Draw becomes
+  **Rewind Turn (Q)**. It reopens the immediately preceding side's turn with
+  that turn's actions staged: Black on Turn 2 returns to White on Turn 2.
+  Earlier committed turns remain intact; the current side's later draft is
+  discarded. **R takes back the reopened moves, attacks, casts and panel walks
+  one at a time**, using ordinary Undo, or End Turn commits the edited turn.
+  The owner confirmed: *"Keep its moves staged; R undoes them"*.
+  Core history and phase bank return to that turn's start; its pre-commit UI,
+  positions, panel occupancy/HP, stars, effects, resources, choices, cooldowns
+  and use budgets restore as its staged preview. The restored side gets a
+  fresh timer. A finished game reopens its result-producing turn with its
+  actions staged; R can undo a winning attack and revive the commander.
+  Resignation and agreed draws require the current ply's exact checkpoint;
+  settled endings require the preceding ply's. No fallback to another turn.
+  Rewinds may repeat through recorded turns, survive reload and discard later
+  branches. Automatic commit playback locks the button; manual Replay can be
+  interrupted. Q does not act in text fields, with any modifier (including
+  Shift) or on repeated keydown events. Multiplayer keeps Offer Draw.
+  Only a fresh start or completed automatic recap creates a turn-start
+  checkpoint. Loading a snapshot or finishing a pick/cast/manual animation
+  cannot establish an unrecorded turn's start. Older saves leave those turns
+  unavailable, and rewind cannot skip a missing checkpoint.
+  `LocalGameService` stores core and start/staged UI checkpoints beside its
+  save, keeping config/history once. Panel views are recreated, then their
+  chronological Undo stack is restored, including the metadata of panel
+  casualties so Undo revives them with their correct HP. Panel staging also
+  survives reload; expired drafts cannot be restored onto an advancing snapshot.
+  The closing solo pass recognizes casualties from earlier held attacks,
+  so End Turn records regicide correctly.
+
 - **Configurable match rules, 10 Oct 2026:** The owner approved parameterizing all
   existing numerical rules, variable phase/overtime counts and existing effect values,
   using the JSON editor. Started matches keep their rules. Config format and balance
@@ -311,7 +477,7 @@ Decided so far:
   Checkmate: +6 ATK/+6 DEF immediately while it stands in the enemy's first
   three battlefield rows, removed immediately on leaving. An action that
   starts there receives +2 MOV for its entire walk, including exiting those
-  rows; entering during a walk cannot extend that walk. Archer now has Quick,
+  rows; entering during a walk cannot extend that walk. Archer now has Withdraw (formerly Quick),
   the existing Rapid Movement effect, replacing Counter. Shieldman now has
   Counter at range 1 with ATK 4 before DEF, replacing Shove entirely; it
   cannot initiate attacks. Its normal ATK remains —, so the established
@@ -320,11 +486,14 @@ Decided so far:
 
 - **Panel unit-kit scope and attrition, 9 Oct 2026:** Veterancy bonuses,
   Vet 2 passives and Vet 3 unit abilities work only on the battlefield.
-  Base/reserve units retain and gain stars under the existing award rules,
+  Reserve units retain/gain stars under the award rules; walking home resets stars
+  after its rank-specific refund under the 11 Oct revision,
   but their unit kit stays inactive; bishop normal healing requires a
   battlefield source as before. For the first-star HP bonus, entering either
   panel lowers maximum HP only, capping current HP to that maximum. Leaving
-  adds the bonus to current and maximum HP: a pawn goes 5/14 → 5/12 → 7/14.
+  with the required earned rank adds the bonus to current and maximum HP: a
+  pawn visiting reserve goes 5/14 → 5/12 → 7/14. Walking home now clears rank,
+  so it needs a new promotion/award before activating that HP bonus again.
   A stored activation flag prevents repeat snapshot/promotion application.
   Red-base deaths now count toward the owner's phase attrition VP, just like
   battlefield and reserve deaths; they still grant no UP bounty. Knight now
@@ -428,23 +597,27 @@ Decided so far:
   Warcry/Bulwark 25, Sap 35, Weakening 15, Dash/Strike 20 and Mire/Mend 10
   regular points. Pawn/archer/shieldman values are
   **12 UP**, replacing the earlier 16; other unit values and Vet 3 costs stay as
-  recorded below. Following the owner's 9 Oct revision, CP prices are Bastion 10,
-  Convert 25 for 50 regular points, Bastion Drain 50, Fortress 250; Onslaught 25,
-  Strengthen 25, CP Cleave 50, Ruin 250; Sprint 50, Recharge 25, Trap 50 and
+  recorded below. Following the owner's 11 Oct revision, CP prices are Bastion 5,
+  Strengthen 25, Bastion Drain 50, Fortress 250; Onslaught 50,
+  Convert 25 for 50 UP, CP Cleave 50, Ruin 250; Sprint 100, Recharge 25, Trap 50 and
   Blitz 250. Bastion’s former Sap is renamed **Drain** and costs **50 CP**,
   superseding the earlier 70-CP price. Pool Sap remains 35 regular points.
   Effects, cooldowns and use limits
   retain their existing rules. Fixed CP portions are now **10/20/30 once per postmatch**, retaining the existing
-  timing. Withdrawal refunds are **`max(1, unit value - 1 - current missing HP)` UP**,
-  measured when the unit leaves. Healing before withdrawal reduces the deduction;
-  later base healing does not reprice the recorded refund. A 12-UP pawn refunds 11
+  timing. Vet-0 withdrawal refunds are **`max(1, unit value - 1 - current missing HP)` UP**;
+  Vet 1 waives the fee, Vet 2 also waives wounds, and Vet 3 pays 3× value, then
+  all withdrawals reset Vet to 0. Refunds use rank/HP before departure. Healing before withdrawal reduces the deduction;
+  later base healing does not reprice the recorded refund. A Vet-0 12-UP pawn refunds 11
   at full HP, 6 while missing 5 HP, and at least 1. Original ownership still decides
   which side receives a controlled unit's refund. These interpretations retain
   existing CP timing and follow the owner's full-health refund example.
 - **Damage is flat and deterministic.** No hit/dodge/crit rolls.
 - **Counter-attacks:** the defender strikes back if the attacker is inside the defender's range.
 - **No terrain.** Uniform board, no movement costs or defence bonuses.
-- **A unit turn allows move + attack + ability.** An ultimate excludes attacking that same turn.
+- **A unit turn allows move → unit ability → attack.** Steps are optional; a unit
+  ability ends movement, an attack blocks its later unit ability, and Withdraw
+  permits partitioning movement, one ability and one attack in any order.
+  An ultimate excludes attacking that same turn.
 - **Abilities are hardcoded effects referenced by id from config JSON.** Import/export works
   immediately; there is deliberately no ability DSL yet.
 - **Passive, activatable, and unit-level ultimate** abilities. Activatables recharge over N
@@ -457,9 +630,9 @@ Decided so far:
   together, once at the stage's first ply, not again for black's half. Being present at that
   boundary is what counts; entering reserve or battlefield afterwards earns nothing until
   the next award. Halftimes, later phase starts, ordinary turns, damage and kills grant none.
-  **A red-base unit gains no stars there, but a veteran returning home keeps its earned
-  stars.** This replaces the earlier wording that all base units always have zero: newly
-  dealt base units start at zero; an experienced unit is not reset by coming home.
+  **A red-base unit gains no stars there. Walking home now resets earned stars to zero
+  after pricing the rank-specific refund (11 Oct revision).** Earlier saved configurations
+  that omit the reset retain returning veterans' earned stars.
   **At Phase 3 postmatch start, a living battlefield or green-reserve unit that already
   had vet 3 before the award heals to full HP.** A unit promoted from vet 2 to vet 3 at that
   boundary gains its star without this heal. Red-base units gain neither the award nor this
@@ -473,7 +646,8 @@ Decided so far:
     that on the game board. everyone starting at vet 0"*. The timing and cap were clarified:
     *"im not seeing them gain vet after each phase. at start of phase 1, everything in reserve
     and board gets vet 1. after then everything gets vet at start of postmatch. max is vet 3"*.
-    Returning to base: *"Keep its earned stars"*.
+    The earlier returning-base rule, *"Keep its earned stars"*, was superseded
+    by the 11 Oct walking-home reset above; old configs preserve it.
   - `unitVeterancy` in `history-rules.ts` and `unit_veterancy` in `panels.py` reconstruct each
     unit's rank from its uid and panel crossings at those boundaries. The board draws that
     rank and sends it to the Unit panel, including after a reload. A staged withdrawal reads
@@ -491,16 +665,16 @@ Decided so far:
 
 - **CP path abilities specified 5 Oct and implemented in both engines, 8 Oct 2026.** These replace
   the shipped path placeholders. One path is still bought once per match. Bastion now costs
-  **10 CP**, Onslaught costs **25 CP**, and Tempo becomes **Sprint**, costing **50 CP**.
+  **5 CP**, Onslaught costs **50 CP**, and Tempo becomes **Sprint**, costing **100 CP**.
   Temporary effects use the established full-turn duration (caster's turn plus opponent's);
   damage, healing, conversion and promotion happen immediately. The path-specific action
   replaces that path's Reselect button. The pool's existing pair selection is separate.
 
   | Path | Passive | Replaces Reselect | Skill | Ultimate |
   |---|---|---|---|---|
-  | Bastion (10 CP) | +1 DEF only while under attack | **Convert:** spend 25 CP for 50 regular points, cooldown 1, five uses per phase | **Drain:** the selected hex's unit has ATK/HEL 0; ring 1 occupants receive -4 ATK/HEL, ring 2 occupants receive +2 ATK/HEL on either side; 50 CP, cooldown 1, three uses per match | **Fortress:** every owned unit takes no damage whatsoever for one full turn; enemy DEF becomes 0; 250 CP, once per match |
-  | Onslaught (25 CP) | Every friendly unit gains +1 ATK | **Strengthen:** a selected friendly battlefield/green-reserve unit gains one veterancy star; red-base units are ineligible; 25 CP, cooldown 1, five uses per phase | **Cleave:** board-wide horizontal line: selected hex takes 5 HP damage, the nearest two hexes on EACH side take 3, farther occupants heal 1; either side can be affected; 50 CP, cooldown 1, three uses per match | **Ruin:** deal 3 HP damage to every unit including battlefield, green reserve and red base, and heal every owned unit by 3; 250 CP, once per match |
-  | Sprint (50 CP; renamed Tempo) | Every friendly unit gains +1 MOV | **Recharge:** subtract 1 cooldown from both abilities in a selected pair, leaving positive cooldowns at least 1; 25 CP, cooldown 1, five uses per phase | **Trap:** board-wide X: centre cannot move, attack, heal normally or use its unit ability and loses positive temporary buffs; nearest two hexes in EACH diagonal direction receive -4 MOV, farther X occupants receive +2 MOV on either side; 50 CP, cooldown 1, three uses per match | **Blitz:** friendly units gain +8 MOV/+2 ATK/+2 DEF and existing healers gain +4 HEL; enemies cannot move, attack or use unit abilities, but may counterattack and use pool/CP abilities; 250 CP, once per match |
+  | Bastion (5 CP) | +1 DEF only while under attack | **Strengthen:** a selected friendly battlefield/green-reserve unit gains one veterancy star; red-base units are ineligible; 25 CP, cooldown 1, five uses per phase | **Drain:** the selected hex's unit has ATK/HEL 0; ring 1 occupants receive -4 ATK/HEL, ring 2 occupants receive +2 ATK/HEL on either side; 50 CP, cooldown 1, three uses per match | **Fortress:** every owned unit takes no damage whatsoever for one full turn; enemy DEF becomes 0; 250 CP, once per match |
+  | Onslaught (50 CP) | +2 ATK on initiated attacks only; +2 HEL for existing healers | **Convert:** spend 25 CP for 50 UP, cooldown 1, five uses per phase | **Cleave:** board-wide horizontal line: selected hex takes 5 HP damage, the nearest two hexes on EACH side take 3, farther occupants heal 1; either side can be affected; 50 CP, cooldown 1, three uses per match | **Ruin:** deal 3 HP damage to every unit including battlefield, green reserve and red base, and heal every owned unit by 3; 250 CP, once per match |
+  | Sprint (100 CP; renamed Tempo) | +1 MOV everywhere, additional +4 MOV in base; ability casts cost 3 less, minimum 1 | **Recharge:** each pair member above 1 CD loses 1, floored at 1; each already at 0/1 CD grants its full configured regular-point value without changing CD; 25 CP, cooldown 1, five uses per phase | **Trap:** board-wide X: centre cannot move, attack, heal normally or use its unit ability and loses positive temporary buffs; nearest two hexes in EACH diagonal direction receive -4 MOV, farther X occupants receive +2 MOV on either side; 50 CP, cooldown 1, three uses per match | **Blitz:** friendly units gain +8 MOV/+2 ATK/+2 DEF and existing healers gain +4 HEL; enemies cannot move, attack or use unit abilities, but may counterattack and use pool/CP abilities; 250 CP, once per match |
 
   **Hex targeting confirmed:** any rendered hex may be selected, including empty, red-base
   and green-reserve hexes. Drain/Trap affect current occupants only and follow those units;
@@ -524,7 +698,8 @@ Decided so far:
   king toll. Trap's centre may counter but cannot use its unit ability, and removes only
   positive temporary buffs, keeping debuffs, earned rank and Cast control. Trap and Blitz
   also block normal bishop healing. Recharge may be used on a ready pair, still paying CP
-  and its cooldown while the pair stays at zero. On 7 Oct the owner clarified that
+  and its cooldown while the pair stays at zero; the 12 Oct revision also pays
+  each member already at 0/1 CD its full configured regular-point value. On 7 Oct the owner clarified that
   positive cooldowns stop at **1**, preventing the same ability from being used
   twice in a turn; ready abilities stay at zero. Recharge opens its description
   first, then Use arms the selection of either member of a carried pair. The owner: *"Damage everyone, then heal
@@ -548,12 +723,13 @@ Decided so far:
   cap remain unchanged. Older saved catalogues retain their own rules. Online abilities
   execute authoritatively in multiplayer under PUNCHLIST 6.107.
 
-- **CP pricing revision, 9 Oct 2026.** Convert costs **25 CP** and grants **50**
-  regular points; Bastion **Drain** (formerly Sap) now costs **50 CP**. Fortress,
+- **CP prices, revised 12 Oct 2026.** Onslaught Convert costs **25 CP** and
+  grants **50 UP**; Bastion carries Strengthen at **25 CP**; Bastion **Drain** (formerly Sap) now costs **50 CP**. Fortress,
   Ruin and Blitz each cost **250 CP**, following the owner’s later
-  *"change all ultimates to 250"*. Strengthen remains **25 CP**; Recharge
-  drops to **25 CP**. CP Cleave and Trap each cost **50 CP**. Path purchases,
-  scopes, effects, cooldowns and use limits are unchanged. The owner:
+  *"change all ultimates to 250"*. Strengthen and Recharge each cost **25 CP**. CP Cleave and Trap each cost
+  **50 CP**. Path purchases remain 5/50/100 CP from 11 Oct. Skill/ultimate
+  scopes, effects, cooldowns and use limits retain their rules; utilities follow
+  the 12 Oct swap/payout decision above. Earlier price instructions:
   *"change covert to 25 but grants 50 points, increase sap by 50, increase
   fortress to 150 ... cleve to 50, ruin to 150 ... recharge ... to 25, trap
   to 50, blitz to 150"*. The later 250-CP request supersedes those ultimate prices.
@@ -573,17 +749,19 @@ Decided so far:
   loss. The recipient gains one permanent star, fully heals, and receives
   **+2 MOV/+6 ATK/+6 DEF** for one full turn, following the owner’s latest
   9 Oct reduction. Missing ATK/HEL cannot be created.
-  Then independently choose an unused friendly battlefield unit for one extra
-  action, which may be the buffed recipient. Newly granted extra actors (including
-  Cast recipients) are selected with their legal actions ready, without an extra click.
-  Used units, same-turn battlefield
-  entrants, panels and action-locked units cannot receive that extra action.
+  The 11 Oct default grants +1 general battlefield unit action this casting
+  turn. Any unused friendly battlefield unit may use it, including the buffed
+  recipient; there is no second target picker. Finished units, same-turn entrants,
+  panels and action-locked units cannot use it. Older configurations without
+  `battlefieldActions` retain nomination of one unused extra actor. Newly granted
+  nominated actors, including Cast recipients, select with actions ready.
   Cost **24 UP**, cooldown **5**, no UP reward. Promotion and healing persist
   after the temporary stats expire. The optional Sacrifice `stars` field enables
   this selected workflow; omission preserves saved army-wide catalogues.
-  Solo staging/Undo/reload and online private drafts/atomic commits retain both
-  selected UIDs. Other casts remain usable while choosing the extra actor;
-  ending the turn without choosing one simply leaves that action unused.
+  Solo staging/Undo/reload and online private drafts/atomic commits retain the
+  selected buff recipient and general allowance. Older nominated configurations
+  retain both selected UIDs; other casts remain usable while choosing the actor,
+  and ending without a nomination leaves that older grant unused.
   Only Fortress, Ruin and Blitz are army-wide activated effects in the shipped
   config. Convert remains a no-target currency operation, and path passives
   remain army-wide passives. Call is adjacent-only.
@@ -602,13 +780,13 @@ Decided so far:
 
   | Unit | Vet 1 stat change | Vet 2 passive | Vet 3 unit ability |
   |---|---|---|---|
-  | Pawn | +2 HP, +2 ATK, +2 DEF | **Checkmate:** +6 ATK/+6 DEF in enemy first three battlefield rows; +2 MOV only for actions starting there, retained while leaving | **Sacrifice:** select another friendly battlefield/green-reserve unit: permanent +1 star (max 3), full heal, +2 MOV/+6 ATK/+6 DEF for one full turn; pawn dies and counts as its side’s loss; independently choose an unused friendly battlefield extra actor; cost 24 UP, cooldown 5, no UP reward |
-  | Archer | +2 MOV | **Quick:** use remaining MOV after attacking | **Snare:** its attack applies -4 MOV to the enemy; cost 8 UP, cooldown 3 (supersedes the duplicated Vet 2 Counter wording) |
+  | Pawn | +2 HP, +2 ATK, +2 DEF | **Checkmate:** +6 ATK/+6 DEF in enemy first three battlefield rows; +2 MOV only for actions starting there, retained while leaving | **Sacrifice:** select another friendly battlefield/green-reserve unit: permanent +1 star (max 3), full heal, +2 MOV/+6 ATK/+6 DEF for one full turn; pawn dies and counts as its side’s loss; +1 general battlefield unit action this turn for an unused unit; cost 24 UP, cooldown 5, no UP reward |
+  | Archer | +2 MOV | **Withdraw:** partition/reorder movement, one unit ability and one attack within its single total MOV budget | **Snare:** its attack applies -4 MOV to the enemy; cost 8 UP, cooldown 3 (supersedes the duplicated Vet 2 Counter wording) |
   | Shieldman | +2 DEF, +2 HP | **Counter:** counter only at range 1 with ATK 4 before DEF; no initiating attack | **Taunt:** attacking stays optional, but an attack must target a reachable taunting shieldman; cost 6 UP, cooldown 1 |
   | Rook | +2 DEF, +2 ATK | **Bog:** after an exchange in which an enemy attacks the rook or the rook attacks/counters, reduce that enemy's ATK and DEF by 1 for one full turn; stacks on subsequent exchanges without a cap | **Bash:** when attacking, damage every adjacent enemy around the rook with its normal ATK against each DEF; only the directly attacked unit counters; cost 16 UP, cooldown 5 |
-  | Knight | +2 ATK, +2 HP | **Hop:** pass through multiple consecutive enemies, paying one MOV per hex, ending on an empty hex; an open panel crossing may also be traversed despite enemy blockers | **Charge:** a second strike only after an actual counter, if the knight survived; no counter to the second strike; cost 16 UP, cooldown 5 |
+  | Knight | +2 ATK, +2 HP | **Hop:** pass through multiple consecutive enemies, paying one MOV per hex, ending on an empty hex; an open panel crossing may also be traversed despite enemy blockers | **Charge:** a second strike only after an actual counter, if the knight survived; an opposing active Charge permits one final counter to that second strike; cost 16 UP, cooldown 5 |
   | Bishop | +2 HP; add healing 4 at range 3 and 2 at range 4 | **Regenerate:** every living Vet 2+ bishop on the battlefield fully heals at the end of its owner's turn, even if it did not act | **Cast:** control a selected adjacent enemy, immediately end the bishop's action and grant the controlled unit an extra move/attack; cost 32 UP, cooldown 5 |
-  | Queen | +1 MOV, +2 HP | **Persuade:** adjacent battlefield allies gain 1 MOV, 1 DEF and 1 ATK at the owner's turn start, until that owner's next turn | **Nullify:** disable the attacked enemy's counter; cost 12 UP, cooldown 1 |
+  | Queen | +1 MOV, +2 HP | **Persuade:** adjacent battlefield allies gain 1 MOV, 1 DEF and 1 ATK at the owner's turn start, until that owner's next turn | **Leech:** +4 ATK/+2 DEF for one full turn; normal attacks heal actual HP damage immediately before counters, capped at max HP; counters never heal; cost 8 UP, cooldown 3 |
   | King | Add ATK 20 at range 2, +2 MOV | **Capture:** from anywhere inside an eligible zone, hold it entirely except eligible enemy occupants' own hexes; opposing active Capture in that zone restores normal rules, with no Vet 3 priority | **Call:** adjacent friendly battlefield/green-reserve units heal 1 and gain +1 ATK/DEF/MOV; adjacent enemies take 1 HP damage and lose 1 ATK/DEF/MOV for one full turn; excludes the king; cost 4 UP, cooldown 1 |
 
   **Cast clarifications confirmed:** the owner answered *"Yes, it acts immediately as an
@@ -628,7 +806,7 @@ Decided so far:
   controlled until the caster's next turn starts, then its original owner may move it.
   After control expires, a postmatch withdrawal follows normal deployment plus pass
   behavior. The retained original-owner marker does not grant an extra action or hold
-  the turn open; active Cast recipients and selected Sacrifice extra actors have separate grants.
+  the turn open; active Cast recipients have nominated grants; new Sacrifice adds a general battlefield slot.
   **Controlling a king alone does not win; if it dies, its
   original owner loses.** The owner: *"Yes, its original owner still loses when it dies"*.
   Keep ownership separate from control so commander detection and death attribution follow
@@ -643,7 +821,8 @@ Decided so far:
   friendly battlefield/green-reserve recipient, with permanent promotion and full
   healing. Red bases remain excluded. Cleave hits *"Adjacent
   enemies around the rook"* with *"the same atk that rook does"*. Charge is *"Second strike
-  only after an actual counter; no second counter"*. Bog lasts one full turn, replacing
+  only after an actual counter; no second counter"*, superseded on 11 Oct only
+  when the defender also has Charge. Bog lasts one full turn, replacing
   the earlier next-two-enemy-turns answer. Persuade (and legacy Intimidate) use their owner's turn start and battlefield
   scope. Regenerate now excludes both panels; the earlier green-reserve scope is superseded. Hop: *"if panel is open it can cross it, and it
   hops multiple enemies"*. Call's enemy effects: *"deal 1h imeediately bf and green, also
@@ -669,12 +848,12 @@ Decided so far:
   Pool, unit and CP army effects enumerate recipients through `abilityRecipients`, using
   the staged board and panels with the configured battlefield/reserve/base scope.
   **Implementation:** `unit-stats.ts` resolves rank-gated passive profiles; `unit-combat.ts`
-  shares Charge, Nullify and Taunt rules between forecasts, staging and local commits.
+  shares Charge, Leech, legacy Nullify and Taunt rules between forecasts, staging and local commits.
   Fixed recipients, per-uid cooldowns, whole-cast Undo and solo reload retain the existing
   ability history model. `unit-control.ts` separates current control from original ownership,
   including king defeat, control expiry and original-owner withdrawal refunds. Cast ends
   the bishop's action and grants only its recipient an extra action. Movement caps count units by controlling side and category, even across physical panels.
-  Cast and Sacrifice extra actions remain separate from the ordinary category allowance. Rapid Movement folds
+  Cast keeps its nominated extra action; new Sacrifice increases the battlefield category allowance. Rapid Movement folds
   its remaining walk into the attack record, including a walk home with post-counter HP;
   `panelDefender` retains the defender separately if that attack landed in a panel.
   Intervening casts resolve after combat and before the remaining walk, so Strike can
@@ -1151,11 +1330,10 @@ Decided so far:
         rather than being ignored by the mending.
       - **0 HP means gone**: a unit killed in a panel is simply not dealt again, and is not
         mended back to life.
-  - **Coming home pays.** The refund is the unit's **own worth** - the same `value` the wrap
-    charges to send one out, so a unit sent out and brought home again leaves the UP where
-    it found them. Every base hex the walk reaches is marked with a green **`+x`**, against
-    the wrap's red `-x`. *The owner left the number open ("x can be whatever you want"); the
-    unit's own worth is the one already in play, and is a choice, not a specification.*
+  - **Coming home pays.** Departure rank determines the refund: Vet 0 deducts the
+    fee and wounds, Vet 1 waives the fee, Vet 2 waives wounds too, and Vet 3 pays
+    3× full value. All withdrawals then reset earned rank. Every reachable base
+    hex shows that computed green **`+x`**, against the wrap's red `-x`.
   - **A withdrawal survives in the record, not on the board.** `make_move` carries
     `withdraw: true`, the engine takes the unit off the board and writes `withdrawn` **plus
     the unit itself** into the history; the room rebuilds the base from those records
@@ -1471,26 +1649,21 @@ Decided so far:
   itself, `5 Until Phase 2 Halftime`. Past the last change it says where you are, in the
   **stage's** name rather than the phase's: `Turn 50 - Overtime 3`.
 
-- **Three arrows a side, three windows, and no turn opens all three.** Every one is read off
-  the ply alone, so both engines and the board answer from the same predicate in `phases.ts`
-  (mirrored in `engine/phases.py`), and the board draws a **red cross** over any arrow that is
-  shut (`arrowKind` on the cell, `arrowShut()`, `.gateway-shut`):
+- **Three arrows a side; all gates open during Initialization and postmatch.**
+  Each predicate reads the stage permissions from the frozen match configuration,
+  so both engines and the board share the same answer in `phases.ts` and
+  `engine/phases.py`. A shut arrow draws a red cross (`arrowShut()`). New defaults:
 
   | | predicate | open on |
   |---|---|---|
-  | the wrap, out of a base | `isWrapOpen()` | a numbered phase's **played first half**: 4-8, 15-19, 26-30 |
-  | the three ways in, out of a reserve | `isEntryOpen()` | any setup turn, and each phase's **halftime half**: 1-3, 9-14, 20-25, 31-36 |
-  | the three ways home, into a base | `isHomecomingOpen()` | any setup turn, and **all of overtime**: 1-3, 14, 25, 36 onward |
+  | the wrap, out of a base | `isWrapOpen()` | Initialization 1-3, postmatch 14/25/36, and numbered first halves 4-8, 15-19, 26-30 |
+  | the three ways in, out of a reserve | `isEntryOpen()` | any setup turn and numbered halftime halves: 1-3, 9-14, 20-25, 31-36 |
+  | the three ways home, into a base | `isHomecomingOpen()` | any setup turn and all overtime: 1-3, 14, 25, 36 onward |
 
-  The wrap and the way in are near enough complements: a side spends a phase's first half
-  sending units out around the outside and its second half bringing them back in. With the
-  postmatch at the end, the way in runs unbroken from a phase's halftime through its
-  postmatch, and the next phase's wrap opens on the very next turn. *The wrap
-  used to be `beforeHalftime()` alone, which said yes for every phase with no break to fall
-  either side of - quietly including the opening and the whole of overtime. It is now spelled
-  out as three conditions: the scoring phase and the halftime each refuse turns the other does
-  not, and the postmatch clause, redundant since the postmatch moved past the halftime, is kept
-  so the rule reads the way the owner said it.*
+  Ordinary first/second halves retain their separate wrap/entry windows; overtime
+  permits homecoming only. Gate flags never waive occupancy, MOV, price, home-row
+  or Initialization prior-turn locks. Saved/custom configurations retain their
+  own permissions rather than acquiring the new default openings.
 
 - **A crossing lands in its own first three rows, and a walk home starts in them**
   (`inHomeRows()` in `hex-rules.ts`, `in_home_rows()` in `engine/panels.py`; `HOME_ROWS = 3`).
@@ -1695,13 +1868,13 @@ Decided so far:
   - **Their abilities, then yours, then Unit in the left column.** The owner, 3 Oct
     2026: *"in the game, the unit tab on the top right should be on the bottom left below
     the abilities tab"*, then *"ok move it there, then that would expand history and the
-    players tab a bit"*. Unit is directly below your Abilities, before Resign/Offer Draw.
+    players tab a bit"*. Unit is directly below your Abilities, before match actions.
     History tops the right column and Game/Lobby share the rest at their existing 1:3
     ratio. On the owner's 1284x649 window History grew from 107px to 152px, and the room
     box from 317px to 452px. The owner added the same day: *"try to fill the rest of
     the verticle spaces with the unit tab on the left"*. Unit fills the remaining left
     column height (`flex: 1 0 auto`), its effects box taking the extra space, with
-    Resign/Offer Draw at the bottom. It keeps its own content height as the floor;
+    match actions at the bottom. It keeps its own content height as the floor;
     neither ability panel may crush its stats or effects. The column's gaps are a
     little tighter, and its sizing was measured with a three-ring unit and its ability
     detail open, not only the empty Unit panel. The earlier arrangement of 29 Sep put
@@ -1819,13 +1992,13 @@ Decided so far:
   - **The tabs** (`.tabbed`): the board on the left, as big as the window allows, and one
     column: Undo and End Turn, Show Hex and Replay, the Unit panel while the window is at least
     `UNIT_PIN_MIN_HEIGHT` (805) tall, a strip of tabs - Yours, Unit (only when it is not
-    pinned), Theirs, History, Room - the panel the tab picks, and Resign and Offer Draw. The
+    pinned), Theirs, History, Room - the panel the tab picks, and match actions. The
     panels stay in the markup where the columns put them: the columns become `display:
     contents` and `main`'s grid places what was in them, so there is one copy of every panel.
     The unit has formulas of its own there, one pinned and one not, measured the same way
     (the comment above them). Every tab fits without scrolling down to about 505px tall.
     Below `TABBED_SHORT_HEIGHT` (520) - a phone on its side - the column gives up two rows
-    (`.short`): the turn's four controls share one, and Resign and Offer Draw go to the Room
+    (`.short`): the turn's four controls share one, and match actions go to the Room
     tab. A phone on its side scrolls its tallest tabs (103-143px from 932x370 to 740x330, by
     what its browser leaves), never out of reach what the Room tab's cue leads to (below). A
     panel under a tab strip scrolls rather than clipping: the Unit panel's body and the Room
@@ -1867,7 +2040,7 @@ Decided so far:
     own offer, waiting, says so on its button ("Draw Offered").
   - **The board over the tabs** (`.stacked`, a portrait window - the owner, 28 Sep 2026): the
     board the whole width on top, the tabs under it, and Undo, End Turn, Show Hex and Replay in
-    a bar along the bottom, 44px tall, where a thumb is. Resign and Offer Draw are on the Room
+    a bar along the bottom, 44px tall, where a thumb is. match actions are on the Room
     tab. From `STACKED_TWO_COLUMN_WIDTH` (600) wide - a tablet upright - the Unit panel stands
     in a column beside the tabs; narrower it is a tab. The board is as tall as the width gives
     it (`--board-h`), unless the panels under it would be left less than they need at the
@@ -2413,8 +2586,9 @@ Decided so far:
   *"onsualt should be 10 poitns to activate, not 7"*, and *"make the 3 cp selections
   with a dash, like Onsault - 10"*.
   Convert, Strengthen and Recharge each have cooldown 1. Recharge subtracts 1
-  from both abilities in the selected pair, with positive cooldowns floored at 1;
-  already-ready abilities remain 0. The owner: *"make convert, streghten, and
+  from both abilities in the selected pair, with positive cooldowns floored at 1.
+  As revised on 12 Oct, each member already at 0/1 CD grants its full configured
+  regular-point value without changing CD; the floor still prevents a same-turn recast. The owner: *"make convert, streghten, and
   recharge all 1cd. recharge -1 cd instead of -3, but cannot reduce less to than 1
   like before"*.
 - **Vet 1 detail row, 8 Oct 2026.** The Unit panel shows the configured first-star
@@ -2549,9 +2723,12 @@ UUID, no access token, no socket. It runs entirely in the browser.
   naming the next player starts a clock and sounds a turn for a finished match in the moment
   before `game_over` lands. `game_started` and `game_state_update` carry the same fields the
   server sends, field for field.
-- **There is no AI.** You drive both sides; the placeholder seat (`Opponent`) has no agency.
+- **Myself drives both sides.** CPU supplies the other seat through the read-only
+  analysis endpoint; AI is an unavailable setup choice.
 
-**The server has no solo path at all.** `create_single_player_game`, `singlePlayer` in
+**The server stores no solo rooms.** CPU analysis rebuilds an in-memory copy from
+accepted intents and never creates a room or player connection. The old server
+solo-room path remains removed: `create_single_player_game`, `singlePlayer` in
 `game_options`, the `controls_both` branches, the readiness skip and the `hostColor` pick were
 deleted once the client stopped reaching them: unreachable, untested code that still carried
 live bugs. Every game the server runs has two real players, which is why nobody chooses their
@@ -2628,11 +2805,12 @@ normal healing follows the rules in the Unit stats section above.
 
 ## Points and unit points (UP)
 
-**Owner revision, 4 Oct 2026:** unit worth is UP, separate from ability points. Each side
-starts with **10 UP** (`rules.upAtStart`). Battlefield attack/counter kills pay the dead
-unit's value in UP; ability kills and panel kills pay nothing. Walking home refunds that
-unit's value in UP. A base-to-reserve crossing spends UP equal to its value, confirmed
-by the owner: *"Yes, spend UP for the crossing"*. A pawn is worth 8 UP.
+**Owner revisions, 4–11 Oct 2026:** unit worth is UP, separate from ability points. Each side
+starts with **10 UP** (`economy.upAtStart`). Battlefield attack/counter kills pay the dead
+unit's value in UP; ability kills and panel kills pay nothing. Walking home uses the
+rank-specific departure refund and clears earned rank afterward. A base-to-reserve
+crossing spends UP equal to its configured price, confirmed by the owner:
+*"Yes, spend UP for the crossing"*. The shipped pawn value is 12 UP.
 
 **At each numbered phase's halftime start (turns 9, 20, 31), both sides add their own
 current phase VP to UP**, confirmed: *"Add it to UP"*. The snapshot uses the displayed
@@ -3227,11 +3405,12 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
 - **A unit type's own ability** is `units.<id>.ability`, a catalogue id used from the
   Unit panel. Shipped unit actives unlock at Vet 3 and spend UP; their cooldown is per
   uid and follows the current controller's turns. Cast arms an adjacent enemy target;
-  the other seven activate on their caster. Unit passives are separate `units.<id>.passive`
+  selected Sacrifice arms another friendly battlefield/reserve unit; the other
+  six activate on their caster. Unit passives are separate `units.<id>.passive`
   references and unlock at Vet 2. Older saved unit Dash entries remain compatible.
 - **Four carried pool slots**, picked in pairs, plus the chosen path's passive, utility,
-  skill and ultimate. **The second pair unlocks five full turns after that side first
-  picks a pair: Turn 1 → Turn 6**, confirmed by the owner on 7 Oct. Each side has its
+  skill and ultimate. **The second pair unlocks three full turns after that side first
+  picks a pair: Turn 1 → Turn 4**, revised by the owner on 11 Oct. Each side has its
   own clock, persisted through solo reload; the panel shows the wait and refuses
   early picks. This does not delay buying paths. `abilities.pairPickDelay` configures
   the wait; omitted means no delay for older catalogues. A match restart resets the
@@ -3264,8 +3443,8 @@ unit type's own ability** (`units.<id>.ability`), for whichever unit is shown.
     lower `phase_x + (mine + theirs) + abs(mine - theirs)`. So a hard-fought phase pays both
     sides more, and the side behind is paid up to level: Phase 2 banking white 12, black 4 -
     the bank's figures, already doubled - pays white 20 + 16 = 36 and black 44.
-    - **Nothing else awards CP.** Starting CP is 5; Bastion (10), Onslaught (25)
-      and Sprint (50) require later income after the 8 Oct price revision. Choosing is open on a setup turn, so an award can be spent
+    - **Nothing else awards CP.** Starting CP is 5, so Bastion (5) can be bought
+      immediately; Onslaught (50) and Sprint (100) require later income. Choosing is open on a setup turn, so an award can be spent
       in the postmatch it arrives on. It used to be a flat `rules.cpPerPhase` (100) as each of
       the five phases began.
     - **Only the phase's own scores are compared**, not the match's: the side behind in that
@@ -3482,7 +3661,10 @@ formats them, so stat calculations never parse presentation text.
   - **Derived once per config** (`catalogueCache`). The template reads `abilityEffects`,
     `abilityCosts` and `abilityPaths` on every change-detection pass, and rebuilding seventeen
     entries each time would allocate through the whole match — the same reason `standings` and
-    `homecomingsSpent` carry caches. `mov`/`atk`/`def` are filled in at 0 where the config omits
+    `homecomingsSpent` carry caches. `phasesOf` and `overtimeStages` also derive
+    schedules once per resolved match-section identity (WeakMap). Replace config
+    sections rather than mutate them in place; replaced sections rebuild schedules
+    without retaining discarded configs. `mov`/`atk`/`def` are filled in at 0 where the config omits
     them: every reader wants a number, and `undefined` reached a stat line as `NaN`.
   - **Both engines validate present catalogue entries and references**. Pool/path references
     must resolve, and an entry's `id` must match its own key. The client retains stricter
@@ -3509,9 +3691,9 @@ formats them, so stat calculations never parse presentation text.
   | Queen | 32 | 6 | 1:16 2:12 | 8 | — | 48 |
   | King | 60 | 6 | 1:14 | 8 | — | 64 |
 
-  On 4 Oct the owner raised pawn ATK/DEF to 8 and bishop HEL to 8. On 8 Oct, unit values became pawn/archer/shieldman 12 UP (after the initial 16-UP proposal), rook 24, knight 30, bishop 32, queen 48 and king 64. Vet 3 costs became Sacrifice 24, archer Bog 8, Taunt 6, unit Cleave/Charge 16, Cast 32, Nullify 12 and Call 20 UP; Call’s later 9 Oct revision is 4 UP/CD 1, and Sacrifice’s fixed UP gain is now 0; its selected-recipient revision is implemented above. Existing value-based deployment, refunds, kill payouts and attrition use the revised unit values.
+  On 4 Oct the owner raised pawn ATK/DEF to 8 and bishop HEL to 8. On 8 Oct, unit values became pawn/archer/shieldman 12 UP (after the initial 16-UP proposal), rook 24, knight 30, bishop 32, queen 48 and king 64. Vet 3 costs became Sacrifice 24, archer Bog 8, Taunt 6, unit Cleave/Charge 16, Cast 32, Nullify 12 and Call 20 UP; Call’s later 9 Oct revision is 4 UP/CD 1; Queen's 11 Oct Leech replaces Nullify at 8 UP/CD 3, and Sacrifice’s fixed UP gain is now 0; its selected-recipient revision is implemented above. Existing value-based deployment, refunds, kill payouts and attrition use the revised unit values.
 
-  Archer normal attacks start at ring 3; Vet 2 Quick allows remaining movement after a strike. Pawn’s Vet 2 Checkmate uses enemy first-three-row positioning and its walk’s starting hex. Shieldman has no initiating ATK at any rank; Vet 2 Counter uses ATK 4 at range 1 before DEF. Positive ATK pool buffs cannot create its missing attack, while retained debuffs affect its counter when unlocked. Bishop heals 8/6 at rings 1/2 and gains +2 HP plus healing 4/2 at rings 3/4 on the battlefield at Vet 1. All unit veterancy bonuses/passives/abilities are inactive in panels; the earned stars and specified HP transition survive crossings and reloads.
+  Archer normal attacks start at ring 3; Vet 2 Withdraw allows partitioning its own movement, attack and unit ability in any order. Pawn’s Vet 2 Checkmate uses enemy first-three-row positioning and its walk’s starting hex. Shieldman has no initiating ATK at any rank; Vet 2 Counter uses ATK 4 at range 1 before DEF. Positive ATK pool buffs cannot create its missing attack, while retained debuffs affect its counter when unlocked. Bishop heals 8/6 at rings 1/2 and gains +2 HP plus healing 4/2 at rings 3/4 on the battlefield at Vet 1. All unit veterancy bonuses/passives/abilities are inactive in panels; the earned stars and specified HP transition survive crossings and reloads.
 
 - **The roster is the six chess-piece names plus two the owner asked for**: an
   **Archer** (`A`, bow-and-arrow glyph - value 12, hp 6, atk 4/3/2/1 at rings 3-6, def 4, move 6) and a
@@ -3600,7 +3782,7 @@ Physical panel gateways and mover caps remain physical after control changes col
 Snapshots carry `abilitiesSupported` and `abilityState`; opponent controls stay read-only.
 Direct pass broadcasts carry the advanced ability state too, like atomic commits and
 fallback timeout passes, so expiry and cooldowns refresh without a later reload.
-Completed combat records actual `countered` and `secondStrike` flags independently of
+Completed combat records actual `countered`, `secondStrike` and `secondCounter` flags independently of
 damage in both engines, including panel blows. Fortress can reduce either beat to zero
 without cancelling the action. Charge still requires a real counter and a surviving attacker.
 Strengthen sends its recipient UID and records a `promotion` alongside the resulting unit;
@@ -3615,6 +3797,11 @@ It was initially verified on isolated databases. On 8 Oct, after the owner resum
 the pending local migration/startup step (6.111), it was applied to the local database
 with a verified SQLite backup. All 107 existing matches and prior columns are preserved;
 the updated backend and frontend now run on 8000/4200.
+At the owner's explicit request (6.138, 11 Oct UTC), migration
+**0015_gamestate_replay_journal** was applied locally with a verified SQLite backup
+and backend restart. All prior match data is preserved; old journals remain null
+and new matches record canonical inputs. CODEX_HANDOFF.md records the backup,
+current process IDs and live checks.
 Server validation now checks present catalogue numbers, structure, ids and path/pool
 references as well as configured effects. Missing optional/retired fields retain their
 compatibility defaults; both validators share the refusal fixture.

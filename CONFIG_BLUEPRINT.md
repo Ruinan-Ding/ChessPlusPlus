@@ -3,14 +3,21 @@
 **Current shipped match rules, with implemented JSON paths.** Tick a rule after owner review.
 **Bold** values are the draft defaults. Nothing reads this document; both engines read
 `shared/default-config.json`. Units and abilities remain outside this checklist.
-See [CONFIGURATION.md](CONFIGURATION.md) for editing and compatibility. Last updated 10 Oct 2026.
+See [CONFIGURATION.md](CONFIGURATION.md) for editing and compatibility. Last updated 11 Oct 2026.
 
 ## New since the last review
+
+- Walking-home refunds now have rank-specific factors, and withdrawals reset earned Vet to 0.
 
 - Match rules now resolve from each saved configuration, including variable phase and overtime counts.
 - Format **2.0** is separate from balance identity; preset **default / null (draft)** remains unreleased.
 - Frozen format-1 data preserves older imports and started games; no owner database migration or restart.
-- Current defaults retain the 9 Oct mechanics and income. Names below are real supported paths.
+- Match income and ending defaults retain the 9 Oct values; the 11 Oct gate revision is below.
+- Initialization/postmatch open all three gates; independent category action slots
+  include unit casts, and switching actors only closes that same category.
+- Unit action order is now explicit: move → unit UP ability → attack, with optional steps
+  and the configurable per-unit movement-order exception. Pool/CP casts remain separate.
+- Names below are real supported paths; unit/ability balance edits stay outside this checklist.
 
 ## Board and schedule
 
@@ -46,17 +53,25 @@ Paths: `match.overtime.stages[].turns`, `kingToll`, `moves.{battlefield,reserve,
 
 | Stage | Attack | Heal | Pool | Unit | CP utility / skill / ultimate | Wrap / reserve entry / home | Each category moves |
 |---|---|---|---|---|---|---|---|
-| opening | **no** | **no** | **no** | **no** | **yes/no/no** | **no/yes/yes** | **1/2/3** |
+| opening | **no** | **no** | **no** | **no** | **yes/no/no** | **yes/yes/yes** | **1/2/3** |
 | firstHalf | **yes** | **yes** | **yes** | **yes** | **yes/yes/yes** | **yes/no/no** | **1** |
 | secondHalf | **yes** | **yes** | **yes** | **yes** | **yes/yes/yes** | **no/yes/no** | **1** |
-| postmatch | **no** | **yes** | **yes** | **yes** | **yes/yes/yes** | **no/yes/yes** | **3** |
+| postmatch | **no** | **yes** | **yes** | **yes** | **yes/yes/yes** | **yes/yes/yes** | **3** |
 | overtime | **yes** | **yes** | **yes** | **yes** | **yes/yes/yes** | **no/no/yes** | **per overtime stage** |
 
 Each flag is under `stageRules.<stage>`, with independent category allowances
 `moves.{battlefield,reserve,base}`. Opening arrays need one entry per opening turn.
 - [ ] `stageRules.movedUnitsLockedInOpening`: **true**.
-- [ ] Switching units ends the earlier walk in that category until Undo. **Fixed action rule**.
+- [ ] Moving, attacking, healing or casting a unit ability claims its source category’s
+  action slot. Switching actors ends the earlier actor in that category until Undo;
+  other categories, inspection and pool/CP casts do not close it. **Fixed action rule**.
 - [ ] Entry stops in the configured home rows and ends its action. **Fixed action rule**.
+- [ ] A unit acts in move → unit UP ability → attack order; each step is optional.
+  Its ability ends movement and attacking blocks later unit abilities. A configured
+  passive may reopen remaining movement after attacking; its `freeOrder` permission
+  allows partitioning/reordering that unit’s movement, cast and attack. Pool/CP casts remain separate. **Fixed action rule**.
+- [ ] Undo restores uncommitted moves, casts and pool/path choices chronologically,
+  including payments and first-pair unlock timing. **Fixed staging rule**.
 
 ## Economy, scoring, combat, panels and veterancy
 
@@ -70,6 +85,8 @@ Each flag is under `stageRules.<stage>`, with independent category allowances
 - [ ] `economy.walkHomeRefund.fee`: **1**. Fixed UP deduction from the withdrawal refund.
 - [ ] `economy.walkHomeRefund.missingHpMultiplier`: **1**. UP deducted per currently missing HP at withdrawal.
 - [ ] `economy.walkHomeRefund.minimum`: **1**. Minimum UP refund for a withdrawal.
+- [ ] `economy.walkHomeRefund.veterancy`: **Vet 1: value ×1, fee 0, wounds ×1; Vet 2: value ×1, fee 0, wounds ×0; Vet 3: value ×3, fee 0, wounds ×0**. Optional per-rank overrides; omitted retains base factors.
+- [ ] `economy.walkHomeRefund.resetVeterancy`: **true**. Reset earned rank after pricing every withdrawal; omitted retains stars.
 - [ ] `economy.wrapPriceMultiplier`: **1**. UP multiplier on unit value when crossing from red base to green reserve.
 - [ ] `economy.halftimeUpMultiplier`: **1**. Multiplier on each side's current phase VP snapshot added to UP at halftime, once.
 - [ ] `economy.overtimeVpToPointsMultiplier`: **1**. Multiplier on final cumulative numbered-phase VP converted to regular points on each side's first overtime turn.

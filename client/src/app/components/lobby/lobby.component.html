@@ -16,10 +16,13 @@
           [attr.title]="renameLocked ? 'Answer or withdraw your invite first' : null">Change</button>
         <button class="setup-btn" (click)="openSetup()">Configure Setup</button>
         <button class="single-player-btn" (click)="startSinglePlayer()">Single Player</button>
+        <button class="setup-btn" type="button" (click)="replayFileInput.click()" [disabled]="replayImportBusy">Load Replay</button>
+        <input #replayFileInput type="file" hidden accept=".json,application/json" (change)="loadReplay($event)">
       </div>
     </div>
   </div>
 
+  <p *ngIf="replayImportError" role="alert">{{ replayImportError }}</p>
   <div class="change-username" *ngIf="showChangeUsername">
     <p class="name-taken" *ngIf="nameWasTaken">
       "{{ username }}" is yours for now - the name you asked for was taken. Pick another, or

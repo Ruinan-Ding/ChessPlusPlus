@@ -5,13 +5,50 @@ from pathlib import Path
 from unittest.mock import patch
 from django.test import SimpleTestCase
 from game.engine.config_loader import DEFAULT_CONFIG, build_initial_board, load_config
-from game.engine.game_rules import PREVIOUS_CONFIG, section_of
+from game.engine.game_rules import PREVIOUS_CONFIG, section_of, migrate_config
 from game.engine import phases, scoring, economy, panels, game_logic
 from game.engine.unit_stats import active_vet, ranked_unit, unit_stats
 
 FIXTURES = Path(__file__).resolve().parents[3] / 'client/src/app/services'
 
 class GameRulesTests(SimpleTestCase):
+    def test_sacrifice_action_count_preserves_frozen_optional_configuration(self):
+        for count in (0, 1, 2):
+            raw = copy.deepcopy(DEFAULT_CONFIG)
+            raw['abilities']['catalogue']['unit-sacrifice']['battlefieldActions'] = count
+            self.assertEqual(load_config(load_config(raw)), raw)
+        saved = copy.deepcopy(DEFAULT_CONFIG)
+        del saved['abilities']['catalogue']['unit-sacrifice']['battlefieldActions']
+        self.assertEqual(load_config(saved), saved)
+        self.assertEqual(load_config(load_config(saved)), saved)
+
+    def test_action_order_and_second_charge_counter_flags_preserve_frozen_configs(self):
+        for ability, field in [('quick', 'freeOrder'), ('knight-charge', 'secondCounter')]:
+            for value in (False, True, None):
+                with self.subTest(ability=ability, value=value):
+                    raw = copy.deepcopy(DEFAULT_CONFIG)
+                    if value is None:
+                        raw['abilities']['catalogue'][ability].pop(field)
+                    else:
+                        raw['abilities']['catalogue'][ability][field] = value
+                    self.assertEqual(load_config(load_config(raw)), raw)
+
+    def test_recharge_refunds_and_swapped_utilities_preserve_frozen_configs(self):
+        for multiplier in (None, 0, 1, 2):
+            raw = copy.deepcopy(DEFAULT_CONFIG)
+            entry = raw['abilities']['catalogue']['recharge']
+            if multiplier is None:
+                entry.pop('refundMultiplier')
+            else:
+                entry['refundMultiplier'] = multiplier
+            self.assertEqual(load_config(load_config(raw)), raw)
+        saved = copy.deepcopy(DEFAULT_CONFIG)
+        saved['abilities']['paths'][0]['utility'] = 'convert'
+        saved['abilities']['paths'][1]['utility'] = 'strengthen'
+        saved['abilities']['catalogue']['convert'].pop('up')
+        saved['abilities']['catalogue']['convert']['points'] = 50
+        self.assertEqual(load_config(load_config(saved)), saved)
+
     def test_default_is_current_format_with_an_unreleased_balance(self):
         config = load_config()
         self.assertEqual(config['version'], '2.0')
@@ -113,6 +150,45 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual(scoring.capture_zone_values(11,two),{})
         self.assertEqual(scoring.capture_zone_values(11,one),{'0,0':9})
 
+    def test_veteran_refunds_price_original_hp_then_reset_rank_and_kit(self):
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        for rank, healthy, wounded in [(0, 11, 6), (1, 12, 7), (2, 12, 12), (3, 36, 36)]:
+            unit = {'unit_id': 'pawn', 'color': 'white', 'uid': 'p', 'hp': 12, 'max_hp': 12, 'vet': rank}
+            self.assertEqual(economy.withdrawal_refund(config, unit), healthy)
+            unit['hp'] = 7
+            self.assertEqual(economy.withdrawal_refund(config, unit), wounded)
+        unit = {'unit_id': 'pawn', 'color': 'white', 'uid': 'p', 'hp': 5, 'max_hp': 14,
+                'vet': 3, 'veterancyHpActive': True}
+        config['veterancy']['kitZones'].append('base')
+        home = economy.withdrawn_unit(config, unit, 'bl')
+        self.assertEqual((home['vet'], home['hp'], home['max_hp'], home['veterancyHpActive']), (0, 5, 12, False))
+        self.assertEqual(unit['vet'], 3)
+        config['economy']['walkHomeRefund']['veterancy'][2]['valueMultiplier'] = 4
+        self.assertEqual(economy.withdrawal_refund(config, unit), 48)
+
+    def test_withdrawal_reset_discards_old_promotions_and_earns_only_later_awards(self):
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        history = [{'turn': 9, 'promotion': {'uid': 'p', 'vet': 3}},
+                   {'turn': 28, 'from': '3,8', 'to': '-12,9', 'withdrawn': True,
+                    'veterancyReset': True, 'unit': {'uid': 'p', 'vet': 0}},
+                   {'turn': 50, 'from': '-12,9', 'to': '11,1', 'panelMove': True, 'unit': {'uid': 'p'}}]
+        for ply, at, expected in [(27, '3,8', 3), (28, '-12,9', 0), (49, '-12,9', 0),
+                                   (50, '11,1', 0), (71, '11,1', 1)]:
+            self.assertEqual(panels.unit_veterancy('p', at, history, ply, 11, config=config), expected)
+        history.append({'turn': 51, 'promotion': {'uid': 'p', 'vet': 2}})
+        self.assertEqual(panels.unit_veterancy('p', '11,1', history, 71, 11, config=config), 3)
+
+    def test_old_refund_config_migration_retains_its_tiers_and_stars(self):
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        del config['economy']['walkHomeRefund']['veterancy']
+        del config['economy']['walkHomeRefund']['resetVeterancy']
+        saved = migrate_config(config)
+        self.assertEqual(saved, config)
+        self.assertEqual(migrate_config(saved), saved)
+        unit = {'unit_id': 'pawn', 'color': 'white', 'hp': 5, 'max_hp': 14, 'vet': 3}
+        self.assertEqual(economy.withdrawal_refund(saved, unit), 2)
+        self.assertEqual(economy.withdrawn_unit(saved, unit, 'bl')['vet'], 3)
+
     def test_configured_refund_fees_damage_and_price_multiplier(self):
         config=copy.deepcopy(DEFAULT_CONFIG)
         config['economy']['walkHomeRefund']={'valueMultiplier':2,'fee':3,'missingHpMultiplier':2,'minimum':2}
@@ -141,7 +217,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual(ranked_unit(unit,config,1)['hp'],14)
         self.assertEqual(active_vet({**unit,'panel':None},config),-1)
         unranked={**unit,'panel':None,'hp':12};unranked.pop('max_hp')
-        self.assertEqual(economy.withdrawal_refund(config,unranked),11)
+        self.assertEqual(economy.withdrawal_refund(config,unranked),12)
         config['veterancy']['postmatchAwards']=False
         config['veterancy']['firstPhaseStartAward']=False
         self.assertEqual(panels.unit_veterancy('p','0,0',[],71,11,config=config),1)
@@ -257,6 +333,8 @@ class ConfiguredMatchLiveTests(TransactionTestCase):
     async def test_wounded_withdrawal_retains_activation_in_an_enabled_base(self):
         config=copy.deepcopy(DEFAULT_CONFIG)
         config['veterancy'].update(startingRank=1,kitZones=['battlefield','base'])
+        config['economy']['walkHomeRefund'].pop('veterancy')
+        config['economy']['walkHomeRefund']['resetVeterancy']=False
         config['panels']['baseHealPerTurn']=0
         config['setup']={'white':{'0,11':'king','-11,11':'pawn'},'black':{'0,-11':'king'}}
         game,white,black,snapshot=await self._start_custom_review_match(config)

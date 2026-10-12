@@ -1,12 +1,37 @@
 import { sectionOf } from './game-rules';
-import { combatExchange, carries, tauntAllows } from './unit-combat';
+import { combatStatuses, combatExchange, carries, tauntAllows } from './unit-combat';
 import { controlsAt, controlledUnit } from './unit-control';
-import { PREVIOUS_GAME_CONFIG as config } from './config.service';
+import { PREVIOUS_GAME_CONFIG as config, DEFAULT_GAME_CONFIG as CURRENT_GAME_CONFIG } from './config.service';
 import { stackEffect } from './ability-rules';
 
 const piece = (unit_id: string, color = 'white', hp = 20): any => ({ unit_id, color, uid: unit_id + color, hp, vet: 3, max_hp: hp });
 const bonuses = { atk: 0, def: 0, targetAtk: 0, targetDef: 0 };
 describe('unit combat effects', () => {
+  it('Leech heals actual attack damage before the counter, with overkill and max-HP caps', () => {
+    const config = structuredClone(CURRENT_GAME_CONFIG);
+    config.units.rook.attack = 20;
+    const queen = { unit_id: 'queen', color: 'white', uid: 'q', vet: 3, hp: 4, max_hp: 34 };
+    const rook = { unit_id: 'rook', color: 'black', uid: 'r', vet: 0, hp: 24, max_hp: 24 };
+    const bonuses = { atk: 4, def: 2, targetAtk: 0, targetDef: 0, leech: true };
+    const result = combatExchange(queen, rook, 1, config, bonuses);
+    expect([result.damage, result.counterDamage, result.leechHeal, result.attackerHp]).toEqual([10, 10, 10, 4]);
+    const overkill = combatExchange(queen, { ...rook, hp: 1 }, 1, config, bonuses);
+    expect([overkill.leechHeal, overkill.attackerHp, overkill.countered]).toEqual([1, 5, false]);
+    const capped = combatExchange({ ...queen, hp: 33 }, rook, 1, config, bonuses);
+    expect([capped.leechHeal, capped.attackerHp]).toEqual([1, 24]);
+    expect(combatExchange(queen, rook, 1, config, { ...bonuses, targetImmune: true }).leechHeal).toBe(0);
+  });
+
+  it('Leech on a defender does not heal from its counterattack', () => {
+    const config = structuredClone(CURRENT_GAME_CONFIG);
+    const pawn = { unit_id: 'pawn', color: 'white', uid: 'p', vet: 0, hp: 12, max_hp: 12 };
+    const queen = { unit_id: 'queen', color: 'black', uid: 'q', vet: 3, hp: 10, max_hp: 34 };
+    const buff = stackEffect(undefined, { name: 'Leech', effect: 'leech', mov: 0, atk: 4, def: 2 }, 'black');
+    const result = combatExchange(pawn, queen, 1, config, { atk: 0, def: 0, targetAtk: 4, targetDef: 2,
+      ...combatStatuses(undefined, buff) });
+    expect(result.countered).toBeTrue(); expect(result.targetHp).toBe(9); expect(result.leechHeal).toBe(0);
+  });
+
   it('caps ATK and DEF before damage, fixed stats and HP before an exchange', () => {
     const custom: any = { units: { attacker: { attack: 95, attackRange: 1, defense: 0 },
       defender: { attack: 0, defense: 95, attackRange: 1 } }, rules: { minStrikeDamage: 1 } };
@@ -17,6 +42,28 @@ describe('unit combat effects', () => {
     expect(combatExchange(attacker, defender, 1, custom, { ...bonuses, atkSet: 150, targetDefSet: 0 }))
       .toEqual(jasmine.objectContaining({ damage: 99, attackerHp: 99, targetHp: 0 }));
     expect(attacker.hp).toBe(200); expect(defender.hp).toBe(200);
+  });
+
+  it('resolves two charged units as attack, counter, attack, counter with no further chain', () => {
+    const config = structuredClone(CURRENT_GAME_CONFIG);
+    const attacker = piece('knight'), defender = piece('knight', 'black');
+    const buff = stackEffect(undefined, { ...config.abilities.catalogue['knight-charge'], mov: 0, atk: 0, def: 0 }, 'black');
+    const modifiers = { ...bonuses, charge: true, ...combatStatuses(undefined, buff) };
+    for (const [hp, targetHp, end, targetEnd, second, counter] of [
+      [20, 20, 4, 4, true, true], [8, 20, 0, 12, false, false],
+      [20, 12, 12, 0, true, false], [10, 20, 0, 4, true, true],
+    ]) {
+      const result = combatExchange({ ...attacker, hp }, { ...defender, hp: targetHp }, 1, config, modifiers);
+      expect([result.attackerHp, result.targetHp, result.secondStrike, result.secondCounter]).toEqual([end, targetEnd, second, counter]);
+    }
+    const immune = combatExchange(attacker, defender, 1, config, { ...modifiers, immune: true, targetImmune: true });
+    expect([immune.damage, immune.counterDamage, immune.secondDamage, immune.secondCounterDamage]).toEqual([0, 0, 0, 0]);
+    expect(immune.secondCounter).toBeTrue();
+    expect(combatExchange(attacker, defender, 1, config, modifiers, false).secondCounter).toBeFalse();
+    expect(combatExchange(attacker, defender, 1, config, { ...modifiers, nullify: true }).secondCounter).toBeFalse();
+    delete buff.effects![0].secondCounter;
+    const legacy = combatExchange(attacker, defender, 1, config, { ...bonuses, charge: true, ...combatStatuses(undefined, buff) });
+    expect([legacy.attackerHp, legacy.secondCounter]).toEqual([12, false]);
   });
 
   it('charges only after an actual counter while alive, with no second counter', () => {

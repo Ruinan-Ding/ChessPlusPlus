@@ -1938,22 +1938,17 @@ class PhaseScheduleTestCase(TestCase):
         self.assertEqual(phases.stage_at(7), 'Phase 1')
         self.assertTrue(phases.is_wrap_open(7))
 
-    def test_the_wrap_is_open_before_each_halftime(self):
-        """
-        The played first half of a numbered phase and nothing else: turns 4-8,
-        15-19 and 26-30. Not the opening, not a postmatch, and not overtime -
-        `before_halftime` alone used to say yes to the opening and overtime.
-        """
+    def test_the_wrap_is_open_in_initialization_postmatch_and_before_halftime(self):
+        """New defaults open all gates on setup turns, retaining first-half wraps."""
         open_turns = [t for t in range(1, 40) if phases.is_wrap_open(2 * t - 1)]
         self.assertEqual(
             open_turns,
-            list(range(4, 9)) + list(range(15, 20)) + list(range(26, 31)))
+            list(range(1, 9)) + list(range(14, 20)) + list(range(25, 31)) + [36])
 
     def test_the_reserve_and_the_base_doorways_keep_their_own_windows(self):
         """
-        Three arrows, three schedules. Crossings run on the setup turns and
-        each phase's second half; walks home run on the setup turns and all of
-        overtime; the wrap runs on the first halves. No turn opens all three.
+        All gates open during Initialization/postmatch. Other stage windows retain
+        their distinct first-half, second-half and overtime permissions.
         """
         entry = [t for t in range(1, 40) if phases.is_entry_open(2 * t - 1)]
         self.assertEqual(entry, [1, 2, 3] + list(range(9, 15))
@@ -1963,9 +1958,9 @@ class PhaseScheduleTestCase(TestCase):
         self.assertEqual(home, [1, 2, 3, 14, 25, 36] + list(range(37, 40)))
         for turn in range(1, 40):
             ply = 2 * turn - 1
-            self.assertFalse(
-                phases.is_wrap_open(ply) and phases.is_entry_open(ply),
-                f'turn {turn} opens both the wrap and the way in')
+            for half in (ply, ply + 1):
+                self.assertEqual(phases.is_wrap_open(half) and phases.is_entry_open(half),
+                                 turn in (1, 2, 3, 14, 25, 36))
 
     def test_the_stages_have_the_names_the_header_counts_down_to(self):
         named = {t: phases.stage_at(2 * t - 1)
@@ -2473,8 +2468,8 @@ class PointsTestCase(TestCase):
     def test_withdrawal_refunds_use_current_wounds_floor_at_one_and_keep_owner_attribution(self):
         config = self._cfg()
         unit = {'unit_id': 'pawn', 'color': 'white', 'uid': 'p', 'hp': 9, 'max_hp': 14, 'vet': 1}
-        self.assertEqual(economy.withdrawal_refund(config, {**unit, 'hp': 14}), 11)
-        self.assertEqual(economy.withdrawal_refund(config, unit), 6)
+        self.assertEqual(economy.withdrawal_refund(config, {**unit, 'hp': 14}), 12)
+        self.assertEqual(economy.withdrawal_refund(config, unit), 7)
         self.assertEqual(economy.withdrawal_refund(config, {'unit_id': 'shieldman', 'hp': 2, 'max_hp': 30}), 1)
         config['units']['rich'] = {'value': 250, 'hp': 99}
         self.assertEqual(economy.withdrawal_refund(config, {'unit_id': 'rich', 'hp': 95, 'max_hp': 99}), 245)
@@ -2483,7 +2478,7 @@ class PointsTestCase(TestCase):
         self.assertEqual(economy.withdrawal_refund(old, {'unit_id': 'pawn', 'hp': 7}), 10)
         history = [{'withdrawn': True, 'color': 'white', 'refundColor': 'black', 'unit_id': 'pawn', 'unit': unit},
                    {'panelEffect': True, 'unit': {**unit, 'hp': 14}, 'defenderHp': 14}]
-        self.assertEqual([economy.unit_points_of(color, history, config) for color in ('white', 'black')], [10, 16])
+        self.assertEqual([economy.unit_points_of(color, history, config) for color in ('white', 'black')], [10, 17])
         self.assertEqual(economy.unit_points_of('white', [{'color': 'black', 'unit_id': 'pawn', 'attacker_eliminated': True}], config), 22)
 
     def test_a_point_for_every_turn_begun(self):

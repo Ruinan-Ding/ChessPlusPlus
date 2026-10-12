@@ -100,23 +100,14 @@ export function lockedPanelUnits(history: Move[] | undefined, ply: number, confi
  * spend it on units it was never about.
  */
 export function panelMoversAt(
-  history: Move[] | undefined, ply: number, color: string, panel?: string, orientation = 'edge-up',
+  history: Move[] | undefined, ply: number, color: string, panel?: string, orientation = 'edge-up', config?: any,
 ): { base: Set<string>; reserve: Set<string> } {
   const movers = { base: new Set<string>(), reserve: new Set<string>() };
   for (const move of history ?? []) {
-    if (!move || move.turn !== ply) continue;
-    if (move.controlSource && move.sourcePanel && move.color === color) {
-      movers[BASE_PANELS.has(move.sourcePanel) ? 'base' : 'reserve'].add(move.controlSource);
-    }
-    const unit = move.unit ?? {};
-    if (!unit.uid || unit.color !== color) continue;
-    const origin = (move.entered ? panelOfHex(move.from, orientation) : move.panel)
-      || (color === 'white' ? (move.entered ? 'br' : 'bl') : (move.entered ? 'tl' : 'tr'));
-    if (panel && origin !== panel) continue;
-    if (move.entered) movers.reserve.add(unit.uid);
-    else if (move.panelMove) {
-      movers[BASE_PANELS.has(move.panel) ? 'base' : 'reserve'].add(unit.uid);
-    }
+    if (!move || move.turn !== ply || (move.color ?? move.unitCast?.color ?? move.unit?.color) !== color) continue;
+    const actor = unitActionActor(move, config ?? { board: { orientation, radius: 11 } });
+    if (!actor || actor.category === 'battlefield' || (panel && actor.panel !== panel)) continue;
+    movers[actor.category].add(actor.uid);
   }
   return movers;
 }
@@ -127,13 +118,56 @@ export function panelMoverAllowed(
   config?: any,
 ): boolean {
   const base = BASE_PANELS.has(panel ?? '');
-  const movers = panelMoversAt(history, ply, color, undefined, config?.board?.orientation)[base ? 'base' : 'reserve'];
-  const last = (history ?? []).filter(move => move?.turn === ply && move.unit?.color === color
-    && (move.entered || move.panelMove) && BASE_PANELS.has(move.entered ? '' : move.panel) === base).at(-1);
-  if (movers.has(uid) && last?.unit?.uid !== uid) return false;
+  const movers = panelMoversAt(history, ply, color, undefined, config?.board?.orientation, config)[base ? 'base' : 'reserve'];
+  if (finishedUnitUids(history ?? [], ply, color, config, base ? 'base' : 'reserve').has(uid)) return false;
   const extra = new Set(Object.values(controlsAt(history ?? [], ply))
     .filter(unit => unit.color === color && unit.controlTurn === ply).map(unit => unit.uid));
   return movers.has(uid) || extra.has(uid) || [...movers].filter(id => !extra.has(id)).length < movesPerTurn(ply, base ? 'base' : 'reserve', config);
+}
+
+/** The category an initiating action began in; target effects and pool/CP casts are not actors. */
+export function unitActionActor(move: Move, config?: any): { uid: string; category: 'battlefield' | 'base' | 'reserve'; panel?: string } | null {
+  const cast = move.unitCast;
+  if (!cast && !move.controlSource && (!(move.from || move.panelMove || move.entered) || move.panelEffect || move.abilityDeath || move.abilityCast || move.control)) return null;
+  const uid = cast?.uid ?? move.controlSource ?? move.uid ?? move.unit?.uid ?? move.from;
+  if (!uid) return null;
+  let panel = move.sourcePanel;
+  if (cast) {
+    const key = normalizeKey(cast.at), at = key?.split(',').map(Number);
+    if (!at) return null;
+    panel = isInsideBoard(at[0], at[1], config?.board?.radius ?? 11) ? undefined : panelOfHex(key!, config?.board?.orientation);
+  } else if (move.entered) panel = panelOfHex(move.from, config?.board?.orientation) || (move.unit?.color === 'black' ? 'tl' : 'br');
+  else if (move.panelMove) panel = move.panel;
+  return { uid, category: move.entered ? 'reserve' : panel || move.panelMove ? BASE_PANELS.has(panel ?? '') ? 'base' : 'reserve' : 'battlefield', panel };
+}
+
+/** Independent category actors: another category never closes this category's current unit. */
+export function finishedUnitUids(history: Move[], ply: number, color: string, config?: any, category?: string): Set<string> {
+  const actors = new Map<string, Set<string>>(), latest = new Map<string, string>();
+  for (const move of history) {
+    if (move.turn !== ply || (move.color ?? move.unitCast?.color ?? move.unit?.color) !== color) continue;
+    const actor = unitActionActor(move, config);
+    if (!actor) continue;
+    if (!actors.has(actor.category)) actors.set(actor.category, new Set());
+    actors.get(actor.category)!.add(actor.uid); latest.set(actor.category, actor.uid);
+  }
+  return new Set([...actors].flatMap(([kind, uids]) => category && category !== kind ? [] : [...uids].filter(uid => uid !== latest.get(kind))));
+}
+
+/** Distinct actors, excluding nominated bonus actions, in one source category. */
+export function unitActionUids(history: Move[] | undefined, ply: number, color: string, category: string, config?: any): Set<string> {
+  const extra = new Set(extraActionUids(history ?? [], ply, color)), out = new Set<string>();
+  for (const move of history ?? []) {
+    if (move.turn !== ply || (move.color ?? move.unitCast?.color ?? move.unit?.color) !== color) continue;
+    const actor = unitActionActor(move, config);
+    if (actor?.category === category && !extra.has(actor.uid)) out.add(actor.uid);
+  }
+  return out;
+}
+
+/** General battlefield slots granted this ply, independent of nominated Cast actors. */
+export function battlefieldActionBonus(history: Move[], ply: number, color: string): number {
+  return history.reduce((sum, move) => sum + (move.turn === ply && move.color === color ? move.battlefieldActions ?? 0 : 0), 0);
 }
 
 /** Cast and Sacrifice grant one action to their chosen unit, only on the casting ply. */
@@ -145,19 +179,12 @@ export function extraActionUids(history: Move[], ply: number, color: string): st
 }
 
 /** Distinct battlefield actors this ply, including walks home. */
-export function boardMoveUids(history: Move[] | undefined, ply: number, color: string): Set<string> {
-  const out = new Set<string>();
-  for (const [i, move] of (history ?? []).entries()) {
-    if (!move || move.turn !== ply || (move.color ?? move.unit?.color) !== color) continue;
-    if (move.panelMove || move.entered) continue;
-    if (['panelEffect', 'unitCast', 'abilityCast', 'abilityChoice', 'abilityDeath', 'control', 'extraUnit', 'extraAction', 'continuedAction'].some(key => move[key])) continue;
-    out.add(move.uid || move.unit?.uid || move.from || `legacy:${i}`);
-  }
-  return out;
+export function boardMoveUids(history: Move[] | undefined, ply: number, color: string, config?: any): Set<string> {
+  return unitActionUids(history, ply, color, 'battlefield', config);
 }
 
-export function boardMovesAt(history: Move[] | undefined, ply: number, color: string): number {
-  return boardMoveUids(history, ply, color).size;
+export function boardMovesAt(history: Move[] | undefined, ply: number, color: string, config?: any): number {
+  return boardMoveUids(history, ply, color, config).size;
 }
 
 /**
@@ -182,7 +209,7 @@ export function boardMoveLandings(
   const out = new Set<string>();
   for (const move of history ?? []) {
     if (!move || move.turn !== ply || move.color !== color) continue;
-    if (move.panelMove || move.entered || move.panelEffect || ['unitCast', 'abilityCast', 'abilityChoice', 'abilityDeath', 'control', 'extraUnit', 'extraAction', 'continuedAction'].some(key => (move as any)[key])) continue;
+    if (move.panelMove || move.entered || move.panelEffect || ['unitCast', 'abilityCast', 'abilityChoice', 'abilityDeath', 'control', 'extraUnit', 'extraAction', 'continuedAction', 'battlefieldActions'].some(key => (move as any)[key])) continue;
     // A walk home lands off the board, so it leaves nothing to move again.
     if (move.withdrawn) continue;
     if (move.to) out.add(move.to);
@@ -217,7 +244,8 @@ export function homecomingsAt(
  * Mirrors panels.unit_veterancy. Everyone starts at zero; both sides gain
  * together at Phase 1's start and each postmatch's start, capped at three.
  * Only battlefield/reserve occupancy at that boundary counts. A veteran
- * keeps its stars when it walks home, but earns none while in the base.
+ * loses its stars at a recorded withdrawal reset and earns none in the base.
+ * Older withdrawals without a reset retain their stars.
  * Strengthen promotions are recorded separately as the explicit CP exception.
  * Ordinary walks, damage and kills cannot change rank. Deriving from the
  * record also brings existing saved games up to date without a migration.
@@ -235,14 +263,16 @@ export function unitVeterancy(
       .map(index => phaseStartTurn(index, config) + phasesOf(config)[index].turns)]
     .map(turn => (turn - 1) * PLIES_PER_TURN + 1);
   let where = normalizeKey(crossings[0]?.from ?? at);
-  const promotions = (history ?? []).filter(move => move?.promotion?.uid === uid && Number.isInteger(move.turn)
-    && Number.isInteger(move.promotion.vet)).sort((a, b) => a.turn - b.turn);
+  const promotions = (history ?? []).filter(move => Number.isInteger(move?.turn)
+    && (move.promotion?.uid === uid && Number.isInteger(move.promotion.vet)
+      || move.veterancyReset && move.withdrawn && move.unit?.uid === uid)).sort((a, b) => a.turn - b.turn);
   let promoted = 0;
   let next = 0, vet = settings.startingRank;
   for (const boundary of boundaries) {
     if (boundary > ply) break;
     while (promoted < promotions.length && promotions[promoted].turn < boundary) {
-      vet = Math.min(3, Math.max(vet, promotions[promoted++].promotion.vet));
+      const event = promotions[promoted++];
+      vet = event.veterancyReset ? 0 : Math.min(3, Math.max(vet, event.promotion.vet));
     }
     // A deployment recorded in the new stage happens AFTER its award.
     while (next < crossings.length && crossings[next].turn < boundary) {
@@ -256,7 +286,8 @@ export function unitVeterancy(
     }
   }
   while (promoted < promotions.length && promotions[promoted].turn <= ply) {
-    vet = Math.min(3, Math.max(vet, promotions[promoted++].promotion.vet));
+    const event = promotions[promoted++];
+    vet = event.veterancyReset ? 0 : Math.min(3, Math.max(vet, event.promotion.vet));
   }
   return vet;
 }

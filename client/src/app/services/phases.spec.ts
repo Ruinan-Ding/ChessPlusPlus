@@ -3,8 +3,9 @@ import {
   isPostmatch, isSetupTurn, isWrapOpen, MILESTONES, noAttackMessage,
   OVERTIME_FIRST_PLY, OVERTIME_FIRST_TURN, OVERTIME_LAST_TURN, OVERTIME_STAGES,
   overtimeTollAt, overtimeTollOver, PHASES, phaseAt, phaseIndexAt,
-  stageAt, turnHeading, turnOf, turnPointsBy,
+  stageAt, turnHeading, turnOf, turnPointsBy, phasesOf, overtimeStages,
 } from './phases';
+import { DEFAULT_GAME_CONFIG } from './config.service';
 
 /**
  * A full turn is white's hand-over and black's. The engine counts one per
@@ -23,6 +24,15 @@ const turnsWhere = (open: (ply: number) => boolean) =>
  * pinning: change a phase's length and every countdown after it moves.
  */
 describe('the match schedule', () => {
+  it('reuses derived schedules and rebuilds them for a new configuration', () => {
+    const config = structuredClone(DEFAULT_GAME_CONFIG);
+    const phases = phasesOf(config), overtime = overtimeStages(config);
+    expect(phasesOf(config)).toBe(phases); expect(overtimeStages(config)).toBe(overtime);
+    const changed = structuredClone(config); changed.match.opening.turns = 1;
+    expect(phasesOf(changed)).not.toBe(phases); expect(phasesOf(changed)[0].turns).toBe(1);
+    expect(phases[0].turns).toBe(3);
+  });
+
   it('runs three turns of setup, then three phases that each close with one', () => {
     expect(PHASES.map(p => p.name)).toEqual([
       'Initialization', 'Phase 1', 'Phase 2', 'Phase 3', 'Overtime',
@@ -169,18 +179,14 @@ describe('the match schedule', () => {
  * all of overtime.
  */
 describe('the three windows', () => {
-  it('opens the wrap only on a numbered phase\'s played first half', () => {
+  it('opens the wrap during Initialization, postmatch and numbered first halves', () => {
     expect(turnsWhere(isWrapOpen)).toEqual([
-      4, 5, 6, 7, 8, 15, 16, 17, 18, 19, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 14, 15, 16, 17, 18, 19, 25, 26, 27, 28, 29, 30, 36,
     ]);
   });
 
-  it('shuts the wrap through the opening, the postmatches and overtime', () => {
-    // `beforeHalftime` alone used to answer this, and it said yes for every
-    // phase with no break to fall either side of - which quietly included the
-    // opening and the whole of overtime.
-    expect([1, 2, 3].some(t => isWrapOpen(ply(t)))).toBeFalse();
-    expect([14, 25, 36].some(t => isWrapOpen(ply(t)))).toBeFalse();
+  it('opens the wrap on setup turns and keeps overtime wraps shut', () => {
+    expect([1, 2, 3, 14, 25, 36].every(t => isWrapOpen(ply(t)))).toBeTrue();
     expect([37, 40, 90].some(t => isWrapOpen(ply(t)))).toBeFalse();
   });
 
@@ -199,11 +205,13 @@ describe('the three windows', () => {
     expect(turnsWhere(isHomecomingOpen)).toEqual([1, 2, 3, 14, 25, 36, 37, 38, 39]);
   });
 
-  it('never opens the wrap and the way in on the same turn', () => {
-    // A side spends a phase's first half sending units out around the outside
-    // and its second half bringing them back in.
+  it('opens all three gates together only on Initialization and postmatch turns', () => {
     for (let turn = 1; turn <= 40; turn++) {
-      expect(isWrapOpen(ply(turn)) && isEntryOpen(ply(turn))).toBeFalse();
+      const setup = [1, 2, 3, 14, 25, 36].includes(turn);
+      for (const color of ['white', 'black'] as const) {
+        expect(isWrapOpen(ply(turn, color)) && isEntryOpen(ply(turn, color))).toBe(setup);
+        if (setup) expect(isHomecomingOpen(ply(turn, color))).toBeTrue();
+      }
     }
   });
 

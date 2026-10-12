@@ -140,14 +140,17 @@ def resolve_combat(
         outcome = exchange(attacker, defender, hex_distance(from_coord, to_coord), config, ability_state,
                            source_key=coord_key(*from_coord), target_key=coord_key(*to_coord))
         board.deal_damage(*to_coord, outcome['damage'] + outcome['second_damage'])
-        board.deal_damage(*from_coord, outcome['counter_damage'])
+        if outcome['attacker_hp'] > 0:
+            board.set_cell(*from_coord, {**attacker, 'hp': outcome['attacker_hp']})
+        else:
+            board.remove(*from_coord)
         return {
             'moved': False, 'attacked': True, 'damage_dealt': outcome['damage'] + outcome['second_damage'],
             'defender_eliminated': outcome['target_hp'] <= 0,
             'captured_unit': defender if outcome['target_hp'] <= 0 else None,
             'defender_hp': outcome['target_hp'] if outcome['target_hp'] > 0 else None,
-            'counter_damage': outcome['counter_damage'], 'attacker_eliminated': outcome['attacker_hp'] <= 0,
-            'attacker_hp': outcome['attacker_hp'], 'countered': outcome['countered'],
+            'counter_damage': outcome['counter_damage'] + outcome['second_counter_damage'], 'second_counter': outcome['second_counter'], 'second_counter_damage': outcome['second_counter_damage'], 'attacker_eliminated': outcome['attacker_hp'] <= 0,
+            'attacker_hp': outcome['attacker_hp'], 'countered': outcome['countered'], 'leech_heal': outcome['leech_heal'],
             'second_damage': outcome['second_damage'], 'second_strike': outcome['second_strike'], 'attacker_before': attacker_before, 'defender_before': defender_before,
         }
 
@@ -294,6 +297,12 @@ def resolve_panel_attack(
 
     walked = (tq, tr) != (fq, fr)
     if walked:
+        if ability_state is not None and ability_state.get('usedUnits', {}).get(uid) == turn:
+            from .ability_rules import passive
+            trait = passive(attacker, config)
+            progress = ability_state.get('unitProgress', {}).get(uid, {})
+            if not (trait.get('effect') == 'rapid-movement' and (trait.get('freeOrder') or progress.get('attacked'))):
+                return {'error': 'Movement ends after using a unit ability'}
         spent = (ability_state or {}).get('unitProgress', {}).get(attacker.get('uid'), {}).get('spent', 0)
         legal = get_legal_moves(board, (fq, fr), config, color, -spent, ability_state=ability_state)
         if (tq, tr) not in legal:
@@ -388,11 +397,17 @@ def resolve_panel_attack(
         record['defender_eliminated'] = True
         record['captured'] = defender['unit_id']
     if outcome:
-        record['counter_damage'] = outcome['counter_damage']
+        record['counter_damage'] = outcome['counter_damage'] + outcome['second_counter_damage']
+        record['secondCounter'] = outcome['second_counter']
+        record['second_counter_damage'] = outcome['second_counter_damage']
         record['countered'] = outcome['countered']
         record['attacker_eliminated'] = outcome['attacker_hp'] <= 0
         record['secondStrike'] = outcome['second_strike']
-        board.deal_damage(tq, tr, outcome['counter_damage'])
+        if outcome['attacker_hp'] > 0:
+            board.set_cell(tq, tr, {**attacker, 'hp': outcome['attacker_hp']})
+        else:
+            board.remove(tq, tr)
+        record['leech_heal'] = outcome['leech_heal']
     elif section_of(config, 'combat')['counterattacks'] and left > 0 and answers and can_attack(defender_def, distance):
         counter = strike_damage(defender_def, attacker_def, distance, config)
         record['counter_damage'] = counter
@@ -441,26 +456,55 @@ def opening_moved_hexes(history: List[Dict[str, Any]], color: str, config=None) 
     return out
 
 
-def board_move_uids(history: List[Dict[str, Any]], ply: int, color: str) -> set:
-    """Distinct battlefield actors this ply, including walks home."""
+def unit_action_actor(move, config=None):
+    """Classify the source actor, never a buff/death target or pool/CP caster."""
+    from .board import parse_coord
+    from .panels import on_battlefield, panel_of, axial_to_pixel, is_base
+    cast = move.get('unitCast')
+    if not cast and not move.get('controlSource') and (not (move.get('from') or move.get('panelMove') or move.get('entered')) or any(move.get(k) for k in ('panelEffect', 'abilityDeath', 'abilityCast', 'control'))):
+        return None
+    uid = (cast or {}).get('uid') or move.get('controlSource') or move.get('uid') or (move.get('unit') or {}).get('uid') or move.get('from')
+    if not uid: return None
+    board = (config or {}).get('board', {})
+    panel = move.get('sourcePanel')
+    if cast:
+        try:
+            at = parse_coord(cast.get('at'))
+            panel = None if on_battlefield(*at, board.get('radius', 11)) else panel_of(*axial_to_pixel(*at, board.get('orientation', 'edge-up')))
+        except ValueError: return None
+    elif move.get('entered'):
+        try: panel = panel_of(*axial_to_pixel(*parse_coord(move.get('from')), board.get('orientation', 'edge-up')))
+        except ValueError: panel = 'tl' if (move.get('unit') or {}).get('color') == 'black' else 'br'
+    elif move.get('panelMove'): panel = move.get('panel')
+    return {'uid': uid, 'category': 'reserve' if move.get('entered') else ('base' if is_base(panel) else 'reserve') if panel or move.get('panelMove') else 'battlefield', 'panel': panel}
+
+
+def finished_unit_uids(history, ply, color, config=None, category=None):
+    """Earlier actors close within their source category; other categories are independent."""
+    actors, latest = {}, {}
+    for move in history:
+        if move.get('turn') != ply or (move.get('color') or (move.get('unitCast') or {}).get('color') or (move.get('unit') or {}).get('color')) != color: continue
+        actor = unit_action_actor(move, config)
+        if not actor: continue
+        kind, uid = actor['category'], actor['uid']
+        actors.setdefault(kind, set()).add(uid); latest[kind] = uid
+    return {uid for kind, uids in actors.items() if category is None or category == kind for uid in uids if uid != latest[kind]}
+
+
+def board_move_uids(history: List[Dict[str, Any]], ply: int, color: str, config=None) -> set:
+    """Distinct battlefield actors, including unit casts, excluding nominated extra actions."""
+    extra = {m['extraUnit']['uid'] for m in history or [] if m.get('turn') == ply and (m.get('extraUnit') or {}).get('color') == color}
+    extra.update(m['control']['uid'] for m in history or [] if (m.get('control') or {}).get('controlTurn') == ply and m['control'].get('color') == color)
     out = set()
-    for i, move in enumerate(history or []):
-        if not isinstance(move, dict) or move.get('turn') != ply:
-            continue
-        unit = move.get('unit') or {}
-        if (move.get('color') or unit.get('color')) != color:
-            continue
-        if move.get('panelMove') or move.get('entered'):
-            continue
-        if any(move.get(k) for k in ('panelEffect', 'unitCast', 'abilityCast', 'abilityChoice', 'abilityDeath', 'control', 'extraUnit', 'extraAction', 'continuedAction')):
-            continue
-        out.add(move.get('uid') or unit.get('uid') or move.get('from') or f'legacy:{i}')
+    for move in history or []:
+        if move.get('turn') != ply or (move.get('color') or (move.get('unitCast') or {}).get('color') or (move.get('unit') or {}).get('color')) != color: continue
+        actor = unit_action_actor(move, config)
+        if actor and actor['category'] == 'battlefield' and actor['uid'] not in extra: out.add(actor['uid'])
     return out
 
 
-def board_moves_at(history: List[Dict[str, Any]], ply: int, color: str) -> int:
-    """Battlefield actions, including walks home; panel movement is separate."""
-    return len(board_move_uids(history, ply, color))
+def board_moves_at(history: List[Dict[str, Any]], ply: int, color: str, config=None) -> int:
+    return len(board_move_uids(history, ply, color, config))
 
 
 def board_move_landings(

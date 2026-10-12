@@ -1131,7 +1131,7 @@ def homecomings_at(
 
 def panel_movers(
     history: Iterable[Dict[str, Any]], ply: int, color: str, panel: Optional[str] = None,
-    orientation: str = 'edge-up',
+    orientation: str = 'edge-up', config=None,
 ) -> Dict[str, set]:
     """
     The units of *color* walked this ply, split by the panel each walk began in.
@@ -1143,29 +1143,12 @@ def panel_movers(
     one. One set each, because the cap is a per-panel allowance, and counting one
     panel's walks against the other spends it on units it was never about.
     """
+    from .game_logic import unit_action_actor
     movers: Dict[str, set] = {'base': set(), 'reserve': set()}
     for move in history or []:
-        if not isinstance(move, dict) or move.get('turn') != ply:
-            continue
-        if move.get('controlSource') and move.get('sourcePanel') and move.get('color') == color:
-            movers['base' if is_base(move['sourcePanel']) else 'reserve'].add(move['controlSource'])
-        unit = move.get('unit') or {}
-        uid = unit.get('uid')
-        if not uid or unit.get('color') != color:
-            continue
-        if panel is not None:
-            physical = move.get('panel')
-            if not physical:
-                try:
-                    physical = panel_of(*axial_to_pixel(*parse_key(move.get('from', '')), orientation))
-                except ValueError:
-                    physical = 'br' if color == 'white' else 'tl'
-            if physical != panel:
-                continue
-        if move.get('entered'):
-            movers['reserve'].add(uid)
-        elif move.get('panelMove'):
-            movers['base' if is_base(move.get('panel')) else 'reserve'].add(uid)
+        if not isinstance(move, dict) or move.get('turn') != ply or (move.get('color') or (move.get('unitCast') or {}).get('color') or (move.get('unit') or {}).get('color')) != color: continue
+        actor = unit_action_actor(move, config or {'board': {'orientation': orientation, 'radius': 11}})
+        if actor and actor['category'] != 'battlefield' and (panel is None or actor['panel'] == panel): movers[actor['category']].add(actor['uid'])
     return movers
 
 
@@ -1211,23 +1194,20 @@ def panel_allowance(
     if not uid or uid in locked_units(moves, ply, config=config):
         return None
     kind = 'base' if is_base(unit.get('panel')) else 'reserve'
-    movers = panel_movers(moves, ply, unit.get('color'), orientation=config.get('board', {}).get('orientation', 'edge-up'))[kind]
+    movers = panel_movers(moves, ply, unit.get('color'), orientation=config.get('board', {}).get('orientation', 'edge-up'), config=config)[kind]
     cap = moves_per_turn(ply, kind, config=config)
-    last = next((move for move in reversed(moves) if move.get('turn') == ply
-                 and (move.get('unit') or {}).get('color') == unit.get('color')
-                 and (move.get('entered') or move.get('panelMove'))
-                 and is_base('' if move.get('entered') else move.get('panel')) == (kind == 'base')), None)
-    if uid in movers and (last or {}).get('unit', {}).get('uid') != uid:
-        return None
+    from .game_logic import finished_unit_uids
+    if uid in finished_unit_uids(moves, ply, unit.get('color'), config, kind): return None
     extra = {key for key, turn in (ability_state or {}).get('extraUnits', {}).items() if turn == ply}
     if uid not in movers and uid not in extra and len(movers - extra) >= cap:
         return None
     stat = unit_stats(unit['unit_id'], config, active_vet(unit, config)).get('move', 0)
     if ability_state is not None:
-        from .ability_rules import bonus, carries
+        from .ability_rules import bonus, carries, passive
         if (carries(ability_state.get('buffs', {}).get(uid), 'action-lock')
                 or ability_state.get('unitProgress', {}).get(uid, {}).get('ended')
-                or ability_state.get('endedUnits', {}).get(uid) == ply):
+                or ability_state.get('endedUnits', {}).get(uid) == ply
+                or (ability_state.get('usedUnits', {}).get(uid) == ply and not (passive(unit, config).get('effect') == 'rapid-movement' and passive(unit, config).get('freeOrder')))):
             return None
         stat += bonus(unit, config, ability_state, 'mov', is_base(unit.get('panel')))
     try:
@@ -1343,8 +1323,8 @@ def unit_veterancy(uid, at, history, ply, radius, orientation='edge-up', config=
     """Phase awards plus recorded promotions. Mirrors history-rules.unitVeterancy.
 
     Identity follows panel crossings, so only where this unit stood at each
-    award matters, including after a reload. Veterans keep their stars in a
-    base but gain none there. Combat and ordinary walks award nothing.
+    award matters, including after a reload. Recorded withdrawals reset stars;
+    older histories retain them. Base occupancy awards nothing.
     """
     crossings = []
     for move in history or []:
@@ -1366,8 +1346,10 @@ def unit_veterancy(uid, at, history, ply, radius, orientation='edge-up', config=
         for index in scoring_phases(config) if settings['postmatchAwards'] and phases_of(config)[index]['postmatch']]
     where = crossings[0]['from'] if crossings else at
     promotions = sorted((move for move in history or [] if isinstance(move, dict)
-        and isinstance(move.get('promotion'), dict) and move['promotion'].get('uid') == uid
-        and type(move.get('turn')) is int and type(move['promotion'].get('vet')) is int),
+        and type(move.get('turn')) is int and (
+            isinstance(move.get('promotion'), dict) and move['promotion'].get('uid') == uid
+            and type(move['promotion'].get('vet')) is int
+            or move.get('veterancyReset') and move.get('withdrawn') and (move.get('unit') or {}).get('uid') == uid)),
         key=lambda move: move['turn'])
     next_move, promoted, vet = 0, 0, settings['startingRank']
     for turn in boundaries:
@@ -1375,7 +1357,7 @@ def unit_veterancy(uid, at, history, ply, radius, orientation='edge-up', config=
         if boundary > ply:
             break
         while promoted < len(promotions) and promotions[promoted]['turn'] < boundary:
-            vet = min(3, max(vet, promotions[promoted]['promotion']['vet']))
+            vet = 0 if promotions[promoted].get('veterancyReset') else min(3, max(vet, promotions[promoted]['promotion']['vet']))
             promoted += 1
         # A deployment in the new stage happens AFTER that stage's award.
         while next_move < len(crossings) and crossings[next_move]['turn'] < boundary:
@@ -1389,7 +1371,7 @@ def unit_veterancy(uid, at, history, ply, radius, orientation='edge-up', config=
         if zone in settings['awardZones']:
             vet = min(3, vet + settings['award'])
     while promoted < len(promotions) and promotions[promoted]['turn'] <= ply:
-        vet = min(3, max(vet, promotions[promoted]['promotion']['vet']))
+        vet = 0 if promotions[promoted].get('veterancyReset') else min(3, max(vet, promotions[promoted]['promotion']['vet']))
         promoted += 1
     return vet
 

@@ -1,6 +1,8 @@
 import { Component, OnInit, OnDestroy, AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { ConfigService } from '../../services/config.service';
+import { parseReplay, REPLAY_MAX_BYTES } from '../../services/replay-session.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { Subject } from 'rxjs';
 import { takeUntil, filter } from 'rxjs/operators';
@@ -107,7 +109,8 @@ export class LobbyComponent implements OnInit, OnDestroy, AfterViewInit {
     private sharedDataService: SharedDataService,
     private navigationState: NavigationStateService,
     private cdr: ChangeDetectorRef,
-    private authService: AuthService
+    private authService: AuthService,
+    private configService: ConfigService = new ConfigService()
   ) {}
   
   ngOnInit(): void {
@@ -881,6 +884,26 @@ export class LobbyComponent implements OnInit, OnDestroy, AfterViewInit {
       type: 'create_single_player_game',
       username: this.username
     });
+  }
+
+  replayImportError = '';
+  replayImportBusy = false;
+
+  async loadReplay(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement, file = input.files?.[0];
+    input.value = '';
+    if (!file || this.replayImportBusy) return;
+    this.replayImportBusy = true; this.replayImportError = '';
+    try {
+      if (file.size > REPLAY_MAX_BYTES) throw new Error('Replay exceeds 20 MiB.');
+      const replay = parseReplay(await file.text(), this.configService);
+      await this.wsService.replay.open(replay);
+      await this.wsService.openReplay(this.username);
+      this.navigationState.setIntentionalNavigation('game-room');
+      await this.router.navigate(['/game-room', 'local'], { queryParams: { token: 'local' } });
+    } catch (error) {
+      this.replayImportError = error instanceof Error ? error.message : 'Could not load replay.';
+    } finally { this.replayImportBusy = false; this.cdr.markForCheck(); }
   }
 
   openSetup(): void {

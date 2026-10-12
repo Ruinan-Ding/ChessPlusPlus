@@ -1,4 +1,4 @@
-# Handoff: ChessPlusPlus, 10 Oct 2026
+# Handoff: ChessPlusPlus, 12 Oct 2026
 
 Updated by Codex from Claude Code's 2 Oct handoff, for the next agent.
 **AGENTS.md is the source of truth** for how this repo works: architecture, the rules the owner
@@ -13,19 +13,23 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
 - **Repo:** https://github.com/Ruinan-Ding/ChessPlusPlus. It is a hex-grid tactics game: a Django
   Channels server in `server/`, an Angular 19 client in `client/`, and the shared config schema in
   `shared/`.
-- **Current branch:** `feature/configuration`, based on published `fcb263b5` (10 Oct).
-  The format-2 parameterization work and review fixes are published in 6.134 below.
+- **Current branch:** `feature/configuration`, based on published `69d6e36` (10 Oct).
+  The format-2 parameterization work and review fixes are published as `69d6e36`
+  (6.134). Solo Rewind Turn, its review/staged-action follow-up, portable replay/branching
+  and the latest ability/UI/Undo/performance/balance/CPU/action changes (6.135-6.137, 6.139-6.143) are uncommitted.
   The short ATK marker (6.105), CP positioning/pool delay (6.106), authoritative
   multiplayer abilities (6.107), board colours (6.108), manual Replay (6.109) and relocated
   Flip (6.110), review/Replay fixes (6.112-6.115), the unit-stat cap (6.116) and
   economy rebalance (6.117-6.118), Vet 1 detail row (6.119) and CP repricing (6.120) and pool repricing (6.121), movement/stat/passive revisions (6.122), ultimate/pawn repricing (6.123), Drain rename/repricing (6.124), selected pool debuffs (6.125), adjacent Call/no Sacrifice UP reward (6.126) and selected Sacrifice (6.127) and its repricing/backend parity audit (6.128) and authoritative replay clock (6.129) and final backend/UI/documentation audit (6.130) are committed in the dev23 publication checkpoint (6.131); that publication retained main at `73cbd43`. New games use the revised config; old catalogues retain their own rules.
   The owner explicitly authorized multiplayer abilities on 7 Oct, superseding 6.15.
   Dated deferral notes below describe older checkpoints. WRITTEN, not owner-SEEN.
-  **Migration 0014 is applied to the local database** (6.111), following the owner's
-  resume after the pending migration/startup step was reported. All 107 existing
-  matches and prior application columns are preserved. Neither server was running;
-  the updated backend now serves 8000 (PID 7900) and frontend 4200 (PID 23616).
-  Backup: `server/backups/db-before-0014-20261008T171855Z.sqlite3`.
+  **Migration 0015 is applied to the local database** (6.138), following the owner's
+  explicit migration/restart request. All 126 rooms, 107 saved matches and prior
+  application data are preserved; old matches retain null replay journals.
+  Updated backend serves 8000 (PID 93624); frontend 4200 (PID 23616)
+  stayed running. Backup: `server/backups/db-before-0015-20261011T031130Z.sqlite3`.
+  Earlier 0014 migration/backup remains recorded under 6.111. The later 6.139
+  backend gameplay/default changes, including 6.140-6.143, are on disk and await its next normal restart.
   - **Current publication checkpoint (6.134), 10 Oct:** the owner requested
     commit and push of format-2 configurable match rules and all six custom-config
     review fixes (6.132-6.133). The commit is titled "Make match rules configurable
@@ -78,6 +82,227 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
   - Every feature branch through dev21 is merged except dev9. Leave dev9 and
     `copilot/analyze-game-room-code` alone. dev19-dev21 used local `--no-ff` merges.
 - **Verification, with the scopes kept separate:**
+  - **CP utility swap and Recharge payouts (6.143), 12 Oct:** Bastion now carries
+    Strengthen with its existing selected +1 Vet effect and scope; Onslaught
+    carries Convert, granting 50 UP for 25 CP. Utility cooldowns and five uses
+    per phase remain unchanged. Recharge reduces each pair member above 1 CD
+    by 1 (floor 1); each already at 0/1 CD instead pays its full configured base
+    regular-point price and retains CD. Sprint discounts cast prices, not payouts.
+    Used 1-CD abilities remain unavailable, and their descriptions explain this.
+    Optional `refundMultiplier: 1` is validated on Recharge only; absence/zero
+    retains frozen cooldown-only behavior. Old path references and point-granting
+    Convert configurations remain valid. UP rewards record their original amount;
+    solo commits resolve them before funded panel crossings, with no duplicate
+    staging overlay. Initialization reward guards reject malformed metadata.
+    Sparse panel timing reads are guarded for autosave/timeout compatibility.
+    **1,050 client specs, 572 backend tests (568 canonical + four legacy),
+    production build, schema/migration checks and all 490 layout checks pass.**
+    Forty-five native Chrome checks cover both seats' controls, descriptions,
+    Sprint/base prices, Undo, commit/reload and same-turn funded crossings.
+    Nineteen real-socket checks cover private drafts, canonical commits,
+    reconnects, both seats and frozen older Convert behavior. Tactical snapshots
+    supplement the suites' existing full-match tests; this is not a new balance
+    simulation. Evidence: Windows Temp `cpp-utilities-20261012-l8cgno55/RESULTS.md`.
+    Owner listeners (8000 PID 146960; 4200 PID 135600) and all 126 rooms/107
+    states are preserved; private verification services/profiles are cleaned.
+    No migration, publication, release or owner restart. Backend/default changes
+    await its next normal restart. Uncommitted; balance revision remains null.
+    WRITTEN, not owner-SEEN.
+
+  - **Action allowances, gates and opposing Charge (6.142), 11 Oct:** All owner
+    clarifications are resolved. Starting UP stays 10; Initialization rotations
+    pay the existing 1-UP fee. Every unit UP cast claims its source category slot,
+    shared with its movement/attack, before Sacrifice grants +1 general battlefield
+    slot. Base/reserve/battlefield retain independent actors: switching within one
+    category closes the former actor until Undo; inspection and pool/CP casts do
+    not switch actors. A cross-category history-filter bug is fixed and covered.
+    Active Archer Withdraw permits partitioning/reordering its own MOV, one attack
+    and one unit cast, including a nonretroactive post-attack Snare. All three gates
+    open during Initialization/postmatch, preserving prices, MOV, occupancy, home
+    rows and prior-turn locks. Opposing active Charge produces attack/counter/
+    attack/counter, ending after four strikes or an earlier death. Casualties,
+    bounties, forecasts, Undo, replay and replay-clock accounting agree.
+    Optional `battlefieldActions`, `freeOrder` and `secondCounter` fields preserve
+    older frozen behavior when absent; schemas/validators and both engines agree.
+    **1,036 client specs, 567 backend tests (563 canonical + four legacy),
+    production build, schema/migration checks and all 490 layout checks pass.**
+    Thirty-one native Chrome assertions cover both colours' action controls,
+    Charge deaths/R/reload/replay, Archer ordering and general Sacrifice budgets.
+    Fourteen real-socket checks cover canonical commits/private drafts/reconnect,
+    opposing Charge, Archer and paid Initialization rotations on an isolated DB.
+    Three deliberate private-source faults are caught; restored regression checks
+    pass. Evidence: Windows Temp `cpp-actions-20261011-y4agxk8q/RESULTS.md`.
+    Owner 8000/4200 and all 126 rooms/107 saved matches are preserved; private
+    services/profiles are cleaned. No migration, publication, release or owner
+    restart; Python/default changes await the backend's next normal restart.
+    Uncommitted; balance revision remains null. WRITTEN, not owner-SEEN.
+
+  - **CPU mode (6.141), 11 Oct:** Server-assisted solo setup now offers
+    Myself/CPU/unavailable AI beneath Me, with Easy/Normal/Hard (Normal default).
+    The read-only `/ws/cpu/` worker reconstructs accepted intents and uses the
+    authoritative partial/full turn runner. It reads frozen config numbers;
+    no training, external model API, solo DB rooms or balance release.
+    Saves/reload, Q/R staged edits, replay, inspection while thinking, timeout
+    cancellation, rollback and Retry/Lobby/Myself recovery are implemented.
+    Snare no longer applies its enemy MOV penalty to its caster in either
+    engine; Trap removes that positive trigger. Search retains commander
+    escapes and checks winning strikes before ordinary pruning; retained
+    state counts, payloads, histories and configuration sizes are bounded.
+    **1,021 client specs, 558 backend tests (554 canonical + four legacy),
+    production build, schema/migration checks and all 490 layout checks pass.**
+    Eighteen native Chrome assertions and seven real-socket CPU checks pass,
+    including Windows process startup, history reconstruction and cancellation.
+    Eight deliberate faults are caught; restored CPU browser cases pass again.
+    Final fault checks exposed and fixed the legacy solo batch sending a pass
+    after a rejected move. Local sends now report acceptance synchronously;
+    replay/CPU rollback restores already accepted panel steps and recording.
+    Paired-seat commander-coverage pilots beat the legal greedy baseline 2/2
+    for Normal and 2/2 for Hard; these precede the last immediate-win priority
+    guard/state-retention/large-price cleanup, whose tactical tests pass. Earlier pilots
+    lost and exposed pruning defects. This is a small scripted comparison,
+    not a human skill rating. Repeat `server/scripts/benchmark_cpu.py` for
+    wider samples/custom configs. Evidence: Windows Temp `cpp-cpu-8q2ogk3x`
+    (`RESULTS.md`, logs and source hashes). Owner 8000/4200 and the database
+    are preserved; CPU/backend changes await the next normal restart.
+    Work is uncommitted, WRITTEN, not owner-SEEN.
+  - **Sacrifice, veteran refunds and CP passives (6.140), 11 Oct:** New defaults
+    refresh Sacrifice's recipient stats without stacking; every cast still adds
+    one permanent star, fully heals and offers its extra actor. Home refunds waive
+    the fee at Vet 1, waive wounds at Vet 2 and pay 3× full value at Vet 3, then
+    reset rank to zero. Staging/R, commit, reload and later awards preserve that
+    reset and the original refund; base-kit activation uses the reset rank.
+    Optional refund fields preserve earlier snapshots when absent. Path activation
+    prices are 5/50/100 CP. Onslaught gives +2 ATK on initiated strikes only and
+    +2 HEL to healers. Sprint adds +4 base MOV on top of its +1 everywhere and
+    discounts all owned pool/UP/CP casts by 3, minimum 1, with no healing. Prices,
+    forecasts and descriptions match; invalid unused knobs/pool passives are
+    refused. Custom Initialization combat/healing accepts these passive bonuses
+    while still refusing forbidden casts.
+    **1,009 client specs, 543 backend tests (539 canonical + four legacy), the
+    production build, schema/migration checks and all 490 layout checks pass.**
+    New rendered solo flows exercise passive attack/counter/heal, discounts,
+    rank/refund Undo and reload. Thirteen real-socket checks verify both seats'
+    canonical commits, private drafts, nonstacking Sacrifice, three cast currencies,
+    refund/reset/reload and Black's Onslaught healing, on an isolated database.
+    Ten deliberate private-source faults produce three failing client specs
+    (15 assertions) and five backend failures; byte-for-byte restoration passes
+    all 84 selected client specs and six backend regressions. No migration or balance release is needed. Owner listeners
+    8000/4200 and database are preserved; private 8241/4241 services were stopped.
+    WRITTEN, not owner-SEEN; existing match configurations keep their saved rules.
+  - **Ability ordering, choice Undo, descriptions and CP performance (6.139), 11 Oct:**
+    New defaults unlock the second pool pair after three full turns (Turn 1 → 4),
+    rename Archer Quick to Withdraw and replace Queen Nullify with Leech, 8 UP/CD 3.
+    Leech grants +4 ATK/+2 DEF for a full turn and heals actual normal-attack damage
+    immediately before counters, capped at max HP; counters never heal. Unit action
+    order is move → UP ability → attack, with optional steps. Its ability ends
+    movement and an attack blocks later UP abilities. Withdraw alone reopens
+    remaining movement after attacking, including after its prior unit cast.
+    R/Undo restores uncommitted pool/path picks and pair returns chronologically,
+    with currency, cooldowns, first-pick wait and reload/Q metadata intact. Online
+    draft replacement drops undone commands. Unit descriptions occupy a fixed box;
+    long text scrolls internally with actions visible. Inactive panel kits remain
+    readable. Targets, UP labels, HEL feedback and custom-economy tooltips match rules.
+    Browser profiling of successful Drain/Cleave/Trap casts found repeated schedule
+    rebuilding. WeakMap caches by resolved match-section identity remove 283–545 ms
+    of schedule work per measured cast, reducing busy sampled time about 20–31%;
+    measured completion changed 2280→1935, 2106→1872 and 2400→1912 ms. Animation
+    durations and gameplay are unchanged. Replaced configs rebuild their schedules.
+    **999 client specs, 537 backend tests (533 canonical + four legacy), production
+    build, schema/migration checks and all 490 layout checks pass.** Fourteen native
+    Chrome assertions cover actual solo clicks/R, Leech/Undo/commit/reload and long
+    unit/pool description boxes. Seventeen live-socket checks cover both seats,
+    canonical accepted history, three-turn unlock, rejected action orders, Leech and
+    replacing a saved draft after Undo. Six deliberate private-source faults catch
+    22 client and three backend failures; byte-for-byte restoration passes the
+    selected checks. Initial UI tests reproduced five tooltip/readiness mismatches.
+    Legacy config/parity snapshots and draft balance revision remain unchanged.
+    Evidence: Windows Temp `cpp-ui-rules-20261011-8q2b8rgc/RESULTS.md`.
+    Owner services on 8000/4200 and database remain untouched; backend rule/default
+    changes load at its next normal restart. No new migration or publication.
+    Uncommitted; WRITTEN, not owner-SEEN.
+  - **Authorized migration/restart (6.138), 11 Oct UTC:** the owner requested
+    "do the migration and restart". Verified SQLite backup `server/backups/db-before-0015-20261011T031130Z.sqlite3`;
+    applied 0015, preserved all prior data across 17 database tables, including
+    126 rooms, 107 matches and 17 unfinished matches. All old journals are null.
+    Integrity/foreign keys, Django system/migration checks and ORM reads pass.
+    Four read-only live WebSocket checks pass against updated daphne on 8000
+    (PID 93624); frontend 4200 (PID 23616) stayed running.
+    Evidence: Windows Temp `cpp-owner-migrate-0015-mnmqp9el/RESULTS.md`.
+    This rollout supersedes 6.137's pending owner migration/restart. No test
+    matches added, publication or balance release. WRITTEN, not owner-SEEN.
+  - **Portable replay files and branching (6.137), 10 Oct:** finished new solo
+    and online matches export config, display names and canonical input intents.
+    Load Replay opens an isolated offline session with `<`/`>` steps, `<<`/`>>`
+    completed-turn staging, autoplay/pause and an explicit branch warning. Branches
+    disable forward controls, allow both sides/R/End Turn and export unfinished
+    turns. Normal solo disk state remains untouched. Imported actions use the
+    existing room/board staging and local engine; compound errors roll back,
+    show Move corrupted and skip, including oversized computed frames. Config,
+    byte/count/depth limits apply upfront; caches are bounded by count and size.
+    Each import has an atomic IndexedDB header/session and coalesced updates.
+    Backend journals append only with accepted revision-checked writes, covering
+    drafts/timeouts, legacy commits, endings and reconnect snapshots. Shared
+    canonical fields exclude transport/private/computed payloads.
+    **984 client specs, 534 backend tests, production build and migration checks
+    pass.** Private 0014 → 0015 proof preserves every existing match column and
+    marks its recording null. Native playback reproduces a complete 100-ply
+    multiplayer match (109 actions), its board/HP/ranks, phase banks and overtime
+    ending. Browser controls cover import/export, branching, R, reload, corruption,
+    solo-save isolation and phone access. Deliberate missing-filter/rollback faults
+    produce five regression failures; restoring both passes all ten selected checks.
+    All 490 desktop/touch layout checks and 24 native Chrome assertions pass on the final code.
+    Karma's five-second heartbeat intermittently disconnected the existing
+    rendered 100-ply fakeAsync spec (~19 seconds of browser CPU); the standard
+    runner now allows 60 seconds, without changing Jasmine assertion/async limits.
+    Evidence: Windows Temp `cpp-match-replay-20261010-dm6nttcc/RESULTS.md`.
+    **Owner rollout is complete under 6.138:** migration 0015 is applied and
+    the updated backend is running. New matches record; old journals stay null.
+    Balance revision remains null. Uncommitted; no publication.
+    WRITTEN, not owner-SEEN.
+  - **Rewind review and editable staging (6.136), 10 Oct:** fixed all three
+    reported defects. Snapshot loads and ordinary animations no longer create
+    turn-start checkpoints. Resignation/draw requires the result-producing ply's
+    exact checkpoint; Shift+Q preserves staging. The owner clarified that Q
+    reopens the prior side's turn with its completed actions staged, and R
+    undoes them one by one. Earlier committed moves remain intact. Pre-commit
+    resources, choices, cooldowns, effects and chronological battlefield/panel
+    Undo stacks survive repeated rewind, edited commits and reload. Stale saved
+    panel drafts are discarded on advancing snapshots. Panel casualty metadata
+    is retained so Undo can revive a unit killed by a reopened cast.
+    **957 client specs, production build and 32 native Chrome assertions pass**, covering real
+    controls/Q/R, previous-turn preservation, all review defects, resources,
+    panel crossings/entries, casualties, reload, winning attacks and phone use.
+    Build evidence is in `review-build.log`. Original defects
+    were reproduced before fixes; two separate deliberate restoration faults
+    were caught by the regressions and removed. A 100-ply native probe persists
+    all checkpoints (~851 KB plus ~30 KB current UI) and reopens overtime.
+    No new template/style changes; the 6.135 full 490-check layout run remains
+    its separate evidence. Backend/config/schema/models are unchanged; 524
+    backend tests remain prior 6.133 evidence. Balance revision stays null.
+    Evidence: Windows Temp `cpp-rewind-20261010-dgkoyfhx/REVIEW_RESULTS.md`.
+    Uncommitted; no owner-service restart, database write or publication.
+    WRITTEN, not owner-SEEN. This supersedes 6.135's initial restoration behavior.
+  - **Solo Rewind Turn (6.135), 10 Oct:** Offer Draw becomes Rewind Turn (Q)
+    only in solo, and remains visible after a result. Black Turn 2 returns to
+    White Turn 2; repeated rewinds discard current drafts and restore positions,
+    panel HP/occupancy, stars, effects, resources, choices, cooldowns/use budgets,
+    phase bank and history. Restored turns receive a fresh clock. Manual Replay
+    can be interrupted; automatic commit playback locks rewind. Local checkpoints
+    preserve new turns through reload and branching. Old saves have no earlier
+    checkpoints; a missing checkpoint cannot cause a multi-turn jump.
+    New win coverage exposed a prior solo defect: the closing pass ignored a
+    commander killed by a held attack. It now resolves those casualties.
+    **950 client specs, production build and all 490 desktop/touch layout checks
+    pass. 24 native Chrome assertions** cover real controls/Q, Black seating,
+    draft cancellation, timer, chat focus, repeated rewinds, purchases/casts/
+    promotion/crossing payments, reload, winning attacks and phone access.
+    A separate 100-ply native storage probe saves all 100 checkpoints in about
+    702 KB, then reopens terminal overtime after reload. Large custom matches
+    remain subject to localStorage quota; default-sized matches are covered.
+    Backend/config/schema/models are unchanged; 524 backend tests remain the
+    prior 6.133 evidence. Docs updated. Evidence: Windows Temp
+    `cpp-rewind-20261010-dgkoyfhx/RESULTS.md`. No publication, balance release,
+    owner-service restart or database write. WRITTEN, not owner-SEEN.
   - **Custom-config review fixes (6.133), 10 Oct:** resolved all six reported
     regressions. Panel reconstruction preserves resolved HP activation/max HP before
     overlaying wounds, while staged promotion Undo remains reversible. Withdrawals
@@ -436,7 +661,7 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
     fields changed; cooldowns, effects, pool/CP costs and income formulas remain
     unchanged. Value-based base purchases, withdrawals, field combat kill payouts
     and attrition use the new unit values; Sacrifice's fixed gain remains 8 UP.
-    Starting UP remains 10 while the owner considers it. The shipped setup already
+    Starting UP remains 10; the owner confirmed this on 11 Oct (6.142). The shipped setup already
     has 24 battlefield units plus 16 red-base units per side; reserve units start
     empty, so the higher base crossing price does not prevent the initial army
     from playing. Only kings/queens can capture or neutralize the enemy 3x zone,
@@ -1112,13 +1337,13 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
     committing, pushing and merging dev22 into main; publication status is recorded below.
     WRITTEN, not owner-SEEN. Private services/databases only; owner ports 8000/4200 preserved.
 
-- **The local database is at 0014**, applied on 8 Oct (6.111) after the owner resumed
-  the pending migration/startup step. Backup: `server/backups/db-before-0014-20261008T171855Z.sqlite3`.
-  Integrity, foreign keys and every existing application row/column are verified;
-  all 107 saved matches receive an empty ability state. Both local services were
-  stopped when checked and now run on 8000/4200. The prior 0013 migration/backup
-  remains recorded under 6.101. Future database migrations/restarts still require
-  the owner's authorization.
+- **The local database is at 0015**, applied at the owner's explicit request
+  (6.138, 11 Oct UTC). Backup: `server/backups/db-before-0015-20261011T031130Z.sqlite3`.
+  Integrity, foreign keys and every prior application row/column are verified;
+  all 107 saved matches retain null replay journals. Updated backend serves 8000
+  at PID 93624; frontend 4200 at PID 23616 was preserved. Earlier
+  migrations/backups remain under 6.101/6.111. Future database migrations/restarts
+  still require the owner's authorization.
 
 ### Recent revisions
 
@@ -1189,14 +1414,17 @@ zero remains buffable. Negative modifiers stay until expiry and apply on a later
 Older saved rooms keep their catalogues; `legacy-abilities.fixture.json` is test-only.
 New games use the specified pool. The CP paths run in solo and authoritative multiplayer
 (6.107), superseding the earlier solo milestones 6.86 and 6.98:
-Bastion 10 CP, Onslaught 25 CP and Sprint 50 CP after the 8 Oct rebalance. Their utilities replace Reselect;
+Bastion 5 CP, Onslaught 50 CP and Sprint 100 CP after the 11 Oct revision. Their utilities replace Reselect;
 older catalogues without `path.utility` retain its legacy behavior. The owner's 9 Oct
-prices are Convert 25 CP for 50 regular points, Strengthen/Recharge 25, Bastion Drain 50 (6.124),
+prices (with the 12 Oct utility swap) are Bastion Strengthen 25 CP,
+Onslaught Convert 25 CP for 50 UP, Sprint Recharge 25 CP, Bastion Drain 50 (6.124),
 CP Cleave/Trap 50 and all three ultimates 250 CP (6.123). Convert, Strengthen
 and Recharge have cooldown 1 and five uses per initialization, numbered phase or overtime;
 halftime/postmatch share their phase budget, all overtime stages share one budget.
 Utilities can cast during initialization; other casts remain blocked there. Recharge
-subtracts 1 from both positive pair cooldowns with a floor of 1. CP skills have cooldown 1
+subtracts 1 from pair members above 1 CD, floored at 1. Each already at 0/1 CD
+grants its configured full base regular-point value and keeps that cooldown.
+Optional `refundMultiplier` omission preserves older cooldown-only catalogs. CP skills have cooldown 1
 and three uses per match. Finite abilities show remaining uses, including ultimates `(1)`
 then `(0)`; unlimited pool/unit actives show remaining/total cooldown. Cooling CP controls
 remain grey and readable; selection changes close unit details and Use stays pinned to UID.
@@ -1208,7 +1436,7 @@ in solo and authoritative multiplayer (6.107); 6.15 is superseded.
 The main-menu controls also remain on one row at every width (6.87).
 
 The 7 Oct positioning revision (6.106) gives each side an independent first-pair
-clock: `abilities.pairPickDelay: 5` means Turn 1 → Turn 6 for its second pool pair,
+clock, revised on 11 Oct: `abilities.pairPickDelay: 3` means Turn 1 → Turn 4 for its second pool pair,
 persisted in solo UI state and reset at match start. An absent delay preserves older
 catalogues. Drain (formerly Bastion Sap) drains ring 1 and boosts ring 2, with no ring 3. Cleave uses a
 board-wide horizontal line (centre 5 damage, nearest two EACH side 3, farther 1 heal).
@@ -1246,12 +1474,14 @@ second counter. Sacrifice's selected workflow and final +2 MOV/+6 ATK/+6 DEF are
 recorded above (6.127-6.128). Rook Bog stacks without a cap for one full turn,
 including counters, once after each exchange. Queen Persuade grants adjacent
 battlefield allies +1 ATK/DEF/MOV at the owner's turn start until their next turn;
-King Capture uses the whole-zone rule in AGENTS.md. Regenerate heals living
+King Capture uses the whole-zone rule in AGENTS.md. Queen Leech replaces Nullify
+with +4 ATK/+2 DEF for one full turn, 8 UP/CD 3 and actual normal-attack damage
+healing immediately before counters, capped at maximum HP; counters never heal. Regenerate heals living
 battlefield bishops on their owner's end turn, even without acting. Hop crosses
 multiple enemies and open panel gateways. Call affects adjacent battlefield/green
 units, excluding its king, with friendly heal 1/+1 ATK/DEF/MOV and enemy damage
 1/-1 ATK/DEF/MOV for a full turn. Current shieldman Counter
-replaces Shove, archer Quick replaces Counter, and pawn Checkmate replaces Rapid Movement.
+replaces Shove, archer Withdraw (formerly Quick) replaces Counter, and pawn Checkmate replaces Rapid Movement.
 Those earlier kit descriptions apply only to saved/custom catalogues. All unit kits are
 inactive in panels; earned stars remain. Effect rules are implemented; the two naming
 collisions were resolved by the owner in 6.130: archer Snare, rook Bash. Rook
@@ -1427,8 +1657,10 @@ agree. No new config field or online ability implementation was introduced.
   6.107 contains server validation/execution and client staging/snapshot integration.
   Follow `ability_rules.py`, `unit_combat.py` and `test_online_abilities.py` for the
   authoritative pipeline. The historical 6.15/6.17 deferrals are superseded.
-- **A config editing UI.** This is carried over from the 23 Sep note, and nothing since says
-  otherwise. Only custom mode would use it, and the owner was unsure about going that far.
+- **A structured setup editor remains optional.** Configure Setup already offers a
+  validated JSON editor with import/export for the implemented match, unit and ability
+  parameters. Dedicated forms are a possible future UI improvement, not missing
+  functionality required by the current configurable rules.
 
 **The questions in the 23 Sep note:**
 
@@ -1455,8 +1687,11 @@ agree. No new config field or online ability implementation was introduced.
 
 - The missing dev20 record is now PUNCHLIST 6.70, dated as a historical entry with its original
   merge evidence. The owner requested current metafiles, statuses and docs on 4 Oct.
-- README.md describes current play; client/README.md describes the installed client tooling.
-  CONFIG_BLUEPRINT.md remains the match-rule checklist, not a runtime config.
+- README.md describes current play; client/README.md describes the installed client tooling,
+  action order, choice Undo and immutable schedule-cache inputs. CONFIGURATION.md and
+  CONFIG_BLUEPRINT.md include the latest structural ordering/Undo rules; the blueprint
+  remains a match-rule checklist, not runtime config. DEPLOYMENT.md covers migration
+  0015 replay persistence while retaining its untested deployment-plan status.
 - IMPLEMENTATION_KICKOFF.md and CORRECTNESS_REPORT.md are historical records. Keep their
   historical findings and counts; follow AGENTS.md and this handoff for current work.
 - DEPLOYMENT.md is still an untested plan. No deployment, database migration, commit, push or

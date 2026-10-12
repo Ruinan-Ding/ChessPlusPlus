@@ -104,6 +104,52 @@ kits retains the unit's base healing profile. Stars remain capped at 3; effectiv
 stats at 99.
 
 `economy.wrapPriceMultiplier: 0` permits free wraps during open windows;
+`economy.walkHomeRefund.veterancy` contains optional Vet 1–3 overrides for
+`valueMultiplier`, `fee` and `missingHpMultiplier`; the common `minimum` floor
+still applies. New defaults waive the fee at Vet 1, waive wounds at Vet 2 and
+pay 3× full value at Vet 3. `resetVeterancy: true` clears stars after pricing;
+recorded reset events prevent old promotions/awards from returning on reload.
+Existing configs that omit these optional fields retain their previous refunds
+and stars when normalized again.
+
+Onslaught's `offensive-power` passive has configurable `atk` and `hel`; ATK
+applies to initiated strikes, HEL to existing profiles. Sprint's
+`mobility-economy` passive uses `mov`, extra `baseMov`, `costReduction` and
+`minimumCost` for all of its owner's ability casts. Discounts never change path
+purchase or panel crossing prices. Its shipped defaults have no healing effect.
+Repeated `sacrifice` effects refresh the recipient's temporary stats; permanent
+promotion and full healing still occur on each cast. Selected Sacrifice's optional
+`battlefieldActions` grants general battlefield unit-action slots on the casting
+ply: shipped value 1, zero for none. These slots belong to unused units and cannot
+reopen finished actors. Omission retains older nominated-extra-actor behavior;
+normalization never inserts this field into an existing saved catalogue. A cast
+claims its source category action before granting slots; it shares that claim with
+its own movement/attack. Base, reserve and battlefield have independent current
+actors. Switching actors within one category closes the prior unit until Undo.
+
+`quick.freeOrder: true` permits partitioning/reordering one unit’s movement,
+attack and unit cast. Omission/false retains the older post-attack movement rule.
+`knight-charge.secondCounter: true` permits one final counter to an opponent’s
+Charge second strike, subject to ordinary survival/counter eligibility. Omission/
+false retains the single-counter exchange. Neither optional field is inserted
+into frozen started-game configurations.
+
+Bastion's utility reference now names `strengthen`; Onslaught's names `convert`.
+Frozen configurations retain their own path references. A non-unit universal
+cast may grant configured `up` independently of its CP/point cost; Convert grants
+50 UP. The cast records the amount in history, preserving it through Undo,
+commit, replay and reload even if a later configuration changes the reward.
+Solo resolves a prior UP reward before checking a subsequent panel crossing
+price, so the same turn can use Convert to fund that crossing.
+
+Recharge's optional `refundMultiplier` is a nonnegative integer, shipped as 1.
+For each selected pair member already at 0 or 1 CD before the cast, grant that
+multiple of the member's configured base regular-point cost; leave CD unchanged.
+Higher cooldowns only decrease by `recharge`, stopping at 1. Sprint discounts
+cast prices but never these payouts. Omission or zero preserves cooldown-only
+Recharge in saved configurations; normalization does not insert the field.
+One-turn pool descriptions show the payout and explain they cannot be refreshed.
+
 `economy.walkHomeRefund.minimum: 0` permits a zero refund. A zero-priced crossing
 still follows its stage gate, and a zero-refund homecoming still withdraws the unit.
 
@@ -118,8 +164,15 @@ values. A custom literal description remains the author's text.
 The configuration exposes existing rules and effect numbers, rather than an ability
 DSL. Hex movement, friendly pass-through, occupancy, two alternating sides, action
 ordering, a reserve entry ending its action, and non-interleaving movement stay in code.
+Unit actions follow move → unit UP ability → attack; each step is optional. A unit
+ability ends movement, and attacking blocks later unit abilities. A configured
+post-attack movement passive can reopen remaining movement after attacking. With
+`freeOrder: true`, it permits partitioning/reordering movement, attack and unit cast
+within their ordinary per-unit budgets. Pool and CP casts use their separate targeting rules.
 Panel units cannot initiate ordinary attacks or heals. Mutual commander death is a
 draw; timeout commits a saved staged turn; replay timing and visual design are separate.
+R/Undo restores uncommitted pool/path choices and casts together with movement in
+chronological order. Purchases restore their payment and first-pair unlock clock.
 The fixed stat cap 99 and rank cap 3 remain code invariants. A configured permission
 never bypasses action locks, targeting, ownership, costs or cooldowns.
 
@@ -132,6 +185,8 @@ checks are mirrored in `game_rules.py` / `game-rules.ts`. Add shared malformed c
 `legacy-config-v1.json` as their input. `game-rules-parity.json` contains an independently
 calculated two-phase/two-overtime match used by both suites and rendered/socket flows.
 Regenerate scoring fixtures only after intentional mirrored scoring-rule changes.
+Resolved match sections are treated as immutable: replace them when changing a config.
+Phase/overtime schedules are cached by section identity; new sections rebuild them.
 
 Run both full suites, build, schema and migration checks; drive JSON editing plus solo
 and multiplayer starts/reloads. Changes to setup/room template or styles also need

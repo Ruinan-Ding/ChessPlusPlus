@@ -31,6 +31,7 @@ interface UnitEffect {
   hostile?: boolean;
   expiresAt?: number;
   effect?: string;
+  secondCounter?: boolean;
   setAtk?: number;
   setDef?: number;
   setHel?: number;
@@ -60,17 +61,18 @@ function summed(effects: UnitEffect[]): UnitBuff {
 
 export function stackEffect(
   held: UnitBuff | undefined,
-  effect: { name: string; mov: number; atk: number; def: number; hel?: number; turns?: number; effect?: string; setAtk?: number; setDef?: number; setHel?: number },
+  effect: { name: string; mov: number; atk: number; def: number; hel?: number; turns?: number; effect?: string; secondCounter?: boolean; setAtk?: number; setDef?: number; setHel?: number },
   caster: string,
   hostile = false,
   expiresAt?: number,
 ): UnitBuff {
   return summed([
-    ...effectsOf(held),
+    ...effectsOf(held).filter(e => effect.effect !== 'sacrifice' || e.effect !== 'sacrifice'),
     {
       name: effect.name, mov: effect.mov, atk: effect.atk, def: effect.def,
       turns: Math.max(1, effect.turns ?? 1), caster, hostile,
       ...(effect.effect ? { effect: effect.effect } : {}),
+      ...(effect.secondCounter !== undefined ? { secondCounter: effect.secondCounter } : {}),
       ...(effect.setAtk !== undefined ? { setAtk: effect.setAtk } : {}),
       ...(effect.setDef !== undefined ? { setDef: effect.setDef } : {}),
       ...(effect.setHel !== undefined ? { setHel: effect.setHel } : {}),
@@ -116,18 +118,24 @@ export function advanceUnitCooldowns(
 }
 
 export interface PathPassive {
-  mov?: number; atk?: number; def?: number; effect?: string;
+  mov?: number; atk?: number; def?: number; hel?: number; effect?: string;
+  baseMov?: number; costReduction?: number; minimumCost?: number;
   minVet?: number; scope?: 'field-reserve' | 'all';
 }
 
-export function passiveStat(passive: PathPassive | null | undefined, stat: 'mov' | 'atk' | 'def',
-  vet: number, inBase: boolean, defending = false): number {
+export function passiveStat(passive: PathPassive | null | undefined, stat: 'mov' | 'atk' | 'def' | 'hel',
+  vet: number, inBase: boolean, defending = false, counter = false): number {
   if (!passive || vet < (passive.minVet ?? 1) || (inBase && passive.scope === 'field-reserve')) return 0;
   if (stat === 'def' && passive.effect === 'defensive-armor' && !defending) return 0;
-  return passive[stat] ?? 0;
+  if (stat === 'atk' && passive.effect === 'offensive-power' && counter) return 0;
+  return (passive[stat] ?? 0) + (stat === 'mov' && inBase ? passive.baseMov ?? 0 : 0);
 }
 
-export interface EffectView { effects?: Array<{ effect?: string; setAtk?: number; setDef?: number; setHel?: number; atk?: number; hel?: number }> }
+export function discountedAbilityCost(cost: number, passive: PathPassive | null | undefined): number {
+  return passive?.costReduction ? Math.max(passive.minimumCost ?? 1, cost - passive.costReduction) : cost;
+}
+
+export interface EffectView { effects?: Array<{ effect?: string; secondCounter?: boolean; setAtk?: number; setDef?: number; setHel?: number; atk?: number; hel?: number }> }
 
 export function statSetting(buff: EffectView | undefined | null, stat: 'atk' | 'def' | 'hel'): number | undefined {
   const field = stat === 'atk' ? 'setAtk' : stat === 'hel' ? 'setHel' : 'setDef';
@@ -146,7 +154,7 @@ export function stripPositiveEffects(buff: UnitBuff | undefined): UnitBuff | und
   const effects = effectsOf(buff).map(e => ({ ...e,
     mov: Math.min(0, e.mov), atk: Math.min(0, e.atk), def: Math.min(0, e.def),
     ...(e.hel !== undefined ? { hel: Math.min(0, e.hel) } : {}),
-    effect: ['charge', 'cleave', 'nullify', 'taunt', 'invulnerable'].includes(e.effect ?? '') ? undefined : e.effect,
+    effect: ['charge', 'cleave', 'nullify', 'leech', 'taunt', 'invulnerable', 'attack-drain'].includes(e.effect ?? '') ? undefined : e.effect,
   })).filter(e => e.mov < 0 || e.atk < 0 || e.def < 0 || (e.hel ?? 0) < 0 || e.effect
     || e.setAtk !== undefined || e.setDef !== undefined || e.setHel !== undefined);
   return effects.length ? summed(effects) : undefined;

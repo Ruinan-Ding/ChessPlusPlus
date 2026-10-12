@@ -194,6 +194,7 @@ class GameState(models.Model):
     phase_bank = models.JSONField(default=dict, blank=True)
     # Authoritative loadouts, paths, costs, cooldowns and UID-bound effects.
     ability_state = models.JSONField(default=dict, blank=True)
+    replay_journal = models.JSONField(null=True, blank=True)
     # Bumped by every accepted write to the fields above, and what a write is
     # conditional on. turn_number cannot be: a deployment or a held overtime
     # move changes the board without handing the turn over, so two writes in

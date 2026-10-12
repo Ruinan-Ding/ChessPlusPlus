@@ -10,7 +10,7 @@
          and timer beep on this screen makes a sound; this is where turning
          them down belongs. -->
     <div class="title-group">
-      <h1>Game Room</h1>
+      <h1>{{ replayActive ? (replayReadOnly ? 'Replay' : 'Branch') : 'Game Room' }}</h1>
       <app-volume-control></app-volume-control>
     </div>
     <div class="turn-indicator" #banner *ngIf="gameStarted && !state.endReason"
@@ -33,7 +33,7 @@
       <span class="turn-text"><ng-container *ngIf="indicatorMine">YOUR</ng-container><ng-container
         *ngIf="!indicatorMine"><span class="turn-long">OPPONENT'S</span><span
         class="turn-short">THEIR</span></ng-container> TURN<ng-container
-        *ngIf="state.turnTimeLimit > 0"> - {{ formattedTurnTime }}</ng-container><span
+        *ngIf="selectedTurnTimeLimit > 0"> - {{ formattedTurnTime }}</ng-container><span
         class="verdict" *ngIf="stageLabel"> - {{ stageLabel }}</span><!-- How the two scores
         either side are counted, on a touch screen (toggleTip). --><button *ngIf="showScore"
         type="button" class="tip-btn" aria-label="How the scores are counted"
@@ -58,6 +58,9 @@
       <!-- Each loses its first or last word when the header is short of room
            (.header-compact, fitHeader) - the turn banner beside them is the
            thing the row is for. -->
+      <button *ngIf="gameOver && !replayActive" type="button" class="setup-btn"
+              (click)="saveReplay()" [disabled]="!canSaveReplay"
+              [title]="canSaveReplay ? 'Download a portable replay' : 'This older match has no complete recording'">Save Replay</button>
       <button class="leave-btn" [class.reveal-leave]="showRevealWaitingModal" (click)="leaveGameRoom()">Leave<span class="label-long"> Room</span></button>
       <app-connection-status></app-connection-status>
     </div>
@@ -107,7 +110,7 @@
     <div class="match-panels">
 
       <!-- Their abilities stay over yours, with the Unit panel below both. -->
-      <section class="match-panel opponent-panel">
+      <section class="match-panel opponent-panel" [attr.inert]="replayBusy ? '' : null">
         <h3 class="panel-head"><span>{{ abilityHeader('opponent', 'Opponent') }}</span><span
           class="points">{{ abilityPurseLabel('opponent') }}<button type="button" class="tip-btn"
             aria-label="What Points and CP are" [attr.aria-expanded]="tip?.id === 'purse-opponent'"
@@ -130,7 +133,7 @@
                       [style.font-size]="abilityFontSize(i, opponentCooldowns[i], 'opponent')"
                       [class.pair-left]="isPairLeft(i)"
                       [class.arming]="isArmed('opponent', i)"
-                      [title]="abilityHint(i)"
+                      [title]="abilityHint(i, false, 'opponent')"
                       [class.focused]="isAbilityFocused('opponent', i)"
                       [class.recent]="isRecent('opponent', i)"
                       [class.picked-recent]="isRecentPick('opponent', i)"
@@ -157,7 +160,7 @@
                      yet, so all three wear the unpicked look. -->
                 <div class="path-passive-row">
                   <button class="passive-row unpicked" type="button"
-                          [title]="abilityHint(chosen.path.passive)"
+                          [title]="abilityHint(chosen.path.passive, false, 'opponent')"
                           [style.font-size]="abilityFontSize(chosen.path.passive, 0, 'opponent')"
                           (click)="selectAbility('opponent', chosen.path.passive, opponentCooldowns)"
                   >{{ abilityLabel(chosen.path.passive, 0, 'opponent') }}</button>
@@ -168,18 +171,18 @@
                           [class.armed]="chosen.path.utility === undefined ? swapArmed === 'opponent' : isArmed('opponent', chosen.path.utility!)"
                           [disabled]="chosen.path.utility === undefined && swapArmed !== 'opponent' && !canSwap('opponent')"
                           [style.font-size]="chosen.path.utility === undefined ? null : abilityFontSize(chosen.path.utility!, opponentCooldowns[chosen.path.utility!], 'opponent')"
-                          [title]="chosen.path.utility === undefined ? 'Swap a carried pair.' : abilityHint(chosen.path.utility!)"
+                          [title]="chosen.path.utility === undefined ? 'Swap a carried pair.' : abilityHint(chosen.path.utility!, false, 'opponent')"
                           (click)="selectPathUtility('opponent', chosen.path, opponentCooldowns)">{{ pathUtilityLabel(chosen.path, opponentCooldowns, 'opponent') }}</button>
                 </div>
                 <div class="path-pair">
                   <button class="scaffold-btn unpicked" type="button"
-                          [title]="abilityHint(chosen.path.skill)"
+                          [title]="abilityHint(chosen.path.skill, false, 'opponent')"
                           [style.font-size]="abilityFontSize(chosen.path.skill, 0, 'opponent')"
                           (click)="selectAbility('opponent', chosen.path.skill, opponentCooldowns)"
                   >{{ abilityLabel(chosen.path.skill, 0, 'opponent') }}</button>
                 
                   <button class="scaffold-btn ultimate-btn unpicked" type="button"
-                          [title]="abilityHint(chosen.path.ultimate)"
+                          [title]="abilityHint(chosen.path.ultimate, false, 'opponent')"
                           [style.font-size]="abilityFontSize(chosen.path.ultimate, 0, 'opponent')"
                           (click)="selectAbility('opponent', chosen.path.ultimate, opponentCooldowns)"
                   >{{ abilityLabel(chosen.path.ultimate, 0, 'opponent') }}</button>
@@ -199,7 +202,7 @@
             </ng-container>
             <ng-container *ngIf="pathChoice('opponent') as path">
               <div class="ability-bottom-row">
-                <button class="passive-row" [title]="abilityHint(path.passive)"
+                <button class="passive-row" [title]="abilityHint(path.passive, false, 'opponent')"
                         [style.font-size]="abilityFontSize(path.passive, 0, 'opponent')"
                         [class.picked-recent]="isRecentPick('opponent', path.passive)"
                         [class.picking]="isPicking('opponent', path.passive)"
@@ -212,12 +215,12 @@
                           [class.armed]="path.utility === undefined ? swapArmed === 'opponent' : isArmed('opponent', path.utility!)"
                           [disabled]="path.utility === undefined && swapArmed !== 'opponent' && !canSwap('opponent')"
                           [style.font-size]="path.utility === undefined ? null : abilityFontSize(path.utility!, opponentCooldowns[path.utility!], 'opponent')"
-                          [title]="path.utility === undefined ? 'Swap a carried pair.' : abilityHint(path.utility!)"
+                          [title]="path.utility === undefined ? 'Swap a carried pair.' : abilityHint(path.utility!, false, 'opponent')"
                           (click)="selectPathUtility('opponent', path, opponentCooldowns)">{{ pathUtilityLabel(path, opponentCooldowns, 'opponent') }}</button>
                 <!-- Two to a row, ultimate first: they are one line of
                      the panel, not two. -->
                 <div class="path-pair">
-                  <button class="scaffold-btn" type="button" [title]="abilityHint(path.skill)"
+                  <button class="scaffold-btn" type="button" [title]="abilityHint(path.skill, false, 'opponent')"
                           [style.font-size]="abilityFontSize(path.skill, opponentCooldowns[path.skill], 'opponent')"
                           [class.arming]="isArmed('opponent', path.skill)"
                           [class.recent]="isRecent('opponent', path.skill)"
@@ -230,7 +233,7 @@
                           (click)="selectAbility('opponent', path.skill, opponentCooldowns)"
                   >{{ abilityLabel(path.skill, opponentCooldowns[path.skill], 'opponent') }}</button>
                 
-                  <button class="scaffold-btn ultimate-btn" type="button" [title]="abilityHint(path.ultimate)"
+                  <button class="scaffold-btn ultimate-btn" type="button" [title]="abilityHint(path.ultimate, false, 'opponent')"
                           [style.font-size]="abilityFontSize(path.ultimate, opponentCooldowns[path.ultimate], 'opponent')"
                           [class.arming]="isArmed('opponent', path.ultimate)"
                           [class.recent]="isRecent('opponent', path.ultimate)"
@@ -294,7 +297,7 @@
         ><span class="label">Replay</span><span class="key-hint" *ngIf="shortcutsActive"> (Z)</span></button>
       </div>
 
-      <section class="match-panel abilities-panel">
+      <section class="match-panel abilities-panel" [attr.inert]="replayBusy ? '' : null">
         <h3 class="panel-head"><span>{{ abilityHeader('mine', 'Abilities') }}</span><span
           class="points">{{ abilityPurseLabel('mine') }}<button type="button" class="tip-btn"
             aria-label="What Points and CP are" [attr.aria-expanded]="tip?.id === 'purse-mine'"
@@ -458,7 +461,7 @@
 
       <!-- The unit under the pointer or the finger, below your abilities.
            The right column gives its freed height to History and the room. -->
-      <section class="match-panel stats-panel" [class.theirs]="unitPanelDim">
+      <section class="match-panel stats-panel" [class.theirs]="unitPanelDim" [attr.inert]="replayBusy ? '' : null">
         <h3 class="panel-head"><span>{{ unitAbilityTitle }}</span>
           <!-- The "?" is for the two tallies drawn with nobody selected. Its
                place is kept while a unit is shown, so the side label beside
@@ -508,7 +511,7 @@
             <div class="stat-cell hel" title="Healing a friendly unit"><span>HEL</span>
               <strong [style.font-size]="statFontSize(statHel)">
                 <ng-container *ngFor="let part of statParts('hel'); let i = index"
-                  ><span *ngIf="i">&#160;</span>{{ part.ring }}:{{ part.now }}/{{ part.base }}</ng-container>
+                  ><span *ngIf="i">&#160;</span>{{ part.ring }}:<span [ngClass]="panelWave('hel')">{{ part.now }}</span>/{{ part.base }}</ng-container>
                 <ng-container *ngIf="!statParts('hel').length">—</ng-container>
               </strong></div>
             <div class="stat-cell vet" title="Earned veterancy"><span>VET</span>
@@ -518,20 +521,21 @@
             <strong>Vet {{ veterancyBonusRank }} · {{ displayVeterancyActive ? 'Active' : 'Not active' }}:</strong>
             {{ displayVeterancy || '—' }}
           </p>
-          <div class="ability-detail" *ngIf="unitAbilityFocus; else unitAbilityList"
+          <div class="unit-kit-stack">
+          <div class="ability-detail" *ngIf="unitAbilityFocus || unitTargetNote"
                [class.ability-disabled]="!unitAbilityIsPassive() && !unitAbilityCanActivate()">
             <div class="ability-detail-content">
-              <p>{{ unitAbilityHint(unitAbilityFocus.index) }}</p>
-              <p class="arming-hint">{{ unitAbilityNote }}</p>
+              <p *ngIf="unitAbilityFocus as focus">{{ unitAbilityHint(focus.index) }}</p>
+              <p class="arming-hint">{{ unitTargetNote || unitAbilityNote }}</p>
             </div>
             <div class="ability-detail-actions">
-              <button *ngIf="!unitAbilityIsPassive()" class="scaffold-btn" type="button"
+              <button *ngIf="unitAbilityFocus && !unitAbilityIsPassive()" class="scaffold-btn" type="button"
                       [disabled]="!unitAbilityCanActivate()"
                       (click)="activateUnitAbility()">Use</button>
-              <button class="ability-back-btn" type="button" (click)="unitAbilityFocus = null">Back</button>
+              <button *ngIf="unitAbilityFocus" class="ability-back-btn" type="button" (click)="unitAbilityFocus = null">Back</button>
             </div>
           </div>
-          <ng-template #unitAbilityList><div class="panel-buttons">
+          <div class="unit-kit-content" [class.behind]="!!unitAbilityFocus || !!unitTargetNote"><div class="panel-buttons">
             <!-- Always drawn, so selecting a unit never resizes the panel.
                  With nobody selected the two slots carry the army's tally
                  instead of standing empty - still greyed, because there is
@@ -572,7 +576,6 @@
                       [class.locked]="!vetUnlocked(displayUnitAbility)"
                       [class.ability-unavailable]="!displayUnitAbilityReady"
                       [class.exhausted]="usesLeft(displayUnit.uid, displayUnitAbility) === 0"
-                      [disabled]="!!displayUnit.panel"
                       (click)="selectUnitAbility(displayUnitAbility)"
               >{{ abilityLabel(displayUnitAbility, unitCooldownOf(displayUnit.uid), displayUnit.uid) }}</button>
               <ng-template #noOwnAbility>
@@ -581,9 +584,7 @@
                 >No ability</button>
               </ng-template>
             </div>
-          </div></ng-template>
-          <p class="arming-hint" *ngIf="pendingAbility">Click the selected target.</p>
-          <p class="arming-hint" *ngIf="pendingUnitCast">Choose an adjacent enemy on the battlefield or in green reserve.</p>
+          </div>
 
           <!-- What is riding on this unit, and for how long. Scrolls: a unit
                can carry more than the panel is tall. -->
@@ -597,6 +598,8 @@
               <div class="effect-empty" *ngIf="!displayEffects.length">Nothing in effect.</div>
             </div>
           </div>
+          </div>
+          </div>
 
         </div>
       </section>
@@ -604,12 +607,15 @@
       <!-- The two things you can do to a running game, under the board's own
            controls rather than in the rail. -->
       <div class="match-actions"
-           *ngIf="gameStarted && gameState.isGameActive && gameState.myColor(username)">
-        <button class="resign-btn" type="button" (click)="resign()">Resign</button>
-        <!-- Your own offer, waiting on them, says so here. -->
-        <button class="draw-btn" type="button" (click)="offerDraw()"
-                [disabled]="!!state.drawOfferedBy"
-        >{{ state.drawOfferedBy === username ? 'Draw Offered' : 'Offer Draw' }}</button>
+           *ngIf="gameStarted && (gameState.isGameActive || isSinglePlayer) && gameState.myColor(username)">
+        <button class="resign-btn" type="button" (click)="resign()" [disabled]="gameOver || replayReadOnly || replayBusy">Resign</button>
+        <button *ngIf="isSinglePlayer; else drawAction" [hidden]="replayActive" class="draw-btn" type="button"
+                (click)="rewindTurn()" [disabled]="!canRewind">Rewind Turn (Q)</button>
+        <ng-template #drawAction>
+          <button class="draw-btn" type="button" (click)="offerDraw()"
+                  [disabled]="!!state.drawOfferedBy"
+          >{{ state.drawOfferedBy === username ? 'Draw Offered' : 'Offer Draw' }}</button>
+        </ng-template>
       </div>
     </div>
 
@@ -620,7 +626,7 @@
            [class.their-turn]="gameStarted && !state.endReason && !!state.currentTurn && state.currentTurn !== username"
            [class.committing-mine]="recapRunning && indicatorMine"
            [class.committing-theirs]="recapRunning && !indicatorMine"
-           [class.offer]="drawOfferToYou">
+           [class.offer]="drawOfferToYou" [class.replay-view]="replayActive || (gameOver && !canSaveReplay)">
         <!-- An offer of a draw from the other side, over the board it is about
              until it is answered, the board giving up the height. Nothing can
              put it out of sight here: in the rail it went with the roster
@@ -639,8 +645,30 @@
             [class.won]="state.winner === username"
             [class.lost]="!!state.winner && state.winner !== username"
         >{{ resultBanner }}</h2>
+        <div class="replay-controls" *ngIf="replayActive" role="group" aria-label="Replay controls">
+          <button type="button" aria-label="Previous turn" (click)="replayNavigate('turn-back')" [disabled]="replayBusy || !replayCursor">&lt;&lt;</button>
+          <button type="button" aria-label="Previous step" (click)="replayNavigate('step-back')" [disabled]="replayBusy || !replayCursor">&lt;</button>
+          <button type="button" [attr.aria-label]="replayPlaying ? 'Pause replay' : 'Autoplay replay'"
+                  (click)="toggleReplayAutoplay()" [disabled]="!replayPlaying && !replayForwardEnabled">{{ replayPlaying ? 'Ⅱ' : '▶' }}</button>
+          <button type="button" aria-label="Next step" (click)="replayNavigate('step-next')" [disabled]="!replayForwardEnabled">&gt;</button>
+          <button type="button" aria-label="Next turn" (click)="replayNavigate('turn-next')" [disabled]="!replayForwardEnabled">&gt;&gt;</button>
+          <span class="replay-position">{{ replayCursor }}/{{ replayActions.length }}</span>
+          <button type="button" *ngIf="replayReadOnly && !replayBusy && !gameOver" (click)="requestReplayBranch()"
+                  [disabled]="replayBusy || !replayReady">Branch here</button>
+          <button *ngIf="(!replayReadOnly || gameOver) && !replayBusy" type="button" (click)="saveReplay()"
+                  [disabled]="!canSaveReplay">Save Replay</button>
+          <button type="button" *ngIf="replayBusy" (click)="cancelReplaySeek()">Cancel</button>
+        </div>
+        <div *ngIf="gameOver && !replayActive && !canSaveReplay" class="replay-notice" role="status">
+          Replay unavailable: a complete recording isn’t available for this match.
+        </div>
+        <div *ngIf="replayError" class="replay-notice" role="status">
+          <span>{{ replayError }}</span><button type="button" (click)="replayError = ''">Dismiss</button>
+        </div>
+        <div *ngIf="replayActive && wsReplayStorageError" class="replay-notice" role="status">{{ wsReplayStorageError }}</div>
+        <div *ngIf="cpuThinking" class="replay-notice" role="status">CPU ({{ cpuDifficulty | titlecase }}) thinking…</div>
         <app-game-board
-          *ngIf="gameStarted"
+          *ngIf="gameStarted && boardVisible"
           [boardState]="stagedBoard ?? state.boardState"
           [radius]="state.config?.board?.radius ?? 11"
           [currentTurn]="state.currentTurn"
@@ -650,7 +678,8 @@
           [username]="username"
           [myColor]="gameState.myColor(username)"
           [endReason]="state.endReason"
-          [interactive]="gameState.myColor(username) !== '' && !state.endReason && !recapRunning"
+          [interactive]="gameState.myColor(username) !== '' && !state.endReason && !recapRunning && (!replayReadOnly || replayExecuting)"
+          [viewOnly]="replayReadOnly || (cpuTurnLocked && !cpuExecuting)" [freezeInput]="replayBusy || cpuExecuting"
           [canMove]="canMoveOnBoard"
           [controlAllSides]="isSinglePlayer"
           [abilitiesSupported]="buffsBind"
@@ -677,12 +706,13 @@
           [actionSpent]="unitActionSpent"
           [endedUnitIds]="endedUnitIds"
           [attackedHexes]="attackedUnitHexes"
-          [boardMovesSpent]="ordinaryBoardMoves.length"
-          [extraActionUids]="extraActionUids"
+          [boardMovesSpent]="unitActionsSpent" [panelActionState]="panelActionState"
+          [extraActionUids]="extraActionUids" [battlefieldActionBonus]="battlefieldActionBonus"
           [unitControls]="unitControls"
           [movedHexes]="movedUnitHexes"
           [unitBuffs]="boardBuffs"
           [unitActed]="abilityUsed"
+          [movementLockedUids]="movementLockedUids"
           [movementArrows]="movementArrows"
           [attackMarkers]="attackMarkers"
           [killMarkers]="killMarkers"
@@ -748,6 +778,22 @@
                     <span>{{ seat.label }}</span>
                   </label>
                 </div>
+              </div>
+
+              <div class="seat-option cpu-options" *ngIf="isSinglePlayer">
+                <span class="seat-label">Opponent</span>
+                <div class="seat-choices">
+                  <label class="radio-option"><input type="radio" name="opponent-choice" [checked]="opponentKind === 'myself'" (change)="setOpponent('myself')">Myself</label>
+                  <label class="radio-option"><input type="radio" name="opponent-choice" [checked]="opponentKind === 'cpu'" (change)="setOpponent('cpu')">CPU</label>
+                  <span class="radio-option ai-choice" (click)="aiUnavailable = true"><input type="radio" name="opponent-choice" disabled aria-label="AI unavailable"><button type="button" aria-label="AI opponent unavailable: show explanation">AI</button></span>
+                </div>
+              </div>
+              <div class="seat-option cpu-options" *ngIf="isSinglePlayer && opponentKind === 'cpu'">
+                <span class="seat-label">CPU Difficulty</span>
+                <div class="seat-choices">
+                  <label class="radio-option" *ngFor="let level of cpuDifficulties"><input type="radio" name="cpu-difficulty" [checked]="cpuDifficulty === level" (change)="cpuDifficulty = level; setOpponent('cpu')">{{ level | titlecase }}</label>
+                </div>
+                <small>CPU requires the game server.</small>
               </div>
 
               <div class="turn-time-option">
@@ -849,8 +895,8 @@
                  (contextmenu)="openUserMenu($event, { username: player.username, status: player.status || 'in-game' })">
               <span class="ready-dot" [ngClass]="{'ready': player.isReady, 'joined': !player.isReady}"></span>
               <span class="player-name">
-                {{ player.username }}
-                <span *ngIf="player.username === username" class="current-user-tag">(You)</span>
+                {{ replayPlayerName(player.username) }}
+                <span *ngIf="player.username === username && !replayActive" class="current-user-tag">(You)</span>
                 <span class="crown-icon" *ngIf="player.isInviter">👑</span>
               </span>
               <span class="player-status disconnect-icon"
@@ -892,7 +938,7 @@
               >Flip<span class="key-hint" *ngIf="shortcutsActive"> (F)</span></button>
               <button *ngIf="isInviter" class="start-game-btn"
                       (click)="gameOver ? restartGame() : startGame()"
-                      [disabled]="startButtonDisabled" [title]="startButtonHint">
+                      [disabled]="replayActive || startButtonDisabled" [title]="startButtonHint">
                 {{ gameOver ? 'Restart Game' : 'Start Game' }}
               </button>
               <button *ngIf="isInviter" type="button" class="tip-btn" [class.idle]="!startTip"
@@ -1019,7 +1065,7 @@
 
     <!-- OUR OWN CONNECTION DROPPED: the opponent is told via
          opponent_disconnected; this is the matching cue for us. -->
-    <div class="reconnect-overlay" *ngIf="isReconnecting || connectionLost">
+    <div class="reconnect-overlay" *ngIf="(isReconnecting || connectionLost) && !isSinglePlayer">
       <div class="reconnect-modal">
         <h2>{{ connectionLost ? 'Connection lost' : 'Reconnecting…' }}</h2>
         <p *ngIf="!connectionLost">
@@ -1035,12 +1081,39 @@
       </div>
     </div>
 
+    <div class="end-overlay" *ngIf="showBranchWarning">
+      <div class="end-modal" role="dialog" aria-modal="true" aria-labelledby="branch-title">
+        <h2 id="branch-title">Branch from this position?</h2>
+        <p>The later recorded moves will be discarded from your branch. Forward playback will be disabled.
+           You can play both sides and save a new replay. The original file is preserved.</p>
+        <div class="end-actions">
+          <button type="button" (click)="showBranchWarning = false">Cancel</button>
+          <button type="button" (click)="confirmReplayBranch()">Branch here</button>
+        </div>
+      </div>
+    </div>
+    <div class="end-overlay" *ngIf="aiUnavailable || cpuError">
+      <div #cpuDialog class="end-modal" role="dialog" aria-modal="true" aria-labelledby="cpu-dialog-title">
+        <h2 id="cpu-dialog-title">{{ aiUnavailable ? 'AI unavailable' : 'CPU unavailable' }}</h2>
+        <p>{{ aiUnavailable ? 'AI opponent is not implemented yet.' : cpuError }}</p>
+        <div class="end-actions" *ngIf="aiUnavailable; else cpuRecovery">
+          <button type="button" (click)="aiUnavailable = false">OK</button>
+        </div>
+        <ng-template #cpuRecovery><div class="end-actions">
+          <button type="button" (click)="retryCpu()">Retry</button>
+          <button type="button" (click)="continueAsMyself()">Continue as Myself</button>
+          <button type="button" (click)="cpuBackToLobby()">Back to Lobby</button>
+        </div></ng-template>
+      </div>
+    </div>
     <!-- END OF ROOM: match over, or everyone else left. -->
     <div class="end-overlay" *ngIf="showEndModal">
       <div class="end-modal">
         <h2>{{ endModalTitle }}</h2>
         <p>{{ endModalDetail }}</p>
         <div class="end-actions">
+          <button type="button" (click)="saveReplay()" [disabled]="!canSaveReplay">Save Replay</button>
+          <button type="button" (click)="showEndModal = false">View board</button>
           <button class="lobby-btn" (click)="returnToLobby()">Back to Lobby</button>
         </div>
       </div>

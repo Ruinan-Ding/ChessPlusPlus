@@ -30,6 +30,8 @@ def fill_missing(value, defaults):
             if key not in value:
                 value[key] = copy.deepcopy(default)
             elif isinstance(default, dict):
+                if key == 'walkHomeRefund':
+                    default = {k: v for k, v in default.items() if k not in ('veterancy', 'resetVeterancy')}
                 fill_missing(value[key], default)
     return value
 

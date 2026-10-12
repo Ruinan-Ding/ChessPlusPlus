@@ -11,15 +11,27 @@ export function handOversBy(color: 'white' | 'black', ply: number): number {
   const played = Math.max(0, ply);
   return color === 'white' ? Math.ceil(played / 2) : Math.floor(played / 2);
 }
+// Resolved match sections are replaced when config changes; derive schedules once per section.
+const phaseSchedules = new WeakMap<object, Phase[]>();
+const overtimeSchedules = new WeakMap<object, OvertimeStage[]>();
+
 export function phasesOf(config?: any): Phase[] {
   const match = sectionOf(config, 'match'), opening = match.opening;
-  return [{ ...opening, points: opening.pointsPerTurn, multiplier: 1, halftime: false, postmatch: false, postmatchTurns: 0 },
+  const cached = phaseSchedules.get(match);
+  if (cached) return cached;
+  const schedule = [{ ...opening, points: opening.pointsPerTurn, multiplier: 1, halftime: false, postmatch: false, postmatchTurns: 0 },
     ...match.phases.map((p: any) => ({ ...p, points: p.pointsPerTurn, multiplier: p.vpMultiplier, halftime: p.halftimeAfter > 0, postmatch: p.postmatchTurns > 0 })),
     { ...match.overtime, turns: Infinity, points: match.overtime.pointsPerTurn, grant: 0, multiplier: 1, halftime: false, postmatch: false, postmatchTurns: 0 }];
+  phaseSchedules.set(match, schedule);
+  return schedule;
 }
 export const scoringPhases = (config?: any): number[] => sectionOf(config, 'match').phases.map((_: any, i: number) => i + 1);
 export function overtimeStages(config?: any): OvertimeStage[] {
-  return sectionOf(config, 'match').overtime.stages.map((s: any) => ({ ...s, toll: s.kingToll, moves: s.moves.battlefield, categoryMoves: s.moves }));
+  const match = sectionOf(config, 'match'), cached = overtimeSchedules.get(match);
+  if (cached) return cached;
+  const schedule = match.overtime.stages.map((s: any) => ({ ...s, toll: s.kingToll, moves: s.moves.battlefield, categoryMoves: s.moves }));
+  overtimeSchedules.set(match, schedule);
+  return schedule;
 }
 const phaseSpan = (phase: Phase): number => phase.turns + (phase.postmatchTurns ?? Number(!!phase.postmatch));
 export function phaseIndexAt(ply: number, config?: any): number {

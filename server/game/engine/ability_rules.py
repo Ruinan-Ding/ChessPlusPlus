@@ -108,14 +108,16 @@ def path_passive(config, abilities, color):
     return ability_config(config).get('catalogue', {}).get(path['passive'], {}) if path else {}
 
 
-def bonus(unit, config, abilities, stat, in_base=False, defending=False, key=None):
+def bonus(unit, config, abilities, stat, in_base=False, defending=False, key=None, counter=False):
     buff = abilities.get('buffs', {}).get(unit.get('uid'), {})
     trait = path_passive(config, abilities, unit.get('color'))
     available = unit.get('vet', 0) >= trait.get('minVet', 1)
     available = available and not (in_base and trait.get('scope') == 'field-reserve')
     available = available and not (stat == 'def' and trait.get('effect') == 'defensive-armor' and not defending)
+    available = available and not (stat == 'atk' and trait.get('effect') == 'offensive-power' and counter)
+    base_extra = trait.get('baseMov', 0) if stat == 'mov' and in_base and available else 0
     origin = abilities.get('unitProgress', {}).get(unit.get('uid'), {}).get('origin', key) if stat == 'mov' else key
-    return buff.get(stat, 0) + (trait.get(stat, 0) if available else 0) + positional_bonus(unit, config, origin, stat)
+    return buff.get(stat, 0) + (trait.get(stat, 0) if available else 0) + base_extra + positional_bonus(unit, config, origin, stat)
 
 
 def effect_band(origin, key, effect, orientation='edge-up'):
@@ -147,10 +149,15 @@ def controlled(unit, abilities, ply):
             'color': control['color'] if active else control['owner']}
 
 
+def battlefield_action_bonus(history, ply, color):
+    return sum(move.get('battlefieldActions', 0) for move in history
+               if move.get('turn') == ply and move.get('color') == color)
+
+
 def actions_used(state, color):
     from .game_logic import board_move_uids
     history, ply = state.move_history, state.turn_number
-    acted = board_move_uids(history, ply, color)
+    acted = board_move_uids(history, ply, color, state.config_snapshot)
     sources = {m['controlSource'] for m in history if m.get('turn') == ply
                and m.get('color') == color and m.get('controlSource') and not m.get('sourcePanel')
                and state.ability_state.get('extraUnits', {}).get(m['controlSource']) != ply}
@@ -234,12 +241,14 @@ class AbilityContext:
                   'hostile': hostile, 'turns': entry.get('turns', 1),
                   'expiresAt': self.ply + 2 * entry.get('turns', 1),
                   **{s: stats.get(s, 0) for s in ('mov', 'atk', 'def', 'hel')},
-                  **{s: stats[s] for s in ('effect', 'setAtk', 'setDef', 'setHel') if s in stats}}
+                  **{s: stats[s] for s in ('effect', 'secondCounter', 'setAtk', 'setDef', 'setHel') if s in stats}}
         if not any(effect.get(s) for s in ('mov', 'atk', 'def', 'hel', 'effect')) and not any(
                 s in effect for s in ('setAtk', 'setDef', 'setHel')):
             return
         uid = unit['uid']
         effects = self.data['buffs'].get(uid, {}).get('effects', [])
+        if effect.get('effect') == 'sacrifice':
+            effects = [held for held in effects if held.get('effect') != 'sacrifice']
         self.data['buffs'][uid] = summed([*effects, effect])
 
     def change_hp(self, key, unit, amount, remove=False):
@@ -275,6 +284,30 @@ class AbilityContext:
         path_slot = bool(path and ability_id in (path.get('utility'), path.get('skill'), path.get('ultimate')))
         unit_slot = bool(source and ('battlefield' if source_key in self.board else 'base' if source.get('panel') in ('bl', 'tr') else 'reserve') in section_of(self.config, 'veterancy')['kitZones'] and source['color'] == self.color
                          and self.config['units'][source['unit_id']].get('ability') == ability_id)
+        progress = self.data.get('unitProgress', {}).get(uid, {})
+        attacked = progress.get('attacked') or progress.get('healed') or any(
+            m.get('turn') == self.ply and (m.get('uid') or (m.get('unit') or {}).get('uid')) == uid
+            and (m.get('attacked') or m.get('healedHex')) and not m.get('panelEffect')
+            for m in self.history if isinstance(m, dict))
+        from .game_logic import finished_unit_uids
+        if uid in finished_unit_uids(self.history, self.ply, self.color, self.config, 'battlefield' if source_key in self.board else 'base' if panels.is_base((source or {}).get('panel')) else 'reserve'):
+            raise ValueError('This unit has finished its action')
+        trait = passive(source, self.config) if source else {}
+        free_order = trait.get('effect') == 'rapid-movement' and trait.get('freeOrder', False)
+        healed = progress.get('healed') or any(m.get('turn') == self.ply and (m.get('uid') or (m.get('unit') or {}).get('uid')) == uid and m.get('healedHex') for m in self.history)
+        if uid and (healed or (attacked and not free_order)):
+            raise ValueError('This unit has already attacked or healed')
+        if unit_slot:
+            from .game_logic import board_move_uids
+            if any(m.get('turn') == self.ply and m.get('entered') and (m.get('unit') or {}).get('uid') == uid for m in self.history):
+                raise ValueError('The caster has crossed onto the board this turn')
+            if self.data.get('endedUnits', {}).get(uid) == self.ply or progress.get('ended'):
+                raise ValueError('The caster has finished its action')
+            if source.get('panel'):
+                if panels.panel_allowance(self.config, self.history, source, self.ply, self.data) is None:
+                    raise ValueError('No panel action remains for the caster')
+            elif uid not in board_move_uids(self.history, self.ply, self.color, self.config) and self.data.get('extraUnits', {}).get(uid) != self.ply and len(board_move_uids(self.history, self.ply, self.color, self.config)) >= board_moves_per_turn(self.ply, config=self.config) + battlefield_action_bonus(self.history, self.ply, self.color):
+                raise ValueError('No battlefield action remains for the caster')
         if uid and (not unit_slot or source.get('vet', 0) < (section_of(self.config, 'veterancy')['abilityUnlock'] if entry.get('effect') else section_of(self.config, 'veterancy')['passiveUnlock'])
                     or carries(self.data['buffs'].get(uid), 'action-lock') or self.data['usedUnits'].get(uid) == self.ply):
             raise ValueError('This unit cannot use that ability')
@@ -291,6 +324,9 @@ class AbilityContext:
             raise ValueError('That ability is cooling down or used up')
         unit_up = unit_slot and entry.get('effect') in UNIT_ACTIVES
         cost = entry.get('cost', 0)
+        discount = path_passive(self.config, self.data, self.color)
+        if discount.get('costReduction', 0):
+            cost = max(discount.get('minimumCost', 1), cost - discount['costReduction'])
         available = unit_points_of(self.color, self.history, self.config) if unit_up else self.cp() if path_slot else (
             points_of(self.color, self.ply, self.history, self.config, self.state.phase_bank) + self.data['pointDelta'][self.color])
         if available < cost:
@@ -317,18 +353,11 @@ class AbilityContext:
             index = pool.index(pair_id)
             for i in pool[index - index % 2:index - index % 2 + 2]:
                 cd = self.data['cooldowns'][self.color].get(i, 0)
+                if cd <= 1:
+                    self.data['pointDelta'][self.color] += entry.get('refundMultiplier', 0) * self.catalogue[i].get('cost', 0)
                 self.data['cooldowns'][self.color][i] = max(1, cd - entry.get('recharge', 0)) if cd > 0 else 0
             recipients = {}
         elif mode == 'control':
-            progress = self.data.get('unitProgress', {}).get(uid)
-            if self.data.get('endedUnits', {}).get(uid) == self.ply or (progress and (
-                    self.data.get('activeUnit') != uid or progress.get('attacked') or progress.get('healed'))):
-                raise ValueError('The caster has finished its action')
-            if source.get('panel'):
-                if panels.panel_allowance(self.config, self.history, source, self.ply, self.data) is None:
-                    raise ValueError('No panel action remains for the caster')
-            elif not progress and self.data.get('extraUnits', {}).get(uid) != self.ply and actions_used(self.state, self.color) >= board_moves_per_turn(self.ply, config=self.config):
-                raise ValueError('No battlefield action remains for the caster')
             if not chosen or chosen_key not in self.recipients('field-reserve') or chosen['color'] == self.color or not 1 <= hex_distance(parse_coord(source_key), parse_coord(chosen_key)) <= entry.get('radius', 1):
                 raise ValueError('Cast needs an adjacent battlefield or reserve enemy')
             recipients = {chosen_key: chosen}
@@ -357,6 +386,7 @@ class AbilityContext:
                         and (m.get('entered') or m.get('from')) for m in self.history if isinstance(m, dict))
             if (mode != 'sacrifice' or 'stars' not in entry or not extra or extra_key not in self.board
                     or extra['color'] != self.color or extra_uid == uid or acted
+                    or self.data.get('usedUnits', {}).get(extra_uid) == self.ply
                     or self.data.get('unitProgress', {}).get(extra_uid)
                     or self.data.get('endedUnits', {}).get(extra_uid) == self.ply
                     or carries(self.data['buffs'].get(extra_uid), 'action-lock')):
@@ -364,10 +394,9 @@ class AbilityContext:
         if unit_slot:
             if not unit_up:
                 self.data['pointDelta'][self.color] -= cost
-            else:
-                self.history.append({'from': '', 'to': '', 'turn': self.ply, 'color': self.color,
-                                     'unitCast': {'uid': uid, 'id': ability_id, 'color': self.color,
-                                              'cost': cost, 'gain': entry.get('up', 0)}})
+            self.history.append({'from': '', 'to': '', 'turn': self.ply, 'color': self.color,
+                                 'unitCast': {'uid': uid, 'id': ability_id, 'color': self.color, 'at': source_key,
+                                              'cost': cost if unit_up else 0, 'gain': entry.get('up', 0) if unit_up else 0}})
             self.data['unitCooldowns'][uid] = {'turns': entry.get('cooldown', 3), 'color': self.color}
             self.data['usedUnits'][uid] = self.ply
         elif path_slot:
@@ -422,7 +451,7 @@ class AbilityContext:
                     stripped = []
                     for e in old:
                         e = {**e, **{s: min(0, e.get(s, 0)) for s in ('mov', 'atk', 'def', 'hel')}}
-                        if e.get('effect') in ('charge', 'cleave', 'nullify', 'taunt', 'invulnerable'):
+                        if e.get('effect') in ('charge', 'cleave', 'nullify', 'leech', 'taunt', 'invulnerable', 'attack-drain'):
                             e.pop('effect', None)
                         if any(e.get(s, 0) < 0 for s in ('mov', 'atk', 'def', 'hel')) or e.get('effect') or any(s in e for s in ('setAtk', 'setDef', 'setHel')):
                             stripped.append(e)
@@ -454,13 +483,15 @@ class AbilityContext:
                     'atk': entry.get('atk', 0) if friendly else entry.get('enemyAtk', 0),
                     'def': entry.get('def', 0) if friendly else entry.get('enemyDef', 0)}, not friendly)
             elif mode in ('attack-drain', 'taunt', 'cleave', 'charge', 'nullify'):
-                self.add_buff(unit, entry)
+                self.add_buff(unit, entry, {**entry, 'mov': 0} if mode == 'attack-drain' else None)
             else:
                 delta = self.change_hp(key, unit, entry.get('heal', 0) if friendly else -entry.get('damage', 0))
                 if any(entry.get(s, 0) for s in ('mov', 'atk', 'def', 'hel')):
                     self.add_buff(unit, entry, hostile=not friendly)
             marks.append({'at': key, 'uid': unit['uid'], 'color': unit['color'], 'delta': delta, 'hostile': hostile})
-        if extra_uid is not None:
+        if mode == 'sacrifice' and entry.get('battlefieldActions', 0):
+            self.history.append({'turn': self.ply, 'color': self.color, 'battlefieldActions': entry['battlefieldActions']})
+        if extra_uid is not None and 'battlefieldActions' not in entry:
             self.data['extraUnits'][extra_uid] = self.ply
             self.history.append({'turn': self.ply, 'color': self.color, 'extraUnit': {'uid': extra_uid, 'color': self.color}})
         if mode == 'sacrifice':
@@ -468,7 +499,8 @@ class AbilityContext:
             marks.append({'at': source_key, 'uid': uid, 'color': self.color, 'delta': delta, 'hostile': True})
         self.history.append({'from': '', 'to': '', 'turn': self.ply, 'color': self.color,
                              'abilityCast': {'id': ability_id, 'row': 'unit' if unit_slot else 'path' if path_slot else 'pool',
-                                             'unitUid': uid, 'name': entry.get('name', ability_id), 'targets': marks}})
+                                             'unitUid': uid, 'name': entry.get('name', ability_id), 'targets': marks,
+                                             **({'up': entry['up']} if not unit_slot and target == 'universal' and entry.get('up') else {})}})
         self.state.board_state = self.board
 
     def end_turn(self):

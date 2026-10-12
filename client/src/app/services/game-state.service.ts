@@ -44,6 +44,7 @@ export interface MoveRecord {
   captured: string | null;
   attacked: boolean;
   damage_dealt: number;
+  leech_heal?: number;
   defender_eliminated: boolean;
   moved: boolean;
   defender_hp?: number;

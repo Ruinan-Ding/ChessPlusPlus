@@ -3,7 +3,7 @@ import { ConfigService, DEFAULT_GAME_CONFIG } from './config.service';
 import { PREVIOUS_GAME_CONFIG, migrateConfig } from './game-rules';
 import { activeVet, rankedUnit } from './unit-stats';
 import { captureZoneValues, rangedDamage } from './hex-rules';
-import { bankEndedPhases, halftimeUpAwards, scheduledPoints, cpAwarded, unitPoints, scheduleEnding, withdrawalRefund } from './match-score';
+import { withdrawnUnit, bankEndedPhases, halftimeUpAwards, scheduledPoints, cpAwarded, unitPoints, scheduleEnding, withdrawalRefund } from './match-score';
 import { turnPointsBy, movesPerTurn, scoringPhases, overtimeFirstPly, overtimeLastTurn, stageAt } from './phases';
 import { abilityDescription } from './ability-description';
 import parity from './config-parity.json';
@@ -12,6 +12,94 @@ import expected from './game-rules-parity.json';
 
 describe('Versioned gameplay configuration', () => {
   const fresh = (): any => structuredClone(DEFAULT_GAME_CONFIG);
+  it('renders omitted Sprint knobs with their runtime defaults', () => {
+    const config = fresh(), entry = config.abilities.catalogue.tempo;
+    delete entry.baseMov; delete entry.costReduction; delete entry.minimumCost;
+    const description = abilityDescription(entry, config);
+    expect(description).toContain('another 0 MOV');
+    expect(description).toContain('cost 0 less');
+    expect(description).toContain('minimum 1');
+    expect(description).not.toContain('{');
+  });
+  it('prices each earned rank before clearing stars and first-star HP on withdrawal', () => {
+    const config = fresh();
+    for (const [vet, full, wounded] of [[0, 11, 6], [1, 12, 7], [2, 12, 12], [3, 36, 36]]) {
+      const unit = { unit_id: 'pawn', color: 'white', uid: 'p', hp: 12, max_hp: 12, vet };
+      expect(withdrawalRefund(config, unit)).toBe(full);
+      expect(withdrawalRefund(config, { ...unit, hp: 7 })).toBe(wounded);
+    }
+    config.veterancy.kitZones.push('base');
+    const veteran = { unit_id: 'pawn', color: 'white', uid: 'p', hp: 5, max_hp: 14, vet: 3, veterancyHpActive: true };
+    expect(withdrawnUnit(config, veteran, 'bl')).toEqual({ ...veteran, vet: 0, max_hp: 12, veterancyHpActive: false });
+    config.economy.walkHomeRefund.veterancy[2].valueMultiplier = 4;
+    expect(withdrawalRefund(config, veteran)).toBe(48);
+    delete config.economy.walkHomeRefund.veterancy; delete config.economy.walkHomeRefund.resetVeterancy;
+    expect(migrateConfig(config)).toEqual(config);
+    expect(migrateConfig(migrateConfig(config))).toEqual(config);
+    expect(withdrawalRefund(config, veteran)).toBe(2);
+    expect(withdrawnUnit(config, veteran, 'bl').vet).toBe(3);
+  });
+  it('preserves optional Sacrifice action counts and frozen legacy behavior', () => {
+    TestBed.configureTestingModule({});
+    const service = TestBed.inject(ConfigService);
+    for (const count of [0, 1, 2]) {
+      const raw = fresh(); raw.abilities.catalogue['unit-sacrifice'].battlefieldActions = count;
+      expect(service.validateGameRules(raw).valid).withContext(`count ${count}`).toBeTrue();
+      expect(migrateConfig(migrateConfig(raw))).toEqual(raw);
+      const text = abilityDescription(raw.abilities.catalogue['unit-sacrifice'], raw);
+      expect(text).toContain(`+${count} battlefield unit action`);
+      expect(text).not.toContain('{');
+    }
+    const saved = fresh(); delete saved.abilities.catalogue['unit-sacrifice'].battlefieldActions;
+    saved.abilities.catalogue['unit-sacrifice'].description = 'Choose an unused friendly battlefield unit for an extra action.';
+    expect(service.validateGameRules(saved).valid).toBeTrue();
+    expect(migrateConfig(saved)).toEqual(saved);
+    expect(abilityDescription(saved.abilities.catalogue['unit-sacrifice'], saved)).toContain('Choose an unused');
+  });
+
+  it('preserves optional Archer ordering and opposing Charge counters in frozen configs and descriptions', () => {
+    const service = TestBed.inject(ConfigService);
+    for (const [id, field] of [['quick', 'freeOrder'], ['knight-charge', 'secondCounter']]) {
+      for (const value of [false, true, undefined]) {
+        const raw = fresh();
+        if (value === undefined) delete raw.abilities.catalogue[id][field];
+        else raw.abilities.catalogue[id][field] = value;
+        expect(service.validateGameRules(raw).valid).withContext(`${id}: ${value}`).toBeTrue();
+        expect(migrateConfig(migrateConfig(raw))).toEqual(raw);
+        const description = abilityDescription(raw.abilities.catalogue[id], raw);
+        expect(description).not.toContain('{');
+        if (id === 'quick') expect(description.includes('any order')).toBe(value === true);
+        else expect(description.includes('Also counter')).toBe(value === true);
+      }
+    }
+  });
+
+  it('preserves Recharge refund configuration and explains one-turn pool cooldowns at base prices', () => {
+    const service = TestBed.inject(ConfigService);
+    for (const multiplier of [undefined, 0, 1, 2]) {
+      const config = fresh();
+      if (multiplier === undefined) delete config.abilities.catalogue.recharge.refundMultiplier;
+      else config.abilities.catalogue.recharge.refundMultiplier = multiplier;
+      expect(service.validateGameRules(config).valid).toBeTrue();
+      expect(migrateConfig(migrateConfig(config))).toEqual(config);
+      const entry = config.abilities.catalogue.mend;
+      const text = abilityDescription({ ...entry, cost: 7 }, config);
+      expect(text.includes('Recharge cannot refresh')).toBe(!!multiplier);
+      if (multiplier) expect(text).toContain(`grants ${10 * multiplier} regular points`);
+      expect(abilityDescription(config.abilities.catalogue['king-call'], config)).not.toContain('Recharge cannot');
+      expect(abilityDescription(config.abilities.catalogue.recharge, config)).not.toContain('{');
+    }
+    const saved = fresh();
+    saved.abilities.paths[0].utility = 'convert'; saved.abilities.paths[1].utility = 'strengthen';
+    delete saved.abilities.catalogue.convert.up; saved.abilities.catalogue.convert.points = 50;
+    expect(service.validateGameRules(saved).valid).toBeTrue();
+    expect(migrateConfig(migrateConfig(saved))).toEqual(saved);
+    expect(abilityDescription(DEFAULT_GAME_CONFIG.abilities.catalogue.mend)).toContain('grants 10 regular points');
+    const olderConvert = PREVIOUS_GAME_CONFIG.abilities.catalogue.convert;
+    expect(abilityDescription(olderConvert, saved)).toContain('points');
+    expect(abilityDescription(olderConvert, saved)).not.toContain('{');
+  });
+
   it('keeps the balance draft while using format 2.0', () => {
     expect(DEFAULT_GAME_CONFIG.version).toBe('2.0');
     expect(DEFAULT_GAME_CONFIG.ruleset).toEqual({ id: 'default', revision: null });

@@ -1,3 +1,4 @@
+import { ReplayAction, ReplayFile, ReplayFrame } from './replay-session.service';
 import { sectionOf } from './game-rules';
 import { attacksAllowed, stageRules } from './phases';
 import { migrateConfig } from './game-rules';
@@ -10,9 +11,9 @@ import { ConfigService, ruleOf } from './config.service';
 import { activeVet, kitActive, capStat, capUnit, rankedUnit, unitPassive, unitStats } from './unit-stats';
 import type { BoardState } from './game-state.service';
 import { BASE_PANELS, computeLegalMoves, computeMoveCosts, canAttack, healingAmount, hexDistanceKeys, inHomeRows, isInsideBoard, panelOfHex } from './hex-rules';
-import { boardMoveLandings, boardMovesAt, extraActionUids, lockedPanelUnits, openingMovedHexes, panelMoverAllowed, unitVeterancy, promotionHeals, regenerationHeals } from './history-rules';
-import { boardMovesPerTurn, overtimeTollAt, isEntryOpen, isHomecomingOpen, isInitialization, isSetupTurn, isWrapOpen, noAttackMessage } from './phases';
-import { PhaseBank, bankEndedPhases, halftimeUpAwards, scheduleEnding, withdrawalRefund, unitPoints } from './match-score';
+import { boardMoveLandings, boardMoveUids, boardMovesAt, unitActionActor, unitActionUids, finishedUnitUids, battlefieldActionBonus, extraActionUids, lockedPanelUnits, openingMovedHexes, panelMoverAllowed, unitVeterancy, promotionHeals, regenerationHeals } from './history-rules';
+import { boardMovesPerTurn, movesPerTurn, overtimeTollAt, isEntryOpen, isHomecomingOpen, isInitialization, isSetupTurn, isWrapOpen, noAttackMessage } from './phases';
+import { PhaseBank, bankEndedPhases, halftimeUpAwards, scheduleEnding, withdrawalRefund, withdrawnUnit, unitPoints } from './match-score';
 
 /**
  * Offline single-player engine.
@@ -77,9 +78,22 @@ export const LOCAL_OPPONENT = 'Opponent';
 /** Stands in for the room UUID; there is no room to address. */
 export const LOCAL_GAME_ID = 'local';
 
+interface TurnCheckpoint {
+  turnNumber: number;
+  boardState: BoardState;
+  historyLength: number;
+  phaseBank?: PhaseBank;
+  abilityBuffs?: Record<string, UnitBuff>;
+  uiState: any;
+  stagedUiState?: any;
+  replayLength?: number;
+}
+
 interface LocalGame {
   username: string;
   hostColor: 'white' | 'black';
+  opponentKind?: 'myself' | 'cpu';
+  cpuDifficulty?: 'easy' | 'normal' | 'hard';
   started: boolean;
   boardState: BoardState;
   currentTurn: string;
@@ -98,6 +112,8 @@ interface LocalGame {
    */
   phaseBank?: PhaseBank;
   abilityBuffs?: Record<string, UnitBuff>;
+  turnCheckpoints?: TurnCheckpoint[];
+  replayJournal?: { version: 1; actions: ReplayAction[] };
 }
 
 /**
@@ -116,6 +132,56 @@ export class LocalGameService {
   readonly messages$ = this.outgoing.asObservable();
 
   private game: LocalGame | null = null;
+  replayMode = false;
+  private pendingRecording: { ply: number; actions: ReplayAction[] } | null = null;
+  private rejected = false;
+
+  captureReplayFrame(ui: any): ReplayFrame {
+    const { config, turnCheckpoints, replayJournal, ...core } = this.game!;
+    return structuredClone({ core, ui });
+  }
+
+  restoreReplayFrame(frame: ReplayFrame): void {
+    if (!this.replayMode) return;
+    this.game = { ...structuredClone(frame.core), config: this.game!.config };
+    this.emit({ type: 'turn_rewound', ...this.snapshot(), uiState: structuredClone(frame.ui) });
+  }
+
+  openReplay(config: any, username: string, frame?: ReplayFrame): void {
+    this.replayMode = true;
+    this.pendingRecording = null;
+    this.game = frame ? { ...structuredClone(frame.core), config: structuredClone(config) } : {
+      ...this.blank(username), started: true, config: structuredClone(config),
+      boardState: this.buildBoard(config), turnNumber: 1, turnStartedAt: new Date().toISOString(),
+    };
+    this.rename(username);
+    this.game!.currentTurn = this.seat(this.game!.turnNumber % 2 ? 'white' : 'black');
+  }
+
+  closeReplay(): void { this.replayMode = false; this.restore(); }
+
+  captureCpuState(): any { return structuredClone(this.game); }
+
+  restoreCpuState(state: any): any {
+    this.game = structuredClone(state); this.pendingRecording = null; this.persist();
+    return this.snapshot();
+  }
+
+  get replayRecording(): boolean { return !!this.game?.replayJournal; }
+
+  get replayFile(): ReplayFile | null {
+    const g = this.game;
+    return g?.replayJournal ? { type: 'chessplusplus-replay', version: 1,
+      config: structuredClone(g.config), players: { white: this.seat('white'), black: this.seat('black') },
+      actions: structuredClone(g.replayJournal.actions) } : null;
+  }
+
+  replayResult(reason: string, color: 'white' | 'black'): boolean {
+    if (!this.replayMode || !this.game || this.game.endReason
+        || !['resign', 'draw_agreed', 'disconnect', 'timeout'].includes(reason)) return false;
+    this.over(reason === 'draw_agreed' ? '' : this.seat(color === 'white' ? 'black' : 'white'), reason);
+    return true;
+  }
 
   constructor(private configService: ConfigService) {
     this.restore();
@@ -124,6 +190,7 @@ export class LocalGameService {
   /** Drop the cached game (a deliberate exit, not a disconnect). */
   clear(): void {
     this.game = null;
+    if (this.replayMode) return;
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* private mode */ }
   }
 
@@ -134,7 +201,9 @@ export class LocalGameService {
   // -- Protocol -------------------------------------------------------
 
   /** Handle one client message exactly as the server would for a solo room. */
-  send(msg: any): void {
+  send(msg: any): boolean {
+    this.rejected = false;
+    const startingPly = this.game?.turnNumber;
     const priorBuffs = this.game?.abilityBuffs, priorHistory = this.game?.moveHistory;
     switch (msg?.type) {
       case 'create_single_player_game':
@@ -166,7 +235,33 @@ export class LocalGameService {
         // The server rejects a replayed start while a match is running; here
         // it would silently re-deal the board out from under the player.
         if (this.game?.started && !this.game.endReason) break;
-        this.start(msg.hostColor === 'black' ? 'black' : 'white', msg.turnTimeLimit);
+        this.start(msg.hostColor === 'black' ? 'black' : 'white', msg.turnTimeLimit, msg);
+        break;
+
+      case 'record_turn':
+        if (this.game?.replayJournal && msg.ply === this.game.turnNumber) {
+          this.pendingRecording = { ply: msg.ply, actions: structuredClone(msg.actions) };
+        }
+        break;
+
+      case 'set_cpu_options':
+        if (this.game && !this.game.started) {
+          this.game.opponentKind = msg.opponentKind === 'cpu' ? 'cpu' : 'myself';
+          this.game.cpuDifficulty = ['easy', 'normal', 'hard'].includes(msg.cpuDifficulty) ? msg.cpuDifficulty : 'normal';
+          this.persist();
+        }
+        break;
+
+      case 'cpu_manual':
+        if (this.game) { this.game.opponentKind = 'myself'; this.persist(); }
+        break;
+
+      case 'checkpoint_turn':
+        this.checkpointTurn(msg.turnNumber, msg.uiState, msg.staged === true);
+        break;
+
+      case 'rewind_turn':
+        this.rewindTurn();
         break;
 
       case 'reset_game': {
@@ -194,7 +289,7 @@ export class LocalGameService {
         break;
 
       case 'panel_move':
-        this.walkInPanel(msg.from, msg.to, msg.unit, msg.panel, msg.cost, msg.price);
+        this.walkInPanel(msg.from, msg.to, msg.unit, msg.panel, msg.cost, msg.price, msg.effectsBefore);
         break;
 
       case 'panel_attack':
@@ -209,6 +304,8 @@ export class LocalGameService {
         break;
 
       case 'resign':
+        if (this.game?.replayJournal) this.game.replayJournal.actions.push({ ply: this.game.turnNumber,
+          color: this.game.hostColor, command: { type: 'result', reason: 'resign' } });
         if (this.game?.started && !this.game.endReason) {
           this.over(this.other(this.game.username), 'resign', { resignedBy: this.game.username });
         }
@@ -251,10 +348,74 @@ export class LocalGameService {
       default:
         break;
     }
+    if (this.rejected && this.pendingRecording) {
+      // A partially accepted legacy batch cannot be exported as a complete recording.
+      if (this.game) delete this.game.replayJournal;
+      this.pendingRecording = null;
+    } else if (this.game?.replayJournal && this.pendingRecording && this.game.turnNumber !== startingPly) {
+      this.game.replayJournal.actions.push(...this.pendingRecording.actions);
+      this.pendingRecording = null;
+      this.persist();
+    }
     // A rejected action must also discard status changes staged before its walk.
     if (['make_move', 'panel_attack'].includes(msg?.type) && this.game && this.game.moveHistory === priorHistory) {
       this.game.abilityBuffs = priorBuffs;
     }
+    return !this.rejected;
+  }
+
+  get canRewind(): boolean { return this.rewindIndex() >= 0; }
+
+  private rewindIndex(): number {
+    const g = this.game;
+    if (!g?.started) return -1;
+    const checkpoints = g.turnCheckpoints ?? [];
+    // Resignation and agreed draws end the current ply; settled turns advance it.
+    const ply = ['resign', 'draw_agreed'].includes(g.endReason) ? g.turnNumber : g.turnNumber - 1;
+    for (let i = checkpoints.length - 1; i >= 0; i--) {
+      if (checkpoints[i].turnNumber === ply) return i;
+    }
+    return -1;
+  }
+
+  private checkpointTurn(ply: number, uiState: any, staged: boolean): void {
+    const g = this.game;
+    if (!g?.started || g.endReason || ply !== g.turnNumber || !uiState) return;
+    if (staged) {
+      const checkpoint = g.turnCheckpoints?.find(turn => turn.turnNumber === ply);
+      if (!checkpoint) return; // A resumed mid-turn save cannot supply its missing start.
+      checkpoint.stagedUiState = structuredClone(uiState);
+      this.persist();
+      return;
+    }
+    if (g.moveHistory.some(move => move.turn === ply && !move.promotionHeal && !move.halftimeUp)) return;
+    if (g.turnCheckpoints?.some(checkpoint => checkpoint.turnNumber === ply)) return;
+    // Config and history already live in the save; retain only each turn's state.
+    // ponytail: localStorage quota limits large custom matches; move checkpoints to IndexedDB if needed.
+    g.turnCheckpoints = [...(g.turnCheckpoints ?? []), structuredClone({
+      turnNumber: ply, boardState: g.boardState, historyLength: g.moveHistory.length,
+      phaseBank: g.phaseBank, abilityBuffs: g.abilityBuffs, uiState, replayLength: g.replayJournal?.actions.length,
+    })];
+    this.persist();
+  }
+
+  private rewindTurn(): void {
+    const index = this.rewindIndex();
+    if (index < 0) return;
+    const g = this.game!, checkpoint = structuredClone(g.turnCheckpoints![index]);
+    g.turnCheckpoints = g.turnCheckpoints!.slice(0, index + 1);
+    if (g.replayJournal && checkpoint.replayLength !== undefined) g.replayJournal.actions.length = checkpoint.replayLength;
+    this.pendingRecording = null;
+    g.boardState = checkpoint.boardState;
+    g.moveHistory = g.moveHistory.slice(0, checkpoint.historyLength);
+    g.phaseBank = checkpoint.phaseBank;
+    g.abilityBuffs = checkpoint.abilityBuffs;
+    g.turnNumber = checkpoint.turnNumber;
+    g.currentTurn = this.seat(g.turnNumber % 2 ? 'white' : 'black');
+    g.winner = ''; g.endReason = '';
+    g.turnStartedAt = new Date().toISOString();
+    this.persist();
+    this.emit({ type: 'turn_rewound', ...this.snapshot(), uiState: checkpoint.stagedUiState ?? checkpoint.uiState });
   }
 
   // -- Game mechanics -------------------------------------------------
@@ -278,7 +439,7 @@ export class LocalGameService {
     };
   }
 
-  private start(hostColor: 'white' | 'black', turnTimeLimit?: number): void {
+  private start(hostColor: 'white' | 'black', turnTimeLimit?: number, options: any = {}): void {
     const username = this.game?.username ?? '';
     const config = migrateConfig(this.configService.getConfig());
     const selectedTime = Number.isInteger(turnTimeLimit) ? turnTimeLimit : this.game?.options?.turnTimeLimit;
@@ -288,9 +449,12 @@ export class LocalGameService {
     this.game = {
       ...this.blank(username),
       hostColor,
+      opponentKind: options.opponentKind === 'cpu' ? 'cpu' : 'myself',
+      cpuDifficulty: ['easy', 'normal', 'hard'].includes(options.cpuDifficulty) ? options.cpuDifficulty : 'normal',
       started: true,
       config,
       boardState: this.buildBoard(config),
+      replayJournal: { version: 1, actions: [] },
       turnNumber: 1,
       turnStartedAt: new Date().toISOString(),
     };
@@ -362,17 +526,30 @@ export class LocalGameService {
   ): boolean {
     const g = this.game!;
     if (!isInitialization(g.turnNumber, g.config) || ['poolAbilities', 'unitAbilities', 'cpSkills', 'cpUltimates'].some(key => stageRules(g.turnNumber, g.config)[key])) return false;
+    const stage = stageRules(g.turnNumber, g.config);
     const casts = [...(effects ?? []), ...(effectsBefore ?? []), ...(effectsAfterAttack ?? [])];
-    if (casts.some(e => !e.promotion?.uid || e.hp !== e.promotion.hp
+    if (casts.length && !stage.cpUtilities) return true;
+    if (casts.some(e => {
+      if (e.abilityCast) {
+        const cast = e.abilityCast, entry = g.config.abilities?.catalogue?.[cast.id];
+        return cast.row !== 'path' || entry?.target !== 'universal' || cast.up !== entry.up
+          || e.color !== this.colorOf(g.currentTurn)
+          || !g.config.abilities.paths.some((path: any) => path.utility === cast.id)
+          || Object.keys(e).some(key => !['castId', 'color', 'abilityCast'].includes(key));
+      }
+      return !e.promotion?.uid || e.hp !== e.promotion.hp
         || !Number.isInteger(e.promotion.vet) || e.promotion.vet < 1 || e.promotion.vet > 3
-        || Object.keys(e).some(key => !['promotion', 'at', 'uid', 'hp', 'unit', 'panel'].includes(key)))) return true;
+        || Object.keys(e).some(key => !['promotion', 'at', 'uid', 'hp', 'unit', 'panel'].includes(key));
+    })) return true;
     // **Sent at all, and not a zero.** `Number(x) || 0` read as a guard let
     // `moveBonus: 'x'` through as though no ability had come: NaN is falsy, so
     // nonsense was indistinguishable from nothing. Asked this way round the
     // missing case is the only one that passes, so NaN and Infinity are both
     // read as what they are - a bonus that arrived and is not zero.
     if (sent(moveBonus)) return true;
-    return Object.values(bonuses ?? {}).some(sent);
+    return Object.entries(bonuses ?? {}).some(([stat, value]) => sent(value)
+      && !(stage.attack && ['atk', 'def', 'targetAtk', 'targetDef'].includes(stat))
+      && !(stage.normalHeal && stat === 'hel'));
   }
 
   /**
@@ -402,7 +579,8 @@ export class LocalGameService {
     if (carries(this.game?.abilityBuffs?.[unit?.uid], 'action-lock')) {
       this.emit({ type: 'invalid_move', message: 'This unit cannot act this turn' }); return;
     }
-    const wrong = this.panelUnitFault(unit);
+    const wrong = this.panelUnitFault(unit)
+      ?? (this.unitWalkEnded(unit.uid, to, [], { ...unit, panel: panelOfHex(from, g.config?.board?.orientation) }) ? 'Movement ends after using a unit ability' : null);
     if (wrong) {
       this.emit({ type: 'invalid_move', message: wrong });
       return;
@@ -476,7 +654,7 @@ export class LocalGameService {
    * wrap's price where this engine takes them as sent, having nobody to cheat.
    */
   private walkInPanel(
-    from: string, to: string, unit: any, panel?: string, cost?: number, price?: number,
+    from: string, to: string, unit: any, panel?: string, cost?: number, price?: number, effectsBefore?: any[],
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
@@ -487,7 +665,8 @@ export class LocalGameService {
     if (carries(this.game?.abilityBuffs?.[unit?.uid], 'action-lock')) {
       this.emit({ type: 'invalid_move', message: 'This unit cannot act this turn' }); return;
     }
-    const wrong = this.panelUnitFault(unit);
+    const wrong = this.panelUnitFault(unit)
+      ?? (this.unitWalkEnded(unit.uid, to, [], { ...unit, panel: panelOfHex(from, g.config?.board?.orientation) }) ? 'Movement ends after using a unit ability' : null);
     if (wrong) {
       this.emit({ type: 'invalid_move', message: wrong });
       return;
@@ -506,14 +685,20 @@ export class LocalGameService {
       this.emit({ type: 'invalid_move', message: 'The wrap is shut' });
       return;
     }
+    // Only currency records precede panel walks; unit HP/status casts keep their existing resolution points.
+    if (effectsBefore?.some(effect => !effect.abilityCast?.up) || this.abilityFault(0, null, undefined, effectsBefore)) {
+      this.emit({ type: 'invalid_move', message: 'Invalid ability reward before a panel walk' }); return;
+    }
+    const before = this.landEffects({ ...g.boardState }, effectsBefore);
+    const history = [...g.moveHistory, ...before.records];
     // Geometry remains the room's; the price and UP affordability are derived here.
     const worth = Math.max(0, Math.trunc(Number(g.config?.units?.[unit.unit_id]?.value) || 0))
       * sectionOf(g.config, 'economy').wrapPriceMultiplier;
-    if (wrap && unitPoints(g.config, g.moveHistory, unit.color) < worth) {
+    if (wrap && unitPoints(g.config, history, unit.color) < worth) {
       this.emit({ type: 'invalid_move', message: 'Not enough UP for the crossing' });
       return;
     }
-    g.moveHistory = [...g.moveHistory, {
+    g.moveHistory = [...history, {
       from, to, unit_id: unit.unit_id, color: unit.color, turn: g.turnNumber,
       captured: null, attacked: false, damage_dealt: 0,
       defender_eliminated: false, moved: true,
@@ -560,12 +745,21 @@ export class LocalGameService {
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
+    if (!this.unitCastOrderValid(effectsBefore) || !this.unitCastOrderValid([...(effectsAfterAttack ?? []), ...(effects ?? [])], g.boardState[from]?.uid)) {
+      this.emit({ type: 'invalid_move', message: 'A unit ability must be used before its attack' }); return;
+    }
     unit = { ...unit, panel: panel ?? panelOfHex(attack, g.config?.board?.orientation) };
     const start = { ...g.boardState };
     const before = this.landEffects(start, effectsBefore);
     const attacker = start[from];
     const movingColor = this.colorOf(g.currentTurn);
+    if (from !== to && this.unitWalkEnded(attacker?.uid, to, before.records)) {
+      this.emit({ type: 'invalid_move', message: 'Movement ends after using a unit ability' }); return;
+    }
     const extraUids = extraActionUids([...g.moveHistory, ...before.records], g.turnNumber, movingColor);
+    if (finishedUnitUids([...g.moveHistory, ...before.records], g.turnNumber, movingColor, g.config, 'battlefield').has(attacker?.uid ?? '')) {
+      this.emit({ type: 'invalid_move', message: 'That unit has already moved this turn' }); return;
+    }
     if (!attacker || attacker.color !== movingColor || !unit || unit.color === movingColor) {
       this.emit({ type: 'invalid_move', message: 'Nothing to attack there' });
       return;
@@ -581,14 +775,14 @@ export class LocalGameService {
     // one-move-per-unit rule and `more`, exactly as `move` asks them. Ending
     // the turn outright threw away every other move an overtime turn had
     // staged alongside the blow. Mirrors `_claim_board_move` in consumers.py.
-    const normalAllowance = boardMovesPerTurn(g.turnNumber, this.game?.config);
+    const normalAllowance = boardMovesPerTurn(g.turnNumber, this.game?.config) + battlefieldActionBonus([...g.moveHistory, ...before.records], g.turnNumber, movingColor);
     const moveAllowance = normalAllowance + extraUids.length;
-    const movesUsed = boardMovesAt(g.moveHistory, g.turnNumber, movingColor);
+    const movesUsed = boardMovesAt(g.moveHistory, g.turnNumber, movingColor, g.config);
     const extraUsed = g.moveHistory.filter((record: any) => record.turn === g.turnNumber && extraUids.includes(record.uid)).length;
     if (extraUids.length && !extraUids.includes(attacker?.uid ?? '') && movesUsed - extraUsed >= normalAllowance) {
       this.emit({ type: 'invalid_move', message: 'Only the controlled unit has an extra action' }); return;
     }
-    if (movesUsed >= moveAllowance) {
+    if (movesUsed >= moveAllowance && !boardMoveUids([...g.moveHistory, ...before.records], g.turnNumber, movingColor, g.config).has(attacker?.uid ?? '')) {
       this.emit({
         type: 'invalid_move',
         message: `That side has had all ${moveAllowance} of its moves this turn`,
@@ -653,10 +847,12 @@ export class LocalGameService {
       ...(attacker.uid ? { uid: attacker.uid } : {}),
       captured: exchange.targetHp <= 0 ? unit.unit_id : null, attacked: true, attackedHex: attack,
       damage_dealt: exchange.damage + exchange.secondDamage, defender_eliminated: exchange.targetHp <= 0,
-      moved: walked, counter_damage: exchange.counterDamage, countered: exchange.countered, attacker_eliminated: exchange.attackerHp <= 0,
+      moved: walked, counter_damage: exchange.counterDamage + exchange.secondCounterDamage, countered: exchange.countered, attacker_eliminated: exchange.attackerHp <= 0,
+      ...(exchange.leechHeal ? { leech_heal: exchange.leechHeal } : {}),
       panelAttack: true, intoPanel: true, unit, defenderHp: exchange.targetHp,
       counterActor: { unit_id: unit.unit_id, color: unit.color, uid: unit.uid },
-      ...(exchange.secondStrike ? { secondStrike: true } : {}), ...(panel ? { panel } : {}),
+      ...(exchange.secondStrike ? { secondStrike: true } : {}),
+      ...(exchange.secondCounter ? { secondCounter: true, second_counter_damage: exchange.secondCounterDamage } : {}), ...(panel ? { panel } : {}),
     };
     if (exchange.attackerHp <= 0) delete board[to]; else board[to] = { ...attacker, hp: exchange.attackerHp };
     const between = this.landEffects(board, effectsAfterAttack).records;
@@ -710,6 +906,39 @@ export class LocalGameService {
    *
    * Returns the panel records, and whether a cast took a unit off the board.
    */
+  private unitCastOrderValid(effects: any[] = [], attackedUid?: string, healedUid?: string): boolean {
+    const g = this.game;
+    if (!g) return false;
+    const history: any[] = [...g.moveHistory], color = this.colorOf(g.currentTurn);
+    for (const effect of effects) {
+      const record = { turn: g.turnNumber, ...effect }, uid = effect.unitCast?.uid;
+      if (uid) {
+        const actor = unitActionActor(record, g.config);
+        if (!actor) return false;
+        const unit = Object.values(g.boardState).find(piece => piece.uid === uid);
+        const trait = unit && unitPassive(unit.unit_id, g.config, activeVet(unit, unit.panel, g.config));
+        const freeOrder = trait?.effect === 'rapid-movement' && !!trait.freeOrder;
+        if ((uid === attackedUid && !freeOrder) || uid === healedUid || finishedUnitUids(history, g.turnNumber, color, g.config, actor.category).has(uid)
+            || history.some(move => move.turn === g.turnNumber && ((move.entered && move.unit?.uid === uid)
+              || ((move.uid ?? move.unit?.uid) === uid && !move.panelEffect && (move.healedHex || (move.attacked && !freeOrder)))))) return false;
+        const actors = unitActionUids(history, g.turnNumber, color, actor.category, g.config);
+        const limit = movesPerTurn(g.turnNumber, actor.category, g.config)
+          + (actor.category === 'battlefield' ? battlefieldActionBonus(history, g.turnNumber, color) : 0);
+        if (!actors.has(uid) && !extraActionUids(history, g.turnNumber, color).includes(uid) && actors.size >= limit) return false;
+      }
+      history.push(record);
+    }
+    return true;
+  }
+
+  private unitWalkEnded(uid: string | undefined, destination: string, before: any[] = [], panelUnit?: any): boolean {
+    const unit = panelUnit ?? Object.values(this.game?.boardState ?? {}).find(piece => piece.uid === uid);
+    const trait = unit && unitPassive(unit.unit_id, this.game!.config, activeVet(unit, unit.panel, this.game!.config));
+    if (trait?.effect === 'rapid-movement' && trait.freeOrder) return false;
+    return !!uid && [...(this.game?.moveHistory ?? []), ...before].some(record => record.turn === this.game?.turnNumber
+      && record.unitCast?.uid === uid && record.unitCast.at !== destination);
+  }
+
   private landEffects(board: Record<string, any>, effects?: any[]): { records: any[]; killed: boolean } {
     const records: any[] = [];
     let killed = false;
@@ -731,6 +960,8 @@ export class LocalGameService {
         records.push({ turn: this.game!.turnNumber, castId: e.castId, unitCast: e.unitCast });
         if (this.game!.config?.abilities?.catalogue?.[e.unitCast.id]?.effect === 'sacrifice') removals.add(e.unitCast.uid);
       }
+      if (e.abilityCast) records.push({ turn: this.game!.turnNumber, castId: e.castId, color: e.color, abilityCast: e.abilityCast });
+      if (e.battlefieldActions) records.push({ turn: this.game!.turnNumber, color: e.color, battlefieldActions: e.battlefieldActions });
       if (e.extraUnit) records.push({ turn: this.game!.turnNumber, extraUnit: e.extraUnit });
       if (e.control) {
         const key = Object.keys(board).find(at => board[at].uid === e.control.uid);
@@ -834,6 +1065,9 @@ export class LocalGameService {
       return;
     }
     const start = { ...g.boardState };
+    if (!this.unitCastOrderValid(effectsBefore) || !this.unitCastOrderValid([...(effectsAfterAttack ?? []), ...(effects ?? [])], attack || heal ? g.boardState[from]?.uid : undefined, heal ? g.boardState[from]?.uid : undefined)) {
+      this.emit({ type: 'invalid_move', message: 'A unit ability must be used before its attack' }); return;
+    }
     const before = this.landEffects(start, effectsBefore);
     const piece = start[from];
     const radius: number = g.config?.board?.radius ?? 11;
@@ -841,6 +1075,9 @@ export class LocalGameService {
     const movingColor = this.colorOf(g.currentTurn);
     const extraUids = extraActionUids([...g.moveHistory, ...before.records], g.turnNumber, movingColor);
     const casting = unitAction && before.records.some(record => record.controlSource === piece?.uid);
+    if (finishedUnitUids([...g.moveHistory, ...before.records], g.turnNumber, movingColor, g.config, 'battlefield').has(piece?.uid ?? '')) {
+      this.emit({ type: 'invalid_move', message: 'That unit has already moved this turn' }); return;
+    }
 
     const relocating = to !== from;
     // Steps lent by an ability, on top of the unit's own move stat.
@@ -850,6 +1087,9 @@ export class LocalGameService {
     // 10 steps and +/-20, which the config never said, so a Surge of 12 was
     // offered on the board and refused here as an illegal move.
     const stat = (v: unknown) => Math.trunc(Number(v) || 0);
+    if (relocating && this.unitWalkEnded(piece?.uid, to, before.records)) {
+      this.emit({ type: 'invalid_move', message: 'Movement ends after using a unit ability' }); return;
+    }
     if (carries(g.abilityBuffs?.[piece?.uid ?? ''], 'action-lock')) {
       this.emit({ type: 'invalid_move', message: 'This unit cannot act this turn' }); return;
     }
@@ -949,14 +1189,14 @@ export class LocalGameService {
     // A setup turn's walk home is not a board move and is checked above
     // against its own three; this guard sits below that block so the two
     // never both charge one walk.
-    const normalAllowance = boardMovesPerTurn(g.turnNumber, this.game?.config);
+    const normalAllowance = boardMovesPerTurn(g.turnNumber, this.game?.config) + battlefieldActionBonus([...g.moveHistory, ...before.records], g.turnNumber, movingColor);
     const moveAllowance = normalAllowance + extraUids.length;
-    const movesUsed = boardMovesAt(g.moveHistory, g.turnNumber, movingColor);
+    const movesUsed = boardMovesAt(g.moveHistory, g.turnNumber, movingColor, g.config);
     const extraUsed = g.moveHistory.filter((record: any) => record.turn === g.turnNumber && extraUids.includes(record.uid)).length;
     if (extraUids.length && !extraUids.includes(piece?.uid ?? '') && movesUsed - extraUsed >= normalAllowance) {
       this.emit({ type: 'invalid_move', message: 'Only the controlled unit has an extra action' }); return;
     }
-    if (movesUsed >= moveAllowance) {
+    if (movesUsed >= moveAllowance && !boardMoveUids([...g.moveHistory, ...before.records], g.turnNumber, movingColor, g.config).has(piece?.uid ?? '')) {
       this.emit({
         type: 'invalid_move',
         message: `That side has had all ${moveAllowance} of its moves this turn`,
@@ -991,7 +1231,8 @@ export class LocalGameService {
       defender_eliminated: false, moved: relocating,
       // The unit rides in the record: it is the only place it survives once
       // it is off the board, and what the base is rebuilt from on a reload.
-      ...(leaving ? { withdrawn: true, unit: rankedUnit(piece, g.config, piece.vet ?? 0, kitActive(piece, g.config, panelOfHex(to, g.config?.board?.orientation))),
+      ...(leaving ? { withdrawn: true, unit: withdrawnUnit(g.config, piece, panelOfHex(to, g.config?.board?.orientation)),
+        ...(sectionOf(g.config, 'economy').walkHomeRefund.resetVeterancy ? { veterancyReset: true } : {}),
         refund: withdrawalRefund(g.config, piece), refundColor: piece.owner ?? piece.color } : {}),
     };
 
@@ -1040,9 +1281,11 @@ export class LocalGameService {
       });
       Object.assign(record, { attacked: true, attackedHex: attack,
         counterActor: { unit_id: target.unit_id, color: target.color, uid: target.uid }, damage_dealt: exchange.damage + exchange.secondDamage,
-        counter_damage: exchange.counterDamage, countered: exchange.countered, attacker_eliminated: exchange.attackerHp <= 0,
+        counter_damage: exchange.counterDamage + exchange.secondCounterDamage, countered: exchange.countered, attacker_eliminated: exchange.attackerHp <= 0,
         defender_eliminated: exchange.targetHp <= 0,
+        ...(exchange.leechHeal ? { leech_heal: exchange.leechHeal } : {}),
         ...(exchange.secondStrike ? { secondStrike: true } : {}),
+      ...(exchange.secondCounter ? { secondCounter: true, second_counter_damage: exchange.secondCounterDamage } : {}),
       });
       if (exchange.targetHp <= 0) { record.captured = target.unit_id; delete board[attack]; }
       else { board[attack] = { ...target, hp: exchange.targetHp }; record.defender_hp = exchange.targetHp; }
@@ -1149,7 +1392,8 @@ export class LocalGameService {
     }
     if (leaving) {
       if (record.intoPanel) record.panelDefender = record.unit;
-      Object.assign(record, { withdrawn: true, unit: rankedUnit(board[at], g.config, unit.vet ?? 0, kitActive(board[at], g.config, panelOfHex(to, g.config?.board?.orientation))),
+      Object.assign(record, { withdrawn: true, unit: withdrawnUnit(g.config, board[at], panelOfHex(to, g.config?.board?.orientation)),
+        ...(sectionOf(g.config, 'economy').walkHomeRefund.resetVeterancy ? { veterancyReset: true } : {}),
         refund: withdrawalRefund(g.config, board[at]), refundColor: unit.owner ?? unit.color });
     } else board[to] = board[at];
     delete board[at];
@@ -1277,18 +1521,21 @@ export class LocalGameService {
     const board = { ...g.boardState };
     // The turn's casts land first, so a king healed off 1 pays the toll from
     // the healed HP.
+    if (!this.unitCastOrderValid(effectsBefore)) {
+      this.emit({ type: 'invalid_move', message: 'A unit ability must be used before its attack' }); return;
+    }
     const cast = this.landEffects(board, effectsBefore);
-    // Only a king the toll felled, or a cast that took a unit off, ends the
-    // game here. Nothing else on a pass moves anybody, so nobody else can have
-    // lost on it - the casts are the reason this is not simply `[felled]`,
-    // which is what the server's `_settle_pass` can say and this cannot.
+    // Casts and earlier held combat can also have removed a commander;
+    // the closing pass must resolve them before scheduled endings.
     const felled = this.overtimeToll(board);
+    const combatDeath = g.moveHistory.some(move => move.turn === g.turnNumber
+      && (move.defender_eliminated || move.attacker_eliminated));
     // The felled side is judged by the objective, like every other ending -
     // and only that side, for the reason above. This used to be `[felled]`
     // outright, which under `elimination` called a king the toll killed a
     // defeat while his army still stood; `move` never did, and the server's
     // `_settle_pass` does not either. Under regicide it is the same answer.
-    const beaten = cast.killed
+    const beaten = cast.killed || combatDeath
       ? this.defeatedSides(board)
       : felled ? this.defeatedSides(board).filter(side => side === felled) : [];
     g.boardState = board;
@@ -1366,6 +1613,7 @@ export class LocalGameService {
     g.boardState = Object.fromEntries(Object.entries(g.boardState).map(([at, unit]) => [at, capUnit(unit)]));
     return {
       gameId: LOCAL_GAME_ID,
+      opponentKind: g.opponentKind ?? 'myself', cpuDifficulty: g.cpuDifficulty ?? 'normal',
       boardState: g.boardState,
       currentTurn: g.currentTurn,
       turnNumber: g.turnNumber,
@@ -1378,6 +1626,7 @@ export class LocalGameService {
       turnStartedAt: g.turnStartedAt,
       drawOfferedBy: '',
       phaseBank: g.phaseBank ?? {},
+      replayJournal: g.replayJournal ?? null,
     };
   }
 
@@ -1402,6 +1651,7 @@ export class LocalGameService {
    * an offline game the moment the tab lost focus.
    */
   private emit(msg: any): void {
+    if (msg.type === 'invalid_move' || msg.type === 'error') this.rejected = true;
     queueMicrotask(() => this.outgoing.next(msg));
   }
 
@@ -1420,6 +1670,7 @@ export class LocalGameService {
 
   private persist(): void {
     this.rankBoard();
+    if (this.replayMode) return;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.game));
     } catch { /* storage full or blocked - the game just won't survive a reload */ }
@@ -1432,6 +1683,14 @@ export class LocalGameService {
       if (this.game?.config) this.game.config = migrateConfig(this.game.config);
       if (this.game) this.game.boardState = Object.fromEntries(Object.entries(this.game.boardState)
         .map(([at, unit]) => [at, capUnit(unit)]));
+      if (this.game?.turnCheckpoints !== undefined) {
+        const g = this.game;
+        g.turnCheckpoints = Array.isArray(g.turnCheckpoints) ? g.turnCheckpoints.filter(checkpoint =>
+          Number.isSafeInteger(checkpoint?.turnNumber) && checkpoint.turnNumber > 0 && checkpoint.turnNumber <= g.turnNumber
+          && Number.isSafeInteger(checkpoint.historyLength) && checkpoint.historyLength >= 0 && checkpoint.historyLength <= g.moveHistory.length
+          && checkpoint.boardState && typeof checkpoint.boardState === 'object' && !Array.isArray(checkpoint.boardState)
+          && checkpoint.uiState && typeof checkpoint.uiState === 'object') : [];
+      }
       this.rankBoard();
     } catch {
       this.game = null;

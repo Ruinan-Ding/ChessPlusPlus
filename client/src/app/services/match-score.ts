@@ -8,7 +8,7 @@ import { phasesOf, scoringPhases, overtimeFirstPly, overtimeLastTurn } from './p
  */
 
 import { ruleOf } from './config.service';
-import { activeVet, capStat, unitStats } from './unit-stats';
+import { activeVet, capStat, kitActive, rankedUnit, unitStats } from './unit-stats';
 import { captureClaims, captureScore, captureZones, captureEligible } from './hex-rules';
 import { handOversBy, isPostmatch, phaseIndexAt, phaseStartTurn, PLIES_PER_TURN, turnOf, turnPointsBy } from './phases';
 
@@ -209,7 +209,15 @@ export function withdrawalRefund(config: any, unit: any): number {
   const maxHp = capStat(unit.max_hp ?? unitStats(unit.unit_id, config, activeVet(unit, unit.panel, config)).hp ?? unit.hp ?? 0);
   const missingHp = Math.max(0, maxHp - capStat(unit.hp ?? maxHp));
   const settings = sectionOf(config, 'economy').walkHomeRefund;
-  return Math.max(settings.minimum, unitValue(config, unit.unit_id) * settings.valueMultiplier - settings.fee - missingHp * settings.missingHpMultiplier);
+  const tiers = settings.veterancy ?? [], rank = unit.vet ?? 0;
+  const factors = rank > 0 && rank <= tiers.length ? tiers[rank - 1] : settings;
+  return Math.max(settings.minimum, unitValue(config, unit.unit_id) * factors.valueMultiplier - factors.fee - missingHp * factors.missingHpMultiplier);
+}
+
+/** Price the refund before resolving the destination's rank and HP. */
+export function withdrawnUnit(config: any, unit: any, panel: string): any {
+  const vet = sectionOf(config, 'economy').walkHomeRefund.resetVeterancy ? 0 : unit.vet ?? 0;
+  return rankedUnit(unit, config, vet, kitActive(unit, config, panel));
 }
 
 /** UP is independent of ability points. All committed unit transactions live in history. */
@@ -220,6 +228,7 @@ export function unitPoints(config: any, history: readonly any[], side: Side): nu
     if (!move) continue;
     if (move.halftimeUp) points += move.halftimeUp[side];
     if (move.unitCast?.color === side) points += (move.unitCast.gain ?? 0) - move.unitCast.cost;
+    if (move.color === side && move.abilityCast?.row !== 'unit') points += move.abilityCast?.up ?? 0;
     if (move.panelEffect || move.entered || move.abilityDeath) continue;
     if (move.panelMove) {
       if (move.unit?.color === side) points -= Math.trunc(Number(move.price) || 0);

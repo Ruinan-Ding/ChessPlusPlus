@@ -1,6 +1,7 @@
+import { ReplaySessionService, ReplayFrame } from './replay-session.service';
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Subject } from 'rxjs';
-import { WEBSOCKET_CONFIG } from './websocket.config';
+import { WEBSOCKET_CONFIG, websocketUrl } from './websocket.config';
 import { LocalGameService } from './local-game.service';
 import { readStore, removeStore, writeStore } from './storage';
 
@@ -14,7 +15,7 @@ const LOCAL_GAME_TYPES = new Set([
   // Putting a finished room back to waiting so it can be played again. Only
   // the browser engine answers it; no server has a restart protocol yet,
   // which is why the button offers it in solo alone.
-  'reset_game',
+  'reset_game', 'checkpoint_turn', 'rewind_turn', 'cpu_manual', 'set_cpu_options',
   // Walking a reserve onto the board. Both engines answer it: the server
   // derives the panels from the config and the move history.
   'enter_board',
@@ -80,12 +81,33 @@ export class WebsocketService {
   /** True while we are deliberately not talking to a server at all. */
   offline$ = this.offlineSubject.asObservable();
 
-  constructor(private local: LocalGameService) {
+  constructor(private local: LocalGameService, public replay: ReplaySessionService = new ReplaySessionService()) {
     this.localGame = readStore('session', 'cpp.localGame') === '1';
     this.offline = readStore('session', 'cpp.offline') === '1';
     this.local.messages$.subscribe(msg => this.messagesSubject.next(msg));
     if (this.offline) this.goLocal();
   }
+
+  get replayActive(): boolean { return readStore('session', 'cpp.replayActive') === '1'; }
+  get replayFile() { return this.local.replayFile; }
+  captureCpuState(): any { return this.local.captureCpuState(); }
+  restoreCpuState(state: any): any { return this.local.restoreCpuState(state); }
+  get replayRecording(): boolean { return this.localGame && this.local.replayRecording; }
+  recordTurn(ply: number, actions: any[]): void { this.local.send({ type: 'record_turn', ply, actions }); }
+  captureReplayFrame(ui: any): ReplayFrame { return this.local.captureReplayFrame(ui); }
+  restoreReplayFrame(frame: ReplayFrame): void { this.local.restoreReplayFrame(frame); }
+  replayResult(reason: string, color: 'white' | 'black'): boolean { return this.local.replayResult(reason, color); }
+
+  async openReplay(username: string): Promise<void> {
+    if (!this.replay.session) await this.replay.restore();
+    if (!this.replay.session) throw new Error('No saved replay session.');
+    this.localGame = true;
+    writeStore('session', 'cpp.localGame', '1');
+    writeStore('session', 'cpp.replayActive', '1');
+    this.local.openReplay(this.replay.session.file.config, username, this.replay.session.frame);
+  }
+
+  get canRewind(): boolean { return this.localGame && this.local.canRewind; }
 
   isLocal(): boolean {
     return this.localGame;
@@ -112,6 +134,7 @@ export class WebsocketService {
    * require going without one, and the lobby still wants its roster.
    */
   startLocalGame(): void {
+    if (this.replayActive) { this.local.closeReplay(); removeStore('session', 'cpp.replayActive'); }
     this.localGame = true;
     writeStore('session', 'cpp.localGame', '1');
     // The solo room has no server counterpart, so the socket belongs to the
@@ -123,7 +146,8 @@ export class WebsocketService {
   endLocalGame(): void {
     this.localGame = false;
     removeStore('session', 'cpp.localGame');
-    this.local.clear();
+    if (this.replayActive) { this.local.closeReplay(); removeStore('session', 'cpp.replayActive'); }
+    else this.local.clear();
   }
 
   /**
@@ -198,16 +222,7 @@ export class WebsocketService {
     this.socket = null;
 
     try {
-      const { protocol, hostname, port, host } = window.location;
-      const wsProtocol = protocol === 'https:' ? 'wss' : 'ws';
-      // The server that served the page is the server that answers the
-      // socket - except under `ng serve`, which proxies nothing and has to be
-      // pointed at daphne by hand. Pinning the backend port unconditionally
-      // dialled :8000 on a deployment sitting behind TLS on 443.
-      const wsHost = port === WEBSOCKET_CONFIG.DEV_SERVER_PORT
-        ? `${hostname}:${WEBSOCKET_CONFIG.BACKEND_PORT}`
-        : host;
-      const wsUrl = `${wsProtocol}://${wsHost}/ws/game/${roomName}/`;
+      const wsUrl = websocketUrl(`/ws/game/${roomName}/`);
       this.socket = new WebSocket(wsUrl);
 
       this.connectTimeout = setTimeout(() => {
@@ -361,14 +376,14 @@ export class WebsocketService {
     }
   }
 
-  sendMessage(message: any): void {
+  sendMessage(message: any): boolean | void {
     // A solo game is answered locally even with a server on the line; only
     // its own traffic is, though - lobby roster and lobby chat are the
     // server's to answer whenever it is there.
     if (this.localGame && (this.offline || LOCAL_GAME_TYPES.has(message?.type))) {
-      this.local.send(message);
+      const accepted = this.local.send(message);
       if (message?.type === 'leave_game_room') this.endLocalGame();
-      return;
+      return accepted;
     }
     if (this.offline) {
       // No server and no local game: drop it rather than queue it up to be

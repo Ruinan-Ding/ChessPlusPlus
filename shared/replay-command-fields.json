@@ -1,0 +1,56 @@
+{
+  "make_move": [
+    "type",
+    "from",
+    "to",
+    "attack",
+    "heal",
+    "withdraw",
+    "more"
+  ],
+  "panel_move": [
+    "type",
+    "from",
+    "to"
+  ],
+  "enter_board": [
+    "type",
+    "from",
+    "to"
+  ],
+  "panel_attack": [
+    "type",
+    "from",
+    "to",
+    "attack",
+    "more"
+  ],
+  "pass_turn": [
+    "type"
+  ],
+  "cast_ability": [
+    "type",
+    "id",
+    "unitUid",
+    "targetUid",
+    "extraUid",
+    "hex",
+    "pairId"
+  ],
+  "pick_pair": [
+    "type",
+    "id"
+  ],
+  "reset_pair": [
+    "type",
+    "id"
+  ],
+  "pick_path": [
+    "type",
+    "id"
+  ],
+  "result": [
+    "type",
+    "reason"
+  ]
+}

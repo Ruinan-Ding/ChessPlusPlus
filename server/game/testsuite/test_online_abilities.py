@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from game.consumers import GameConsumer, _pending_turn_timers
 from game.engine import panels
-from game.engine.ability_rules import AbilityContext, bonus, carries, initial_state, setting
+from game.engine.ability_rules import AbilityContext, battlefield_action_bonus, bonus, carries, initial_state, setting
 from game.engine.board import HexBoard, HEX_DIRECTIONS
 from game.engine.config_loader import DEFAULT_CONFIG
 from game.engine.economy import unit_points_of
@@ -66,12 +66,126 @@ class OnlineAbilityRulesTests(SimpleTestCase):
     def path(self, path):
         self.ctx.pick({'type': 'pick_path', 'id': path})
 
+    def test_onslaught_bonus_applies_to_initiated_strikes_and_existing_healing(self):
+        pawn = self.put('0,0', uid='pawn', vet=0)
+        enemy = self.put('1,0', color='black', uid='enemy', vet=0)
+        self.path('onslaught')
+        self.ctx.data['paths']['black'] = 'onslaught'
+        result = exchange(pawn, enemy, 1, self.config, self.ctx.data)
+        self.assertEqual((result['damage'], result['counter_damage']), (4, 2))
+        self.put('3,0', 'bishop', uid='bishop', vet=0)
+        recipient = self.put('4,0', uid='wounded', vet=0, hp=1)
+        board = HexBoard.from_dict(11, self.ctx.board)
+        from game.engine.game_logic import resolve_heal
+        self.assertEqual(resolve_heal(board, (3, 0), (4, 0), self.config, self.ctx.data)['healed_amount'], 10)
+        self.assertEqual(self.ctx.data['cpSpent']['white'], 50)
+
+    def test_sprint_discounts_all_cast_currencies_without_discounting_path_activation(self):
+        self.path('tempo')
+        self.carry('warcry', 'sap')
+        pawn = self.put('0,0', uid='pawn')
+        enemy = self.put('1,0', color='black', uid='enemy')
+        self.cast('warcry', targetUid='pawn')
+        self.cast('surge', hex='1,0')
+        self.cast('unit-sacrifice', unitUid='pawn', targetUid='wk', extraUid='wk')
+        self.assertEqual(self.ctx.data['pointDelta']['white'], 1000 - 22)
+        self.assertEqual(self.ctx.data['cpSpent']['white'], 100 + 47)
+        self.assertEqual(self.ctx.history[-1].get('abilityCast', {}).get('id'), 'unit-sacrifice')
+        unit_cast = next(move['unitCast'] for move in self.ctx.history if move.get('unitCast'))
+        self.assertEqual(unit_cast['cost'], 21)
+        reserve = {'unit_id': 'pawn', 'color': 'white', 'uid': 'reserve', 'vet': 0, 'hp': 12, 'max_hp': 12, 'panel': 'br'}
+        self.assertEqual(bonus(reserve, self.config, self.ctx.data, 'mov'), 1)
+        self.assertEqual(bonus({**reserve, 'panel': 'bl'}, self.config, self.ctx.data, 'mov', True), 5)
+        self.config['abilities']['catalogue']['strike']['cost'] = 2
+        self.carry('strike', 'mend')
+        before = self.ctx.data['pointDelta']['white']
+        self.cast('strike', targetUid='enemy')
+        self.assertEqual(self.ctx.data['pointDelta']['white'], before - 1)
+
+    def test_sacrifice_refreshes_each_recipient_without_stacking_and_still_promotes_and_heals(self):
+        self.put('0,0', uid='p1')
+        self.put('1,0', uid='p2')
+        self.put('2,0', uid='p3')
+        self.put('3,0', 'knight', uid='target', vet=0, hp=1)
+        self.put('4,0', 'rook', uid='other', vet=0, hp=1)
+        self.cast('unit-sacrifice', unitUid='p1', targetUid='target', extraUid='wk')
+        self.assertEqual((self.ctx.board['3,0']['vet'], self.ctx.board['3,0']['hp']), (1, 20))
+        previous = copy.deepcopy(self.ctx.data['buffs']['target'])
+        self.ctx.board['3,0']['hp'] = 2
+        self.ctx.ply += 2
+        self.cast('unit-sacrifice', unitUid='p2', targetUid='target', extraUid='wk')
+        self.cast('unit-sacrifice', unitUid='p3', targetUid='other', extraUid='wk')
+        self.assertEqual((self.ctx.board['3,0']['vet'], self.ctx.board['3,0']['hp']), (2, 20))
+        for uid in ('target', 'other'):
+            buff = self.ctx.data['buffs'][uid]
+            self.assertEqual((buff['mov'], buff['atk'], buff['def']), (2, 6, 6))
+            self.assertEqual(len(buff['effects']), 1)
+            self.assertEqual(buff['effects'][0]['expiresAt'], 59)
+        self.assertEqual(previous['effects'][0]['expiresAt'], 57)
+        self.assertFalse(any(key in self.ctx.board for key in ('0,0', '1,0', '2,0')))
+
+    def test_leech_heals_actual_damage_before_counter_and_never_from_counters(self):
+        self.config['units']['rook']['attack'] = 20
+        queen = self.put('0,0', 'queen', uid='q', hp=4)
+        rook = self.put('1,0', 'rook', color='black', uid='r', vet=0)
+        self.cast('queen-leech', unitUid='q')
+        self.assertEqual(self.ctx.data['unitCooldowns']['q']['turns'], 3)
+        result = exchange(queen, rook, 1, self.config, self.ctx.data)
+        self.assertEqual((result['damage'], result['counter_damage'], result['leech_heal'], result['attacker_hp']), (10, 10, 10, 4))
+        killed = exchange(queen, {**rook, 'hp': 1}, 1, self.config, self.ctx.data)
+        self.assertEqual((killed['leech_heal'], killed['attacker_hp']), (1, 5))
+        capped = exchange({**queen, 'hp': 33}, rook, 1, self.config, self.ctx.data)
+        self.assertEqual((capped['leech_heal'], capped['attacker_hp']), (1, 24))
+        pawn = self.put('-1,0', 'pawn', color='black', uid='p', vet=0)
+        result = exchange(pawn, {**queen, 'hp': 10}, 1, self.config, self.ctx.data)
+        self.assertTrue(result['countered'])
+        self.assertEqual(result['target_hp'], 9)
+        self.assertEqual(result['leech_heal'], 0)
+
+    def test_unit_ability_is_refused_after_an_attack_without_spending(self):
+        self.put('0,0', 'queen', uid='q')
+        self.ctx.data['unitProgress']['q'] = {'attacked': True, 'spent': 1}
+        before = copy.deepcopy(self.ctx.data)
+        with self.assertRaisesRegex(ValueError, 'already attacked'):
+            self.cast('queen-leech', unitUid='q')
+        self.assertEqual(self.ctx.data, before)
+
+    def test_online_move_ability_attack_and_withdraw_ordering(self):
+        async def preview(commands):
+            return await GameConsumer()._preview_turn(self.state, commands)
+        queen = self.put('0,0', 'queen', uid='q', hp=4)
+        self.put('1,0', 'rook', color='black', uid='r', vet=0)
+        self.config['units']['rook']['attack'] = 20
+        cast = {'type': 'cast_ability', 'id': 'queen-leech', 'unitUid': 'q'}
+        walk = {'type': 'make_move', 'from': '0,0', 'to': '0,1', 'more': True}
+        attack = {'type': 'make_move', 'from': '0,1', 'to': '0,1', 'attack': '1,0', 'more': True}
+        result = asyncio.run(preview([walk, cast, attack]))
+        self.assertEqual(result.board_state['0,1']['hp'], 4)
+        with self.assertRaisesRegex(ValidationError, 'Movement ends'):
+            asyncio.run(preview([cast, walk]))
+        with self.assertRaisesRegex(ValidationError, 'already attacked'):
+            asyncio.run(preview([walk, attack, cast]))
+        self.state.board_state.pop('0,0'); self.state.board_state.pop('1,0')
+        self.put('0,0', 'archer', uid='a')
+        self.put('3,0', 'pawn', color='black', uid='p', vet=0)
+        result = asyncio.run(preview([
+            {'type': 'cast_ability', 'id': 'archer-bog', 'unitUid': 'a'},
+            {'type': 'make_move', 'from': '0,0', 'to': '0,0', 'attack': '3,0', 'more': True},
+            {'type': 'make_move', 'from': '0,0', 'to': '0,6', 'more': True},
+        ]))
+        self.assertEqual(result.board_state['0,6']['uid'], 'a')
+        self.assertEqual(result.ability_state['buffs']['a']['mov'], 0)
+        self.assertEqual(result.ability_state['buffs']['p']['mov'], -4)
+
     def test_pair_unlock_is_per_side_and_measured_in_full_turns(self):
         self.state.turn_number = self.ctx.ply = 7
         self.ctx.pick({'type': 'pick_pair', 'id': 'warcry'})
         with self.assertRaisesRegex(ValueError, 'not unlocked'):
             self.ctx.pick({'type': 'pick_pair', 'id': 'bulwark'})
-        self.ctx.ply = 17
+        self.ctx.ply = 11
+        with self.assertRaisesRegex(ValueError, 'not unlocked'):
+            self.ctx.pick({'type': 'pick_pair', 'id': 'bulwark'})
+        self.ctx.ply = 13
         self.ctx.pick({'type': 'pick_pair', 'id': 'bulwark'})
         self.assertEqual(self.ctx.data['loadouts']['white'], ['warcry', 'sap', 'bulwark', 'weakening'])
         self.assertEqual(self.ctx.data['pickTurns']['white'], 4)
@@ -202,7 +316,7 @@ class OnlineAbilityRulesTests(SimpleTestCase):
         for path, stat in [('bastion', 'def'), ('onslaught', 'atk'), ('tempo', 'mov')]:
             with self.subTest(path=path):
                 self.ctx.data['paths']['white'] = path
-                self.assertEqual(bonus(unit, self.config, self.ctx.data, stat, True, True), 1)
+                self.assertEqual(bonus(unit, self.config, self.ctx.data, stat, True, True), {'bastion': 1, 'onslaught': 2, 'tempo': 5}[path])
         self.ctx.data['paths']['white'] = 'bastion'
         self.assertEqual(bonus(unit, self.config, self.ctx.data, 'def', False, False), 0)
 
@@ -288,13 +402,112 @@ class OnlineAbilityRulesTests(SimpleTestCase):
         self.assertTrue(carries(self.ctx.data['buffs']['enemy-base'], 'action-lock'))
         self.assertTrue(attack_allowed(base, 1, self.config, self.ctx.data, True))
 
+    async def test_cp_unit_point_grants_are_recorded_once_and_preserve_old_point_rewards(self):
+        for color in ('white', 'black'):
+            for currency in ('up', 'points'):
+                with self.subTest(color=color, currency=currency):
+                    self.setUp()
+                    ply = self.state.turn_number = 55 if color == 'white' else 56
+                    self.state.current_turn = 'alice' if color == 'white' else 'bob'
+                    self.ctx.ply = ply; self.ctx.color = color
+                    entry = self.ctx.catalogue['convert']
+                    entry.pop('up', None); entry.pop('points', None); entry[currency] = 50
+                    self.path('onslaught')
+                    points = self.ctx.data['pointDelta'][color]
+                    up = unit_points_of(color, self.ctx.history, self.config)
+                    state = await GameConsumer()._preview_turn(self.state,
+                        [{'type': 'cast_ability', 'id': 'convert'}, {'type': 'pass_turn'}])
+                    self.assertEqual(unit_points_of(color, state.move_history, self.config), up + (50 if currency == 'up' else 0))
+                    self.assertEqual(state.ability_state['pointDelta'][color], points + (50 if currency == 'points' else 0))
+                    self.assertEqual(unit_points_of('black' if color == 'white' else 'white', state.move_history, self.config), 1000)
+                    restored = copy.deepcopy(state)
+                    restored.config_snapshot['abilities']['catalogue']['convert'][currency] = 900
+                    self.assertEqual(unit_points_of(color, restored.move_history, restored.config_snapshot), up + (50 if currency == 'up' else 0))
+                    self.assertFalse(state.ability_state['unitProgress'])
+
+    async def test_convert_funds_an_initialization_crossing_in_the_same_canonical_turn(self):
+        for color in ('white', 'black'):
+            with self.subTest(color=color):
+                self.setUp()
+                self.config['economy']['upAtStart'] = 10
+                self.state.turn_number = 1 if color == 'white' else 2
+                self.state.current_turn = 'alice' if color == 'white' else 'bob'
+                source, destination = ('-12,1', '11,1') if color == 'white' else ('12,-1', '-11,-1')
+                self.config['setup'][color][source] = 'pawn'
+                preview = await GameConsumer()._preview_turn(self.state, [
+                    {'type': 'pick_path', 'id': 'onslaught'}, {'type': 'cast_ability', 'id': 'convert'},
+                    {'type': 'panel_move', 'from': source, 'to': destination}, {'type': 'pass_turn'}])
+                self.assertEqual(unit_points_of(color, preview.move_history, self.config), 48)
+                self.assertEqual(preview.ability_state['cpSpent'][color], 75)
+                self.assertEqual(AbilityContext(preview).find(color[0] + source)[0], destination)
+                reward = next(i for i, m in enumerate(preview.move_history) if m.get('abilityCast', {}).get('up'))
+                crossing = next(i for i, m in enumerate(preview.move_history) if m.get('price') == 12)
+                self.assertLess(reward, crossing)
+
+    def test_recharge_pays_only_members_already_at_zero_or_one_before_reduction(self):
+        for color in ('white', 'black'):
+            for multiplier in (None, 0, 1, 2):
+                for first, second in ((0, 0), (0, 1), (1, 1), (1, 2), (2, 3)):
+                    with self.subTest(color=color, multiplier=multiplier, cooldowns=(first, second)):
+                        self.setUp(); self.ctx.color = color
+                        self.ctx.data['paths'][color] = 'tempo'
+                        self.ctx.data['loadouts'][color] = ['warcry', 'sap']
+                        self.ctx.data['pointDelta'][color] = 1000
+                        self.ctx.data['cooldowns'][color] = {'warcry': first, 'sap': second}
+                        entry = self.ctx.catalogue['recharge']
+                        if multiplier is None: entry.pop('refundMultiplier')
+                        else: entry['refundMultiplier'] = multiplier
+                        self.ctx.catalogue['warcry']['cost'] = 17
+                        self.ctx.catalogue['sap']['cost'] = 31
+                        other = 'black' if color == 'white' else 'white'
+                        other_points = self.ctx.data['pointDelta'][other]
+                        self.cast('recharge', pairId='sap')
+                        expected = (17 if first <= 1 else 0) + (31 if second <= 1 else 0)
+                        self.assertEqual(self.ctx.data['pointDelta'][color], 1000 + expected * (multiplier or 0))
+                        self.assertEqual(self.ctx.data['pointDelta'][other], other_points)
+                        self.assertEqual([self.ctx.data['cooldowns'][color][i] for i in ('warcry', 'sap')],
+                            [max(1, n - 1) if n else 0 for n in (first, second)])
+                        self.assertEqual(self.ctx.data['cpSpent'][color], 22)
+                        self.assertEqual(self.ctx.data['cooldowns'][color]['recharge'], 1)
+                        with self.assertRaisesRegex(ValueError, 'cooling down'):
+                            self.cast('recharge', pairId='warcry')
+
+    async def test_recharge_used_one_turn_abilities_refunds_base_prices_and_never_refreshes_them(self):
+        for color in ('white', 'black'):
+            for ability, pair, target in [('mend', 'strike', 'friend'), ('weakening', 'bulwark', 'enemy')]:
+                with self.subTest(color=color, ability=ability):
+                    self.setUp()
+                    self.state.turn_number = 55 if color == 'white' else 56
+                    self.state.current_turn = 'alice' if color == 'white' else 'bob'
+                    self.ctx.ply = self.state.turn_number; self.ctx.color = color
+                    self.ctx.data['paths'][color] = 'tempo'
+                    self.ctx.data['loadouts'][color] = [pair, ability]
+                    self.ctx.data['pointDelta'][color] = 1000
+                    self.put('0,0', color=color, uid='friend', hp=1)
+                    self.put('1,0', color='black' if color == 'white' else 'white', uid='enemy')
+                    commands = [{'type': 'cast_ability', 'id': ability, 'targetUid': target},
+                                {'type': 'cast_ability', 'id': 'recharge', 'pairId': ability}]
+                    preview = await GameConsumer()._preview_turn(self.state, commands, finish=False)
+                    price = self.ctx.catalogue[ability]['cost']
+                    refund = price + self.ctx.catalogue[pair]['cost']
+                    self.assertEqual(preview.ability_state['pointDelta'][color], 1000 - max(1, price - 3) + refund)
+                    self.assertEqual(preview.ability_state['cooldowns'][color][ability], 1)
+                    self.assertEqual(preview.ability_state['cooldowns'][color].get(pair, 0), 0)
+                    with self.assertRaisesRegex(ValidationError, 'cooling down'):
+                        await GameConsumer()._preview_turn(self.state, commands + [commands[0]], finish=False)
+                    self.assertEqual(self.state.ability_state['pointDelta'][color], 1000)
+                    committed = await GameConsumer()._preview_turn(self.state, commands + [{'type': 'pass_turn'}])
+                    self.assertEqual(committed.ability_state['pointDelta'][color], preview.ability_state['pointDelta'][color])
+                    self.assertEqual(AbilityContext(copy.deepcopy(committed)).data['cooldowns'][color][ability], 1)
+
     def test_utilities_phase_uses_and_recharge_floor(self):
-        self.path('bastion')
-        start = self.ctx.data['pointDelta']['white']
+        self.path('onslaught')
+        start = unit_points_of('white', self.ctx.history, self.config)
         for _ in range(5):
             self.cast('convert')
             self.ctx.begin_turn('white', self.ctx.ply + 2)
-        self.assertEqual(self.ctx.data['pointDelta']['white'], start + 250)
+        self.assertEqual(unit_points_of('white', self.ctx.history, self.config), start + 250)
+        self.assertEqual(self.ctx.data['pointDelta']['white'], 1000)
         with self.assertRaisesRegex(ValueError, 'used up'):
             self.cast('convert')
         self.ctx.begin_turn('white', 75)
@@ -361,7 +574,7 @@ class OnlineAbilityRulesTests(SimpleTestCase):
                     self.panel('br', uid='promoted', vet=1, hp=7)
                     self.state.move_history[-1]['turn'] = 23
                 self.state.turn_number = self.ctx.ply = 25
-                self.path('onslaught')
+                self.path('bastion')
                 state = await GameConsumer()._preview_turn(self.state, [
                     {'type': 'cast_ability', 'id': 'strengthen', 'targetUid': 'promoted'},
                     {'type': 'pass_turn'}])
@@ -385,7 +598,7 @@ class OnlineAbilityRulesTests(SimpleTestCase):
                 q, r = map(int, key.split(','))
                 self.cast('anchor', hex=f'{q:03d},{r:03d}')
                 self.assertEqual(setting(self.ctx.data['buffs']['target'], 'atk'), 0)
-                self.assertEqual(self.ctx.data['cpSpent']['white'], 60)
+                self.assertEqual(self.ctx.data['cpSpent']['white'], 55)
 
     async def test_checkmate_walks_charge_their_actual_steps_before_continuing(self):
         self.put('5,-9', uid='walker', vet=2)
@@ -478,7 +691,7 @@ class OnlineAbilityRulesTests(SimpleTestCase):
 
     async def test_strengthen_does_not_spend_the_battlefield_action(self):
         self.put('0,0', uid='promoted', vet=1)
-        self.path('onslaught')
+        self.path('bastion')
         state = await GameConsumer()._preview_turn(self.state, [
             {'type': 'cast_ability', 'id': 'strengthen', 'targetUid': 'promoted'},
             {'type': 'make_move', 'from': '0,0', 'to': '1,0'},
@@ -488,7 +701,7 @@ class OnlineAbilityRulesTests(SimpleTestCase):
 
     def test_strengthen_raises_current_and_max_hp_once_and_caps_rank(self):
         self.put('0,0', uid='pawn', vet=0, hp=5)
-        self.path('onslaught')
+        self.path('bastion')
         for expected in (1, 2, 3, 3):
             self.cast('strengthen', targetUid='pawn')
             self.assertEqual(self.ctx.board['0,0']['vet'], expected)
@@ -496,7 +709,7 @@ class OnlineAbilityRulesTests(SimpleTestCase):
             self.ctx.begin_turn('white', self.ctx.ply + 2)
 
     def test_legacy_sacrifice_spends_up_counts_death_and_excludes_bases(self):
-        entry = self.ctx.catalogue['unit-sacrifice']; entry.pop('stars')
+        entry = self.ctx.catalogue['unit-sacrifice']; entry.pop('stars'); entry.pop('battlefieldActions')
         entry.update(atk=1, def_=1, mov=1, heal=1); entry['def'] = entry.pop('def_')
         self.put('0,0', uid='pawn')
         self.put('1,0', 'bishop', uid='ally', hp=3)
@@ -561,10 +774,11 @@ class OnlineAbilityRulesTests(SimpleTestCase):
                 self.assertEqual(deaths_of(self.config, state.move_history, color), 12)
                 self.assertEqual(deaths_of(self.config, state.move_history, enemy_color), 0)
 
-    async def test_sacrifice_extra_actor_is_independent_and_does_not_restore_used_actions(self):
+    async def test_legacy_sacrifice_extra_actor_is_independent_and_does_not_restore_used_actions(self):
         for selected in ('target', 'extra'):
             with self.subTest(selected=selected):
-                self.setUp()
+                self.setUp(); self.state.turn_number = self.ctx.ply = 89
+                self.ctx.catalogue['unit-sacrifice'].pop('battlefieldActions')
                 self.put('0,0', uid='caster')
                 self.put('2,0', uid='target', vet=1, hp=3)
                 self.put('3,0', uid='extra')
@@ -575,11 +789,11 @@ class OnlineAbilityRulesTests(SimpleTestCase):
                     {'type': 'cast_ability', 'id': 'unit-sacrifice', 'unitUid': 'caster', 'targetUid': 'target', 'extraUid': selected},
                     {'type': 'make_move', 'from': key, 'to': key.replace(',0', ',1'), 'more': True},
                     {'type': 'pass_turn'}]))
-                self.assertEqual(state.turn_number, 56)
+                self.assertEqual(state.turn_number, 90)
                 self.assertEqual(state.board_state[key.replace(',0', ',1')]['uid'], selected)
-                self.assertEqual(board_moves_at(state.move_history, 55, 'white'), 1)
+                self.assertEqual(board_moves_at(state.move_history, 89, 'white'), 2)
                 self.assertTrue(any(m.get('extraUnit', {}).get('uid') == selected for m in state.move_history))
-        self.setUp(); self.put('0,0', uid='caster'); self.put('2,0', uid='target')
+        self.setUp(); self.state.turn_number = self.ctx.ply = 89; self.put('0,0', uid='caster'); self.put('2,0', uid='target')
         before = copy.deepcopy(self.state.board_state)
         with self.assertRaisesRegex(ValidationError, 'unused'):
             await GameConsumer()._preview_turn(self.state, [
@@ -587,6 +801,143 @@ class OnlineAbilityRulesTests(SimpleTestCase):
                 {'type': 'cast_ability', 'id': 'unit-sacrifice', 'unitUid': 'caster', 'targetUid': 'target', 'extraUid': 'target'}])
         self.assertEqual(self.state.board_state, before)
         self.assertEqual(self.state.move_history, [])
+
+    async def test_configured_panel_casts_spend_only_their_source_category_and_end_ordinary_walks(self):
+        for color in ('white', 'black'):
+            for category in ('base', 'reserve'):
+                with self.subTest(color=color, category=category):
+                    self.setUp()
+                    self.config['veterancy']['kitZones'] = ['battlefield', 'base', 'reserve']
+                    self.state.turn_number = 55 if color == 'white' else 56
+                    self.state.current_turn = 'alice' if color == 'white' else 'bob'
+                    panel = ('bl' if color == 'white' else 'tr') if category == 'base' else ('br' if color == 'white' else 'tl')
+                    key, _ = self.panel(panel, 'knight', 'caster')
+                    self.put('0,0', 'rook', color, 'field')
+                    before = panels.panel_move_targets(self.config, 11, self.state.move_history,
+                        self.state.board_state, key, self.state.turn_number, 1000, ability_state=self.state.ability_state)
+                    destination = next(k for k, cost in before.items() if cost['cost'] == 1)
+                    cast = await GameConsumer()._preview_turn(self.state,
+                        [{'type': 'cast_ability', 'id': 'knight-charge', 'unitUid': 'caster'}], finish=False)
+                    self.assertEqual(panels.panel_movers(cast.move_history, cast.turn_number, color, config=self.config)[category], {'caster'})
+                    self.assertEqual(board_moves_at(cast.move_history, cast.turn_number, color, self.config), 0)
+                    with self.assertRaises(ValidationError):
+                        await GameConsumer()._preview_turn(cast,
+                            [{'type': 'panel_move', 'from': key, 'to': destination}], finish=False)
+                    field = await GameConsumer()._preview_turn(cast,
+                        [{'type': 'make_move', 'from': '0,0', 'to': '0,1', 'more': True}], finish=False)
+                    self.assertEqual(field.board_state['0,1']['uid'], 'field')
+
+    async def test_each_category_can_resume_independently_until_its_own_actor_switches(self):
+        for color in ('white', 'black'):
+            for ply in (89, 99):
+                with self.subTest(color=color, ply=ply):
+                    self.setUp()
+                    self.state.turn_number = ply if color == 'white' else ply + 1
+                    self.state.current_turn = 'alice' if color == 'white' else 'bob'
+                    self.put('0,0', 'rook', color, 'fieldA')
+                    self.put('3,0', 'rook', color, 'fieldB')
+                    locations = {'fieldA': '0,0', 'fieldB': '3,0'}
+                    for category, panel in [('base', 'bl' if color == 'white' else 'tr'),
+                                             ('reserve', 'br' if color == 'white' else 'tl')]:
+                        keys = panels.panel_zones(11)[panel]
+                        for key, suffix in zip((keys[0], keys[-1]), ('A', 'B')):
+                            uid = category + suffix
+                            self.config['setup'][color][key] = 'rook'
+                            unit = self.put(key, 'rook', color, uid)
+                            self.state.board_state.pop(key)
+                            self.state.move_history.append({'turn': 53, 'color': color, 'from': '0,0',
+                                'to': key, 'withdrawn': True, 'unit_id': 'rook', 'unit': unit})
+                            locations[uid] = key
+                    async def walk(state, uid):
+                        origin = locations[uid]
+                        targets = panels.panel_move_targets(self.config, 11, state.move_history,
+                            state.board_state, origin, state.turn_number, 1000, ability_state=state.ability_state)
+                        panel = panels.panel_of(*panels.axial_to_pixel(*panels.parse_key(origin)))
+                        destination = next(key for key, cost in targets.items() if cost['cost'] == 1
+                            and panels.panel_of(*panels.axial_to_pixel(*panels.parse_key(key))) == panel)
+                        result = await GameConsumer()._preview_turn(state,
+                            [{'type': 'panel_move', 'from': origin, 'to': destination}], finish=False)
+                        locations[uid] = destination
+                        return result
+                    state = await walk(self.state, 'baseA')
+                    state = await walk(state, 'reserveA')
+                    state = await GameConsumer()._preview_turn(state,
+                        [{'type': 'make_move', 'from': '0,0', 'to': '0,1', 'more': True}], finish=False)
+                    state = await walk(state, 'baseA')
+                    state = await walk(state, 'reserveA')
+                    state = await GameConsumer()._preview_turn(state,
+                        [{'type': 'make_move', 'from': '0,1', 'to': '0,2', 'more': True}], finish=False)
+                    before = copy.deepcopy(state)
+                    state = await walk(state, 'baseB')
+                    state = await walk(state, 'reserveB')
+                    state = await GameConsumer()._preview_turn(state,
+                        [{'type': 'make_move', 'from': '3,0', 'to': '3,1', 'more': True}], finish=False)
+                    for uid in ('baseA', 'reserveA'):
+                        origin = locations[uid]
+                        targets = panels.panel_move_targets(self.config, 11, before.move_history,
+                            before.board_state, origin, before.turn_number, 1000, ability_state=before.ability_state)
+                        destination = next(key for key, cost in targets.items() if cost['cost'] == 1)
+                        with self.assertRaises(ValidationError):
+                            await GameConsumer()._preview_turn(state,
+                                [{'type': 'panel_move', 'from': origin, 'to': destination}], finish=False)
+                    with self.assertRaises(ValidationError):
+                        await GameConsumer()._preview_turn(state,
+                            [{'type': 'make_move', 'from': '0,2', 'to': '0,3', 'more': True}], finish=False)
+                    undo = await walk(before, 'baseA')
+                    undo = await walk(undo, 'reserveA')
+                    undo = await GameConsumer()._preview_turn(undo,
+                        [{'type': 'make_move', 'from': '0,2', 'to': '0,3', 'more': True}], finish=False)
+                    self.assertEqual(undo.board_state['0,3']['uid'], 'fieldA')
+
+    async def test_different_battlefield_unit_cast_closes_previous_actor_for_both_seats(self):
+        for color in ('white', 'black'):
+            for ply in (89, 99):
+                with self.subTest(color=color, ply=ply):
+                    self.setUp()
+                    self.state.turn_number = ply if color == 'white' else ply + 1
+                    self.state.current_turn = 'alice' if color == 'white' else 'bob'
+                    self.put('0,0', 'rook', color, 'mover')
+                    self.put('3,0', 'knight', color, 'caster')
+                    first = await GameConsumer()._preview_turn(self.state,
+                        [{'type': 'make_move', 'from': '0,0', 'to': '1,0', 'more': True}], finish=False)
+                    cast = {'type': 'cast_ability', 'id': 'knight-charge', 'unitUid': 'caster'}
+                    switched = await GameConsumer()._preview_turn(first, [cast], finish=False)
+                    before = copy.deepcopy(switched.board_state), copy.deepcopy(switched.move_history)
+                    for command in [{'type': 'make_move', 'from': '1,0', 'to': '2,0', 'more': True},
+                                    {'type': 'cast_ability', 'id': 'rook-cleave', 'unitUid': 'mover'}]:
+                        with self.assertRaisesRegex(ValidationError, 'already moved|finished'):
+                            await GameConsumer()._preview_turn(switched, [command], finish=False)
+                    self.assertEqual((switched.board_state, switched.move_history), before)
+                    undo = await GameConsumer()._preview_turn(first,
+                        [{'type': 'make_move', 'from': '1,0', 'to': '2,0', 'more': True}], finish=False)
+                    self.assertEqual(undo.board_state['2,0']['uid'], 'mover')
+
+    async def test_sacrifice_general_slots_accept_any_unused_actor_and_expire_for_both_seats(self):
+        for color in ('white', 'black'):
+            for count in (0, 1, 2):
+                with self.subTest(color=color, count=count):
+                    self.setUp()
+                    self.ctx.catalogue['unit-sacrifice']['battlefieldActions'] = count
+                    ply = self.state.turn_number = 55 if color == 'white' else 56
+                    self.state.current_turn = 'alice' if color == 'white' else 'bob'
+                    self.put('0,0', color=color, uid='caster')
+                    self.put('2,0', color=color, uid='target', hp=3)
+                    for n in range(count):
+                        self.put(f'{-2-n},0', color=color, uid=f'actor{n}')
+                    commands = [{'type': 'cast_ability', 'id': 'unit-sacrifice', 'unitUid': 'caster',
+                                 'targetUid': 'target', 'extraUid': 'target'}]
+                    commands += [{'type': 'make_move', 'from': f'{-2-n},0', 'to': f'{-2-n},1', 'more': True}
+                                 for n in range(count)]
+                    state = await GameConsumer()._preview_turn(self.state, commands, finish=False)
+                    self.assertEqual(battlefield_action_bonus(state.move_history, ply, color), count)
+                    self.assertEqual(board_moves_at(state.move_history, ply, color), 1 + count)
+                    self.assertFalse(any(m.get('extraUnit') for m in state.move_history))
+                    self.assertEqual(state.ability_state['extraUnits'], {})
+                    with self.assertRaises(ValidationError):
+                        await GameConsumer()._preview_turn(state, [{'type': 'make_move', 'from': '2,0', 'to': '2,1'}])
+                    self.assertEqual(battlefield_action_bonus(state.move_history, ply + 1, color), 0)
+                    self.assertEqual(battlefield_action_bonus(state.move_history, ply + 2, color), 0)
+                    self.assertEqual(battlefield_action_bonus(state.move_history, ply, 'black' if color == 'white' else 'white'), 0)
 
     def test_sacrifice_rejects_invalid_recipients_and_extra_actors_without_payment(self):
         self.put('0,0', uid='caster'); self.put('1,0', uid='target')
@@ -641,6 +992,95 @@ class OnlineAbilityRulesTests(SimpleTestCase):
         archer['panel'] = 'br'; shield['panel'] = 'tl'
         self.assertFalse(attack_allowed(shield, 1, self.config, self.ctx.data, True))
         self.assertEqual(passive(archer, self.config), {})
+
+    def test_two_charged_units_finish_after_four_strikes_or_an_earlier_death(self):
+        attacker = self.put('0,0', 'knight', uid='a')
+        defender = self.put('1,0', 'knight', 'black', 'd')
+        entry = self.ctx.catalogue['knight-charge']
+        self.ctx.add_buff(attacker, entry)
+        self.ctx.add_buff(defender, entry)
+        for source_hp, target_hp, source_end, target_end, second, counter in [
+                (20, 20, 4, 4, True, True), (8, 20, 0, 12, False, False),
+                (20, 12, 12, 0, True, False), (10, 20, 0, 4, True, True)]:
+            with self.subTest(source_hp=source_hp, target_hp=target_hp):
+                result = exchange({**attacker, 'hp': source_hp}, {**defender, 'hp': target_hp}, 1, self.config, self.ctx.data)
+                self.assertEqual((result['attacker_hp'], result['target_hp'], result['second_strike'], result['second_counter']),
+                                 (source_end, target_end, second, counter))
+        protected = copy.deepcopy(self.ctx.data)
+        for unit in (attacker, defender):
+            protected['buffs'][unit['uid']]['effects'].append({'effect': 'invulnerable'})
+        result = exchange(attacker, defender, 1, self.config, protected)
+        self.assertEqual((result['damage'], result['counter_damage'], result['second_damage'], result['second_counter_damage']), (0, 0, 0, 0))
+        self.assertTrue(result['second_counter'])
+        self.assertFalse(exchange(attacker, defender, 1, self.config, self.ctx.data, counters=False)['second_counter'])
+        self.ctx.data['buffs']['d']['effects'][0].pop('secondCounter')
+        result = exchange(attacker, defender, 1, self.config, self.ctx.data)
+        self.assertEqual((result['attacker_hp'], result['second_counter']), (12, False))
+
+    async def test_opposing_turn_charge_persists_and_records_second_counter_deaths_for_both_seats(self):
+        for color in ('white', 'black'):
+            for hp in (20, 10):
+                with self.subTest(color=color, hp=hp):
+                    self.setUp()
+                    other = 'black' if color == 'white' else 'white'
+                    self.state.turn_number = 54 if color == 'white' else 55
+                    self.state.current_turn = 'alice' if other == 'white' else 'bob'
+                    self.put('0,0', 'knight', color, 'a', hp=hp)
+                    self.put('1,0', 'knight', other, 'd')
+                    charged = await GameConsumer()._preview_turn(self.state, GameConsumer._draft_commands([
+                        {'type': 'cast_ability', 'id': 'knight-charge', 'unitUid': 'd'}, {'type': 'pass_turn'}]))
+                    result = await GameConsumer()._preview_turn(charged, GameConsumer._draft_commands([
+                        {'type': 'cast_ability', 'id': 'knight-charge', 'unitUid': 'a'},
+                        {'type': 'make_move', 'from': '0,0', 'to': '0,0', 'attack': '1,0', 'more': True},
+                        {'type': 'pass_turn'}]))
+                    record = next(m for m in result.move_history if m.get('attacked'))
+                    self.assertTrue(record['secondCounter']); self.assertTrue(record['secondStrike'])
+                    from game.replay import beat, replay_milliseconds
+                    self.assertEqual(replay_milliseconds([record]), 4 * (2 * beat('strike') + beat('hit') + beat('gap')))
+                    self.assertEqual((record['damage_dealt'], record['counter_damage'], record['second_counter_damage']), (16, 16, 8))
+                    self.assertEqual(result.board_state['1,0']['hp'], 4)
+                    if hp == 20:
+                        self.assertEqual(result.board_state['0,0']['hp'], 4)
+                    else:
+                        self.assertNotIn('0,0', result.board_state)
+                        self.assertEqual(unit_points_of(other, result.move_history, self.config), 1000 - 16 + 30)
+                        self.assertEqual(deaths_of(self.config, result.move_history, color), 30)
+
+    async def test_archer_interleaves_its_own_walk_attack_and_cast_but_never_reopens_after_switching(self):
+        for color in ('white', 'black'):
+            with self.subTest(color=color):
+                self.setUp(); other = 'black' if color == 'white' else 'white'
+                self.state.turn_number = 89 if color == 'white' else 90
+                self.state.current_turn = 'alice' if color == 'white' else 'bob'
+                self.put('0,0', 'archer', color, 'a')
+                self.put('3,0', color=other, uid='d', vet=0)
+                self.put('-3,0', color=color, uid='b')
+                commands = [
+                    {'type': 'make_move', 'from': '0,0', 'to': '0,1', 'more': True},
+                    {'type': 'make_move', 'from': '0,1', 'to': '0,1', 'attack': '3,0', 'more': True},
+                    {'type': 'make_move', 'from': '0,1', 'to': '0,2', 'more': True},
+                    {'type': 'cast_ability', 'id': 'archer-bog', 'unitUid': 'a'},
+                    {'type': 'make_move', 'from': '0,2', 'to': '0,3', 'more': True},
+                ]
+                result = await GameConsumer()._preview_turn(self.state, commands, finish=False)
+                self.assertEqual(result.board_state['0,3']['uid'], 'a')
+                self.assertEqual(result.ability_state['unitProgress']['a']['spent'], 3)
+                self.assertEqual(result.board_state['3,0']['hp'], 11)
+                self.assertNotIn('d', result.ability_state['buffs'])
+                self.assertEqual(board_moves_at(result.move_history, result.turn_number, color, self.config), 1)
+                for extra in [{'type': 'cast_ability', 'id': 'archer-bog', 'unitUid': 'a'},
+                              {'type': 'make_move', 'from': '0,3', 'to': '0,3', 'attack': '3,0', 'more': True},
+                              {'type': 'make_move', 'from': '0,3', 'to': '-6,6', 'more': True}]:
+                    with self.assertRaises(ValidationError):
+                        await GameConsumer()._preview_turn(result, [extra], finish=False)
+                switched = await GameConsumer()._preview_turn(result,
+                    [{'type': 'make_move', 'from': '-3,0', 'to': '-3,1', 'more': True}], finish=False)
+                with self.assertRaises(ValidationError):
+                    await GameConsumer()._preview_turn(switched,
+                        [{'type': 'make_move', 'from': '0,3', 'to': '0,4', 'more': True}], finish=False)
+                undo = await GameConsumer()._preview_turn(result,
+                    [{'type': 'make_move', 'from': '0,3', 'to': '0,4', 'more': True}], finish=False)
+                self.assertEqual(undo.board_state['0,4']['uid'], 'a')
 
     def test_charge_requires_actual_counter_and_nullify_prevents_it(self):
         knight = self.put('0,0', 'knight', uid='knight')
@@ -1053,18 +1493,19 @@ class OnlineAbilityDraftTests(TransactionTestCase):
         self.assertFalse(await TurnDraft.objects.filter(pk=self.game.game_id).aexists())
 
     async def test_saved_ability_turn_timeout_commits_once_and_preserves_cooldown(self):
-        commands = [{'type': 'pick_path', 'id': 'bastion'}, {'type': 'cast_ability', 'id': 'convert'}]
+        commands = [{'type': 'pick_path', 'id': 'onslaught'}, {'type': 'cast_ability', 'id': 'convert'}]
         await self.consumer._handle_save_turn_draft(self.request(commands))
         draft = await TurnDraft.objects.aget(pk=self.game.game_id)
         self.assertTrue(await self.consumer._commit_saved_draft(self.state, draft, True))
         state = await GameState.objects.aget(pk=self.game.game_id)
         self.assertEqual((state.turn_number, state.revision), (8, 2))
-        self.assertEqual(state.ability_state['cpSpent']['white'], 35)
-        self.assertEqual(state.ability_state['pointDelta']['white'], 150)
+        self.assertEqual(state.ability_state['cpSpent']['white'], 75)
+        self.assertEqual(state.ability_state['pointDelta']['white'], 100)
         self.assertEqual(state.ability_state['cooldowns']['white']['convert'], 1)
+        self.assertEqual(unit_points_of('white', state.move_history, state.config_snapshot), 150)
         self.assertTrue(self.messages[-1]['timedOut'])
         self.assertIsNone(await self.consumer._commit_saved_draft(self.state, draft, True))
-        self.assertEqual((await GameState.objects.aget(pk=self.game.game_id)).ability_state['pointDelta']['white'], 150)
+        self.assertEqual((await GameState.objects.aget(pk=self.game.game_id)).ability_state['pointDelta']['white'], 100)
 
     async def test_opponent_cannot_spend_casters_path_or_carried_ability(self):
         self.state.ability_state['loadouts']['white'] = ['warcry', 'sap']
@@ -1129,11 +1570,12 @@ class OnlineAbilityPanelTests(SimpleTestCase):
             {'type': 'make_move', 'from': '-11,9', 'to': '-12,9', 'withdraw': True, 'more': True},
             {'type': 'pass_turn'}])
         record = next(move for move in result.move_history if move.get('withdrawn'))
-        self.assertEqual((record['unit']['hp'], record['unit']['max_hp']), (9, 12))
-        self.assertEqual(unit_points_of('white', result.move_history, self.config), 1006)
+        self.assertEqual((record['unit']['hp'], record['unit']['max_hp'], record['unit']['vet']), (9, 12, 0))
+        self.assertTrue(record['veterancyReset'])
+        self.assertEqual(unit_points_of('white', result.move_history, self.config), 1036)
         standing = panels.panel_occupancy(self.config, 11, result.move_history, ply=28, ability_state=result.ability_state)
         self.assertGreaterEqual(standing['-12,9']['hp'], 9)
-        self.assertEqual(unit_points_of('white', result.move_history, self.config), 1006)
+        self.assertEqual(unit_points_of('white', result.move_history, self.config), 1036)
 
     async def test_controlled_withdrawal_refunds_original_owner_and_returns_in_place(self):
         self.state.turn_number = self.ctx.ply = 27
@@ -1145,7 +1587,7 @@ class OnlineAbilityPanelTests(SimpleTestCase):
             {'type': 'make_move', 'from': '-11,9', 'to': '-12,9', 'withdraw': True, 'more': True},
             {'type': 'pass_turn'}])
         self.assertNotIn('-11,9', result.board_state)
-        self.assertEqual(unit_points_of('black', result.move_history, self.config), before_black + self.config['units']['rook']['value'] - 1)
+        self.assertEqual(unit_points_of('black', result.move_history, self.config), before_black + 3 * self.config['units']['rook']['value'])
         self.assertEqual(unit_points_of('white', result.move_history, self.config), 1000 - self.config['abilities']['catalogue']['bishop-cast']['cost'])
         at_home = panels.panel_occupancy(self.config, 11, result.move_history, ply=28, ability_state=result.ability_state)
         self.assertEqual(at_home['-12,9']['color'], 'white')

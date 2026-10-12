@@ -4,7 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { LocalGameService, LOCAL_OPPONENT } from './local-game.service';
 import { unitPoints } from './match-score';
 import { unitStats } from './unit-stats';
-import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG, ConfigService } from './config.service';
+import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG, DEFAULT_GAME_CONFIG as CURRENT_GAME_CONFIG, ConfigService } from './config.service';
 
 /**
  * The offline engine is the only thing standing between the player and the
@@ -64,6 +64,55 @@ describe('LocalGameService', () => {
   // it has been on before, -9,9 and -7,9, have each in turn been dealt an
   // archer; -5,9 is a pawn on the setup as it stands.
 
+  it('records Initialization UP utilities and rejects modified reward records before applying them', async () => {
+    for (const color of ['white', 'black'] as const) {
+      for (const fault of ['none', 'amount', 'side', 'slot', 'hp', 'disabled']) {
+        const game = (service as any).game;
+        game.config = structuredClone(CURRENT_GAME_CONFIG);
+        Object.assign(game, { turnNumber: color === 'white' ? 1 : 2, currentTurn: color === 'white' ? 'Solo' : LOCAL_OPPONENT,
+          moveHistory: [], endReason: '', winner: '' });
+        const reward: any = { castId: 'up-test', color, abilityCast: { id: 'convert', row: 'path', up: 50 } };
+        if (fault === 'amount') reward.abilityCast.up = 500;
+        if (fault === 'side') reward.color = color === 'white' ? 'black' : 'white';
+        if (fault === 'slot') reward.abilityCast.row = 'unit';
+        if (fault === 'hp') reward.hp = 0;
+        if (fault === 'disabled') game.config.stageRules.opening.cpUtilities = false;
+        replies.length = 0;
+        const ply = game.turnNumber;
+        service.send({ type: 'pass_turn', effectsBefore: [reward] }); await flush();
+        expect(game.turnNumber).withContext(`${color}: ${fault}`).toBe(ply + (fault === 'none' ? 1 : 0));
+        expect(unitPoints(game.config, game.moveHistory, color)).toBe(10 + (fault === 'none' ? 50 : 0));
+        expect(!!last('invalid_move')).toBe(fault !== 'none');
+      }
+    }
+  });
+
+  it('counts a Sacrifice allowance before the next move when the original battlefield slot is spent', async () => {
+    for (const color of ['white', 'black']) {
+      const g = (service as any).game;
+      g.config = structuredClone(DEFAULT_GAME_CONFIG);
+      g.config.rules.upAtStart = 100;
+      g.config.abilities.catalogue['unit-sacrifice'].battlefieldActions = 1;
+      Object.assign(g, { turnNumber: color === 'white' ? 89 : 90,
+        currentTurn: color === 'white' ? 'Solo' : LOCAL_OPPONENT, moveHistory: [], phaseBank: {} });
+      g.boardState = { '-8,0': fullUnit('king', 'white', 'wk'), '8,0': fullUnit('king', 'black', 'bk'),
+        '0,0': fullUnit('pawn', color, 'first'), '2,0': fullUnit('pawn', color, 'second'),
+        '4,0': { ...fullUnit('pawn', color, 'caster'), vet: 3 } };
+      service.send({ type: 'make_move', from: '0,0', to: '0,1', more: true }); await flush();
+      expect(g.boardState['0,1']?.uid).toBe('first');
+      service.send({ type: 'make_move', from: '2,0', to: '2,1', more: true, effectsBefore: [
+        { unitCast: { uid: 'caster', id: 'unit-sacrifice', color, at: '4,0', cost: 24, gain: 0 } },
+        { battlefieldActions: 1, color },
+        { at: '4,0', uid: 'caster', hp: 0 },
+      ] }); await flush();
+      expect(g.boardState['2,1']?.uid).toBe('second');
+      expect(g.boardState['4,0']).toBeUndefined();
+      expect(g.moveHistory.filter((record: any) => record.battlefieldActions).length).toBe(1);
+      expect(g.moveHistory.filter((record: any) => record.moved).length).toBe(2);
+      expect(last('invalid_move')).toBeUndefined();
+    }
+  });
+
   it('preserves the counter actor when either combatant dies before replay', async () => {
     for (const victim of ['attacker', 'defender']) {
       const g = (service as any).game;
@@ -81,6 +130,24 @@ describe('LocalGameService', () => {
       expect(g.boardState[victim === 'attacker' ? '0,0' : '1,0']).toBeUndefined();
       const persisted = JSON.parse(localStorage.getItem('cpp.localGame.v1')!);
       expect(persisted.moveHistory.at(-1).counterActor).toEqual(record.counterActor);
+    }
+  });
+
+  it('ends ordinary panel movement after a configured panel unit cast without spending a battlefield slot', async () => {
+    const g = (service as any).game;
+    g.turnNumber = 55;
+    g.moveHistory = [];
+    g.config = structuredClone(g.config);
+    for (const panel of ['bl', 'br']) {
+      const from = panel === 'bl' ? '-12,11' : '12,0';
+      const to = panel === 'bl' ? '-11,10' : '12,-1';
+      const unit = { unit_id: 'knight', color: 'white', uid: 'panel-' + panel, vet: 3, hp: 20, max_hp: 20, panel };
+      g.moveHistory = [{ turn: 55, color: 'white', unitCast: { uid: unit.uid, at: from, id: 'knight-charge' } }];
+      const before = structuredClone(g.moveHistory);
+      expect(service.send({ type: 'panel_move', from, to, panel, unit, cost: 1 })).toBeFalse();
+      await flush();
+      expect(last('invalid_move').message).toContain('Movement ends');
+      expect(g.moveHistory).toEqual(before);
     }
   });
 
@@ -208,7 +275,7 @@ describe('LocalGameService', () => {
     const g = (service as any).game; g.turnNumber = 55; g.currentTurn = 'Solo'; g.moveHistory = [];
     g.boardState = { '-8,0': fullUnit('king', 'white', 'wk'), '8,0': fullUnit('king', 'black', 'bk'),
       '0,0': { ...fullUnit('pawn', 'white', 'wp'), hp: 14, max_hp: 14, vet: 3 } };
-    service.send({ type: 'pass_turn', effectsBefore: [{ castId: 'sacrifice-55', unitCast: { uid: 'wp', id: 'unit-sacrifice', color: 'white', cost: 3, gain: 8 } }, { at: '0,0', uid: 'wp', hp: 0 }] }); await flush();
+    service.send({ type: 'pass_turn', effectsBefore: [{ castId: 'sacrifice-55', unitCast: { uid: 'wp', at: '0,0', id: 'unit-sacrifice', color: 'white', cost: 3, gain: 8 } }, { at: '0,0', uid: 'wp', hp: 0 }] }); await flush();
     expect(unitPoints(g.config, g.moveHistory, 'white')).toBe(15); expect(unitPoints(g.config, g.moveHistory, 'black')).toBe(10);
     expect(g.moveHistory.find((m: any) => m.abilityDeath).abilityDeath.color).toBe('white');
     const restored = new LocalGameService(TestBed.inject(ConfigService));
@@ -233,7 +300,7 @@ describe('LocalGameService', () => {
     const target = { ...fullUnit('king', 'black', 'bk'), vet: 3, owner: 'black', color: 'white', controlledUntil: 57, controlTurn: 55 };
     g.boardState = { '-8,0': fullUnit('king', 'white', 'wk'), '1,0': { ...target, color: 'black' }, '0,0': { ...fullUnit('bishop', 'white', 'wb'), vet: 3 } };
     service.send({ type: 'make_move', from: '0,0', to: '0,0', unitAction: true, more: true,
-      effectsBefore: [{ castId: 'cast-55', unitCast: { uid: 'wb', id: 'bishop-cast', color: 'white', cost: 10, gain: 0 } }, { at: '1,0', control: target, controlSource: 'wb' }] }); await flush();
+      effectsBefore: [{ castId: 'cast-55', unitCast: { uid: 'wb', at: '0,0', id: 'bishop-cast', color: 'white', cost: 10, gain: 0 } }, { at: '1,0', control: target, controlSource: 'wb' }] }); await flush();
     expect(g.turnNumber).toBe(55); expect(g.boardState['1,0'].color).toBe('white');
     service.send({ type: 'make_move', from: '1,0', to: '2,0' }); await flush();
     expect(g.turnNumber).toBe(56); expect(g.endReason).toBeFalsy(); expect(g.boardState['2,0'].owner).toBe('black');
@@ -312,16 +379,16 @@ describe('LocalGameService', () => {
       expect(last('invalid_move')).toBeUndefined(); expect(g.boardState['-10,9']).toBeUndefined();
       const move = last('move_made').move;
       expect(move.withdrawn).toBeTrue(); expect(move.to).toBe('-12,9'); expect(move.unit.uid).toBe('wp');
-      expect(move.unit.hp).toBe(12); expect(unitPoints(g.config, g.moveHistory, 'white')).toBe(10 + valueOf('pawn') - (intoPanel ? 1 : 3));
+      expect(move.unit.hp).toBe(12); expect(unitPoints(g.config, g.moveHistory, 'white')).toBe(10 + 3 * valueOf('pawn'));
       if (intoPanel) { expect(move.panelDefender.uid).toBe('bp'); expect(move.defenderHp).toBe(10); }
       const restored = new LocalGameService(TestBed.inject(ConfigService));
       expect((restored as any).game.moveHistory.find((m: any) => m.withdrawn).unit.hp).toBe(12);
       if (!intoPanel) {
         g.turnNumber = 73; g.currentTurn = 'Solo'; g.moveHistory = [];
         g.boardState = { '-8,0': fullUnit('king', 'white', 'wk'), '8,0': fullUnit('king', 'black', 'bk'),
-          '-10,9': { ...move.unit, hp: 14 }, '-9,9': { ...defender, hp: 1 } };
+          '-10,9': { ...move.unit, hp: 14, max_hp: 14, vet: 3, veterancyHpActive: true }, '-9,9': { ...defender, hp: 1 } };
         service.send({ type: 'make_move', from: '-10,9', to: '-10,9', attack: '-9,9', afterAttackTo: '-12,9', withdraw: true }); await flush();
-        expect(unitPoints(g.config, g.moveHistory, 'white')).toBe(10 + 2 * valueOf('pawn') - 1);
+        expect(unitPoints(g.config, g.moveHistory, 'white')).toBe(10 + 4 * valueOf('pawn'));
       }
     }
   });
@@ -460,6 +527,95 @@ describe('LocalGameService', () => {
     expect(g.boardState['-1,0'].max_hp).toBe(14);
   });
 
+  it('ends the match when the closing pass follows a lethal held attack', async () => {
+    const g=(service as any).game;
+    g.config.stageRules.opening.attack=true;
+    g.boardState={'0,11':fullUnit('king','white','wk'),'0,0':fullUnit('pawn','white','wp'),
+      '1,0':{...fullUnit('king','black','bk'),hp:1},'4,0':fullUnit('pawn','black','bp')};
+    service.send({type:'make_move',from:'0,0',to:'0,0',attack:'1,0',more:true});await flush();
+    expect(g.boardState['1,0']).toBeUndefined();expect(g.endReason).toBe('');
+    service.send({type:'pass_turn'});await flush();
+    expect(last('game_over')).toEqual(jasmine.objectContaining({winner:'Solo',endReason:'regicide'}));
+  });
+
+  it('rewinds saved turn checkpoints, preserving the prefix and discarding a later branch', async () => {
+    const g=(service as any).game;
+    const initial=structuredClone(g.boardState);
+    service.send({type:'checkpoint_turn',turnNumber:1,uiState:{messageCount:0}});
+    service.send({type:'make_move',from:'-5,9',to:'-5,8'});await flush();
+    service.send({type:'checkpoint_turn',turnNumber:2,uiState:{messageCount:1}});
+    service.send({type:'pass_turn'});await flush();
+    service.send({type:'checkpoint_turn',turnNumber:3,uiState:{messageCount:2}});
+    service.send({type:'pass_turn'});await flush();
+    expect(service.canRewind).toBeTrue();
+    service.send({type:'rewind_turn'});await flush();
+    expect(last('turn_rewound').turnNumber).toBe(3);
+    expect(g.currentTurn).toBe('Solo');expect(g.boardState['-5,8']).toBeDefined();
+    const restored=new LocalGameService(TestBed.inject(ConfigService));
+    restored.send({type:'rewind_turn'});await flush();
+    expect((restored as any).game.turnNumber).toBe(2);
+    restored.send({type:'rewind_turn'});await flush();
+    expect((restored as any).game.boardState).toEqual(initial);
+    expect((restored as any).game.moveHistory).toEqual([]);expect(restored.canRewind).toBeFalse();
+    restored.send({type:'pass_turn'});await flush();
+    expect((restored as any).game.turnCheckpoints.map((turn:any)=>turn.turnNumber)).toEqual([1]);
+  });
+
+  it('does not skip a missing checkpoint to rewind several turns at once', async () => {
+    const g=(service as any).game;
+    service.send({type:'checkpoint_turn',turnNumber:1,uiState:{}});
+    for(let ply=1;ply<=3;ply++)service.send({type:'pass_turn'});
+    await flush();expect(g.turnNumber).toBe(4);expect(service.canRewind).toBeFalse();
+    service.send({type:'rewind_turn'});await flush();expect(g.turnNumber).toBe(4);
+  });
+
+  it('requires the result-producing checkpoint for a resignation or agreed draw', async () => {
+    const g = (service as any).game;
+    service.send({ type: 'checkpoint_turn', turnNumber: 1, uiState: {} });
+    service.send({ type: 'pass_turn' }); await flush();
+    for (const type of ['resign', 'offer_draw']) {
+      service.send({ type }); await flush();
+      expect(g.turnNumber).toBe(2); expect(service.canRewind).withContext(type).toBeFalse();
+      service.send({ type: 'rewind_turn' }); await flush();
+      expect(g.turnNumber).withContext(type).toBe(2);
+      g.endReason = ''; g.winner = ''; g.currentTurn = LOCAL_OPPONENT;
+    }
+    service.send({ type: 'checkpoint_turn', turnNumber: 2, uiState: {} });
+    service.send({ type: 'resign' }); await flush();
+    expect(service.canRewind).toBeTrue(); service.send({ type: 'rewind_turn' }); await flush();
+    expect([g.turnNumber, g.currentTurn, g.endReason]).toEqual([2, LOCAL_OPPONENT, '']);
+  });
+
+  it('ignores a malformed saved checkpoint while retaining the playable game', async () => {
+    const g=(service as any).game;
+    service.send({type:'pass_turn'});await flush();
+    g.turnCheckpoints=[{turnNumber:1,historyLength:0,boardState:null,uiState:{}}];
+    localStorage.setItem('cpp.localGame.v1',JSON.stringify(g));
+    const restored=new LocalGameService(TestBed.inject(ConfigService));
+    expect(restored.hasSavedGame()).toBeTrue();expect(restored.canRewind).toBeFalse();
+    expect(()=>restored.send({type:'rewind_turn'})).not.toThrow();
+    expect((restored as any).game.turnNumber).toBe(2);
+  });
+
+  it('rewinds a finished turn with fresh clock, full core state and independent UI data', async () => {
+    const g=(service as any).game;
+    g.config.match.maxTurns=1;
+    g.phaseBank={1:{white:7,black:2}};g.abilityBuffs={};
+    const initial=structuredClone(g.boardState),ui={messageCount:0,myAbilityPoints:-25,buffs:{unit:{atk:8}}};
+    service.send({type:'checkpoint_turn',turnNumber:1,uiState:ui});
+    ui.buffs.unit.atk=99;
+    service.send({type:'pass_turn'});await flush();
+    expect(g.endReason).toBe('draw_max_turns');expect(service.canRewind).toBeTrue();
+    const before=Date.now();service.send({type:'rewind_turn'});await flush();
+    expect([g.turnNumber,g.currentTurn,g.endReason,g.winner]).toEqual([1,'Solo','','']);
+    expect(g.boardState).toEqual(initial);expect(g.phaseBank).toEqual({1:{white:7,black:2}});
+    expect(g.moveHistory).toEqual([]);expect(g.abilityBuffs).toEqual({});
+    expect(last('turn_rewound').uiState.buffs.unit.atk).toBe(8);
+    expect(Date.parse(g.turnStartedAt)).toBeGreaterThanOrEqual(before);
+    service.send({type:'resign'});await flush();service.send({type:'start_game'});await flush();
+    expect(service.canRewind).toBeFalse();
+  });
+
   it('derives multiplied wrap affordability and applies the closed-window gate to free wraps', async () => {
     const g=(service as any).game;
     g.config.setup={white:{'0,11':'king','-12,1':'pawn'},black:{'0,-11':'king'}};
@@ -468,7 +624,7 @@ describe('LocalGameService', () => {
     const unit={unit_id:'pawn',color:'white',uid:'w-12,1',hp:12,max_hp:12,vet:0};
     service.send({type:'panel_move',from:'-12,1',to:'11,1',unit,panel:'bl',price:1,cost:1});await flush();
     expect(last('invalid_move').message).toBe('Not enough UP for the crossing');expect(g.moveHistory).toEqual([]);
-    g.config.economy.wrapPriceMultiplier=0;g.turnNumber=27;
+    g.config.economy.wrapPriceMultiplier=0;g.turnNumber=17;
     service.send({type:'panel_move',from:'-12,1',to:'11,1',unit,panel:'bl',price:0,cost:1});await flush();
     expect(last('invalid_move').message).toBe('The wrap is shut');expect(g.moveHistory).toEqual([]);
   });

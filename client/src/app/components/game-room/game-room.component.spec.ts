@@ -2,7 +2,7 @@ import { BehaviorSubject, Subject, of } from 'rxjs';
 import { GameRoomComponent } from './game-room.component';
 import { GameStateService } from '../../services/game-state.service';
 import { LocalGameService } from '../../services/local-game.service';
-import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG, ConfigService, ruleOf } from '../../services/config.service';
+import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG, DEFAULT_GAME_CONFIG as CURRENT_GAME_CONFIG, ConfigService, ruleOf } from '../../services/config.service';
 import { advanceBuffs, stackEffect, statSetting, passiveStat } from '../../services/ability-rules';
 import { carries, combatExchange, combatStatuses } from '../../services/unit-combat';
 import { turnHeading } from '../../services/phases';
@@ -395,24 +395,136 @@ describe('GameRoomComponent ability panel', () => {
     ]);
   });
 
+  describe('mechanics reflected in the UI', () => {
+    it('shows inactive unit abilities as unavailable while keeping their description readable', () => {
+      const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+      c.canAfford = () => true;
+      c.selectedUnit = { key: '0,0', uid: 'pawn', unitId: 'pawn', color: 'white', vet: 3 };
+      const active = c.displayUnitAbility;
+      expect(c.displayUnitAbilityReady).toBeTrue();
+      c.selectedUnit.vet = 2; expect(c.displayUnitAbilityReady).toBeFalse();
+      c.selectedUnit.vet = 3;
+      for (const panel of ['bl', 'br']) {
+        c.selectedUnit.panel = panel; c.unitAbilityFocus = null;
+        expect(c.displayUnitAbilityReady).toBeFalse();
+        c.selectUnitAbility(active);
+        expect(c.unitAbilityFocus).toEqual({ index: active, uid: 'pawn' });
+        expect(c.unitAbilityCanActivate()).toBeFalse();
+        expect(c.unitAbilityNote).toBe('Inactive in base and reserve.');
+      }
+      c.gameState.snapshot.config.veterancy.kitZones = ['reserve'];
+      expect(c.displayUnitAbilityReady).toBeTrue();
+      expect(c.unitAbilityCanActivate()).toBeTrue();
+    });
+
+    it('describes each Sacrifice selection and configured Cast reach', () => {
+      const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+      c.pendingUnitCast = { index: c.slotOfAbility('unit-sacrifice'), unit: {} };
+      expect(c.unitTargetNote).toContain('another friendly');
+      expect(c.unitTargetNote).toContain('green reserve');
+      c.pendingUnitCast = null; const pending = spyOnProperty(c, 'pendingSacrificeAction', 'get').and.returnValue({});
+      expect(c.unitTargetNote).toContain('unused friendly battlefield unit');
+      pending.and.returnValue(null);
+      c.gameState.snapshot.config.abilities.catalogue['bishop-cast'].radius = 2;
+      c.gameState.snapshot.config = structuredClone(c.gameState.snapshot.config);
+      c.pendingUnitCast = { index: c.slotOfAbility('bishop-cast'), unit: {} };
+      expect(c.unitTargetNote).toContain('enemy within 2 hex');
+      expect(c.unitTargetNote).not.toContain('adjacent');
+    });
+
+    it('names unit values in UP and describes configured economy rather than fixed refunds', () => {
+      const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+      c.selectedUnit = { unitId: 'pawn', name: 'Pawn', points: 12 };
+      expect(c.unitPanelTitle).toBe('Pawn - 12 UP');
+      Object.assign(c.gameState.snapshot.config.economy, { wrapPriceMultiplier: 2, killPayMultiplier: 3,
+        killPayZones: ['reserve'], halftimeUpMultiplier: 2 });
+      Object.assign(c.gameState.snapshot.config.economy.walkHomeRefund, { fee: 7, minimum: 0,
+        valueMultiplier: 2, missingHpMultiplier: 3 });
+      expect(c.cpTitle).toContain('2 × unit value');
+      expect(c.cpTitle).toContain('reserve'); expect(c.cpTitle).toContain('3 × unit value');
+      expect(c.cpTitle).toContain('minimum 0 UP'); expect(c.cpTitle).toContain('minus 7');
+      expect(c.cpTitle).toContain('3 × missing HP'); expect(c.cpTitle).toContain('2 × current phase VP');
+      expect(c.cpTitle).not.toContain('minimum of 1 UP');
+    });
+
+    it('describes configured zone values, phase multipliers and death scoring', () => {
+      const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+      c.gameState.snapshot.config.scoring.zones[0].worth = 7;
+      c.gameState.snapshot.config.match.phases[1].vpMultiplier = 4;
+      c.gameState.snapshot.config.scoring.floorAtZero = false;
+      c.gameState.snapshot.config.scoring.deathCostMultiplier = 2;
+      c.gameState.snapshot.config.scoring.deathZones = ['reserve'];
+      expect(c.scoreTitle).toContain('7 VP per hex'); expect(c.scoreTitle).toContain('Phase 2 ×4');
+      expect(c.scoreTitle).toContain('2 × unit value'); expect(c.scoreTitle).toContain('reserve');
+      expect(c.scoreTitle).toContain('Negative VP is allowed'); expect(c.scoreTitle).not.toContain('never below 0');
+    });
+
+    it('includes HEL modifiers in ability hints and stat feedback', () => {
+      const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+      c.gameState.snapshot.config.abilities.catalogue.bulwark.hel = 3;
+      const index = c.slotOfAbility('bulwark');
+      expect(c.abilityHint(index)).toContain('+3 HEL');
+      c.selectedUnit = { uid: 'bishop', unitId: 'bishop', color: 'white', vet: 0 };
+      c.buffs = { bishop: { effects: [], mov: 0, atk: 0, def: 0, hel: 3 } };
+      expect(c.panelWave('hel')).toBe('wave-up');
+    });
+  });
+
+  it('Undo reverses pool and CP picks in order and restores the first-pick wait', () => {
+    const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+    c.gameState.snapshot.turnNumber = 7; fundCp(c, 100);
+    c.pickAbility('mine', c.slotOfAbility('warcry'));
+    expect(c.poolPairWait('mine')).toBe(3); expect(c.canUndo).toBeTrue();
+    c.unlockPath('mine', 0); expect(c.myCp).toBe(95);
+    c.undoMove(); expect(c.myPath).toBeNull(); expect(c.myCp).toBe(100);
+    expect(c.myLoadout.length).toBe(2);
+    c.undoMove(); expect(c.myLoadout).toEqual([]); expect(c.poolPairWait('mine')).toBe(0);
+    expect(c.onlineChoices).toEqual([]); expect(c.canUndo).toBeFalse();
+    c.pickAbility('mine', c.slotOfAbility('bulwark'));
+    expect(c.poolPairWait('mine')).toBe(3);
+  });
+
+  it('Undo takes a later battlefield action before its earlier CP pick', () => {
+    const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+    c.gameState.snapshot.turnNumber = 7; fundCp(c, 100); c.unlockPath('mine', 0);
+    c.stagedActions.push({ at: c.onlineChoices[0].at + 1, from: '0,0', to: '1,0', attack: null, board: {} });
+    c.undoMove(); expect(c.myPath).toBe(0); expect(c.myCp).toBe(95);
+    c.undoMove(); expect(c.myPath).toBeNull(); expect(c.myCp).toBe(100);
+  });
+
+  it('unit abilities end movement while Withdraw reopens it only after attacking', () => {
+    const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+    delete c.gameState.snapshot.config.abilities.catalogue.quick.freeOrder;
+    Object.assign(c.gameState.snapshot, {turnNumber:7,moveHistory:[],boardState:{'0,0':{unit_id:'archer',uid:'a',vet:3,color:'white',hp:6}}});
+    const cast = { at:1, from:'', to:'', board:c.gameState.snapshot.boardState, spend:{row:'unit',uid:'a'} };
+    c.stagedActions=[cast]; expect(c.movementLockedUids).toEqual(['a']);
+    c.stagedActions.push({at:2,from:'0,0',to:'0,0',unitUid:'a',attack:'3,0',board:c.gameState.snapshot.boardState});
+    expect(c.movementLockedUids).toEqual([]);
+    c.selectedUnit={key:'0,0',uid:'a',unitId:'archer',color:'white',vet:3};c.canAfford=()=>true;
+    expect(c.displayUnitAbilityReady).toBeFalse();
+    const staged = c.stagedActions.length;
+    c.stageUnitCast(c.selectedUnit, c.slotOfAbility('archer-bog'));
+    expect(c.stagedActions.length).toBe(staged);
+  });
+
   describe('second pool pair timing', () => {
     const waiting = () => {
       const c = room(); c.gameId = 'local'; c.gameState = new GameStateService();
       c.persistLocalUiState = () => {};
       c.gameState.applyGameStarted({ playerWhite: 'me', playerBlack: 'them', currentTurn: 'me',
-        turnNumber: 1, config: structuredClone(DEFAULT_GAME_CONFIG), boardState: {} });
+        turnNumber: 1, config: structuredClone(CURRENT_GAME_CONFIG), boardState: {} });
       return c;
     };
 
-    it('unlocks a Turn 1 first pick on Turn 6, showing the wait and refusing early picks', () => {
+    it('unlocks a Turn 1 first pick on Turn 4, showing the wait and refusing early picks', () => {
       const c = waiting(); c.pickAbility('mine', 0);
-      expect(c.myLoadout).toEqual([0, 1]); expect(c.poolPairWait('mine')).toBe(5);
-      expect(c.abilityPurseLabel('mine')).toBe('Pick in 5');
+      expect(c.myLoadout).toEqual([0, 1]); expect(c.poolPairWait('mine')).toBe(3);
+      expect(c.abilityPurseLabel('mine')).toBe('Pick in 3');
       c.pickAbility('mine', 2); expect(c.myLoadout).toEqual([0, 1]);
       c.selectAbility('mine', 2, c.myCooldowns);
-      expect(c.focusedAbilityBlocker).toContain('Turn 6');
-      c.gameState.snapshot.turnNumber = 9; expect(c.canPick('mine', 2)).toBeFalse();
-      c.gameState.snapshot.turnNumber = 11; expect(c.canPick('mine', 2)).toBeTrue();
+      expect(c.focusedAbilityBlocker).toContain('Turn 4');
+      c.gameState.snapshot.turnNumber = 5; expect(c.canPick('mine', 2)).toBeFalse();
+      c.gameState.snapshot.turnNumber = 7; expect(c.canPick('mine', 2)).toBeTrue();
       c.pickAbility('mine', 2); expect(c.myLoadout).toEqual([0, 1, 2, 3]);
     });
 
@@ -421,9 +533,19 @@ describe('GameRoomComponent ability panel', () => {
       c.gameState.snapshot.turnNumber = 8; c.gameState.snapshot.currentTurn = 'them';
       c.pickAbility('opponent', 4); expect(c.opponentLoadout).toEqual([4, 5]);
       c.gameState.snapshot.turnNumber = 12;
-      expect(c.poolPairWait('mine')).toBe(0); expect(c.poolPairWait('opponent')).toBe(3);
+      expect(c.poolPairWait('mine')).toBe(0); expect(c.poolPairWait('opponent')).toBe(1);
       expect(c.canPick('opponent', 6)).toBeFalse();
-      c.gameState.snapshot.turnNumber = 18; expect(c.canPick('opponent', 6)).toBeTrue();
+      c.gameState.snapshot.turnNumber = 14; expect(c.canPick('opponent', 6)).toBeTrue();
+    });
+
+    it('retains a saved five-turn delay instead of replacing it with new defaults', () => {
+      const c = waiting(); c.gameState.snapshot.config.abilities.pairPickDelay = 5;
+      c.pickAbility('mine', 0);
+      c.gameState.snapshot.turnNumber = 7;
+      expect(c.canPick('mine', 2)).toBeFalse();
+      expect(c.poolPairWait('mine')).toBe(2);
+      c.gameState.snapshot.turnNumber = 11;
+      expect(c.canPick('mine', 2)).toBeTrue();
     });
 
     it('keeps older catalogues without a delay immediately pickable', () => {
@@ -440,13 +562,13 @@ describe('GameRoomComponent ability panel', () => {
       try {
         const c = waiting(); delete c.persistLocalUiState; c.pickAbility('mine', 0);
         const fresh = waiting(); fresh.restoreLocalUiState();
-        expect(fresh.poolPairWait('mine')).toBe(5);
-        fresh.gameState.snapshot.turnNumber = 11; expect(fresh.canPick('mine', 2)).toBeTrue();
+        expect(fresh.poolPairWait('mine')).toBe(3);
+        fresh.gameState.snapshot.turnNumber = 7; expect(fresh.canPick('mine', 2)).toBeTrue();
         fresh.handleWebSocketMessage({ type: 'game_started', playerWhite: 'me', playerBlack: 'them',
-          currentTurn: 'me', turnNumber: 1, boardState: {}, config: structuredClone(DEFAULT_GAME_CONFIG) });
+          currentTurn: 'me', turnNumber: 1, boardState: {}, config: structuredClone(CURRENT_GAME_CONFIG) });
         expect(fresh.myLoadout).toEqual([]);
         fresh.gameState.snapshot.turnNumber = 7; fresh.pickAbility('mine', 0);
-        expect(fresh.poolPairWait('mine')).toBe(5);
+        expect(fresh.poolPairWait('mine')).toBe(3);
       } finally {
         if (previous === null) localStorage.removeItem(key); else localStorage.setItem(key, previous);
       }
@@ -1004,7 +1126,8 @@ describe('GameRoomComponent ability panel', () => {
     });
 
     it('keeps cooldowns independent for two veterans of the same type', () => {
-      const c = kitRoom(), first = veteran(c, 'knight'), second = veteran(c, 'knight', '1,0');
+      const c = kitRoom(); c.gameState.snapshot.turnNumber = 89;
+      const first = veteran(c, 'knight'), second = veteran(c, 'knight', '1,0');
       useUnit(c, first);
       expect(c.unitCooldownOf(first.uid)).toBe(5);
       expect(c.unitCooldownOf(second.uid)).toBe(0);
@@ -1041,6 +1164,24 @@ describe('GameRoomComponent ability panel', () => {
       }
     });
 
+    it('repeated Sacrifice refreshes one target while continuing its promotion and heal, and Undo restores the prior cast', () => {
+      const c = kitRoom(); c.myUnitPoints = 200; c.gameState.snapshot.turnNumber = 89;
+      const one = veteran(c, 'pawn', '0,0'), two = veteran(c, 'pawn', '1,0');
+      const target = veteran(c, 'knight', '-2,0', 'white', 1);
+      c.gameState.snapshot.boardState[target.key].vet = 0; target.vet = 0;
+      c.gameState.snapshot.boardState[target.key].max_hp = 18; c.gameState.snapshot.boardState[target.key].veterancyHpActive = false;
+      const extra = veteran(c, 'pawn', '-3,0');
+      useUnit(c, one); c.onHexClicked(target); c.onHexClicked(extra);
+      const first = structuredClone(c.buffs[target.uid]);
+      c.stagedBoard[target.key].hp = 2;
+      useUnit(c, two); c.onHexClicked({ ...target, vet: 1 }); c.onHexClicked(extra);
+      expect([c.buffs[target.uid].atk, c.buffs[target.uid].def, c.buffs[target.uid].mov]).toEqual([6, 6, 2]);
+      expect([c.unitPromotions[target.uid].vet, c.unitPromotions[target.uid].hp]).toEqual([2, 20]);
+      expect(c.stagedBoard[one.key]).toBeUndefined(); expect(c.stagedBoard[two.key]).toBeUndefined();
+      c.undoMove(); expect(c.buffs[target.uid]).toEqual(first);
+      expect(c.unitPromotions[target.uid].vet).toBe(1); expect(c.myUnitPoints).toBe(176);
+    });
+
     it('allows another targeted cast while Sacrifice awaits its extra actor, then resumes the picker', () => {
       const c = kitRoom(), source = veteran(c, 'pawn'), ally = veteran(c, 'pawn', '-2,0');
       const enemy = veteran(c, 'pawn', '2,0', 'black');
@@ -1059,6 +1200,7 @@ describe('GameRoomComponent ability panel', () => {
         useUnit(c, source); c.onHexClicked(target);
         expect(c.stagedActions).toEqual([]); expect(c.myUnitPoints).toBe(100);
       }
+      c.gameState.snapshot.turnNumber = 89;
       c.onPlayerMove({ from: '-2,0', to: '-2,1', cost: 1 });
       useUnit(c, source); c.onHexClicked({ ...ally, key: '-2,1' });
       expect(c.activeBoardAbilityEffect().targetUids).not.toContain(ally.uid);
@@ -2186,7 +2328,8 @@ describe('GameRoomComponent ability panel', () => {
       c.selectedUnit.panel = panel; c.unitAbilityFocus = null; c.selectUnitAbility(passive);
       expect(c.unitAbilityNote).toBe('Inactive in base and reserve.');
       c.selectedUnit.vet = 3; c.selectUnitAbility(active);
-      expect(c.unitAbilityFocus.index).toBe(passive);
+      expect(c.unitAbilityFocus.index).toBe(active);
+      expect(c.unitAbilityNote).toBe('Inactive in base and reserve.');
       expect(c.unitAbilityCanActivate()).toBeFalse();
     }
   });
@@ -3796,7 +3939,7 @@ describe('GameRoomComponent ability panel', () => {
     for (const [vet, stars] of ['—', '★', '★★', '★★★'].entries()) {
       c.selectedUnit = { ...c.selectedUnit, vet };
       expect(c.statVet).toBe(stars);
-      expect(c.unitPanelTitle).toBe('Bishop - 16 pts');
+      expect(c.unitPanelTitle).toBe('Bishop - 16 UP');
     }
     expect(c.statParts('hel').map((p: any) => p.ring)).toEqual([1, 2, 3, 4]);
   });
@@ -4025,7 +4168,7 @@ describe('GameRoomComponent ability panel', () => {
     expect(c.initBoardSpent).toBeFalse();
 
     // One board move is this side's allowance for the turn it is made in.
-    c.gameState.snapshot.moveHistory = [{ color: 'white', turn: 1, to: '0,1' }];
+    c.gameState.snapshot.moveHistory = [{ color: 'white', turn: 1, from: '0,0', to: '0,1' }];
     expect(c.initBoardSpent).toBeTrue();
 
     // The next turn brings a fresh one. Per turn, not per phase: the whole
@@ -4054,13 +4197,13 @@ describe('GameRoomComponent ability panel', () => {
 
     // Nor does sending one home lock a unit that is no longer on the board.
     c.gameState.snapshot.moveHistory = [
-      { color: 'white', turn: 1, to: '-12,11', withdrawn: true },
+      { color: 'white', turn: 1, from: '0,0', to: '-12,11', withdrawn: true },
     ];
     expect(c.initMovedHexes).toEqual([]);
 
     // And past the opening the rule does not apply at all.
     c.gameState.snapshot.turnNumber = 20;
-    c.gameState.snapshot.moveHistory = [{ color: 'white', turn: 1, to: '0,1' }];
+    c.gameState.snapshot.moveHistory = [{ color: 'white', turn: 1, from: '0,0', to: '0,1' }];
     expect(c.initBoardSpent).toBeFalse();
     expect(c.initMovedHexes).toEqual([]);
   });
@@ -4914,6 +5057,7 @@ describe('GameRoomComponent ability panel', () => {
         config.units.rook.ability = 'bulwark';
         delete config.units.king.ability;
       });
+      c.gameState.snapshot.turnNumber = 89;
       const focus = c.slotOfAbility('focus');
       // Nothing picked: a unit's own ability is not a pool pick.
       c.selectedUnit = WP;
@@ -4966,11 +5110,12 @@ describe('GameRoomComponent ability panel', () => {
       expect(c.unitAbilityCanActivate()).toBeFalse();
       c.activateUnitAbility();
       expect(c.myPoints).toBe(100);
-      // A unit in a panel still opens nothing.
       c.unitAbilityFocus = null;
       c.selectedUnit = { ...WP, panel: 'base' };
       c.selectUnitAbility(focus);
-      expect(c.unitAbilityFocus).toBeNull();
+      expect(c.unitAbilityFocus).toEqual({ index: focus, uid: WP.uid });
+      expect(c.unitAbilityCanActivate()).toBeFalse();
+      expect(c.unitAbilityNote).toBe('Inactive in base and reserve.');
     });
   });
 });
@@ -5120,13 +5265,13 @@ describe('GameRoomComponent leaving', () => {
     };
 
     it('is spent by a board move', () => {
-      expect(spent([{ color: 'white', turn: 1, to: '-5,8', moved: true }])).toBeTrue();
+      expect(spent([{ color: 'white', turn: 1, from: '0,0', to: '-5,8', moved: true }])).toBeTrue();
     });
 
     it('is not spent by a crossing, a panel walk or a cast', () => {
-      expect(spent([{ color: 'white', turn: 1, to: '-5,8', entered: true }])).toBeFalse();
-      expect(spent([{ color: 'white', turn: 1, to: 'bl-2', panelMove: true }])).toBeFalse();
-      expect(spent([{ color: 'white', turn: 1, to: '', panelEffect: true }])).toBeFalse();
+      expect(spent([{ color: 'white', turn: 1, from: '0,0', to: '-5,8', entered: true }])).toBeFalse();
+      expect(spent([{ color: 'white', turn: 1, from: '0,0', to: 'bl-2', panelMove: true }])).toBeFalse();
+      expect(spent([{ color: 'white', turn: 1, from: '0,0', to: '', panelEffect: true }])).toBeFalse();
     });
 
     /**
@@ -5136,16 +5281,16 @@ describe('GameRoomComponent leaving', () => {
      * one would grey every battlefield unit for the rest of the turn, taking an
      * allowance it no longer spends.
      */
-    it('is not spent by a walk home, which is a deployment while setting out', () => {
-      expect(spent([{ color: 'white', turn: 1, to: '-12,11', withdrawn: true }])).toBeTrue();
+    it('is spent by a walk home even while setting out', () => {
+      expect(spent([{ color: 'white', turn: 1, from: '0,0', to: '-12,11', withdrawn: true }])).toBeTrue();
     });
 
     it('is still spent by a board move taken beside three walks home', () => {
       expect(spent([
-        { color: 'white', turn: 1, to: '-12,11', withdrawn: true },
-        { color: 'white', turn: 1, to: '-11,11', withdrawn: true },
-        { color: 'white', turn: 1, to: '-10,11', withdrawn: true },
-        { color: 'white', turn: 1, to: '-5,8', moved: true },
+        { color: 'white', turn: 1, from: '0,0', to: '-12,11', withdrawn: true },
+        { color: 'white', turn: 1, from: '0,0', to: '-11,11', withdrawn: true },
+        { color: 'white', turn: 1, from: '0,0', to: '-10,11', withdrawn: true },
+        { color: 'white', turn: 1, from: '0,0', to: '-5,8', moved: true },
       ])).toBeTrue();
     });
 
@@ -5196,7 +5341,7 @@ describe('GameRoomComponent leaving', () => {
       walkHome(c, '-12,11', 'bl-0');
       // The lock the board reads. Before this change the first walk home set
       // it, and `drivable` refused every other unit for the rest of the turn.
-      expect(c.pendingMove).toEqual({ from: '-12,11', to: 'bl-0', used: 2 });
+      expect(c.pendingMove).toBeNull();
       expect(c.stagedActions.length).toBe(1);
       expect(c.stagedActions[0].endsAction).toBeTrue();
     });
@@ -5250,7 +5395,7 @@ describe('GameRoomComponent leaving', () => {
       const { c, sent } = playing(73, three());
       walkHome(c, '-12,11', 'bl-0');
       expect(c.stagedActions[0].endsAction).toBeTrue();
-      expect(c.pendingMove).toEqual({ from: '-12,11', to: 'bl-0', used: 2 });
+      expect(c.pendingMove).toBeNull();
       c.endTurn();
       const walks = sent.filter((m: any) => m.type === 'make_move');
       expect(walks.length).toBe(1);
@@ -5267,7 +5412,7 @@ describe('GameRoomComponent leaving', () => {
       const { c, sent } = playing(5, three());
       c.onPlayerMove({ from: '-12,11', to: '-12,10', cost: 1 });
       walkHome(c, '-12,10', 'bl-0');
-      expect(c.pendingMove).toEqual({ from: '-12,11', to: 'bl-0', used: 3 });
+      expect(c.pendingMove).toBeNull();
       c.endTurn();
       const walks = sent.filter((m: any) => m.type === 'make_move');
       expect(walks.length).toBe(1);

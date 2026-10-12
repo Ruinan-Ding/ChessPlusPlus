@@ -1,10 +1,40 @@
-import { advanceBuffs, advanceUnitCooldowns, cooldownAfterTurn, stackEffect, statSetting, stripPositiveEffects } from './ability-rules';
+import { advanceBuffs, advanceUnitCooldowns, cooldownAfterTurn, stackEffect, passiveStat, discountedAbilityCost, statSetting, stripPositiveEffects } from './ability-rules';
 import type { UnitBuff } from './ability-rules';
 
 const dash = { name: 'Dash', mov: 2, atk: 3, def: 4, turns: 2 };
 const sap = { name: 'Sap', mov: -2, atk: -3, def: -4, turns: 1 };
 
 describe('ability rules', () => {
+  it('separates Onslaught attacks from counters, and Sprint base movement from other zones', () => {
+    const offensive = { effect: 'offensive-power', atk: 2, hel: 2, minVet: 0, scope: 'all' as const };
+    expect(passiveStat(offensive, 'atk', 0, false)).toBe(2);
+    expect(passiveStat(offensive, 'atk', 0, false, false, true)).toBe(0);
+    expect(passiveStat(offensive, 'hel', 0, false)).toBe(2);
+    const sprint = { effect: 'mobility-economy', mov: 1, baseMov: 4, costReduction: 3, minimumCost: 1, minVet: 0, scope: 'all' as const };
+    expect(passiveStat(sprint, 'mov', 0, false)).toBe(1);
+    expect(passiveStat(sprint, 'mov', 0, true)).toBe(5);
+    expect([discountedAbilityCost(25, sprint), discountedAbilityCost(4, sprint), discountedAbilityCost(2, sprint)]).toEqual([22, 1, 1]);
+    expect(discountedAbilityCost(0, undefined)).toBe(0);
+  });
+
+  it('refreshes Sacrifice per recipient while preserving other stackable effects and Undo snapshots', () => {
+    const sacrifice = { name: 'Sacrifice', effect: 'sacrifice', atk: 6, def: 6, mov: 2, turns: 1 };
+    let held = stackEffect(undefined, sacrifice, 'white', false, 57);
+    held = stackEffect(held, { name: 'Bog', effect: 'on-hit-drain', atk: -1, def: -1, mov: 0 }, 'black');
+    const undo = structuredClone(held);
+    held = stackEffect(JSON.parse(JSON.stringify(held)), sacrifice, 'white', false, 59);
+    expect([held.atk, held.def, held.mov]).toEqual([5, 5, 2]);
+    expect(held.effects.filter(e => e.effect === 'sacrifice').length).toBe(1);
+    expect(held.effects.find(e => e.effect === 'sacrifice')!.expiresAt).toBe(59);
+    expect(undo.effects.find(e => e.effect === 'sacrifice')!.expiresAt).toBe(57);
+    held = stackEffect(held, { name: 'Bog', effect: 'on-hit-drain', atk: -1, def: -1, mov: 0 }, 'black');
+    expect(held.atk).toBe(4);
+    const other = stackEffect(undefined, sacrifice, 'white', false, 59);
+    expect(other.atk).toBe(6);
+    expect(advanceBuffs({ one: held, two: other }, 'white', 57)['two'].atk).toBe(6);
+    expect(advanceBuffs({ one: held, two: other }, 'white', 59)['two']).toBeUndefined();
+  });
+
   it('allows later ATK/HEL buffs to restore a zero-setting debuff without reapplying earlier boosts', () => {
     let held = stackEffect(undefined, { name: 'Earlier boost', mov: 0, atk: 8, def: 2, hel: 4 }, 'white');
     held = stackEffect(held, { name: 'Sap', mov: 0, atk: 0, def: 0, setAtk: 0, setHel: 0, setDef: 0 }, 'black', true);

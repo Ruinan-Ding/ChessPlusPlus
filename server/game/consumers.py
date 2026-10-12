@@ -1,4 +1,4 @@
-from .engine.game_rules import rule_of
+from .engine.game_rules import rule_of, section_of
 """
 WebSocket consumer for game lobby and game room management
 Uses Django ORM models instead of in-memory class-level dictionaries
@@ -33,6 +33,7 @@ from .models import (
     TurnDraft,
 )
 from .replay import next_turn_started_at, turn_clock_start
+from .recording import COMMAND_FIELDS, append_action, incoming_action, record_write
 from .validators import (
     ValidationError, GAME_OPTION_KEYS, validate_required_fields, username_with_tripcode, name_key,
     validate_status, validate_game_mode, validate_game_options,
@@ -45,7 +46,7 @@ from .utils import (
 from .engine import load_config, build_initial_board, DEFAULT_CONFIG
 from .engine.config_loader import rule_of
 from .engine import economy, panels
-from .engine.ability_rules import AbilityContext, actions_used, initial_state, bonus, carries, passive, state_of
+from .engine.ability_rules import AbilityContext, actions_used, battlefield_action_bonus, initial_state, bonus, carries, passive, state_of
 from .engine.unit_combat import attack_allowed, after_exchange, taunt_allows
 from .engine.board import HexBoard, parse_coord, hex_distance
 from .engine.game_logic import (
@@ -527,7 +528,11 @@ class GameConsumer(AsyncWebsocketConsumer):
                             self._last_activity_update = now
                         except Exception:
                             structured_log('warning', 'update_activity_failed', username=self.username)
-                await handler(data)
+                recording_token = incoming_action.set(data)
+                try:
+                    await handler(data)
+                finally:
+                    incoming_action.reset(recording_token)
             else:
                 logger.warning(f"Unknown message type: {message_type}")
         
@@ -1687,6 +1692,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 timezone.now() - turn_started_at).total_seconds())
 
         async def _timer_task():
+            incoming_action.set(None)
             try:
                 await asyncio.sleep(remaining)
                 # Expiry commits saved moves, or passes if there are none.
@@ -1976,6 +1982,9 @@ class GameConsumer(AsyncWebsocketConsumer):
             ).update(
                 winner=winner,
                 end_reason='disconnect',
+                replay_journal=append_action(state.replay_journal, state.turn_number,
+                    'white' if username == state.player_white else 'black',
+                    {'type': 'result', 'reason': 'disconnect'}),
                 revision=F('revision') + 1,
             )
             if not rows:
@@ -2028,8 +2037,10 @@ class GameConsumer(AsyncWebsocketConsumer):
                                    revision: int, **extra):
         """Cancel the turn timer and notify both players that the game ended."""
         self._cancel_turn_timer(game_id)
+        state = await self._get_game_state(game_id)
         await broadcast_to_group(self.channel_layer, f'game_{game_id}', {
             'type': 'game_over',
+            'replayJournal': getattr(state, 'replay_journal', None),
             'winner': winner,
             'endReason': end_reason,
             'revision': revision,
@@ -2201,9 +2212,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                     # once it is off the board this record is the only place it
                     # survives, and what the base is rebuilt from on a reload.
                     'withdrawn': True,
-                    'unit': ranked_unit(dict(leaving), config, leaving.get('vet', 0), active=kit_active({
-                        **leaving, 'panel': panels.panel_of(*panels.axial_to_pixel(
-                            *parse_coord(to_key), config.get('board', {}).get('orientation', 'edge-up')))}, config)),
+                    'unit': economy.withdrawn_unit(config, leaving, panels.panel_of(*panels.axial_to_pixel(
+                        *parse_coord(to_key), config.get('board', {}).get('orientation', 'edge-up')))),
+                    **({'veterancyReset': True} if section_of(config, 'economy')['walkHomeRefund'].get('resetVeterancy') else {}),
                     'refund': economy.withdrawal_refund(config, leaving),
                     'refundColor': leaving.get('owner', leaving['color']),
                 }
@@ -2306,6 +2317,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             if attack_coord:
                 move_record['attackedHex'] = attack_coord
                 move_record['counter_damage'] = combat.get('counter_damage', 0)
+                if combat.get('leech_heal'):
+                    move_record['leech_heal'] = combat['leech_heal']
                 move_record['countered'] = combat.get('countered', combat.get('counter_damage', 0) > 0)
                 target = combat.get('defender_before')
                 if target:
@@ -2325,6 +2338,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                 board = HexBoard.from_dict(radius, ctx.board)
                 if combat.get('second_strike'):
                     move_record['secondStrike'] = True
+                if combat.get('second_counter'):
+                    move_record['secondCounter'] = True
+                    move_record['second_counter_damage'] = combat['second_counter_damage']
                 move_record['uid'] = piece.get('uid')
 
             # Not the turn's last move: the same seat, the same ply, the same
@@ -2355,6 +2371,10 @@ class GameConsumer(AsyncWebsocketConsumer):
         history = list(state.move_history)
         piece = state.board_state.get(from_key, {})
         uid = piece.get('uid')
+        from .engine.game_logic import finished_unit_uids
+        if uid in finished_unit_uids(history, state.turn_number, color, state.config_snapshot, 'battlefield'):
+            await send_error(self, 'INVALID_MOVE', 'That unit has already moved this turn')
+            return None
         if uid and any(move.get('entered') and move.get('turn') == state.turn_number
                        and move.get('color') == color and (move.get('unit') or {}).get('uid') == uid
                        for move in history if isinstance(move, dict)):
@@ -2362,6 +2382,13 @@ class GameConsumer(AsyncWebsocketConsumer):
             return None
         if state.ability_state:
             progress = state.ability_state.get('unitProgress', {}).get(uid, {})
+            destination = panels.coord_key(*parse_coord(data.get('to', from_key)))
+            occupant = state.board_state.get(destination)
+            walking = destination != from_key and not (occupant and occupant.get('color') != color and not data.get('attack'))
+            if state.ability_state.get('usedUnits', {}).get(uid) == state.turn_number and walking and not (
+                    passive(piece, state.config_snapshot).get('effect') == 'rapid-movement' and (progress.get('attacked') or passive(piece, state.config_snapshot).get('freeOrder'))):
+                await send_error(self, 'INVALID_MOVE', 'Movement ends after using a unit ability')
+                return None
             if state.ability_state.get('endedUnits', {}).get(uid) == state.turn_number or progress.get('ended'):
                 await send_error(self, 'INVALID_MOVE', 'That unit has already moved this turn')
                 return None
@@ -2374,8 +2401,11 @@ class GameConsumer(AsyncWebsocketConsumer):
                 return bool(data.get('more'))
             if state.ability_state.get('extraUnits', {}).get(uid) == state.turn_number:
                 return bool(data.get('more'))
-        moves_allowed = board_moves_per_turn(state.turn_number, config=state.config_snapshot)
-        moves_used = board_moves_at(history, state.turn_number, color)
+        from .engine.game_logic import board_move_uids
+        if uid in board_move_uids(history, state.turn_number, color, state.config_snapshot):
+            return bool(data.get('more'))
+        moves_allowed = board_moves_per_turn(state.turn_number, config=state.config_snapshot) + battlefield_action_bonus(history, state.turn_number, color)
+        moves_used = board_moves_at(history, state.turn_number, color, state.config_snapshot)
         if state.ability_state:
             moves_used = actions_used(state, color)
         if moves_used >= moves_allowed:
@@ -3084,7 +3114,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 raise ValidationError('INVALID_DRAFT', 'Unknown draft move')
             # The existing handlers derive costs, units, combat and HP themselves.
             cleaned = {key: value for key, value in command.items()
-                       if key in ('type', 'from', 'to', 'attack', 'heal', 'withdraw', 'more', 'id', 'unitUid', 'targetUid', 'extraUid', 'hex', 'pairId')}
+                       if key in COMMAND_FIELDS[command['type']]}
             fields = ('hex',) if command['type'] == 'cast_ability' else (
                 ('from', 'to', 'attack', 'heal') if command['type'] in ('make_move', 'panel_move', 'panel_attack', 'enter_board') else ())
             for field in fields:
@@ -3096,7 +3126,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             commands.append(cleaned)
         return commands
 
-    async def _preview_turn(self, state, commands):
+    async def _preview_turn(self, state, commands, finish=True):
         preview = _TurnPreview(state)
         preview.defer_handover = True
         state_of(preview.state)
@@ -3105,6 +3135,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 break
             if preview.state.turn_number != state.turn_number:
                 raise ValidationError('INVALID_DRAFT', 'The turn ended before its remaining moves')
+            color = 'white' if preview.state.current_turn == preview.state.player_white else 'black'
             if command['type'] in ('cast_ability', 'pick_pair', 'reset_pair', 'pick_path'):
                 try:
                     ctx = AbilityContext(preview.state)
@@ -3119,8 +3150,13 @@ class GameConsumer(AsyncWebsocketConsumer):
             if preview.errors:
                 error = preview.errors[-1]
                 raise ValidationError(error.get('code', 'INVALID_MOVE'), error.get('message', 'Invalid move'))
-        if preview.state.turn_number == state.turn_number and not preview.state.is_finished:
+            preview.state.replay_journal = append_action(
+                preview.state.replay_journal, state.turn_number, color, command)
+        if finish and preview.state.turn_number == state.turn_number and not preview.state.is_finished:
             await preview._handle_pass_turn({})
+            preview.state.replay_journal = append_action(
+                preview.state.replay_journal, state.turn_number, color if commands else (
+                    'white' if state.current_turn == state.player_white else 'black'), {'type': 'pass_turn'})
         return preview.state
 
     def _state_message(self, state):
@@ -3130,7 +3166,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'turnNumber': state.turn_number, 'moveHistory': state.move_history,
             'playerWhite': state.player_white, 'playerBlack': state.player_black,
             'winner': state.winner, 'endReason': state.end_reason,
-            'config': state.config_snapshot,
+            'config': state.config_snapshot, 'replayJournal': getattr(state, 'replay_journal', None),
             'turnStartedAt': (state.turn_started_at or timezone.now()).isoformat(),
             'drawOfferedBy': state.draw_offered_by or '', 'phaseBank': state.phase_bank or {},
             'revision': state.revision, 'turnDraftsSupported': True, 'abilitiesSupported': True, 'abilityState': state.ability_state,
@@ -3175,7 +3211,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             turn_number=result.turn_number, move_history=result.move_history, winner=result.winner,
             end_reason=result.end_reason, expected_turn_number=state.turn_number,
             expected_revision=state.revision, turn_started_at=result.turn_started_at,
-            phase_bank=result.phase_bank, ability_state=result.ability_state, draft_sequence=draft.sequence)
+            phase_bank=result.phase_bank, ability_state=result.ability_state, draft_sequence=draft.sequence,
+            replay_journal=result.replay_journal)
         if not applied:
             return None
         result.revision = state.revision + 1
@@ -3725,6 +3762,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 # A rematch reuses the row, and must not inherit the last
                 # match's phases.
                 'phase_bank': {}, 'ability_state': initial_state(),
+                'replay_journal': {'version': 1, 'actions': []},
                 'updated_at': timezone.now(),
             }
         initial = GameState(game=game, **values)
@@ -3765,7 +3803,7 @@ class GameConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _update_game_state(self, game_id, board_state, current_turn, turn_number, move_history,
                             winner='', end_reason='', expected_turn_number=None, turn_started_at=None,
-                            phase_bank=None, expected_revision=None, draft_sequence=None, require_no_draft=False, ability_state=None):
+                            phase_bank=None, expected_revision=None, draft_sequence=None, require_no_draft=False, ability_state=None, replay_journal=None):
         """Update the mutable fields of a GameState after a move or game end.
 
         If expected_turn_number is given, the write is conditional: it only
@@ -3800,10 +3838,13 @@ class GameConsumer(AsyncWebsocketConsumer):
             qs = qs.filter(turn_number=expected_turn_number, end_reason='')
         if expected_revision is not None:
             qs = qs.filter(revision=expected_revision)
-        saved_config = qs.values_list('config_snapshot', flat=True).first()
-        if saved_config is None: return False
+        prior = qs.first()
+        if prior is None: return False
+        saved_config = prior.config_snapshot
+        recorded = replay_journal if replay_journal is not None else record_write(prior, turn_number, winner, end_reason)
         update_fields = {
             'config_snapshot': load_config(saved_config),
+            'replay_journal': recorded,
             'board_state': board_state,
             'current_turn': current_turn,
             'turn_number': turn_number,
@@ -3988,6 +4029,7 @@ class _TurnPreview(GameConsumer):
     """Run the same move handlers on a copy, with no database writes, sockets or timers."""
     def __init__(self, state):
         self.state = copy.deepcopy(state)
+        self.state.replay_journal = getattr(state, 'replay_journal', None)
         self.game_id = state.game_id
         self.username = state.current_turn
         self.room_group_name = f'game_{state.game_id}'

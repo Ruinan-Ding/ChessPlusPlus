@@ -138,23 +138,26 @@ UNIT_EFFECT_FIELDS = {
     'rapid-movement': [],
 }
 UNIT_PASSIVES = tuple(UNIT_EFFECT_FIELDS)
-UNIT_ACTIVES = ('sacrifice', 'attack-drain', 'taunt', 'cleave', 'charge', 'control', 'nullify', 'call')
+UNIT_ACTIVES = ('sacrifice', 'attack-drain', 'taunt', 'cleave', 'charge', 'control', 'nullify', 'leech', 'call')
 UNIT_EFFECT_FIELDS.update({
-    'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up', 'stars'],
+    'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up', 'stars', 'battlefieldActions'],
     'attack-drain': ['cost', 'cooldown', 'turns', 'mov'],
     'taunt': ['cost', 'cooldown', 'turns'],
     'cleave': ['cost', 'cooldown', 'turns', 'radius'],
     'charge': ['cost', 'cooldown', 'turns'],
     'control': ['cost', 'cooldown', 'turns', 'radius'],
     'nullify': ['cost', 'cooldown', 'turns'],
+    'leech': ['cost', 'cooldown', 'turns', 'atk', 'def'],
     'call': ['cost', 'cooldown', 'turns', 'heal', 'atk', 'def', 'mov', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius'],
 })
 
 
 PATH_EFFECT_FIELDS = {
     'defensive-armor': ['def', 'minVet'],
+    'offensive-power': ['atk', 'hel', 'minVet'],
+    'mobility-economy': ['mov', 'baseMov', 'costReduction', 'minimumCost', 'minVet'],
     'promote': ['cost', 'cooldown', 'uses', 'stars'],
-    'recharge': ['cost', 'cooldown', 'uses', 'recharge'],
+    'recharge': ['cost', 'cooldown', 'uses', 'recharge', 'refundMultiplier'],
     'hex-sap': ['cost', 'cooldown', 'uses', 'turns', 'setAtk', 'splashAtk', 'setHel', 'splashHel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel'],
     'hex-cleave': ['cost', 'cooldown', 'uses', 'damage', 'splashDamage', 'splashRange', 'heal'],
     'hex-trap': ['cost', 'cooldown', 'uses', 'turns', 'splashMov', 'splashRange', 'outerMov'],
@@ -171,10 +174,11 @@ PATH_TARGETS = {
 
 
 ABILITY_NUMBERS = (
+    ('baseMov', 0), ('costReduction', 0), ('minimumCost', 1),
     ('cost', 0), ('cooldown', 0), ('turns', 1), ('uses', 1),
     ('mov', None), ('atk', None), ('def', None), ('damage', 0), ('heal', 0), ('points', 0),
     ('up', 0), ('enemyDamage', 0), ('enemyAtk', None), ('enemyDef', None), ('enemyMov', None), ('radius', 1), ('minVet', 0),
-    ('stars', 1), ('recharge', 0), ('splashDamage', 0), ('splashAtk', None), ('splashMov', None),
+    ('stars', 1), ('recharge', 0), ('refundMultiplier', 0), ('splashDamage', 0), ('splashAtk', None), ('splashMov', None),
     ('setAtk', 0), ('enemyDefSet', 0), ('hel', None), ('setHel', 0), ('splashHel', None),
     ('splashRange', 1), ('outerRange', 1), ('outerAtk', 0), ('outerHel', 0), ('outerMov', 0),
 )
@@ -254,13 +258,19 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                     errors.append(f'{at}.effect is unknown')
                 if entry.get('target') != PATH_TARGETS.get(entry.get('effect') if isinstance(entry.get('effect'), str) else '', 'enemy' if entry.get('effect') == 'control' else 'friendly'):
                     errors.append(f'{at}.target must be friendly for a unit passive')
-                for field in ('cost', 'cooldown', 'turns', 'uses', 'mov', 'atk', 'def', 'damage', 'heal', 'points', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius', 'minVet', 'stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'hel', 'setHel', 'splashHel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov'):
+                for field in ('cost', 'cooldown', 'turns', 'uses', 'mov', 'atk', 'def', 'damage', 'heal', 'points', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius', 'minVet', 'stars', 'recharge', 'refundMultiplier', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'hel', 'setHel', 'splashHel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov', 'baseMov', 'costReduction', 'minimumCost', 'battlefieldActions'):
                     if field in entry:
                         if field not in (EFFECT_FIELDS.get(entry['effect'], ()) if isinstance(entry['effect'], str) else ()):
                             errors.append(f'{at}.{field} does nothing on a unit passive')
-                        elif type(entry[field]) is not int or (field in ('cost', 'cooldown', 'damage', 'heal', 'up', 'enemyDamage', 'minVet', 'recharge', 'splashDamage', 'setAtk', 'enemyDefSet', 'setHel', 'outerAtk', 'outerHel', 'outerMov') and entry[field] < 0) or (field in ('turns', 'uses', 'stars', 'splashRange', 'outerRange', 'radius') and entry[field] < 1):
+                        elif type(entry[field]) is not int or (field in ('cost', 'cooldown', 'damage', 'heal', 'up', 'enemyDamage', 'minVet', 'recharge', 'refundMultiplier', 'splashDamage', 'setAtk', 'enemyDefSet', 'setHel', 'outerAtk', 'outerHel', 'outerMov', 'battlefieldActions') and entry[field] < 0) or (field in ('turns', 'uses', 'stars', 'splashRange', 'outerRange', 'radius') and entry[field] < 1):
                             errors.append(f'{at}.{field} must be an integer')
             effect = entry.get('effect') if isinstance(entry.get('effect'), str) else ''
+            if 'refundMultiplier' in entry and effect != 'recharge':
+                errors.append(f'{at}.refundMultiplier requires Recharge')
+            if any(field in entry for field in ('baseMov', 'costReduction', 'minimumCost')) and effect != 'mobility-economy':
+                errors.append(f'{at}: Sprint-only fields require mobility-economy')
+            if effect in ('offensive-power', 'mobility-economy') and isinstance(abilities.get('pool'), list) and ability_id in abilities['pool']:
+                errors.append(f'{at}: path passives cannot be pool casts')
             if 'area' in entry and entry['area'] != {'hex-cleave': 'horizontal', 'hex-trap': 'cross'}.get(effect):
                 errors.append(f'{at}.area does not match its hex effect')
             if 'area' in entry and entry['area'] is None:
@@ -278,6 +288,12 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
             if 'scope' in entry and (entry['scope'] not in ('field-reserve', 'all') or effect == 'recharge' or not (ability_id in passives or effect in PATH_EFFECT_FIELDS
                     or ('effect' not in entry and entry.get('target') in ('friendly', 'enemy')))):
                 errors.append(f'{at}.scope is invalid')
+            if 'freeOrder' in entry and (type(entry['freeOrder']) is not bool or effect != 'rapid-movement'):
+                errors.append(f'{at}.freeOrder requires a boolean on rapid movement')
+            if 'secondCounter' in entry and (type(entry['secondCounter']) is not bool or effect != 'charge'):
+                errors.append(f'{at}.secondCounter requires a boolean on Charge')
+            if 'battlefieldActions' in entry and 'stars' not in entry:
+                errors.append(f'{at}.battlefieldActions requires selected Sacrifice')
             if 'radius' in entry and effect not in ('call', 'control', 'cleave', 'persuade', 'intimidate'):
                 errors.append(f'{at}.radius requires a range-aware unit effect')
             if 'minVet' in entry and (ability_id not in passives or type(entry['minVet']) is not int or not 0 <= entry['minVet'] <= 3):
@@ -295,7 +311,7 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
             if entry.get('effect') == 'deflect' and 'atk' not in entry:
                 errors.append(f'{at}.atk is required')
             for field in ('up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov'):
-                if field in entry and 'effect' not in entry:
+                if field in entry and 'effect' not in entry and not (field == 'up' and entry.get('target') == 'universal' and ability_id not in passives):
                     errors.append(f'{at}.{field} requires a unit effect')
 
     if config.get('version') == '2.0':

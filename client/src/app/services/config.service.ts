@@ -50,15 +50,16 @@ const UNIT_NUMBERS: ReadonlyArray<readonly [string, number]> = [
 const ABILITY_FIELDS = new Set([
   'id', 'name', 'description', 'target', 'cost', 'cooldown', 'turns', 'uses', 'usesScope',
   'mov', 'atk', 'def', 'damage', 'heal', 'points', 'testing', 'effect', 'counterAttack', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius',
-  'minVet', 'stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'hel', 'setHel', 'splashHel', 'area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov',
+  'minVet', 'stars', 'battlefieldActions', 'secondCounter', 'freeOrder', 'recharge', 'refundMultiplier', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'baseMov', 'costReduction', 'minimumCost', 'hel', 'setHel', 'splashHel', 'area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov',
 ]);
 
 /** A catalogue entry's whole numbers, and the least of each - null for none. */
 const ABILITY_NUMBERS: ReadonlyArray<readonly [string, number | null]> = [
+  ['baseMov', 0], ['costReduction', 0], ['minimumCost', 1],
   ['cost', 0], ['cooldown', 0], ['turns', 1], ['uses', 1],
   ['mov', null], ['atk', null], ['def', null], ['damage', 0], ['heal', 0], ['points', 0],
   ['up', 0], ['enemyDamage', 0], ['enemyAtk', null], ['enemyDef', null], ['enemyMov', null], ['radius', 1],
-  ['minVet', 0], ['stars', 1], ['recharge', 0], ['splashDamage', 0],
+  ['minVet', 0], ['stars', 1], ['battlefieldActions', 0], ['recharge', 0], ['refundMultiplier', 0], ['splashDamage', 0],
   ['splashAtk', null], ['splashMov', null], ['setAtk', 0], ['enemyDefSet', 0], ['hel', null], ['setHel', 0], ['splashHel', null],
   ['splashRange', 1], ['outerRange', 1], ['outerAtk', 0], ['outerHel', 0], ['outerMov', 0],
 ];
@@ -92,22 +93,25 @@ export const UNIT_EFFECT_FIELDS: Record<string, string[]> = {
   'rapid-movement': [],
 };
 export const UNIT_PASSIVES = Object.keys(UNIT_EFFECT_FIELDS);
-export const UNIT_ACTIVES = ['sacrifice', 'attack-drain', 'taunt', 'cleave', 'charge', 'control', 'nullify', 'call'];
+export const UNIT_ACTIVES = ['sacrifice', 'attack-drain', 'taunt', 'cleave', 'charge', 'control', 'nullify', 'leech', 'call'];
 Object.assign(UNIT_EFFECT_FIELDS, {
-  'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up', 'stars'],
+  'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up', 'stars', 'battlefieldActions'],
   'attack-drain': ['cost', 'cooldown', 'turns', 'mov'],
   'taunt': ['cost', 'cooldown', 'turns'],
   'cleave': ['cost', 'cooldown', 'turns', 'radius'],
   'charge': ['cost', 'cooldown', 'turns'],
   'control': ['cost', 'cooldown', 'turns', 'radius'],
   'nullify': ['cost', 'cooldown', 'turns'],
+  'leech': ['cost', 'cooldown', 'turns', 'atk', 'def'],
   'call': ['cost', 'cooldown', 'turns', 'heal', 'atk', 'def', 'mov', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius'],
 });
 
 const PATH_EFFECT_FIELDS: Record<string, string[]> = {
   'defensive-armor': ['def', 'minVet'],
+  'offensive-power': ['atk', 'hel', 'minVet'],
+  'mobility-economy': ['mov', 'baseMov', 'costReduction', 'minimumCost', 'minVet'],
   'promote': ['cost', 'cooldown', 'uses', 'stars'],
-  'recharge': ['cost', 'cooldown', 'uses', 'recharge'],
+  'recharge': ['cost', 'cooldown', 'uses', 'recharge', 'refundMultiplier'],
   'hex-sap': ['cost', 'cooldown', 'uses', 'turns', 'setAtk', 'splashAtk', 'setHel', 'splashHel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel'],
   'hex-cleave': ['cost', 'cooldown', 'uses', 'damage', 'splashDamage', 'splashRange', 'heal'],
   'hex-trap': ['cost', 'cooldown', 'uses', 'turns', 'splashMov', 'splashRange', 'outerMov'],
@@ -187,6 +191,9 @@ function abilityNumberErrors(abilities: any): string[] {
       }
       if (a.target !== (PATH_TARGETS[a.effect] ?? (a.effect === 'control' ? 'enemy' : 'friendly'))) errors.push(`${at}.target does not match the configured effect`);
     }
+    if (a.refundMultiplier !== undefined && a.effect !== 'recharge') errors.push(`${at}.refundMultiplier requires Recharge`);
+    if (['baseMov', 'costReduction', 'minimumCost'].some(field => a[field] !== undefined) && a.effect !== 'mobility-economy') errors.push(`${at}: Sprint-only fields require mobility-economy`);
+    if (['offensive-power', 'mobility-economy'].includes(a.effect) && pool.includes(id)) errors.push(`${at}: path passives cannot be pool casts`);
     if (a.area !== undefined && a.area !== ({ 'hex-cleave': 'horizontal', 'hex-trap': 'cross' } as Record<string, string>)[a.effect]) errors.push(`${at}.area does not match its hex effect`);
     if ((a.outerAtk !== undefined || a.outerHel !== undefined) && a.outerRange === undefined) errors.push(`${at}.outerRange is required for outer-ring boosts`);
     if (Number.isInteger(a.outerRange) && Number.isInteger(a.splashRange === undefined ? 1 : a.splashRange) && a.outerRange <= (a.splashRange === undefined ? 1 : a.splashRange)) errors.push(`${at}.outerRange must exceed splashRange`);
@@ -195,6 +202,9 @@ function abilityNumberErrors(abilities: any): string[] {
     if (a.scope !== undefined && (!['field-reserve', 'all'].includes(a.scope)
         || a.effect === 'recharge' || !(passives.has(id) || PATH_EFFECT_FIELDS[a.effect]
           || (a.effect === undefined && ['friendly', 'enemy'].includes(a.target))))) errors.push(`${at}.scope is invalid`);
+    if (a.freeOrder !== undefined && (typeof a.freeOrder !== 'boolean' || a.effect !== 'rapid-movement')) errors.push(`${at}.freeOrder requires a boolean on rapid movement`);
+    if (a.secondCounter !== undefined && (typeof a.secondCounter !== 'boolean' || a.effect !== 'charge')) errors.push(`${at}.secondCounter requires a boolean on Charge`);
+    if (a.battlefieldActions !== undefined && a.stars === undefined) errors.push(`${at}.battlefieldActions requires selected Sacrifice`);
     if (a.radius !== undefined && !['call', 'control', 'cleave', 'persuade', 'intimidate'].includes(a.effect)) errors.push(`${at}.radius requires a range-aware unit effect`);
     if (a.minVet !== undefined && (!passives.has(id) || a.minVet > 3)) errors.push(`${at}.minVet requires a path passive and must be at most 3`);
     for (const field of ['stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'setHel', 'splashHel', 'hel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov']) {
@@ -208,7 +218,7 @@ function abilityNumberErrors(abilities: any): string[] {
     if (a.effect === 'counter' && a.counterAttack === undefined) errors.push(`${at}.counterAttack is required`);
     if (a.effect === 'deflect' && a.atk === undefined) errors.push(`${at}.atk is required`);
     for (const field of ['up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov']) {
-      if (a[field] !== undefined && a.effect === undefined) errors.push(`${at}.${field} requires a unit effect`);
+      if (a[field] !== undefined && a.effect === undefined && !(field === 'up' && a.target === 'universal' && !passives.has(id))) errors.push(`${at}.${field} requires a unit effect`);
     }
     const kind = a.effect !== undefined ? a.effect : passives.has(id) ? 'passive' : a.target;
     for (const field of Array.isArray(IGNORED_BY[kind]) ? IGNORED_BY[kind] : []) {

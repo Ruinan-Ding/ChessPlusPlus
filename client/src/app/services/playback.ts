@@ -9,6 +9,7 @@ export interface PlayableAction {
   heal?: string;
   afterAttackWalk?: boolean;
   secondStrike?: boolean;
+  secondCounter?: boolean;
   actor?: PieceIdentity;
   counterActor?: PieceIdentity;
   impactTargets?: AnimStep[];
@@ -114,6 +115,8 @@ export function buildPlayback(actions: PlayableAction[], collapseMoves = false):
       }
       if (action.secondStrike) { steps.push({ kind: 'attack', from: action.to, to: action.attack,
         ...(action.actor ? { actor: action.actor } : {}) }); owners.push(owner); }
+      if (action.secondCounter) { steps.push({ kind: 'counter', from: action.attack, to: action.to,
+        ...(action.counterActor ? { actor: action.counterActor } : {}) }); owners.push(owner); }
       if (action.from && action.to) standing.set(action.from, action.to);
       continue;
     }
@@ -206,7 +209,9 @@ export function historyPlayback(records: readonly any[], slotOf: (id: string) =>
       if (record.attacked) {
         const from = record.attackedHex ? landing : record.from;
         const to = record.attackedHex ?? record.to;
-        steps.push({ kind: 'attack', from, to, ...(appearance ? { actor: appearance } : {}) });
+        steps.push({ kind: 'attack', from, to, ...(appearance ? { actor: appearance } : {}),
+          ...(record.leech_heal > 0 ? { targets: [{ kind: 'heal' as const, from, to: from,
+            uid: appearance?.uid, color: appearance?.color, mark: `+${record.leech_heal}` }] } : {}) });
         if (record.countered ?? record.counter_damage > 0) {
           const target = record.counterActor ?? (record.panelAttack ? record.panelDefender ?? record.unit
             : record.captured && appearance ? { unit_id: record.captured,
@@ -216,6 +221,10 @@ export function historyPlayback(records: readonly any[], slotOf: (id: string) =>
           } } : {}) });
         }
         if (record.secondStrike) steps.push({ kind: 'attack', from, to, ...(appearance ? { actor: appearance } : {}) });
+        if (record.secondCounter) {
+          const target = record.counterActor ?? (record.panelAttack ? record.panelDefender ?? record.unit : undefined);
+          steps.push({ kind: 'counter', from: to, to: from, ...(target ? { actor: { unit_id: target.unit_id, color: target.color, uid: target.uid } } : {}) });
+        }
       }
       if (record.attackFrom && record.to !== landing && record.moved) {
         const step: AnimStep = { kind: 'move', from: landing, to: record.to,

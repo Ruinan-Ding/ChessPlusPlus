@@ -1,5 +1,5 @@
 import {
-  boardMovesAt, homecomingsAt, lockedPanelUnits,
+  boardMovesAt, finishedUnitUids, battlefieldActionBonus, extraActionUids, homecomingsAt, lockedPanelUnits,
   openingMovedHexes, panelMoverAllowed, panelMoversAt, unitVeterancy, promotionHeals,
 } from './history-rules';
 
@@ -21,6 +21,29 @@ describe('history-rules', () => {
   const panelStep = (uid: string, color: string, turn: number, over: any = {}) => ({
     from: 'bl-1', to: 'bl-2', turn, panelMove: true,
     unit: { uid, color, unit_id: 'pawn' }, panel: 'bl', ...over,
+  });
+
+  it('grants general Sacrifice slots only to the casting side and ply, with Undo restoring the allowance', () => {
+    const grant = { turn: 55, color: 'white', battlefieldActions: 2 };
+    const history = [grant, { ...grant, battlefieldActions: 1 }];
+    expect(battlefieldActionBonus(history, 55, 'white')).toBe(3);
+    expect(battlefieldActionBonus(history, 56, 'black')).toBe(0);
+    expect(battlefieldActionBonus(history, 57, 'white')).toBe(0);
+    expect(battlefieldActionBonus(history.slice(0, 1), 55, 'white')).toBe(2);
+    expect(battlefieldActionBonus([], 55, 'white')).toBe(0);
+    expect(boardMovesAt(history, 55, 'white')).toBe(0);
+    expect(extraActionUids(history, 55, 'white')).toEqual([]);
+  });
+
+  it('closes an earlier battlefield actor after a different unit casts, with Undo and ply isolation', () => {
+    const move = { turn: 99, color: 'white', uid: 'a', from: '0,0', to: '1,0' };
+    const cast = { turn: 99, unitCast: { uid: 'b', color: 'white', at: '2,0' } };
+    const history = [move, { turn: 99, color: 'white', abilityCast: { id: 'warcry', unitUid: 'b' } }, cast];
+    expect([...finishedUnitUids(history, 99, 'white')]).toEqual(['a']);
+    expect(finishedUnitUids(history.slice(0, -1), 99, 'white').size).toBe(0);
+    expect(finishedUnitUids(history, 100, 'black').size).toBe(0);
+    expect(finishedUnitUids(history, 101, 'white').size).toBe(0);
+    expect(finishedUnitUids([move, { ...cast, unitCast: { ...cast.unitCast, uid: 'a', at: '1,0' } }], 99, 'white').size).toBe(0);
   });
 
   describe('openingMovedHexes', () => {
@@ -254,6 +277,21 @@ describe('phase awards and Strengthen veterancy', () => {
     expect(rank('11,1', 7, history)).toBe(0);
     expect(rank('11,1', 8, history)).toBe(0);
     expect(rank('11,1', 27, history)).toBe(1);
+  });
+
+  it('resets withdrawals in history, discards old promotions and resumes with new awards', () => {
+    const history: any[] = [{ turn: 9, promotion: { uid: 'u', vet: 3 } },
+      step(28, '3,8', '-12,9', { panelMove: false, withdrawn: true, veterancyReset: true }),
+      step(50, '-12,9', '11,1')];
+    const uid = history[1].unit.uid;
+    history[0].promotion.uid = uid;
+    expect(rank('3,8', 27, history)).toBe(3);
+    expect(rank('-12,9', 28, history)).toBe(0);
+    expect(rank('-12,9', 49, history)).toBe(0);
+    expect(rank('11,1', 50, JSON.parse(JSON.stringify(history)))).toBe(0);
+    expect(rank('11,1', 71, history)).toBe(1);
+    history.push({ turn: 51, promotion: { uid, vet: 2 } });
+    expect(rank('11,1', 71, history)).toBe(3);
   });
 
   it('keeps earned stars in a base, earns none there, and resumes in reserve', () => {

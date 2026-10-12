@@ -21,7 +21,11 @@ function fillMissing(value: any, defaults: any): void {
   if (value && typeof value === 'object' && !Array.isArray(value) && defaults && typeof defaults === 'object') {
     for (const [key, fallback] of Object.entries(defaults)) {
       if (!Object.hasOwn(value, key)) value[key] = structuredClone(fallback);
-      else if (fallback && typeof fallback === 'object' && !Array.isArray(fallback)) fillMissing(value[key], fallback);
+      else if (fallback && typeof fallback === 'object' && !Array.isArray(fallback)) {
+        const retained = key === 'walkHomeRefund'
+          ? Object.fromEntries(Object.entries(fallback).filter(([field]) => !['veterancy', 'resetVeterancy'].includes(field))) : fallback;
+        fillMissing(value[key], retained);
+      }
     }
   }
 }
