@@ -28,7 +28,7 @@ SERVER = os.path.dirname(HERE)
 sys.path.insert(0, SERVER)
 
 from game.engine import economy, phases, scoring  # noqa: E402
-from game.engine.config_loader import DEFAULT_CONFIG  # noqa: E402
+from game.engine.config_loader import DEFAULT_CONFIG, rule_of  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(SERVER), 'client', 'src', 'app', 'services', 'scoring-parity.json')
 SEED = 20260925
@@ -84,6 +84,14 @@ def make_cases(rng):
                     cases.append({'config': {'board': {'radius': 11}, 'units': {uid: {'value': u['value'], 'captureZones': u['captureZones']}
                                                for uid, u in DEFAULT_CONFIG['units'].items()}}, 'board': board, 'history': [],
                                   'bank': {}, 'ply': 27})
+    for white in range(4):
+        for black in range(4):
+            for ply in (39, 49, 71):
+                cases.append({'config': {'board': {'radius': 11}, 'units': {'king': DEFAULT_CONFIG['units']['king']},
+                                        'abilities': {'catalogue': {'capture': DEFAULT_CONFIG['abilities']['catalogue']['capture']}}},
+                              'board': {'2,0': {'unit_id': 'king', 'color': 'white', 'vet': white},
+                                        '-2,0': {'unit_id': 'king', 'color': 'black', 'vet': black}},
+                              'history': [], 'bank': {}, 'ply': ply})
     for phase, ply in ((1, 17), (2, 39), (3, 61)):
         config = {'board': {'radius': 11}, 'units': UNITS, 'rules': {'upAtStart': 10}}
         board = {'-3,6': {'unit_id': 'pawn', 'color': 'white'},
@@ -114,6 +122,21 @@ def make_cases(rng):
                           'bank': {str(phase): {'white': 0, 'black': 0, 'pendingLoss': loss}}, 'ply': ply})
         cases.append({'config': {'board': {'radius': 11}, 'units': UNITS}, 'board': {}, 'history': [],
                       'bank': {str(phase): {'white': 0, 'black': 0, 'pendingLoss': loss, 'late': True}}, 'ply': first + 2})
+    for hp in (14, 9, 2):
+        config = {'board': {'radius': 11}, 'units': {'pawn': {'value': 12, 'hp': 12}},
+                  'rules': {'pointsAtStart': 42, 'cpPhaseOffset': 3, 'upAtStart': 10}}
+        history = [{'turn': 27, 'withdrawn': True, 'unit_id': 'pawn', 'color': 'white',
+                    'refundColor': 'black', 'unit': {'unit_id': 'pawn', 'color': 'white',
+                    'hp': hp, 'max_hp': 14, 'vet': 1}},
+                   {'turn': 28, 'panelEffect': True, 'unit': {'unit_id': 'pawn', 'hp': 14}, 'defenderHp': 14}]
+        cases.append({'config': config, 'board': {}, 'history': history,
+                      'bank': {'1': {'white': 7, 'black': 3}}, 'ply': 28})
+    for lead in (-26, -25, -24, 0, 49, 50, 51):
+        bank = {'1': {'white': 60 + lead, 'black': 60},
+                '2': {'white': 20, 'black': 20}, '3': {'white': 30, 'black': 30}}
+        for ply in (71, 72, 73, 74):
+            cases.append({'config': {'board': {'radius': 11}, 'units': UNITS},
+                          'board': {}, 'history': [], 'bank': bank, 'ply': ply})
     return cases
 
 
@@ -132,10 +155,10 @@ def answers(case):
                    for side in ('white', 'black')],
         'decided': scoring.decided_on_points(bank),
         'ending': list(ending) if ending else None,
-        'cp': [scoring.cp_awarded(bank, side, 5) for side in ('white', 'black')],
+        'cp': [scoring.cp_awarded(bank, side, rule_of(config, 'cpPhaseOffset')) for side in ('white', 'black')],
         'vp': [[p] + [scoring.vp_as_points(bank, side, p) for side in ('white', 'black')]
                for p in (72, 73, 74, ply)],
-        'scheduled': [scoring.scheduled_points(bank, side, ply) for side in ('white', 'black')],
+        'scheduled': [scoring.scheduled_points(bank, side, ply, config) for side in ('white', 'black')],
     }
 
 

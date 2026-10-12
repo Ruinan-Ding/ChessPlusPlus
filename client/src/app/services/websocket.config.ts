@@ -18,8 +18,16 @@ export const WEBSOCKET_CONFIG = {
   /**
    * Where `ng serve` runs. It proxies nothing, so a page served from this
    * port is the one case where the socket has to be pointed somewhere else -
-   * see createSocket. Anywhere else the page's own origin answers.
+   * see websocketUrl. Anywhere else the page's own origin answers.
    */
   DEV_SERVER_PORT: '4200',
   BACKEND_PORT: 8000,
 };
+
+/** Solo analysis and game sockets use the same deployment address. */
+export function websocketUrl(path: string): string {
+  const { protocol, hostname, port, host } = window.location;
+  const server = port === WEBSOCKET_CONFIG.DEV_SERVER_PORT
+    ? `${hostname}:${WEBSOCKET_CONFIG.BACKEND_PORT}` : host;
+  return `${protocol === 'https:' ? 'wss' : 'ws'}://${server}${path}`;
+}

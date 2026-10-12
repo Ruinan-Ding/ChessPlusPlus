@@ -907,6 +907,7 @@ try {
       await ev(`(() => {
         const room = ng.getComponent(document.querySelector('app-game-room'));
         const name = 'WWWWWWWWWWWWWWWWWWWWWWWW!xxxxxxxxxxxx';
+        room.isSinglePlayer = '${state}' !== 'reconnect';
         room.connectionLost = '${state}' === 'reconnect';
         room.showEndModal = '${state}' === 'end';
         room.endModalTitle = 'Match finished';

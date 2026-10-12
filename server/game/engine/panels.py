@@ -35,13 +35,15 @@ import math
 import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .unit_stats import ranked_unit, unit_stats
+from .game_rules import section_of
+from .phases import phases_of, scoring_phases, moves_per_turn
+from .unit_stats import kit_active, unit_zone, active_vet, cap_stat, cap_unit, ranked_unit, unit_stats
 
 # The phase schedule's own count of a side's turns. Mending needs it, and it
 # lived here as a private copy until the schedule was ported whole; one copy of
 # a rule is the only kind that cannot drift from itself.
 from .phases import hand_overs_by  # noqa: F401  (re-exported as panels.hand_overs_by)
-from .phases import PHASES, PLIES_PER_TURN, SCORING_PHASES, phase_start_turn
+from .phases import PLIES_PER_TURN, phase_start_turn
 
 #: Radius of a single hex in the client's SVG units. Only ratios and signs
 #: matter here, but the client's own value is kept so the bounding-box
@@ -353,6 +355,7 @@ def dealt_panels(
                 'uid': uid,
                 'panel': panel,
                 'vet': 0,
+                **({'veterancyHpActive': False} if section_of(config, 'veterancy')['statUnlock'] == 0 else {}),
             }
     return dealt
 
@@ -415,6 +418,7 @@ def set_up_panels(
                 'uid': uid,
                 'panel': panel,
                 'vet': 0,
+                **({'veterancyHpActive': False} if section_of(config, 'veterancy')['statUnlock'] == 0 else {}),
             }
     return dealt
 
@@ -452,11 +456,7 @@ def recorded_panel_hp(history: Iterable[Dict[str, Any]]) -> Dict[str, int]:
 
 #: What a base closes on each of its wounded at the end of its side's turn.
 #: The owner's placeholder - "1hp (for now at least)". Mirrors
-#: BASE_HEAL_PER_TURN in game-room.component.ts.
-BASE_HEAL_PER_TURN = 1
-
-
-def mended_since(color: str, since: Optional[int], now: int) -> int:
+def mended_since(color: str, since: Optional[int], now: int, config=None) -> int:
     """
     What a unit in a base has mended between the ply its HP was last written
     down and the ply about to be played.
@@ -469,7 +469,7 @@ def mended_since(color: str, since: Optional[int], now: int) -> int:
     if since is None:
         return 0
     return max(0, hand_overs_by(color, now - 1) - hand_overs_by(color, since)) \
-        * BASE_HEAL_PER_TURN
+        * section_of(config, 'panels')['baseHealPerTurn']
 
 
 def in_base_after(
@@ -499,7 +499,7 @@ def in_base_after(
             out.append((move.get('turn') or 0,
                         is_base(panel_of(*axial_to_pixel(q, r, orientation)))))
         elif move.get('entered'):
-            out.append((move.get('turn') or 0, False))
+            out.append((move.get('turn') or 0, None))
     return out
 
 
@@ -509,6 +509,7 @@ def mended_in_base(
     in_base: bool,
     stays: List[Tuple[int, bool]],
     now: int,
+    config=None,
 ) -> int:
     """
     What a unit mends from the ply its HP was written down (*since*, standing
@@ -528,7 +529,7 @@ def mended_in_base(
     segments = [(since, in_base)] + list(stays)
     total = 0
     for k, (start, base) in enumerate(segments):
-        if not base:
+        if base is None:
             continue
         # The plies this stretch is where the unit stood at the close of: from
         # its own ply to the one before the next move. Two moves in one ply
@@ -536,14 +537,15 @@ def mended_in_base(
         lo = max(since, start - 1)
         hi = now - 1 if k + 1 == len(segments) else min(now - 1, segments[k + 1][0] - 1)
         if hi > lo:
-            total += hand_overs_by(color, hi) - hand_overs_by(color, lo)
-    return total * BASE_HEAL_PER_TURN
+            total += (hand_overs_by(color, hi) - hand_overs_by(color, lo)) * section_of(config, 'panels')['baseHealPerTurn' if base else 'reserveHealPerTurn']
+    return total
 
 
 def panel_hp(
     history: Iterable[Dict[str, Any]],
     ply: int,
     orientation: str = 'edge-up',
+    config=None,
 ) -> Dict[str, int]:
     """
     Each panel unit's HP as of *ply*: its last word, plus whatever a base has
@@ -581,7 +583,7 @@ def panel_hp(
             continue
         mended = mended_in_base(
             wound['color'], wound['turn'], wound['mends'],
-            in_base_after(moves, wound['index'], uid, orientation), ply)
+            in_base_after(moves, wound['index'], uid, orientation), ply, config)
         hp[uid] = min(wound['full'], wound['left'] + mended)
     return hp
 
@@ -609,6 +611,7 @@ def withdrawn_units(
     history: Iterable[Dict[str, Any]],
     ply: Optional[int] = None,
     orientation: str = 'edge-up',
+    config=None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Units that walked off the battlefield into their own base, by uid.
@@ -664,7 +667,7 @@ def withdrawn_units(
         full = unit.get('max_hp') or unit.get('hp') or 0
         stays = in_base_after(moves, index, unit.get('uid'), orientation)
         stood['hp'] = min(full, stood['hp'] + mended_in_base(
-            unit.get('color'), stood['turn'], True, stays, ply))
+            unit.get('color'), stood['turn'], True, stays, ply, config))
     return alive
 
 
@@ -674,6 +677,7 @@ def panel_occupancy(
     history: Iterable[Dict[str, Any]],
     orientation: str = 'edge-up',
     ply: Optional[int] = None,
+    ability_state=None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Everything standing in a panel right now, by hex key.
@@ -689,8 +693,8 @@ def panel_occupancy(
     which is fine for "is anyone there" and wrong for "how much is left".
     """
     moves = [move for move in (history or []) if isinstance(move, dict)]
-    wounds = recorded_panel_hp(moves) if ply is None else panel_hp(moves, ply, orientation)
-    home = withdrawn_units(moves, ply, orientation)
+    wounds = recorded_panel_hp(moves) if ply is None else panel_hp(moves, ply, orientation, config)
+    home = withdrawn_units(moves, ply, orientation, config)
 
     # Where each unit stands, by uid, replayed from the deal in the order things
     # happened. It used to be two sets - the dealt squad less whoever had ever
@@ -737,8 +741,11 @@ def panel_occupancy(
         # Read off where it stands NOW: a unit wrapped out of its base is a
         # reserve unit, and answers blows as one.
         unit['panel'] = panel_of(*axial_to_pixel(aq, ar, orientation))
-        vet = unit_veterancy(uid, at, moves, ply or 1, radius, orientation)
-        standing[at] = ranked_unit(unit, config, vet)
+        vet = unit_veterancy(uid, at, moves, ply or 1, radius, orientation, config=config)
+        standing[at] = ranked_unit(unit, config, max(unit.get('vet', 0), vet), active=kit_active(unit, config))
+    if ability_state is not None:
+        from .ability_rules import controlled
+        standing = {k: controlled(u, ability_state, ply or 1) for k, u in standing.items()}
     return standing
 
 
@@ -763,7 +770,7 @@ def is_base(panel: Optional[str]) -> bool:
 HOME_ROWS = 3
 
 
-def in_home_rows(color: str, r: int, radius: int) -> bool:
+def in_home_rows(color: str, r: int, radius: int, config=None) -> bool:
     """
     Whether row ``r`` is one of *color*'s own first three.
 
@@ -777,7 +784,7 @@ def in_home_rows(color: str, r: int, radius: int) -> bool:
     its ground on a config that leaves some of those hexes empty. Mirrors the
     board's ``homeOf``, which tints exactly these rows.
     """
-    edge = max(1, radius - (HOME_ROWS - 1))
+    edge = max(1, radius - (section_of(config, 'panels')['homeRows'] - 1))
     return r >= edge if color == 'white' else r <= -edge
 
 
@@ -799,6 +806,7 @@ def move_costs(
     radius: int,
     moves_left: Optional[int] = None,
     zone: Optional[Sequence[str]] = None,
+    hop: bool = False,
 ) -> Tuple[Dict[str, int], Dict[str, int]]:
     """
     What the unit at (sq, sr) can reach, and at what cost. Mirrors
@@ -818,10 +826,10 @@ def move_costs(
     piece = units.get(coord_key(sq, sr))
     if not piece:
         return costs, passable
-    unit_def = unit_stats(piece['unit_id'], config, piece.get('vet', 0))
+    unit_def = unit_stats(piece['unit_id'], config, active_vet(piece, config))
     move_range = unit_def.get('move', 0) if moves_left is None else moves_left
     try:
-        move_range = int(move_range)
+        move_range = int(cap_stat(move_range))
     except (TypeError, ValueError):
         return costs, passable
     if move_range <= 0:
@@ -844,7 +852,7 @@ def move_costs(
                     continue
                 visited.add(key)
                 blocker = units.get(key)
-                if blocker and blocker.get('color') != piece.get('color'):
+                if blocker and blocker.get('color') != piece.get('color') and not hop:
                     continue
                 if blocker:
                     passable[key] = step
@@ -865,6 +873,7 @@ def entry_targets(
     from_key: str,
     orientation: str = 'edge-up',
     moves_left: Optional[int] = None,
+    hop: bool = False,
 ) -> Dict[str, int]:
     """
     Every battlefield hex the panel unit on ``from_key`` may step onto, by the
@@ -893,15 +902,15 @@ def entry_targets(
     if not zone:
         return {}
 
-    unit_def = unit_stats(unit['unit_id'], config, unit.get('vet', 0))
+    unit_def = unit_stats(unit['unit_id'], config, active_vet(unit, config))
     mov = unit_def.get('move', 0) if moves_left is None else moves_left
     try:
-        mov = int(mov)
+        mov = int(cap_stat(mov))
     except (TypeError, ValueError):
         return {}
 
     costs, passable = move_costs(
-        occupancy, fq, fr, config, radius, mov, zone)
+        occupancy, fq, fr, config, radius, mov, zone, hop)
     # `costAt` accepts a hex the walk passes THROUGH as well as one it can stop
     # on, so a friend standing on the gateway does not shut the crossing.
     reach = dict(costs)
@@ -910,12 +919,12 @@ def entry_targets(
 
     out: Dict[str, int] = {}
     for gate, arrow in gateway_hexes(radius).items():
-        if arrow['color'] != color:
+        if arrow['color'] != color_of_panel(panel):
             continue
         to_gate = reach.get(gate)
         if to_gate is None:
             continue
-        spent = to_gate + 1
+        spent = to_gate + section_of(config, 'panels')['crossingStepCost']
         left = mov - spent
         if left < 0:
             continue
@@ -926,7 +935,7 @@ def entry_targets(
             if not on_battlefield(eq, er, radius):
                 continue
             standing = board_state.get(entry)
-            if standing and standing.get('color') != color:
+            if standing and standing.get('color') != color and not hop:
                 continue
             if not standing and spent < out.get(entry, math.inf):
                 out[entry] = spent
@@ -938,7 +947,7 @@ def entry_targets(
             onward = dict(board_state)
             onward[entry] = unit
             onward_costs, _ = move_costs(
-                onward, eq, er, config, radius, left)
+                onward, eq, er, config, radius, left, hop=hop)
             for hex_key, cost in onward_costs.items():
                 total = spent + cost
                 if total < out.get(hex_key, math.inf):
@@ -949,7 +958,7 @@ def entry_targets(
     # way it may pass over a friend it cannot stop on.
     return {
         hex_key: cost for hex_key, cost in out.items()
-        if in_home_rows(color, parse_key(hex_key)[1], radius)
+        if in_home_rows(color_of_panel(panel), parse_key(hex_key)[1], radius, config=config)
     }
 
 
@@ -961,6 +970,7 @@ def homecoming_targets(
     from_key: str,
     orientation: str = 'edge-up',
     moves_left: Optional[int] = None,
+    hop: bool = False,
 ) -> Dict[str, int]:
     """
     Every hex in its own base the board unit on ``from_key`` may walk home to,
@@ -993,7 +1003,7 @@ def homecoming_targets(
     except ValueError:
         return {}
     color = unit.get('color')
-    unit_def = unit_stats(unit['unit_id'], config, unit.get('vet', 0))
+    unit_def = unit_stats(unit['unit_id'], config, active_vet(unit, config))
     if unit_def.get('commander'):
         return {}
     # Only from your own first three rows. The owner's rule, and the same bound
@@ -1001,15 +1011,15 @@ def homecoming_targets(
     # back down into its own ground before it can walk off it. Asked of where
     # the unit STANDS, not of where the walk passes - the doorways are in the
     # base and the route to them runs through these rows anyway.
-    if not in_home_rows(color, fr, radius):
+    if not in_home_rows(color, fr, radius, config=config):
         return {}
     mov = unit_def.get('move', 0) if moves_left is None else moves_left
     try:
-        mov = int(mov)
+        mov = int(cap_stat(mov))
     except (TypeError, ValueError):
         return {}
 
-    costs, passable = move_costs(board_state, fq, fr, config, radius, mov)
+    costs, passable = move_costs(board_state, fq, fr, config, radius, mov, hop=hop)
     # `costAt`: where the unit already stands costs nothing, and a hex it could
     # only pass through still counts as reached.
     reach = dict(costs)
@@ -1022,7 +1032,7 @@ def homecoming_targets(
         if mark['color'] != color:
             continue
         in_door = occupancy.get(gate)
-        if in_door and in_door.get('color') != color:
+        if in_door and in_door.get('color') != color and not hop:
             continue
         gq, gr = parse_key(gate)
         to_edge = math.inf
@@ -1033,7 +1043,7 @@ def homecoming_targets(
             cost = reach.get(coord_key(nq, nr))
             if cost is not None:
                 to_edge = min(to_edge, cost)
-        spent = to_edge + 1
+        spent = to_edge + section_of(config, 'panels')['crossingStepCost']
         if not math.isfinite(spent):
             continue
         left = mov - spent
@@ -1057,7 +1067,7 @@ def homecoming_targets(
         onward[gate] = unit
         onward.pop(from_key, None)
         onward_costs, _ = move_costs(
-            onward, gq, gr, config, radius, int(left), zone)
+            onward, gq, gr, config, radius, int(left), zone, hop)
         for hex_key, cost in onward_costs.items():
             total = int(spent) + cost
             if total < out.get(hex_key, math.inf):
@@ -1120,7 +1130,8 @@ def homecomings_at(
 
 
 def panel_movers(
-    history: Iterable[Dict[str, Any]], ply: int, color: str,
+    history: Iterable[Dict[str, Any]], ply: int, color: str, panel: Optional[str] = None,
+    orientation: str = 'edge-up', config=None,
 ) -> Dict[str, set]:
     """
     The units of *color* walked this ply, split by the panel each walk began in.
@@ -1132,22 +1143,16 @@ def panel_movers(
     one. One set each, because the cap is a per-panel allowance, and counting one
     panel's walks against the other spends it on units it was never about.
     """
+    from .game_logic import unit_action_actor
     movers: Dict[str, set] = {'base': set(), 'reserve': set()}
     for move in history or []:
-        if not isinstance(move, dict) or move.get('turn') != ply:
-            continue
-        unit = move.get('unit') or {}
-        uid = unit.get('uid')
-        if not uid or unit.get('color') != color:
-            continue
-        if move.get('entered'):
-            movers['reserve'].add(uid)
-        elif move.get('panelMove'):
-            movers['base' if is_base(move.get('panel')) else 'reserve'].add(uid)
+        if not isinstance(move, dict) or move.get('turn') != ply or (move.get('color') or (move.get('unitCast') or {}).get('color') or (move.get('unit') or {}).get('color')) != color: continue
+        actor = unit_action_actor(move, config or {'board': {'orientation': orientation, 'radius': 11}})
+        if actor and actor['category'] != 'battlefield' and (panel is None or actor['panel'] == panel): movers[actor['category']].add(actor['uid'])
     return movers
 
 
-def locked_units(history: Iterable[Dict[str, Any]], ply: int) -> frozenset:
+def locked_units(history: Iterable[Dict[str, Any]], ply: int, config=None) -> frozenset:
     """
     Panel units that may not move again for the rest of the opening.
 
@@ -1159,14 +1164,14 @@ def locked_units(history: Iterable[Dict[str, Any]], ply: int) -> frozenset:
     """
     from .phases import is_initialization
 
-    if not is_initialization(ply):
+    if not section_of(config, 'stageRules')['movedUnitsLockedInOpening'] or not is_initialization(ply, config=config):
         return frozenset()
     out = set()
     for move in history or []:
-        if not _is_panel_step(move):
+        if not _is_panel_step(move) and not move.get('withdrawn'):
             continue
         turn = move.get('turn')
-        if turn is None or turn >= ply or not is_initialization(turn):
+        if turn is None or turn >= ply or not is_initialization(turn, config=config):
             continue
         uid = (move.get('unit') or {}).get('uid')
         if uid:
@@ -1179,48 +1184,37 @@ def panel_allowance(
     history: Iterable[Dict[str, Any]],
     unit: Dict[str, Any],
     ply: int,
+    ability_state=None,
 ) -> Optional[int]:
-    """
-    The MOV this panel unit may still spend this ply - or None if it may not
-    move at all. Mirrors `panelCanMove` and `budgetFor`.
-
-    None when it is locked out of the opening, or when its panel's three movers
-    are used up and it is not one of them. Otherwise its move stat less what it
-    has already walked, which may be 0.
-
-    **In a postmatch the reserve's cap is five, not three.** The owner's
-    number, and it stands *instead of* the per-panel three rather than beside
-    it. It governs walking inside the reserve as well as crossing out of it,
-    because the two are the same allowance: capping the walk at three would
-    leave two of the five unable to reach a gateway to spend their crossing on.
-    The base keeps its three - nothing in the rule was about the base, and the
-    wrap is shut on that turn anyway. (The five belonged to a phase's
-    initialization turn until that turn moved to the end of the phase and
-    became its postmatch; the allowance moved with it, unchanged.)
-    """
-    from .config_loader import rule_of
-    from .phases import is_postmatch
+    """Remaining panel MOV within its category’s stage limit and Initialization lock."""
+    from .phases import board_moves_per_turn
 
     moves = list(history or [])
     uid = unit.get('uid')
-    if not uid or uid in locked_units(moves, ply):
+    if not uid or uid in locked_units(moves, ply, config=config):
         return None
     kind = 'base' if is_base(unit.get('panel')) else 'reserve'
-    movers = panel_movers(moves, ply, unit.get('color'))[kind]
-    # Three out of the base and three out of the reserve, never three between
-    # them - rules.panelMoversPerTurn, or rules.postmatchEntries for the
-    # reserve in a postmatch.
-    cap = rule_of(config, 'panelMoversPerTurn')
-    if kind == 'reserve' and is_postmatch(ply):
-        cap = rule_of(config, 'postmatchEntries')
-    if uid not in movers and len(movers) >= cap:
+    movers = panel_movers(moves, ply, unit.get('color'), orientation=config.get('board', {}).get('orientation', 'edge-up'), config=config)[kind]
+    cap = moves_per_turn(ply, kind, config=config)
+    from .game_logic import finished_unit_uids
+    if uid in finished_unit_uids(moves, ply, unit.get('color'), config, kind): return None
+    extra = {key for key, turn in (ability_state or {}).get('extraUnits', {}).items() if turn == ply}
+    if uid not in movers and uid not in extra and len(movers - extra) >= cap:
         return None
-    stat = unit_stats(unit['unit_id'], config, unit.get('vet', 0)).get('move', 0)
+    stat = unit_stats(unit['unit_id'], config, active_vet(unit, config)).get('move', 0)
+    if ability_state is not None:
+        from .ability_rules import bonus, carries, passive
+        if (carries(ability_state.get('buffs', {}).get(uid), 'action-lock')
+                or ability_state.get('unitProgress', {}).get(uid, {}).get('ended')
+                or ability_state.get('endedUnits', {}).get(uid) == ply
+                or (ability_state.get('usedUnits', {}).get(uid) == ply and not (passive(unit, config).get('effect') == 'rapid-movement' and passive(unit, config).get('freeOrder')))):
+            return None
+        stat += bonus(unit, config, ability_state, 'mov', is_base(unit.get('panel')))
     try:
         stat = int(stat)
     except (TypeError, ValueError):
         return None
-    return max(0, stat - walked_this_ply(moves, uid, ply))
+    return max(0, cap_stat(stat) - walked_this_ply(moves, uid, ply))
 
 
 def panel_move_targets(
@@ -1232,6 +1226,7 @@ def panel_move_targets(
     ply: int,
     points: int,
     orientation: str = 'edge-up',
+    ability_state=None,
 ) -> Dict[str, Dict[str, int]]:
     """
     Every panel hex the unit on ``from_key`` may walk to this ply, with the MOV
@@ -1251,7 +1246,7 @@ def panel_move_targets(
     from .phases import is_wrap_open
 
     moves = list(history or [])
-    occupancy = panel_occupancy(config, radius, moves, orientation, ply=ply)
+    occupancy = panel_occupancy(config, radius, moves, orientation, ply=ply, ability_state=ability_state)
     unit = occupancy.get(from_key)
     if not unit:
         return {}
@@ -1259,7 +1254,7 @@ def panel_move_targets(
         fq, fr = parse_key(from_key)
     except ValueError:
         return {}
-    budget = panel_allowance(config, moves, unit, ply)
+    budget = panel_allowance(config, moves, unit, ply, ability_state)
     if not budget:
         return {}
     panel = unit.get('panel')
@@ -1272,15 +1267,17 @@ def panel_move_targets(
     # `occupancy` is: an enemy anywhere blocks, a friend anywhere is passed.
     everyone = dict(board_state)
     everyone.update(occupancy)
-    costs, passable = move_costs(everyone, fq, fr, config, radius, budget, zone)
+    from .ability_rules import passive
+    hop = ability_state is not None and passive(unit, config).get('effect') == 'hop'
+    costs, passable = move_costs(everyone, fq, fr, config, radius, budget, zone, hop)
     out: Dict[str, Dict[str, int]] = {
         hex_key: {'cost': cost, 'price': 0} for hex_key, cost in costs.items()
     }
 
-    if not is_base(panel) or not is_wrap_open(ply):
+    if not is_base(panel) or not is_wrap_open(ply, config=config):
         return out
     color = unit.get('color')
-    tips = wrap_tips(color, radius)
+    tips = wrap_tips(color_of_panel(panel), radius)
     reach = dict(costs)
     reach.update(passable)
     reach[from_key] = 0
@@ -1288,14 +1285,14 @@ def panel_move_targets(
     far = everyone.get(tips['reserve'])
     # An enemy on the far tip shuts the wrap - no landing and no way past. One
     # of your own only means you cannot stop there.
-    if to_tip is None or (far and far.get('color') != color):
+    if to_tip is None or (far and far.get('color') != color and not hop):
         return out
-    spent = to_tip + 1
+    spent = to_tip + section_of(config, 'panels')['crossingStepCost']
     left = budget - spent
     if left < 0:
         return out
     price = ((config.get('units') or {}).get(unit.get('unit_id')) or {}).get('value', 0) or 0
-    price = int(price)
+    price = int(price * section_of(config, 'economy')['wrapPriceMultiplier'])
     if price > points:
         return out
     if not far:
@@ -1313,7 +1310,7 @@ def panel_move_targets(
     onward = dict(everyone)
     onward[tips['reserve']] = unit
     onward.pop(from_key, None)
-    beyond, _ = move_costs(onward, wq, wr, config, radius, left, reserve_zone)
+    beyond, _ = move_costs(onward, wq, wr, config, radius, left, reserve_zone, hop)
     for hex_key, cost in beyond.items():
         total = spent + cost
         if hex_key in out and total >= out[hex_key]['cost']:
@@ -1322,12 +1319,12 @@ def panel_move_targets(
     return out
 
 
-def unit_veterancy(uid, at, history, ply, radius, orientation='edge-up'):
-    """Phase-only stars. Mirrors history-rules.unitVeterancy in the browser.
+def unit_veterancy(uid, at, history, ply, radius, orientation='edge-up', config=None):
+    """Phase awards plus recorded promotions. Mirrors history-rules.unitVeterancy.
 
     Identity follows panel crossings, so only where this unit stood at each
-    award matters, including after a reload. Veterans keep their stars in a
-    base but gain none there. Combat and ordinary walks award nothing.
+    award matters, including after a reload. Recorded withdrawals reset stars;
+    older histories retain them. Base occupancy awards nothing.
     """
     crossings = []
     for move in history or []:
@@ -1343,14 +1340,25 @@ def unit_veterancy(uid, at, history, ply, radius, orientation='edge-up'):
         except (ValueError, TypeError):
             continue
         crossings.append(move)
-    boundaries = [phase_start_turn(1)] + [
-        phase_start_turn(index) + PHASES[index]['turns'] for index in SCORING_PHASES]
+    settings = section_of(config, 'veterancy')
+    boundaries = ([phase_start_turn(1, config=config)] if settings['firstPhaseStartAward'] else []) + [
+        phase_start_turn(index, config=config) + phases_of(config)[index]['turns']
+        for index in scoring_phases(config) if settings['postmatchAwards'] and phases_of(config)[index]['postmatch']]
     where = crossings[0]['from'] if crossings else at
-    next_move, vet = 0, 0
+    promotions = sorted((move for move in history or [] if isinstance(move, dict)
+        and type(move.get('turn')) is int and (
+            isinstance(move.get('promotion'), dict) and move['promotion'].get('uid') == uid
+            and type(move['promotion'].get('vet')) is int
+            or move.get('veterancyReset') and move.get('withdrawn') and (move.get('unit') or {}).get('uid') == uid)),
+        key=lambda move: move['turn'])
+    next_move, promoted, vet = 0, 0, settings['startingRank']
     for turn in boundaries:
         boundary = (turn - 1) * PLIES_PER_TURN + 1
         if boundary > ply:
             break
+        while promoted < len(promotions) and promotions[promoted]['turn'] < boundary:
+            vet = 0 if promotions[promoted].get('veterancyReset') else min(3, max(vet, promotions[promoted]['promotion']['vet']))
+            promoted += 1
         # A deployment in the new stage happens AFTER that stage's award.
         while next_move < len(crossings) and crossings[next_move]['turn'] < boundary:
             where = crossings[next_move]['to']
@@ -1359,26 +1367,35 @@ def unit_veterancy(uid, at, history, ply, radius, orientation='edge-up'):
             q, r = parse_key(where)
         except (ValueError, TypeError):
             continue
-        if on_battlefield(q, r, radius) or panel_of(*axial_to_pixel(q, r, orientation)) not in BASE_PANELS:
-            vet = min(3, vet + 1)
+        zone = 'battlefield' if on_battlefield(q, r, radius) else ('base' if panel_of(*axial_to_pixel(q, r, orientation)) in BASE_PANELS else 'reserve')
+        if zone in settings['awardZones']:
+            vet = min(3, vet + settings['award'])
+    while promoted < len(promotions) and promotions[promoted]['turn'] <= ply:
+        vet = 0 if promotions[promoted].get('veterancyReset') else min(3, max(vet, promotions[promoted]['promotion']['vet']))
+        promoted += 1
     return vet
 
 
 def promotion_heals(config, board_state, history, ply):
     """One full heal for existing vet-3 field/reserve units at Phase 3 postmatch."""
-    boundary = (phase_start_turn(3) + PHASES[3]['turns'] - 1) * PLIES_PER_TURN + 1
+    settings = section_of(config, 'veterancy')
+    phase = len(scoring_phases(config)) if settings['fullHealPhase'] == 'last' else settings['fullHealPhase']
+    if not phase or not phases_of(config)[phase]['postmatch']: return []
+    boundary = (phase_start_turn(phase, config=config) + phases_of(config)[phase]['turns'] - 1) * PLIES_PER_TURN + 1
     if ply != boundary:
         return []
     radius = config.get('board', {}).get('radius', 11)
     orientation = config.get('board', {}).get('orientation', 'edge-up')
-    for at, unit in board_state.items():
+    for at, raw in board_state.items():
+        unit = cap_unit(raw)
+        board_state[at] = unit
         uid = unit.get('uid', f"{unit['color'][0]}{at}")
-        if unit.get('hp', 0) > 0 and unit_veterancy(uid, at, history, ply - 1, radius, orientation) == 3:
+        if unit.get('hp', 0) > 0 and unit_veterancy(uid, at, history, ply - 1, radius, orientation, config=config) >= settings['fullHealRank'] and 'battlefield' in settings['awardZones']:
             unit['hp'] = unit.get('max_hp', config.get('units', {}).get(unit['unit_id'], {}).get('hp', unit['hp']))
     heals = []
     for at, unit in panel_occupancy(config, radius, history, orientation, ply - 1).items():
         full = unit.get('max_hp', unit['hp'])
-        if (unit['panel'] in BASE_PANELS or unit['vet'] != 3
+        if (unit_zone(unit) not in settings['awardZones'] or unit['vet'] < settings['fullHealRank']
                 or unit['hp'] <= 0 or unit['hp'] >= full):
             continue
         heals.append({

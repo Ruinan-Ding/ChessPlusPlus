@@ -1,11 +1,14 @@
 """Separate ability points and unit points (UP), derived from schedule and history."""
 
 from __future__ import annotations
+from .game_rules import section_of
+from .scoring import casualty_zone
 
 from typing import Any, Dict, Iterable, Optional
 
 from .config_loader import rule_of
 from .scoring import scheduled_points, unit_value
+from .unit_stats import active_vet, cap_stat, kit_active, ranked_unit, unit_stats
 
 
 def points_of(
@@ -15,8 +18,25 @@ def points_of(
     config: Dict[str, Any],
     bank: Optional[Dict[str, Any]] = None,
 ) -> int:
-    """Regular ability points: scheduled income; online casts remain deferred."""
-    return scheduled_points(bank, color, ply)
+    """Scheduled ability income; the authoritative ability state records cast spending."""
+    return scheduled_points(bank, color, ply, config)
+
+
+def withdrawal_refund(config: Dict[str, Any], unit: Dict[str, Any]) -> int:
+    """Use withdrawal HP; later healing or wounds do not reprice the refund."""
+    maximum = cap_stat(unit.get('max_hp', unit_stats(unit['unit_id'], config, active_vet(unit, config)).get('hp', unit.get('hp', 0))))
+    missing = max(0, maximum - cap_stat(unit.get('hp', maximum)))
+    settings = section_of(config, 'economy')['walkHomeRefund']
+    rank = unit.get('vet', 0)
+    tiers = settings.get('veterancy', [])
+    factors = tiers[rank - 1] if 0 < rank <= len(tiers) else settings
+    return max(settings['minimum'], unit_value(config, unit['unit_id']) * factors['valueMultiplier'] - factors['fee'] - missing * factors['missingHpMultiplier'])
+
+
+def withdrawn_unit(config, unit, panel):
+    """Resolve destination HP after the refund's original rank has been priced."""
+    vet = 0 if section_of(config, 'economy')['walkHomeRefund'].get('resetVeterancy', False) else unit.get('vet', 0)
+    return ranked_unit(unit, config, vet, active=kit_active({**unit, 'panel': panel}, config))
 
 
 def unit_points_of(color: str, history: Iterable[Dict[str, Any]], config: Dict[str, Any]) -> int:
@@ -32,6 +52,9 @@ def unit_points_of(color: str, history: Iterable[Dict[str, Any]], config: Dict[s
         # never paid for a kill made that way - only the turn's own action.
         if (move.get('unitCast') or {}).get('color') == color:
             points += int(move['unitCast'].get('gain') or 0) - int(move['unitCast'].get('cost') or 0)
+        cast = move.get('abilityCast') or {}
+        if move.get('color') == color and cast.get('row') != 'unit':
+            points += int(cast.get('up') or 0)
         if move.get('panelEffect') or move.get('entered') or move.get('abilityDeath'):
             continue
         if move.get('panelMove'):
@@ -40,13 +63,13 @@ def unit_points_of(color: str, history: Iterable[Dict[str, Any]], config: Dict[s
             continue
         if move.get('withdrawn'):
             if move.get('refundColor', move.get('color')) == color:
-                points += unit_value(config, move.get('unit_id'))
+                points += move.get('refund', withdrawal_refund(config, {'unit_id': move.get('unit_id'), **(move.get('unit') or {})}))
         # A blow into a panel pays nobody, whichever side dies of it.
-        if move.get('intoPanel'):
+        if casualty_zone(move) not in section_of(config, 'economy')['killPayZones']:
             continue
         if move.get('defender_eliminated') and move.get('color') == color:
-            points += unit_value(config, move.get('captured'))
+            points += unit_value(config, move.get('captured')) * section_of(config, 'economy')['killPayMultiplier']
         # The attacker died of the counter: its worth goes to the defender.
         if move.get('attacker_eliminated') and move.get('color') == other:
-            points += unit_value(config, move.get('unit_id'))
+            points += unit_value(config, move.get('unit_id')) * section_of(config, 'economy')['killPayMultiplier']
     return points

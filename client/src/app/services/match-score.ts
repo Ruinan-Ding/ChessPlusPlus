@@ -1,33 +1,16 @@
+import { sectionOf } from './game-rules';
+import { phasesOf, scoringPhases, overtimeFirstPly, overtimeLastTurn } from './phases';
 /**
- * The match's score, and how the schedule ends it. Mirrors
- * server/game/engine/scoring.py and economy.py - keep the engines in step.
- *
- * Three numbered phases each bank a score: what the capture hexes a side holds
- * are worth as the phase's play ends (`ZONE_WORTH`: 3, 2 or 1 a hex, by zone),
- * less what its units were worth that died in the phase - never less than 0,
- * and times the phase's number (`phaseTotal`).
- * The three are summed, and the match ends in one of two ways the owner set
- * out:
- *
- * - **On points, once Phase 3's postmatch is played.** Phase 3 banks as its
- *   postmatch begins; a side more than the other's margin clear then takes
- *   it outright (`OVERTIME_MARGIN`) as the postmatch ends. Anything closer
- *   goes to overtime.
- * - **At the end of turn 50.** Overtime is a deathmatch until a king falls,
- *   and *"if both survives, black wins."*
- *
- * Both used to be read in the room's header and enforced nowhere, because the
- * score lived in the room: banked by whichever client happened to be watching
- * when a phase ended. The engines keep the bank now - the server on its state
- * row, the browser engine on its game - and hand it out with every hand-over,
- * so the room shows the engine's bank rather than keeping one of its own.
+ * Per-match phase banks, resource transactions and scheduled endings.
+ * Mirrors server scoring.py/economy.py. Capture weights, attrition floors,
+ * phase multipliers and ending thresholds come from the saved config.
+ * The engines freeze each tally before postmatch and send it with handovers.
  */
+
 import { ruleOf } from './config.service';
-import { BASE_PANELS, captureClaims, captureScore, captureZones, captureEligible } from './hex-rules';
-import {
-  OVERTIME_FIRST_PLY, OVERTIME_LAST_TURN, PHASES, SCORING_PHASES, handOversBy, isPostmatch,
-  phaseIndexAt, phaseStartTurn, PLIES_PER_TURN, turnOf, turnPointsBy,
-} from './phases';
+import { activeVet, capStat, kitActive, rankedUnit, unitStats } from './unit-stats';
+import { captureClaims, captureScore, captureZones, captureEligible } from './hex-rules';
+import { handOversBy, isPostmatch, phaseIndexAt, phaseStartTurn, PLIES_PER_TURN, turnOf, turnPointsBy } from './phases';
 
 export type Side = 'white' | 'black';
 
@@ -43,14 +26,14 @@ export type PhaseBank = Record<number, { white: number; black: number; late?: bo
 /**
  * How far behind a side may finish the third phase and still force overtime,
  * keyed by the side behind. Black is allowed the wider gap because white
- * moves first: **white has to be more than 10 clear to take it outright,
- * black only more than 5**. *The owner, 24 Sep 2026: "10 ahead for white and
- * 5 ahead for black to trigger overtime"*.
+ * moves first. The owner's 9 Oct revision allows a White lead of 50 or a
+ * Black lead of 25; larger leads settle on points after both postmatch turns.
  */
-export const OVERTIME_MARGIN = { white: 5, black: 10 };
+const defaultLead = sectionOf(undefined, 'match').winConditions.points.leadToWin;
+export const OVERTIME_MARGIN = { white: defaultLead.black, black: defaultLead.white };
 
 /** How a match the schedule ends was ended. Mirrors the server's reasons. */
-export type ScheduleEndReason = 'points' | 'overtime' | 'phase_result';
+export type ScheduleEndReason = 'points' | 'overtime' | 'phase_result' | 'draw_overtime';
 
 /**
  * What a unit is worth, by its config `value`; 0 for no unit, or one the
@@ -78,38 +61,38 @@ export function unitValue(config: any, unitId: string | null | undefined): numbe
  * alike, so the two cannot disagree. Everything downstream - the match total,
  * the margins, the CP award - reads the multiplied figure.
  */
-export function phaseTotal(cap: number, deaths: number, multiplier: number): number {
-  return Math.max(0, cap - deaths) * multiplier;
+export function phaseTotal(cap: number, deaths: number, multiplier: number, config?: any): number {
+  const raw = cap - deaths;
+  return (sectionOf(config, 'scoring').floorAtZero ? Math.max(0, raw) : raw) * multiplier;
 }
 
 /** What a side is holding on `board`, right now. */
 export function capOf(board: Record<string, any> | null | undefined, radius: number, color: Side, config?: any): number {
-  return captureScore(captureClaims(board ?? {}, radius, config), color, radius);
+  return captureScore(captureClaims(board ?? {}, radius, config), color, radius, config);
 }
 
 /**
  * What a side's losses have cost it: the `value` of every unit of its that
  * died, in `phase` alone when one is named. A loss counts against the phase
- * it happened in and no other, so summing the three never charges one twice.
+ * it happened in and no other, so summing the phases never charges one twice.
  * The defender belongs to whoever was not moving; a counter-attack kills the
  * mover's own unit.
  *
- * **A unit killed in a base (the red panels, `BASE_PANELS`) costs nothing.**
- * *The owner, 24 Sep 2026: "killing things in base (red panel) should not
- * count towards victory points"* - while one killed in a reserve (green) still
- * does. A base never strikes back, so a blow into one only ever kills the unit
- * standing in it. Neither pays the killer any points (`points_of`).
+ * Battlefield, reserve and base deaths count attrition VP; panel kills pay no UP bounty.
  */
+export function casualtyZone(move: any): string { return !move.intoPanel ? 'battlefield' : ['bl', 'tr'].includes(move.panel) ? 'base' : 'reserve'; }
+
 export function deathsOf(config: any, history: readonly any[] | null | undefined, color: Side, phase?: number): number {
   let total = 0;
+  const settings = sectionOf(config, 'scoring');
   for (const move of history ?? []) {
-    if (phase !== undefined && phaseIndexAt(move.turn) !== phase) continue;
-    if (move.intoPanel && BASE_PANELS.has(move.panel)) continue;
-    if (move.abilityDeath?.color === color) total += unitValue(config, move.abilityDeath.unit_id);
-    if (move.defender_eliminated && move.color !== color) total += unitValue(config, move.captured);
-    if (move.attacker_eliminated && move.color === color) total += unitValue(config, move.unit_id);
+    if (!move) continue;
+    if (phase !== undefined && phaseIndexAt(move.turn, config) !== phase) continue;
+    if (settings.deathZones.includes(casualtyZone(move)) && move.abilityDeath?.color === color) total += unitValue(config, move.abilityDeath.unit_id);
+    if (settings.deathZones.includes(casualtyZone(move)) && move.defender_eliminated && move.color !== color) total += unitValue(config, move.captured);
+    if (settings.deathZones.includes('battlefield') && move.attacker_eliminated && move.color === color) total += unitValue(config, move.unit_id);
   }
-  return total;
+  return total * settings.deathCostMultiplier;
 }
 
 /**
@@ -117,9 +100,9 @@ export function deathsOf(config: any, history: readonly any[] | null | undefined
  * once the next phase does. The postmatch still counts as the phase's own
  * (`phaseIndexAt`), which is why this asks about it as well as the index.
  */
-export function phaseOver(phase: number, ply: number): boolean {
-  const now = phaseIndexAt(ply);
-  return phase < now || (phase === now && isPostmatch(ply));
+export function phaseOver(phase: number, ply: number, config?: any): boolean {
+  const now = phaseIndexAt(ply, config);
+  return phase < now || (phase === now && isPostmatch(ply, config));
 }
 
 /**
@@ -145,22 +128,25 @@ export function bankEndedPhases(
   const radius: number = config?.board?.radius ?? 11;
   let out: PhaseBank | null = null;
   let claims: ReturnType<typeof captureClaims> | null = null;
-  for (const phase of SCORING_PHASES) {
-    if (bank?.[phase] || !phaseOver(phase, ply)) continue;
+  for (const phase of scoringPhases(config)) {
+    if (bank?.[phase] || !phaseOver(phase, ply, config)) continue;
     out ??= { ...(bank ?? {}) };
     claims ??= captureClaims(board ?? {}, radius, config);
     out[phase] = {
-      white: phaseTotal(captureScore(claims, 'white', radius), deathsOf(config, history, 'white', phase), PHASES[phase].multiplier),
-      black: phaseTotal(captureScore(claims, 'black', radius), deathsOf(config, history, 'black', phase), PHASES[phase].multiplier),
+      white: phaseTotal(captureScore(claims, 'white', radius, config), deathsOf(config, history, 'white', phase), phasesOf(config)[phase].multiplier, config),
+      black: phaseTotal(captureScore(claims, 'black', radius, config), deathsOf(config, history, 'black', phase), phasesOf(config)[phase].multiplier, config),
       // Already over before this hand-over: its moment has passed.
-      ...(phaseOver(phase, ply - 1) ? { late: true } : {}),
+      ...(phaseOver(phase, ply - 1, config) ? { late: true } : {}),
     };
     const entry = out[phase];
     if (!entry.late) {
-      if (phase === 1 && !Object.entries(board ?? {}).some(([at, piece]) =>
-          piece?.color === 'white' && (piece.hp === undefined || piece.hp > 0)
-          && captureZones(radius).some(zone => zone.hexes.has(at) && captureEligible(piece, zone, config)))) entry.pendingLoss = 'white';
-      if (phase === 2 && entry.black === 0) entry.pendingLoss = 'black';
+      for (const rule of sectionOf(config, 'match').winConditions.earlyPhaseLosses) {
+        if (rule.phase !== phase) continue;
+        const occupied = Object.entries(board ?? {}).filter(([at, piece]: [string, any]) => piece && piece.color === rule.side && (piece.hp ?? 1) > 0
+          && captureZones(radius, config).some(zone => zone.hexes.has(at) && captureEligible(piece, zone, config))).length;
+        const value = rule.condition === 'no-eligible-capture-occupant' ? occupied : entry[rule.side as Side];
+        if (value <= rule.threshold) { entry.pendingLoss = rule.side; break; }
+      }
     }
   }
   return out ?? bank ?? {};
@@ -171,31 +157,21 @@ export function bankEndedPhases(
  * as the phase's postmatch begins - which is when a phase banks, so the bank
  * is all this needs. CP comes from nothing else.
  *
- * Phase N's award is `N x offset` (`rules.cpPhaseOffset`: 5, 10, 15), plus
- * both sides' scores for the phase, plus - for the side that scored less -
- * the gap between them. *The owner, 24 Sep 2026:* the side with the higher
- * total gets `phase_x + (mine + theirs)`, the lower
- * `phase_x + (mine + theirs) + abs(mine - theirs)` - the offset lowered to
- * 5, 10, 15 the same day. So a phase fought hard pays both sides more, and
- * the side behind is paid up to level: Phase 2 banking white 12, black 4
- * awards white 10 + 16 = 26 and black 26 + 8 = 34. Level scores award the two
- * the same. The 5 each side starts with (`rules.cpAtStart`) is the room's to
- * add; this is the awards alone.
- *
- * Only the phase's own scores are compared, not the match's - the side
- * behind in that phase is paid the gap even when it leads overall. A late
- * phase (see `bankEndedPhases`) still awards: it is shown, and its CP is
- * as real as its place in the header.
+ * Phase N pays N times the room's offset (10, 20, 30 by default), plus
+ * both phase scores and the shortfall for the side behind. Starting CP
+ * is separate. A late bank still awards; only that phase is compared.
  */
-export function cpAwarded(bank: PhaseBank | null | undefined, side: Side, offset: number): number {
+export function cpAwarded(bank: PhaseBank | null | undefined, side: Side, offset: number, config?: any): number {
   const other: Side = side === 'white' ? 'black' : 'white';
   let total = 0;
-  for (const phase of SCORING_PHASES) {
+  for (const phase of scoringPhases(config)) {
     const entry = bank?.[phase];
     if (!entry) continue;
     const mine = entry[side];
     const theirs = entry[other];
-    total += phase * offset + mine + theirs + Math.max(0, theirs - mine);
+    const settings = sectionOf(config, 'economy');
+    const fixed = config ? phasesOf(config)[phase].cpAward! : phase * offset;
+    total += fixed + mine * settings.cpOwnScoreMultiplier + theirs * settings.cpOpponentScoreMultiplier + Math.max(0, theirs - mine) * settings.cpBehindGapMultiplier;
   }
   return total;
 }
@@ -215,17 +191,33 @@ export function cpAwarded(bank: PhaseBank | null | undefined, side: Side, offset
  * on screen the victory points are gone and the points are what is left of
  * them. A match decided on points never reaches overtime, so never converts.
  */
-export function vpAsPoints(bank: PhaseBank | null | undefined, side: Side, ply: number): number {
-  const begun = handOversBy(side, ply) - handOversBy(side, OVERTIME_FIRST_PLY - 1);
+export function vpAsPoints(bank: PhaseBank | null | undefined, side: Side, ply: number, config?: any): number {
+  const begun = handOversBy(side, ply) - handOversBy(side, overtimeFirstPly(config) - 1);
   // A match decided on points ends ON the hand-over into overtime's first
   // ply, which is the one moment the arithmetic below would read as begun.
-  if (begun <= 0 || decidedOnPoints(bank)) return 0;
-  return SCORING_PHASES.reduce((sum, phase) => sum + (bank?.[phase]?.[side] ?? 0), 0);
+  if (begun <= 0 || decidedOnPoints(bank, config)) return 0;
+  return scoringPhases(config).reduce((sum, phase) => sum + (bank?.[phase]?.[side] ?? 0), 0) * sectionOf(config, 'economy').overtimeVpToPointsMultiplier;
 }
 
-/** Regular ability points from turn income, phase grants and overtime VP conversion. */
-export function scheduledPoints(bank: PhaseBank | null | undefined, side: Side, ply: number): number {
-  return turnPointsBy(side, ply) + vpAsPoints(bank, side, ply);
+/** Regular points from the starting balance, turn income, phase grants and overtime VP conversion. */
+export function scheduledPoints(bank: PhaseBank | null | undefined, side: Side, ply: number, config?: any): number {
+  return ruleOf(config, 'pointsAtStart') + turnPointsBy(side, ply, config) + vpAsPoints(bank, side, ply, config);
+}
+
+/** Refund the unit as it stood on withdrawal; later base healing does not change the transaction. */
+export function withdrawalRefund(config: any, unit: any): number {
+  const maxHp = capStat(unit.max_hp ?? unitStats(unit.unit_id, config, activeVet(unit, unit.panel, config)).hp ?? unit.hp ?? 0);
+  const missingHp = Math.max(0, maxHp - capStat(unit.hp ?? maxHp));
+  const settings = sectionOf(config, 'economy').walkHomeRefund;
+  const tiers = settings.veterancy ?? [], rank = unit.vet ?? 0;
+  const factors = rank > 0 && rank <= tiers.length ? tiers[rank - 1] : settings;
+  return Math.max(settings.minimum, unitValue(config, unit.unit_id) * factors.valueMultiplier - factors.fee - missingHp * factors.missingHpMultiplier);
+}
+
+/** Price the refund before resolving the destination's rank and HP. */
+export function withdrawnUnit(config: any, unit: any, panel: string): any {
+  const vet = sectionOf(config, 'economy').walkHomeRefund.resetVeterancy ? 0 : unit.vet ?? 0;
+  return rankedUnit(unit, config, vet, kitActive(unit, config, panel));
 }
 
 /** UP is independent of ability points. All committed unit transactions live in history. */
@@ -236,15 +228,16 @@ export function unitPoints(config: any, history: readonly any[], side: Side): nu
     if (!move) continue;
     if (move.halftimeUp) points += move.halftimeUp[side];
     if (move.unitCast?.color === side) points += (move.unitCast.gain ?? 0) - move.unitCast.cost;
+    if (move.color === side && move.abilityCast?.row !== 'unit') points += move.abilityCast?.up ?? 0;
     if (move.panelEffect || move.entered || move.abilityDeath) continue;
     if (move.panelMove) {
       if (move.unit?.color === side) points -= Math.trunc(Number(move.price) || 0);
       continue;
     }
-    if (move.withdrawn && (move.refundColor ?? move.color) === side) points += unitValue(config, move.unit_id);
-    if (!move.intoPanel) {
-      if (move.defender_eliminated && move.color === side) points += unitValue(config, move.captured);
-      if (move.attacker_eliminated && move.color === other) points += unitValue(config, move.unit_id);
+    if (move.withdrawn && (move.refundColor ?? move.color) === side) points += move.refund ?? withdrawalRefund(config, { unit_id: move.unit_id, ...move.unit });
+    if (sectionOf(config, 'economy').killPayZones.includes(casualtyZone(move))) {
+      if (move.defender_eliminated && move.color === side) points += unitValue(config, move.captured) * sectionOf(config, 'economy').killPayMultiplier;
+      if (move.attacker_eliminated && move.color === other) points += unitValue(config, move.unit_id) * sectionOf(config, 'economy').killPayMultiplier;
     }
   }
   return points;
@@ -252,32 +245,34 @@ export function unitPoints(config: any, history: readonly any[], side: Side): nu
 
 /** Persist the current phase VP once on the White hand-over into halftime. */
 export function halftimeUpAwards(config: any, board: any, history: readonly any[], ply: number): any[] {
-  const phase = SCORING_PHASES.find(index =>
-    ply === (Math.ceil(phaseStartTurn(index) + PHASES[index].turns / 2) - 1) * PLIES_PER_TURN + 1);
-  if (phase === undefined || history.some(move => move?.halftimeUp?.phase === phase)) return [];
+  const phase = scoringPhases(config).find(index =>
+    ply === (phaseStartTurn(index, config) + phasesOf(config)[index].halftimeAfter! - 1) * PLIES_PER_TURN + 1);
+  if (phase === undefined || !phasesOf(config)[phase].halftime || history.some(move => move?.halftimeUp?.phase === phase)) return [];
   const radius = config?.board?.radius ?? 11;
   const claims = captureClaims(board, radius, config);
-  const score = (side: Side) => phaseTotal(captureScore(claims, side, radius),
-    deathsOf(config, history, side, phase), PHASES[phase].multiplier ?? 1);
-  return [{ turn: ply, halftimeUp: { phase, white: score('white'), black: score('black') } }];
+  const score = (side: Side) => phaseTotal(captureScore(claims, side, radius, config),
+    deathsOf(config, history, side, phase), phasesOf(config)[phase].multiplier ?? 1, config);
+  return [{ turn: ply, halftimeUp: { phase, white: score('white') * sectionOf(config, 'economy').halftimeUpMultiplier, black: score('black') * sectionOf(config, 'economy').halftimeUpMultiplier } }];
 }
 
-function allBanked(bank: PhaseBank | null | undefined): bank is PhaseBank {
-  return !!bank && SCORING_PHASES.every(phase => !!bank[phase]);
+function allBanked(bank: PhaseBank | null | undefined, config?: any): bank is PhaseBank {
+  return !!bank && scoringPhases(config).every(phase => !!bank[phase]);
 }
 
 /**
- * The side the three phases hand the match to outright, or `null` - while
+ * The side the configured phases hand the match to outright, or `null` - while
  * any is unbanked, while the two are close enough for overtime, or while any
  * phase was banked late (see `bankEndedPhases`): a score read off the wrong
  * board decides nothing.
  */
-export function decidedOnPoints(bank: PhaseBank | null | undefined): Side | null {
-  if (!allBanked(bank) || SCORING_PHASES.some(phase => bank[phase].late)) return null;
-  const total = (side: Side) => SCORING_PHASES.reduce((sum, phase) => sum + bank[phase][side], 0);
+export function decidedOnPoints(bank: PhaseBank | null | undefined, config?: any): Side | null {
+  if (!allBanked(bank, config) || scoringPhases(config).some(phase => bank[phase].late)) return null;
+  const total = (side: Side) => scoringPhases(config).reduce((sum, phase) => sum + bank[phase][side], 0);
   const lead = total('white') - total('black');
-  if (lead > OVERTIME_MARGIN.black) return 'white';
-  if (-lead > OVERTIME_MARGIN.white) return 'black';
+  const settings = sectionOf(config, 'match').winConditions.points;
+  if (!settings.enabled) return null;
+  if (lead > settings.leadToWin.white) return 'white';
+  if (-lead > settings.leadToWin.black) return 'black';
   return null;
 }
 
@@ -290,11 +285,11 @@ export function decidedOnPoints(bank: PhaseBank | null | undefined): Side | null
  * first, even through Phase 3's postmatch once it is decided: the owner, 25 Sep
  * 2026 - *"you can draw/forfiet anytime"*.
  */
-export function matchVerdict(bank: PhaseBank | null | undefined, ply: number): Side | 'overtime' | null {
-  const pending = [1, 2].find(phase => bank?.[phase]?.pendingLoss && !bank[phase].late);
+export function matchVerdict(bank: PhaseBank | null | undefined, ply: number, config?: any): Side | 'overtime' | 'draw' | null {
+  const pending = scoringPhases(config).find(phase => bank?.[phase]?.pendingLoss && !bank[phase].late);
   if (pending !== undefined) return bank![pending].pendingLoss === 'white' ? 'black' : 'white';
-  if (!allBanked(bank)) return null;
-  return decidedOnPoints(bank) ?? (turnOf(ply) > OVERTIME_LAST_TURN ? 'black' : 'overtime');
+  if (!allBanked(bank, config)) return null;
+  return decidedOnPoints(bank, config) ?? (turnOf(ply) > overtimeLastTurn(config) ? sectionOf(config, 'match').winConditions.overtimeWinner : 'overtime');
 }
 
 /**
@@ -318,14 +313,18 @@ export function matchVerdict(bank: PhaseBank | null | undefined, ply: number): S
  */
 export function scheduleEnding(
   bank: PhaseBank | null | undefined, ply: number,
-): { winner: Side; reason: ScheduleEndReason } | null {
-  for (const phase of [1, 2]) {
+config?: any,
+): { winner: Side | ''; reason: ScheduleEndReason } | null {
+  for (const phase of scoringPhases(config)) {
     const loss = bank?.[phase]?.pendingLoss;
-    if (loss && !bank![phase].late && ply >= (phaseStartTurn(phase + 1) - 1) * PLIES_PER_TURN + 1)
+    if (loss && !bank![phase].late && ply >= (phaseStartTurn(phase + 1, config) - 1) * PLIES_PER_TURN + 1)
       return { winner: loss === 'white' ? 'black' : 'white', reason: 'phase_result' };
   }
-  const points = ply >= OVERTIME_FIRST_PLY ? decidedOnPoints(bank) : null;
+  const points = ply >= overtimeFirstPly(config) ? decidedOnPoints(bank, config) : null;
   if (points) return { winner: points, reason: 'points' };
-  if (turnOf(ply) > OVERTIME_LAST_TURN) return { winner: 'black', reason: 'overtime' };
+  if (turnOf(ply) > overtimeLastTurn(config)) {
+    const winner = sectionOf(config, 'match').winConditions.overtimeWinner;
+    return winner === 'draw' ? { winner: '', reason: 'draw_overtime' } : { winner, reason: 'overtime' };
+  }
   return null;
 }

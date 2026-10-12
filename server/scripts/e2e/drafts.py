@@ -49,7 +49,7 @@ def run():
         start = white.type('game_started')
         black.type('game_started')
         check('real timed match starts from the shipped deal', start['turnNumber'] == 1
-              and start['playerWhite'] == host and start['config']['rules']['turnTimeLimit'] == 15, start)
+              and start['playerWhite'] == host and start['config']['match']['turnTimeLimit'] == 15, start)
         board = start['boardState']
 
         def pawn_step(color, dr):

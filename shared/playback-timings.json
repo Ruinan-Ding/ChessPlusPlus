@@ -1,0 +1,14 @@
+{
+  "speed": 1.5,
+  "move": 840,
+  "strike": 340,
+  "hit": 520,
+  "glow": 2000,
+  "glowBrief": 1200,
+  "pick": 900,
+  "gap": 180,
+  "commit": 620,
+  "upkeep": 760,
+  "markFade": 2200,
+  "notice": 900
+}

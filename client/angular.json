@@ -34,7 +34,10 @@
             "styles": [
               "src/styles.scss"
             ],
-            "scripts": []
+            "scripts": [],
+            "allowedCommonJsDependencies": [
+              "ajv"
+            ]
           },
           "configurations": {
             "production": {
@@ -83,6 +86,7 @@
               "zone.js/testing"
             ],
             "tsConfig": "tsconfig.spec.json",
+            "karmaConfig": "karma.conf.cjs",
             "inlineStyleLanguage": "scss",
             "assets": [
               {

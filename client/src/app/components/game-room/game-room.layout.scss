@@ -227,7 +227,7 @@
   //
   // A portrait window too small for the three columns - a phone, a tablet
   // upright. The owner, 28 Sep 2026: the board the whole width on top, the
-  // tabs under it, and Undo, End Turn, Show Hex and Flip in a bar along the
+  // tabs under it, and Undo, End Turn, Show Hex and Replay in a bar along the
   // bottom, where a thumb is. Resign and Offer Draw go with the room's other
   // business, on the Room tab. Wide enough for two columns (a tablet,
   // .unit-pinned), the Unit panel stands beside the tabs; on a phone it is a
@@ -243,7 +243,10 @@
     // upright gives the board up to the panels; a phone keeps the board the
     // width of the screen, and its tallest tab scrolls.
     --lower: 584px;
-    --board-h: min(calc((100vw - 18px) / 1.194), max(calc(100dvh - var(--lower)), 45dvh));
+    --board-floor: 45dvh;
+    --board-h: min(calc((100vw - 18px) / 1.194), max(calc(100dvh - var(--lower)), var(--board-floor)));
+    // Short phones need the enabled Flip row above the Room tab's fold.
+    &[data-tab='room'] { --board-floor: calc(45dvh - 32px); }
     // The unit: 12px on a phone, up to 16px on a tablet (across the width),
     // and only as far as the height left under the board allows - two
     // straight lines from the same measurements, 18 units + 326px up to 15px

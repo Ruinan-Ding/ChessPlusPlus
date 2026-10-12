@@ -11,11 +11,15 @@ daphne==4.2.2
 Django==6.0.6
 hyperlink==21.0.0
 idna==3.18
+jsonschema==4.25.1
+jsonschema-specifications==2025.9.1
 Incremental==24.11.0
 msgpack==1.2.1
 packaging==26.2
 pycparser==3.0
 pyOpenSSL==26.3.0
+referencing==0.37.0
+rpds-py==2026.9.1
 service-identity==26.1.0
 sqlparse==0.5.5
 Twisted==26.4.0

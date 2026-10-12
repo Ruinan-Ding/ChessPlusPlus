@@ -1,3 +1,5 @@
+import { ruleOf } from './config.service';
+import { sectionOf } from './game-rules';
 /**
  * Client-side movement rules.
  *
@@ -13,7 +15,33 @@
  * will disagree with the server about what a unit may do.
  */
 
-import { combatStats, hasAttack, unitPassive, unitStats } from './unit-stats';
+import { activeVet, capStat, combatStats, hasAttack, unitPassive, unitStats } from './unit-stats';
+
+export interface HexEffectArea {
+  area?: 'horizontal' | 'cross';
+  splashRange?: number;
+  outerRange?: number;
+  outerAtk?: number;
+  outerHel?: number;
+  outerMov?: number;
+  heal?: number;
+}
+
+/** The same bands drive cast recipients and the board's targeting preview. */
+export function hexEffectBand(origin: string, key: string, effect: HexEffectArea,
+  orientation = 'edge-up'): 'centre' | 'splash' | 'outer' | null {
+  const [oq, or] = origin.split(',').map(Number), [q, r] = key.split(',').map(Number);
+  const dq = q - oq, dr = r - or;
+  if (!dq && !dr) return 'centre';
+  let distance = hexDistanceKeys(origin, key);
+  if (effect.area === 'horizontal') {
+    if (orientation === 'vertex-up' ? dq + 2 * dr !== 0 : dr !== 0) return null;
+    distance = orientation === 'vertex-up' ? Math.abs(dr) : Math.abs(dq);
+  } else if (effect.area === 'cross') {
+    if (orientation === 'vertex-up' ? dr !== 0 && dq + dr !== 0 : dq !== 0 && dq + dr !== 0) return null;
+  } else if (distance > (effect.outerRange ?? effect.splashRange ?? 1)) return null;
+  return distance <= (effect.splashRange ?? 1) ? 'splash' : 'outer';
+}
 
 export type BoardLike = Record<string, { unit_id: string; color: string; vet?: number } | undefined>;
 
@@ -85,8 +113,8 @@ export const HOME_ROWS = 3;
  * its ground on a config that leaves some of those hexes empty, which is also
  * why the board's `homeOf` tint reads the same answer from here.
  */
-export function inHomeRows(color: string, r: number, radius: number): boolean {
-  const edge = Math.max(1, radius - (HOME_ROWS - 1));
+export function inHomeRows(color: string, r: number, radius: number, config?: any): boolean {
+  const edge = Math.max(1, radius - (sectionOf(config, 'panels').homeRows - 1));
   return color === 'white' ? r >= edge : r <= -edge;
 }
 
@@ -125,9 +153,10 @@ export function computeMoveCosts(
   const costs = new Map<string, number>();
   const piece = boardState[`${sq},${sr}`];
   if (!piece) return costs;
-  const unitDef = unitStats(piece.unit_id, config, piece.vet);
-  const hop = kits && unitPassive(piece.unit_id, config, piece.vet)?.effect === 'hop';
-  const moveRange: number = movesLeft ?? unitDef?.move ?? 0;
+  const unitDef = unitStats(piece.unit_id, config, activeVet(piece, undefined, config));
+  const hop = kits && unitPassive(piece.unit_id, config, activeVet(piece, undefined, config))?.effect === 'hop';
+  const moveRange: number = capStat(movesLeft ?? ((unitDef?.move ?? 0)
+    + (kits ? positionalBonus(piece, `${sq},${sr}`, 'mov', config, radius) : 0)));
   if (moveRange <= 0) return costs;
 
   const visited = new Set<string>([`${sq},${sr}`]);
@@ -190,6 +219,7 @@ export function computeAttackZone(
   minimum: number = config?.units?.[unitId]?.attackMinRange ?? 1,
 ): Set<string> {
   const zone = new Set<string>();
+  range = capStat(range); minimum = capStat(minimum);
   if (range < 1) return zone;
 
   const offsets: [number, number][] = [];
@@ -218,19 +248,21 @@ export function computeAttackZone(
 /** Whether a unit has an attack at this distance, counters included. */
 export function canAttack(unit: any, distance: number, atkBonus = 0): boolean {
   const attack = unit?.attack ?? 1;
-  const armed = (Array.isArray(attack) ? attack[distance - (unit?.attackMinRange ?? 1)] ?? 0 : attack) + atkBonus > 0;
+  const armed = (Array.isArray(attack) ? attack[distance - capStat(unit?.attackMinRange ?? 1)] ?? 0 : attack) + atkBonus > 0;
   return hasAttack(unit) && armed
-    && distance >= (unit?.attackMinRange ?? 1) && distance <= (unit?.attackRange ?? 1);
+    && distance >= capStat(unit?.attackMinRange ?? 1) && distance <= capStat(unit?.attackRange ?? 1);
 }
 
 /** Exact list attack from its first supported ring, or scalar percentage falloff. */
 export function rangedDamage(attack: number | number[], distance: number, config: any, minimum = 1): number {
   // Lists name exact attacks per ring; only a scalar takes percentage falloff.
-  if (Array.isArray(attack)) return attack[distance - minimum] ?? 0;
+  minimum = capStat(minimum);
+  if (Array.isArray(attack)) return capStat(attack[distance - minimum] ?? 0);
+  attack = capStat(attack);
   if (attack <= 0 || distance <= 1) return Math.max(0, attack);
-  const falloff: number = config?.rules?.rangeFalloff ?? 0;
+  const falloff: number = ruleOf(config, 'rangeFalloff');
   const scale = Math.max(0, 1 - falloff * (distance - 1));
-  return Math.max(1, Math.trunc(attack * scale));
+  return Math.min(attack, Math.max(sectionOf(config, 'combat').minRangedDamage, Math.trunc(attack * scale)));
 }
 
 /** Exact healing at this ring, capped to missing HP; mirrors resolve_heal. */
@@ -238,8 +270,8 @@ export function healingAmount(unitId: string, target: { unit_id: string; hp: num
                               distance: number, config: any, vet = 0, bonus = 0, setting?: number): number {
   const profile = unitStats(unitId, config, vet).heal;
   if (!profile || profile[distance - 1] === undefined) return 0;
-  const amount = Math.max(0, setting ?? (profile[distance - 1] + bonus));
-  const max = target.max_hp ?? config?.units?.[target.unit_id]?.hp ?? 0;
+  const amount = capStat(setting ?? (profile[distance - 1] + bonus));
+  const max = capStat(target.max_hp ?? config?.units?.[target.unit_id]?.hp ?? 0);
   return Math.max(0, Math.min(amount, max - target.hp));
 }
 
@@ -256,16 +288,6 @@ export function attackTiers(unitId: string, config: any, vet = 0, kits = true): 
 }
 
 /**
- * How far out the outer four capture zones sit, as a share of the board's
- * radius: 7 columns to the sides and 6 rows up and down on the shipped
- * radius-11 board. Rows are the tighter pair - two hexes closer than the
- * geometry would put them, which is how the plus is meant to sit.
- */
-const ZONE_COLS = 7 / 11;
-const ZONE_ROWS = 6 / 11;
-/** Rings of hexes around each zone's centre: 2 makes a 19-hex patch. */
-const ZONE_SPREAD = 2;
-/**
  * What one hex of each zone is worth to the side holding it. The owner, 26 Sep
  * 2026: "make the hex capture zone near my base 3x. the middle hex worth 2x.
  * side hex worth 1x" - the zone in each side's own half 3 a hex (412 and 130 on
@@ -273,7 +295,7 @@ const ZONE_SPREAD = 2;
  * 278). Black's is the mirror of white's, and a zone is worth the same to
  * whichever side holds it.
  */
-export const ZONE_WORTH = { base: 3, middle: 2, side: 1 } as const;
+export const ZONE_WORTH = Object.fromEntries(sectionOf(undefined, 'scoring').zones.map((zone: any) => [zone.kind, zone.worth])) as Record<'base' | 'middle' | 'side', number>;
 
 /**
  * The five capture zones, as what each of their hexes is worth: a patch in the
@@ -297,53 +319,31 @@ export interface CaptureZone {
   owner: 'white' | 'black' | '';
   worth: number;
   hexes: Set<string>;
+  radius?: number;
 }
-const zonesCache = new Map<number, CaptureZone[]>();
-
-export function captureZones(radius: number): CaptureZone[] {
-  const cached = zonesCache.get(radius);
-  if (cached) return cached;
-  const cols = Math.max(ZONE_SPREAD + 1, Math.round(radius * ZONE_COLS));
-  const pairs = Math.max(1, Math.round((radius * ZONE_ROWS) / 2));
-  const centres: Array<[number, number, CaptureZone['kind'], CaptureZone['owner']]> = [
-    [0, 0, 'middle', ''], [cols, 0, 'side', ''], [-cols, 0, 'side', ''],
-    [pairs, -2 * pairs, 'base', 'black'], [-pairs, 2 * pairs, 'base', 'white'],
-  ];
-  const zones = centres.map(([cq, cr, kind, owner]) => {
-    const hexes = new Set<string>();
-    for (let dq = -ZONE_SPREAD; dq <= ZONE_SPREAD; dq++) {
-      const lo = Math.max(-ZONE_SPREAD, -dq - ZONE_SPREAD);
-      const hi = Math.min(ZONE_SPREAD, -dq + ZONE_SPREAD);
-      for (let dr = lo; dr <= hi; dr++) {
-        const q = cq + dq, r = cr + dr;
-        if (isInsideBoard(q, r, radius)) hexes.add(`${q},${r}`);
+export function captureZones(radius: number, config?: any): CaptureZone[] {
+  const settings = sectionOf(config, 'scoring'), layout = settings.layout;
+  return settings.zones.map((spec: any) => {
+    const spread = spec.radius, cols = Math.max(spread + 1, Math.round(radius * layout.columnRatio));
+    const pairs = Math.max(1, Math.round(radius * layout.rowRatio / 2));
+    const anchors: Record<string, number[]> = { middle: [0, 0], right: [cols, 0], left: [-cols, 0],
+      'black-home': [pairs, -2 * pairs], 'white-home': [-pairs, 2 * pairs] };
+    const [cq, cr] = spec.center ?? anchors[spec.anchor], hexes = new Set<string>();
+    for (let dq = -spread; dq <= spread; dq++) {
+      for (let dr = Math.max(-spread, -dq - spread); dr <= Math.min(spread, -dq + spread); dr++) {
+        if (isInsideBoard(cq + dq, cr + dr, radius)) hexes.add(`${cq + dq},${cr + dr}`);
       }
     }
-    return { center: `${cq},${cr}`, kind, owner, worth: ZONE_WORTH[kind], hexes };
+    return { ...spec, center: `${cq},${cr}`, hexes };
   });
-  zonesCache.set(radius, zones);
-  return zones;
 }
-
-const zoneCache = new Map<number, Map<string, number>>();
-export function captureZoneValues(radius: number): Map<string, number> {
-  const cached = zoneCache.get(radius);
-  if (cached) return cached;
+export function captureZoneValues(radius: number, config?: any): Map<string, number> {
   const worths = new Map<string, number>();
-  for (const zone of captureZones(radius)) {
-    for (const key of zone.hexes) worths.set(key, Math.max(zone.worth, worths.get(key) ?? 0));
-  }
-  zoneCache.set(radius, worths);
+  for (const zone of captureZones(radius, config)) for (const key of zone.hexes) worths.set(key, Math.max(zone.worth, worths.get(key) ?? 0));
   return worths;
 }
-
-/** Every capture hex, as one set. */
-const zoneHexCache = new Map<number, Set<string>>();
-
-export function captureZoneHexes(radius: number): Set<string> {
-  let hexes = zoneHexCache.get(radius);
-  if (!hexes) zoneHexCache.set(radius, hexes = new Set(captureZoneValues(radius).keys()));
-  return hexes;
+export function captureZoneHexes(radius: number, config?: any): Set<string> {
+  return new Set(captureZoneValues(radius, config).keys());
 }
 
 /**
@@ -354,6 +354,15 @@ export function captureZoneHexes(radius: number): Set<string> {
  * With an eligible enemy anywhere in the zone, normal adjacent claims apply.
  * A hex reached by both sides is neutral; an ineligible unit makes no claim.
  */
+/** Immediate combat bonuses; MOV is requested using the action's starting hex. */
+export function positionalBonus(unit: any, key: string, stat: 'atk' | 'def' | 'mov', config: any, radius = config?.board?.radius ?? 11): number {
+  const passive = unitPassive(unit?.unit_id ?? unit?.unitId ?? '', config, activeVet(unit, undefined, config));
+  if (passive?.effect !== 'checkmate' || !key) return 0;
+  const [q, r] = key.split(',').map(Number);
+  const enemy = unit.color === 'white' ? 'black' : 'white';
+  return isInsideBoard(q, r, radius) && inHomeRows(enemy, r, radius, config) ? passive[stat] ?? 0 : 0;
+}
+
 export function captureEligible(piece: any, zone: CaptureZone, config?: any): boolean {
   const permissions = config?.units?.[piece.unit_id]?.captureZones;
   const kind = zone.kind === 'base' ? (zone.owner === piece.color ? 'home' : 'enemy') : zone.kind;
@@ -363,7 +372,7 @@ export function captureEligible(piece: any, zone: CaptureZone, config?: any): bo
 export function captureClaims(
   boardState: BoardLike, radius: number, config?: any,
 ): Map<string, 'white' | 'black'> {
-  const zones = captureZones(radius);
+  const zones = captureZones(radius, config);
   const disruption = { white: new Set<string>(), black: new Set<string>() };
   const claimed = new Map<string, 'white' | 'black' | 'contested'>();
   const claim = (key: string, color: 'white' | 'black') => {
@@ -378,18 +387,21 @@ export function captureClaims(
     const color = piece.color === 'black' ? 'black' : 'white';
     claim(key, color);
     disruption[color].add(key);
-    const expanded = zones.some(zone => captureEligible(piece, zone, config) && hexDistanceKeys(key, zone.center) < ZONE_SPREAD);
+    const expanded = zones.some(zone => captureEligible(piece, zone, config) && hexDistanceKeys(key, zone.center) < zone.radius!);
     const [q, r] = key.split(',').map(Number);
-    for (const [dq, dr] of HEX_DIRS) {
-      const next = `${q + dq},${r + dr}`;
-      if (!allowed.has(next)) continue;
-      disruption[color].add(next);
-      if (expanded) claim(next, color);
+    const settings = sectionOf(config, 'scoring');
+    const reach = expanded ? settings.innerClaimReach : settings.outerClaimReach;
+    const distanceLimit = Math.max(reach, settings.neutralizeReach);
+    for (let dq = -distanceLimit; dq <= distanceLimit; dq++) for (let dr = -distanceLimit; dr <= distanceLimit; dr++) {
+      const distance = hexDistance(dq, dr), neighbour = `${q + dq},${r + dr}`;
+      if (!allowed.has(neighbour)) continue;
+      if (distance <= settings.neutralizeReach) disruption[color].add(neighbour);
+      if (distance <= reach) claim(neighbour, color);
     }
   }
   for (const zone of zones) {
     const center = boardState[zone.center];
-    if (!center || !captureEligible(center, zone, config)) continue;
+    if (!sectionOf(config, 'scoring').centerControl || !center || !captureEligible(center, zone, config)) continue;
     const enemyPresent = Object.entries(boardState).some(([key, piece]) =>
       piece && piece.color !== center.color && zone.hexes.has(key) && captureEligible(piece, zone, config));
     if (!enemyPresent) for (const key of zone.hexes) claim(key, center.color === 'black' ? 'black' : 'white');
@@ -398,14 +410,32 @@ export function captureClaims(
   for (const [key, color] of claimed) {
     if (color !== 'contested' && !disruption[color === 'white' ? 'black' : 'white'].has(key)) held.set(key, color);
   }
+  const overrides = new Map<string, 'white' | 'black' | 'contested'>();
+  for (const zone of zones) {
+    const occupants = new Map(Object.entries(boardState).filter(([key, piece]) =>
+      piece && zone.hexes.has(key) && captureEligible(piece, zone, config)));
+    const colors = new Set([...occupants.values()].filter(piece =>
+      unitPassive(piece!.unit_id, config, activeVet(piece, undefined, config))?.effect === 'capture').map(piece => piece!.color));
+    if (colors.size !== 1) continue;
+    const color = [...colors][0];
+    for (const key of zone.hexes) {
+      const owner = occupants.get(key)?.color ?? color;
+      const claimed = owner === 'black' ? 'black' : 'white';
+      overrides.set(key, overrides.has(key) && overrides.get(key) !== claimed ? 'contested' : claimed);
+    }
+  }
+  for (const [key, color] of overrides) {
+    if (color === 'contested') held.delete(key);
+    else held.set(key, color);
+  }
   return held;
 }
 
 /** What the hexes a side holds are worth: each its zone's worth (ZONE_WORTH). */
 export function captureScore(
-  claims: Map<string, 'white' | 'black'>, color: 'white' | 'black', radius: number,
+  claims: Map<string, 'white' | 'black'>, color: 'white' | 'black', radius: number, config?: any,
 ): number {
-  const worths = captureZoneValues(radius);
+  const worths = captureZoneValues(radius, config);
   let held = 0;
   for (const [key, owner] of claims) if (owner === color) held += worths.get(key) ?? 0;
   return held;
@@ -424,7 +454,7 @@ export function hexDistanceKeys(a: string, b: string): number {
  * reached by a caller that hand-built a config object without going through
  * the config service - several specs do exactly that.
  */
-export const MIN_STRIKE_DAMAGE = 1;
+export const MIN_STRIKE_DAMAGE = sectionOf(undefined, 'combat').minStrikeDamage;
 
 /**
  * Damage one unit lands on another: ring-scaled attack less the defender's
@@ -461,13 +491,13 @@ export function strikeDamage(
 export function strikeFromStats(attacker: any, defender: any, distance: number, config: any, atkBonus = 0, defBonus = 0): number {
   if (!canAttack(attacker, distance, atkBonus)) return 0;
   const base = rangedDamage(attacker.attack ?? 1, distance, config, attacker.attackMinRange ?? 1);
-  const attack = base + atkBonus;
+  const attack = capStat(base + atkBonus);
   if (attack <= 0) return 0;
   // Never more than the attacker could deal unblunted. The floor lifts a hit
   // that armour absorbed; it is not a damage source of its own, and without
   // this clamp a large `minStrikeDamage` would override the attack stat
   // outright - every blow dealing the floor regardless of attack, defence or
   // ring falloff, which makes all three dead config.
-  const floor = config?.rules?.minStrikeDamage ?? MIN_STRIKE_DAMAGE;
-  return Math.min(attack, Math.max(floor, attack - ((defender.defense ?? 0) + defBonus)));
+  const floor = ruleOf(config, 'minStrikeDamage');
+  return Math.min(attack, Math.max(floor, attack - capStat((defender.defense ?? 0) + defBonus)));
 }

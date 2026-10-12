@@ -1,4 +1,6 @@
-import { buildPlayback, PlayableAction } from './playback';
+import { buildPlayback, historyPlayback, PlayableAction } from './playback';
+import replayCases from '../../../../shared/replay-parity.json';
+import timings from '../../../../shared/playback-timings.json';
 
 /**
  * The replay is what the player sees of a turn they already committed, so it
@@ -230,7 +232,133 @@ describe('buildPlayback', () => {
     expect(buildPlayback([actions[0], actions[0]], true).length).toBe(2);
   });
 
+  it('retains both combat actors across Rapid Movement and folded walks', () => {
+    const actor = { unit_id: 'pawn', color: 'white' as const, uid: 'actor' };
+    const counterActor = { unit_id: 'rook', color: 'black' as const, uid: 'defender' };
+    const actions = [step('0,0', '1,0', null, { actor }),
+      step('0,0', '1,0', '2,0', { actor, counterActor, countered: true, secondStrike: true }),
+      step('0,0', '1,1', '2,0', { actor, afterAttackWalk: true })];
+    const rapid = buildPlayback(actions, true);
+    expect(rapid.map(beat => beat.kind)).toEqual(['move', 'attack', 'counter', 'attack', 'move']);
+    expect(rapid.map(beat => beat.actor)).toEqual([actor, actor, counterActor, actor, actor]);
+    const folded = buildPlayback([step('0,0', '1,0', null, { actor }),
+      step('0,0', '2,0', null, { actor })], true);
+    expect(folded).toEqual([{ kind: 'move', from: '0,0', to: '2,0', actor }]);
+  });
+
   it('has nothing to play for a turn that staged nothing', () => {
     expect(buildPlayback([])).toEqual([]);
+  });
+});
+
+
+describe('historyPlayback', () => {
+  it('collapses a received walk into its complete path, including interleaved panel movers', () => {
+    expect(historyPlayback([
+      { uid: 'a', unit_id: 'pawn', from: '0,0', to: '1,0', moved: true },
+      { unit: { uid: 'b' }, unit_id: 'pawn', panelMove: true, from: '4,10', to: '5,10', moved: true },
+      { uid: 'a', unit_id: 'pawn', from: '1,0', to: '2,0', moved: true },
+      { unit: { uid: 'b' }, unit_id: 'pawn', entered: true, from: '5,10', to: '4,9', moved: true },
+    ], () => 0, 'opponent')).toEqual([
+      { kind: 'move', from: '0,0', to: '2,0' }, { kind: 'move', from: '4,10', to: '4,9' },
+    ]);
+  });
+  it('uses the initiating unit UID when a panel blow also carries its victim', () => {
+    const beats = historyPlayback([
+      { unit_id: 'pawn', uid: 'attacker', from: '0,0', to: '1,0', moved: true },
+      { unit_id: 'pawn', uid: 'attacker', unit: { uid: 'victim' }, panelAttack: true,
+        from: '1,0', to: '2,0', moved: true, attacked: true, attackedHex: '3,0', countered: false },
+      { unit_id: 'pawn', uid: 'attacker', from: '2,0', to: '2,1', moved: true },
+    ], () => 0, 'opponent');
+    expect(beats).toEqual([
+      { kind: 'move', from: '0,0', to: '2,0' }, { kind: 'attack', from: '2,0', to: '3,0' },
+      { kind: 'move', from: '2,0', to: '2,1' },
+    ]);
+  });
+  it('retains intervening casts while folding the same unit’s consecutive walk', () => {
+    const steps = historyPlayback([
+      { unit_id: 'pawn', from: '0,0', to: '1,0', moved: true },
+      { abilityCast: { id: 'warcry', targets: [{ at: '1,0', uid: 'a' }] } },
+      { unit_id: 'pawn', from: '1,0', to: '2,0', moved: true },
+    ], () => 0, 'mine');
+    expect(steps.map(step => step.kind)).toEqual(['move', 'ability']);
+    expect(steps[0]).toEqual({ kind: 'move', from: '0,0', to: '2,0' });
+    expect(steps[1].targets?.[0].uid).toBe('a');
+  });
+
+  it('keeps movement, attacks, actual counters and Charge in the received order', () => {
+    expect(historyPlayback([{ unit_id: 'knight', from: '0,0', to: '1,0', moved: true,
+      attacked: true, attackedHex: '2,0', countered: true, secondStrike: true }], () => 0, 'opponent')).toEqual([
+        { kind: 'move', from: '0,0', to: '1,0' }, { kind: 'attack', from: '1,0', to: '2,0' },
+        { kind: 'counter', from: '2,0', to: '1,0' }, { kind: 'attack', from: '1,0', to: '2,0' },
+      ]);
+  });
+  it('reconstructs killed actors with their actual colour and distinct panel identities', () => {
+    const actor = { unit_id: 'knight', color: 'white' as const, uid: 'attacker' };
+    const counterActor = { unit_id: 'pawn', color: 'black' as const, uid: 'victim' };
+    for (const panel of [false, true]) {
+      const record = { ...actor, from: '0,0', to: '1,0', moved: true, attacked: true,
+        attackedHex: '2,0', countered: true, secondStrike: true, defender_eliminated: true,
+        ...(panel ? { panelAttack: true, unit: { ...counterActor, hp: 5, max_hp: 14 } } : { counterActor }) };
+      const beats = historyPlayback([record], () => 0, 'opponent');
+      expect(beats.map(beat => beat.actor)).withContext(String(panel)).toEqual([actor, actor, counterActor, actor]);
+      expect(beats[2].actor).not.toBe(counterActor);
+      if (!panel) {
+        const legacy = { ...record, counterActor: undefined, captured: 'pawn' };
+        expect(historyPlayback([legacy], () => 0, 'opponent')[2].actor)
+          .toEqual({ unit_id: 'pawn', color: 'black', uid: undefined });
+      }
+    }
+  });
+
+  it('reconstructs both walks around combat in a combined solo Rapid Movement record', () => {
+    const actor = { unit_id: 'pawn', color: 'white' as const, uid: 'actor' };
+    const counterActor = { unit_id: 'pawn', color: 'black' as const, uid: 'target' };
+    for (const start of ['0,0', '1,0']) {
+      const beats = historyPlayback([{ ...actor, from: start, attackFrom: '1,0', to: '1,1',
+        moved: true, attacked: true, attackedHex: '2,0', countered: true, counterActor }], () => 0, 'mine');
+      expect(beats).toEqual([
+        ...(start === '0,0' ? [{ kind: 'move' as const, from: start, to: '1,0', actor }] : []),
+        { kind: 'attack', from: '1,0', to: '2,0', actor },
+        { kind: 'counter', from: '2,0', to: '1,0', actor: counterActor },
+        { kind: 'move', from: '1,0', to: '1,1', actor },
+      ]);
+    }
+  });
+
+  it('replays a real counter even when protection reduced its damage to zero', () => {
+    expect(historyPlayback([{ unit_id: 'knight', from: '0,0', to: '0,0', attacked: true,
+      attackedHex: '1,0', countered: true, counter_damage: 0, secondStrike: true }], () => 0, 'opponent')
+      .map(step => step.kind)).toEqual(['attack', 'counter', 'attack']);
+    expect(historyPlayback([{ unit_id: 'knight', from: '0,0', to: '0,0', attacked: true,
+      attackedHex: '1,0', countered: false, counter_damage: 0 }], () => 0, 'opponent')
+      .map(step => step.kind)).toEqual(['attack']);
+  });
+  it('plays all recipients of one ability simultaneously and ignores non-action bookkeeping', () => {
+    const steps = historyPlayback([{ unitCast: { id: 'king-call' } },
+      { abilityCast: { id: 'king-call', targets: [{ at: '0,0', uid: 'a', color: 'white', delta: 2 },
+        { at: '1,0', uid: 'b', color: 'black', delta: -1, hostile: true }] } },
+      { panelEffect: true, unit_id: 'pawn', from: '0,0', to: '0,0' }], () => 4, 'mine');
+    expect(steps.length).toBe(1); expect(steps[0].targets?.map(target => target.mark)).toEqual(['+2', '-1']);
+  });
+});
+
+describe('server replay clock parity', () => {
+  it('uses the same collapsed beats and durations as the server allowance', () => {
+    const beat = (name: keyof Omit<typeof timings, 'speed'>) => Math.round(timings[name] / timings.speed);
+    for (const test of replayCases) {
+      const steps = historyPlayback(test.records, () => -1, 'opponent');
+      expect(steps.map(step => String(step.kind))).withContext(test.name).toEqual(test.kinds);
+      const durations = steps.map(step => step.kind === 'pick' ? beat('pick')
+        : step.kind === 'move' ? beat('move')
+        : step.kind === 'ability' || step.kind === 'heal' ? beat('glowBrief')
+        : 2 * beat('strike') + beat('hit'));
+      const actual = durations.length ? durations.reduce((sum, ms) => sum + ms + beat('gap'), 0)
+        : beat('commit') + beat('gap');
+      expect(actual).withContext(test.name).toBe(test.milliseconds);
+      for (const step of steps.filter(step => step.kind === 'ability' || step.kind === 'heal')) {
+        expect(step.brief).withContext(test.name).toBeTrue();
+      }
+    }
   });
 });

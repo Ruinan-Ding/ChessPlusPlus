@@ -185,7 +185,7 @@ step('turn 50', fifty)
 print(f'\n[points]  E2EPointsA{tag} / E2EPointsB{tag}')
 def points():
     m = seat('Points')
-    frm, to = INTO_ZONE
+    frm, to, held = '-4,9', '-3,6', 57
     said, over, last = play_out(m, first_move={'type': 'make_move', 'from': frm, 'to': to},
                                  second_move={'type': 'make_move', 'from': '8,-10', 'to': '7,-2'})
     ctx['points'] = m
@@ -194,14 +194,14 @@ def points():
     check("points: Phase 3's postmatch is still played",
           said.get(72, {}).get('currentTurn') == m['start']['playerBlack'], said.get(72, {}).get('currentTurn'))
     check('points: the match ends as the postmatch does, on the hand-over into turn 37', last == 72, last)
-    banks_where_expected('points', said, last, lambda phase: {'white': HOLDS * phase, 'black': phase})
-    check(f'points: white, {(HOLDS - 1) * 6} clear, takes it on points',
+    banks_where_expected('points', said, last, lambda phase: {'white': held * phase, 'black': phase})
+    check(f'points: white, {(held - 1) * 6} clear, takes it on points',
           over.get('endReason') == 'points' and over.get('winner') == m['start']['playerWhite'], over)
     m['black'].send({'type': 'request_game_state', 'gameId': m['game']})
     st = m['black'].until(lambda x: x.get('type') in ('game_state_update', 'game_state'), 'game state')
     bank = st.get('phaseBank', {})
     check('points: the finished state holds Phase 3 banked as it ended, none of it late',
-          bank.get('3') == {'white': HOLDS * 3, 'black': 3} and not any(e.get('late') for e in bank.values()),
+          bank.get('3') == {'white': held * 3, 'black': 3} and not any(e.get('late') for e in bank.values()),
           bank)
 step('points', points)
 

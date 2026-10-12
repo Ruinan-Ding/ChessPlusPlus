@@ -13,12 +13,8 @@ from typing import Any, Dict
 
 from game.engine import economy, panels, phases
 from game.engine.board import HexBoard, coord_key, parse_coord, hex_distance
-from game.engine.config_loader import (
-    DEFAULT_CONFIG,
-    _validate_config,
-    load_config,
-    build_initial_board,
-)
+from game.engine.config_loader import _validate_config, load_config, build_initial_board
+from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG, rule_of
 from game.engine.move_validator import (
     get_legal_moves,
     is_legal_move,
@@ -206,7 +202,7 @@ class ConfigLoaderTestCase(TestCase):
 
     def test_default_config_loads(self):
         config = load_config(None)
-        self.assertEqual(config['version'], '1.0')
+        self.assertEqual(config['version'], '2.0')
         self.assertEqual(config['board']['radius'], 11)
         self.assertIn('king', config['units'])
         self.assertIn('pawn', config['units'])
@@ -228,12 +224,12 @@ class ConfigLoaderTestCase(TestCase):
         would silently get the dead matchups the floor exists to remove.
         """
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         raw = copy.deepcopy(DEFAULT_CONFIG)
         del raw['rules']['minStrikeDamage']
         loaded = load_config(raw)
         self.assertEqual(
-            loaded['rules']['minStrikeDamage'],
+            loaded['combat']['minStrikeDamage'],
             DEFAULT_CONFIG['rules']['minStrikeDamage'],
         )
 
@@ -243,15 +239,15 @@ class ConfigLoaderTestCase(TestCase):
         them loads at the numbers every game was played under.
         """
         import copy
-        from game.engine.config_loader import COUNTED_RULES, DEFAULT_CONFIG
+        from game.engine.config_loader import COUNTED_RULES
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         raw = copy.deepcopy(DEFAULT_CONFIG)
         for key in COUNTED_RULES:
             del raw['rules'][key]
         loaded = load_config(raw)
         self.assertEqual(
-            {k: loaded['rules'][k] for k in COUNTED_RULES},
-            {'panelMoversPerTurn': 3, 'postmatchEntries': 5,
-             'homecomingsPerSetupTurn': 3, 'cpAtStart': 5, 'cpPhaseOffset': 5, 'upAtStart': 10})
+            {k: rule_of(loaded, k) for k in COUNTED_RULES},
+            {'cpAtStart': 5, 'cpPhaseOffset': 10, 'upAtStart': 10, 'pointsAtStart': 10})
         for key in COUNTED_RULES:
             for value in (-1, 1.5, True, None):
                 bad = copy.deepcopy(DEFAULT_CONFIG)
@@ -268,18 +264,17 @@ class ConfigLoaderTestCase(TestCase):
         its default rather than at whatever the old one said.
         """
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG, rule_of
+        from game.engine.config_loader import rule_of
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         raw = copy.deepcopy(DEFAULT_CONFIG)
-        del raw['rules']['postmatchEntries']
+        raw['rules']['postmatchEntries'] = 5
         raw['rules']['phaseInitEntries'] = 1
         loaded = load_config(raw)
-        self.assertEqual(loaded['rules']['postmatchEntries'], 5)
-        self.assertEqual(rule_of(loaded, 'postmatchEntries'), 5)
+        self.assertNotIn('rules', loaded)
         # A room already playing is never loaded again: its config_snapshot is
         # read as it was stored, and that is the road a frozen room takes -
         # rule_of's fallback, not the normaliser's fill.
-        self.assertNotIn('postmatchEntries', raw['rules'])
-        self.assertEqual(rule_of(raw, 'postmatchEntries'), 5)
+        self.assertEqual(phases.board_moves_per_turn(27), 3)
 
     def test_a_negative_damage_floor_is_rejected(self):
         """
@@ -288,7 +283,7 @@ class ConfigLoaderTestCase(TestCase):
         subtracts it, so a blow would heal whatever it hit.
         """
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         bad = copy.deepcopy(DEFAULT_CONFIG)
         bad['rules']['minStrikeDamage'] = -1
         with self.assertRaises(ValueError):
@@ -297,9 +292,9 @@ class ConfigLoaderTestCase(TestCase):
     def test_the_default_config_round_trips_and_still_deals_its_board(self):
         """The whole config goes through the real path, floor and all."""
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         loaded = load_config(copy.deepcopy(DEFAULT_CONFIG))
-        self.assertEqual(loaded['rules']['minStrikeDamage'], 1)
+        self.assertEqual(loaded['combat']['minStrikeDamage'], 1)
         board = build_initial_board(loaded)
         self.assertEqual(len(board.to_dict()), 48)
 
@@ -311,7 +306,7 @@ class ConfigLoaderTestCase(TestCase):
 
     def test_out_of_range_attack_range_is_rejected(self):
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         bad = copy.deepcopy(DEFAULT_CONFIG)
         bad['units']['pawn']['attackRange'] = 0
         with self.assertRaises(ValueError):
@@ -450,20 +445,20 @@ class ConfigLoaderTestCase(TestCase):
         config = load_config(old)
         self.assertEqual(config['units']['king']['defense'], 0)
         # It has commanders on both sides, so regicide is what it was played as.
-        self.assertEqual(config['rules']['objective'], 'regicide')
+        self.assertEqual(config['match']['objective'], 'regicide')
 
         # One without a commander anywhere never meant regicide.
         old['units'] = {'pawn': {'id': 'pawn', 'name': 'P', 'symbol': 'P',
                                  'value': 1, 'hp': 5, 'attack': 2}}
         old['setup'] = {'white': {'0,3': 'pawn'}, 'black': {'0,-3': 'pawn'}}
-        self.assertEqual(load_config(old)['rules']['objective'], 'elimination')
+        self.assertEqual(load_config(old)['match']['objective'], 'elimination')
 
     def test_malformed_rules_is_a_config_error_not_a_crash(self):
         """`config.get('rules', {})` hands back None for an explicit null, and
         every read off it raised AttributeError straight through handlers that
         only catch ValueError - an INTERNAL_ERROR traceback for a bad paste."""
         import copy
-        from game.engine.config_loader import DEFAULT_CONFIG
+        from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
         bad = copy.deepcopy(DEFAULT_CONFIG)
         bad['rules'] = None
         with self.assertRaises(ValueError):
@@ -678,7 +673,7 @@ class GameLogicTestCase(TestCase):
         board = HexBoard(5)
         board.set(1, 0, 'pawn', 'white', hp=pawn_hp, max_hp=pawn_hp)
         board.set(3, 0, 'king', 'black', hp=king_hp, max_hp=king_hp)
-        config['rules']['objective'] = 'elimination'
+        config['match']['objective'] = 'elimination'
 
         # White has no king but still has a unit, so it is not out yet.
         self.assertIsNone(find_defeated(board, config))
@@ -709,7 +704,7 @@ class GameLogicTestCase(TestCase):
         board = HexBoard(5)
         board.set(0, 0, 'pawn', 'white', hp=pawn_hp, max_hp=pawn_hp)
         board.set(1, 0, 'pawn', 'black', hp=pawn_hp, max_hp=pawn_hp)
-        config['rules']['objective'] = 'regicide'
+        config['match']['objective'] = 'regicide'
 
         # Neither side has a commander, so both are beaten at once.
         self.assertEqual(defeated_sides(board, config), ['white', 'black'])
@@ -746,19 +741,19 @@ class GameLogicTestCase(TestCase):
         config = copy.deepcopy(self._cfg())
         config['units']['pawn'].update(attack=5, defense=1)
         config['units']['rook'].update(attack=7, defense=1)
-        config['rules']['minStrikeDamage'] = 1  # under both blows, so it never bites
+        config['combat']['minStrikeDamage'] = 1  # under both blows, so it never bites
         board = HexBoard(5)
-        board.set(0, 0, 'pawn', 'white', hp=100, max_hp=100)
-        board.set(1, 0, 'rook', 'black', hp=100, max_hp=100)
+        board.set(0, 0, 'pawn', 'white', hp=99, max_hp=99)
+        board.set(1, 0, 'rook', 'black', hp=99, max_hp=99)
 
         result = resolve_combat(board, (0, 0), (1, 0), config)
 
         self.assertFalse(result['defender_eliminated'])
         self.assertFalse(result['moved'])
         self.assertEqual(result['damage_dealt'], 4)     # 5 attack into 1 defence
-        self.assertEqual(result['defender_hp'], 96)
+        self.assertEqual(result['defender_hp'], 95)
         self.assertEqual(result['counter_damage'], 6)   # 7 attack into 1 defence
-        self.assertEqual(result['attacker_hp'], 94)
+        self.assertEqual(result['attacker_hp'], 93)
         self.assertFalse(result['attacker_eliminated'])
 
     def test_counter_attack_can_kill_the_attacker(self):
@@ -784,14 +779,14 @@ class GameLogicTestCase(TestCase):
             'ranged': {'attack': 8, 'defense': 0, 'attackRange': 3},
             'short': {'attack': 8, 'defense': 0, 'attackRange': 1},
         })
-        board.set(0, 0, 'ranged', 'white', hp=100, max_hp=100)
-        board.set(2, 0, 'short', 'black', hp=100, max_hp=100)
+        board.set(0, 0, 'ranged', 'white', hp=99, max_hp=99)
+        board.set(2, 0, 'short', 'black', hp=99, max_hp=99)
 
         result = resolve_combat(board, (0, 0), (2, 0), config)
 
         self.assertTrue(result['attacked'])
         self.assertEqual(result['counter_damage'], 0)
-        self.assertEqual(result['attacker_hp'], 100)
+        self.assertEqual(result['attacker_hp'], 99)
 
     def test_every_configured_attacker_and_defender_uses_its_stats(self):
         """Combat reads configured attack, defense, range and falloff for the roster."""
@@ -804,8 +799,8 @@ class GameLogicTestCase(TestCase):
                         attacker=attacker_id, defender=defender_id, distance=distance,
                     ):
                         board = HexBoard(distance)
-                        board.set(0, 0, attacker_id, 'white', hp=10000, max_hp=10000)
-                        board.set(distance, 0, defender_id, 'black', hp=10000, max_hp=10000)
+                        board.set(0, 0, attacker_id, 'white', hp=99, max_hp=99)
+                        board.set(distance, 0, defender_id, 'black', hp=99, max_hp=99)
 
                         result = resolve_combat(board, (0, 0), (distance, 0), config)
                         dealt = strike_damage(attacker_def, defender_def, distance, config)
@@ -815,13 +810,13 @@ class GameLogicTestCase(TestCase):
                         )
 
                         self.assertEqual(result['damage_dealt'], dealt)
-                        self.assertEqual(result['defender_hp'], 10000 - dealt)
+                        self.assertEqual(result['defender_hp'], 99 - dealt)
                         self.assertEqual(result['counter_damage'], counter)
-                        self.assertEqual(result['attacker_hp'], 10000 - counter)
+                        self.assertEqual(result['attacker_hp'], 99 - counter)
 
     def test_explicit_attack_rings_apply_to_strikes_and_counters(self):
         config = copy.deepcopy(self._cfg())
-        config['rules']['rangeFalloff'] = 1
+        config['combat']['rangeFalloff'] = 1
         # Rename the types: no engine branch may depend on the archer's id.
         config['units'] = {
             'ranger': {**config['units']['archer'], 'defense': 0},
@@ -830,13 +825,13 @@ class GameLogicTestCase(TestCase):
         for distance, attack in enumerate([4, 3, 2, 1], 3):
             with self.subTest(distance=distance):
                 board = HexBoard(11)
-                board.set(0, 0, 'ranger', 'white', hp=100, max_hp=100)
-                board.set(distance, 0, 'target', 'black', hp=100, max_hp=100)
+                board.set(0, 0, 'ranger', 'white', hp=99, max_hp=99)
+                board.set(distance, 0, 'target', 'black', hp=99, max_hp=99)
                 result = resolve_combat(board, (0, 0), (distance, 0), config)
                 self.assertEqual(result['damage_dealt'], attack)
-                self.assertEqual(result['defender_hp'], 100 - attack)
+                self.assertEqual(result['defender_hp'], 99 - attack)
                 self.assertEqual(result['counter_damage'], 12 - distance)
-                self.assertEqual(result['attacker_hp'], 100 - (12 - distance))
+                self.assertEqual(result['attacker_hp'], 99 - (12 - distance))
         config['units']['ranger']['attack'][1] = 0
         self.assertEqual(strike_damage(config['units']['ranger'], config['units']['target'], 4, config), 0)
         self.assertEqual(strike_damage(config['units']['ranger'], config['units']['target'], 2, config), 0)
@@ -846,7 +841,7 @@ class GameLogicTestCase(TestCase):
         Defence above attack is clamped to the configured floor and attack cap.
         """
         config = copy.deepcopy(self._cfg())
-        attack = max(2, config['rules']['minStrikeDamage'] + 1)
+        attack = max(2, config['combat']['minStrikeDamage'] + 1)
         config['units']['pawn']['attack'] = attack
         config['units']['king']['defense'] = attack + 10
         king_hp = config['units']['king']['hp']
@@ -856,7 +851,7 @@ class GameLogicTestCase(TestCase):
 
         result = resolve_combat(board, (0, 0), (1, 0), config)
 
-        expected = min(attack, config['rules']['minStrikeDamage'])
+        expected = min(attack, config['combat']['minStrikeDamage'])
         self.assertEqual(result['damage_dealt'], expected)
         self.assertEqual(result['defender_hp'], king_hp - expected)
 
@@ -993,7 +988,7 @@ class SharedDefaultConfigTestCase(TestCase):
     """
 
     def test_the_default_config_is_the_shared_file(self):
-        from game.engine.config_loader import DEFAULT_CONFIG_PATH
+        from game.engine.config_loader import DEFAULT_CONFIG_PATH, DEFAULT_CONFIG
         self.assertEqual(DEFAULT_CONFIG_PATH.parent.name, 'shared')
         with open(DEFAULT_CONFIG_PATH, encoding='utf-8') as fh:
             self.assertEqual(json.load(fh), DEFAULT_CONFIG)
@@ -1749,9 +1744,9 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         config = copy.deepcopy(self._cfg())
         for unit in config['units'].values():
             unit.pop('veterancy', None)
-        config['units']['pawn'].update(hp=1000, attack=9, defense=2)
-        config['units'][defender].update(hp=1000, attack=12, defense=4)
-        config['rules']['minStrikeDamage'] = 1
+        config['units']['pawn'].update(hp=99, attack=9, defense=2)
+        config['units'][defender].update(hp=99, attack=12, defense=4)
+        config['combat']['minStrikeDamage'] = 1
         return config
 
     def test_a_reserve_answers_the_blow(self):
@@ -1765,10 +1760,10 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         self.assertTrue(out['counters'])
         self.assertEqual(record['panel'], 'tl')
         self.assertEqual(record['damage_dealt'], 5)      # 9 attack into 4 defence
-        self.assertEqual(record['defenderHp'], 995)
+        self.assertEqual(record['defenderHp'], 94)
         self.assertEqual(record['counter_damage'], 10)   # 12 attack into 2 defence
         q, r = panels.parse_key(self.BESIDE_RESERVE)
-        self.assertEqual(board.get(q, r)['hp'], 990)
+        self.assertEqual(board.get(q, r)['hp'], 89)
 
     def test_a_base_never_answers(self):
         """
@@ -1786,10 +1781,10 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         self.assertFalse(out['counters'])
         self.assertEqual(record['panel'], 'tr')
         self.assertEqual(record['damage_dealt'], 5)      # 9 attack into 4 defence
-        self.assertEqual(record['defenderHp'], 995)
+        self.assertEqual(record['defenderHp'], 94)
         self.assertEqual(record['counter_damage'], 0)
         q, r = panels.parse_key(self.BESIDE_BASE)
-        self.assertEqual(board.get(q, r)['hp'], 1000)    # untouched
+        self.assertEqual(board.get(q, r)['hp'], 99)    # untouched
 
     def test_the_record_carries_what_the_client_derives_panels_from(self):
         """
@@ -1807,12 +1802,12 @@ class PanelAttackTestCase(DealtPanels, TestCase):
         self.assertTrue(record['panelAttack'])
         self.assertEqual(record['attackedHex'], self.RESERVE_QUEEN)
         self.assertEqual(record['unit']['uid'], 'rtl0')
-        self.assertEqual(record['unit']['max_hp'], config['units']['queen']['hp'] + 2)
+        self.assertEqual(record['unit']['max_hp'], 99)
         self.assertEqual(record['turn'], 21)
         # And it is exactly what the derivation reads back.
         self.assertEqual(
             panels.recorded_panel_hp([record]),
-            {'rtl0': config['units']['queen']['hp'] + 2 - record['damage_dealt']},
+            {'rtl0': 99 - record['damage_dealt']},
         )
 
     def test_a_panel_unit_already_wounded_is_struck_from_its_wounds(self):
@@ -1943,22 +1938,17 @@ class PhaseScheduleTestCase(TestCase):
         self.assertEqual(phases.stage_at(7), 'Phase 1')
         self.assertTrue(phases.is_wrap_open(7))
 
-    def test_the_wrap_is_open_before_each_halftime(self):
-        """
-        The played first half of a numbered phase and nothing else: turns 4-8,
-        15-19 and 26-30. Not the opening, not a postmatch, and not overtime -
-        `before_halftime` alone used to say yes to the opening and overtime.
-        """
+    def test_the_wrap_is_open_in_initialization_postmatch_and_before_halftime(self):
+        """New defaults open all gates on setup turns, retaining first-half wraps."""
         open_turns = [t for t in range(1, 40) if phases.is_wrap_open(2 * t - 1)]
         self.assertEqual(
             open_turns,
-            list(range(4, 9)) + list(range(15, 20)) + list(range(26, 31)))
+            list(range(1, 9)) + list(range(14, 20)) + list(range(25, 31)) + [36])
 
     def test_the_reserve_and_the_base_doorways_keep_their_own_windows(self):
         """
-        Three arrows, three schedules. Crossings run on the setup turns and
-        each phase's second half; walks home run on the setup turns and all of
-        overtime; the wrap runs on the first halves. No turn opens all three.
+        All gates open during Initialization/postmatch. Other stage windows retain
+        their distinct first-half, second-half and overtime permissions.
         """
         entry = [t for t in range(1, 40) if phases.is_entry_open(2 * t - 1)]
         self.assertEqual(entry, [1, 2, 3] + list(range(9, 15))
@@ -1968,9 +1958,9 @@ class PhaseScheduleTestCase(TestCase):
         self.assertEqual(home, [1, 2, 3, 14, 25, 36] + list(range(37, 40)))
         for turn in range(1, 40):
             ply = 2 * turn - 1
-            self.assertFalse(
-                phases.is_wrap_open(ply) and phases.is_entry_open(ply),
-                f'turn {turn} opens both the wrap and the way in')
+            for half in (ply, ply + 1):
+                self.assertEqual(phases.is_wrap_open(half) and phases.is_entry_open(half),
+                                 turn in (1, 2, 3, 14, 25, 36))
 
     def test_the_stages_have_the_names_the_header_counts_down_to(self):
         named = {t: phases.stage_at(2 * t - 1)
@@ -2043,7 +2033,7 @@ class PhaseScheduleTestCase(TestCase):
         """
         self.assertEqual([phases.board_moves_per_turn(2 * t - 1)
                           for t in (1, 4, 20, 36, 37, 44, 45, 49, 50, 500)],
-                         [1, 1, 1, 1, 1, 1, 2, 2, 3, 3])
+                         [1, 1, 1, 3, 1, 1, 2, 2, 3, 3])
 
     def test_board_moves_at_counts_what_the_client_counts(self):
         """
@@ -2070,7 +2060,7 @@ class PhaseScheduleTestCase(TestCase):
         # while setting out - ply 27 being turn 14, Phase 1's postmatch.
         self.assertEqual(board_moves_at([move(withdrawn=True)], 89, 'white'), 1)
         self.assertEqual(
-            board_moves_at([move(withdrawn=True, turn=27)], 27, 'white'), 0)
+            board_moves_at([move(withdrawn=True, turn=27)], 27, 'white'), 1)
 
     def test_a_setup_turn_says_which_one_it_is_when_it_refuses_a_blow(self):
         self.assertEqual(phases.no_attack_message(1), 'Nobody attacks in the opening')
@@ -2255,12 +2245,12 @@ class PanelMoveTestCase(DealtPanels, TestCase):
         # once-a-phase lock is a different rule with its own test below.
         config, radius, board, at = self._setup()
         unit = panels.panel_occupancy(config, radius, [], ply=7)[at['rbr4']]
-        self.assertEqual(panels.panel_allowance(config, [], unit, 7), 8)
+        self.assertEqual(panels.panel_allowance(config, [], unit, 7), 6)
         history = [_panel_step('rbr4', 'archer', 'white', at['rbr4'], '7,6', 7, 'br', cost=4)]
         moved = panels.panel_occupancy(config, radius, history, ply=7)['7,6']
-        self.assertEqual(panels.panel_allowance(config, history, moved, 7), 4)
+        self.assertEqual(panels.panel_allowance(config, history, moved, 7), 2)
         # A new turn is a new allowance.
-        self.assertEqual(panels.panel_allowance(config, history, moved, 9), 8)
+        self.assertEqual(panels.panel_allowance(config, history, moved, 9), 6)
 
     def test_three_movers_a_panel_a_turn_and_the_two_panels_count_apart(self):
         config, radius, board, at = self._setup()
@@ -2273,7 +2263,7 @@ class PanelMoveTestCase(DealtPanels, TestCase):
         # A fourth reserve unit may not start.
         self.assertIsNone(panels.panel_allowance(config, history, by_uid['rbr3'], 1))
         # One of the three may keep going on what it has left.
-        self.assertIsNotNone(panels.panel_allowance(config, history, by_uid['rbr0'], 1))
+        self.assertIsNotNone(panels.panel_allowance(config, history, by_uid['rbr2'], 1))
         # And the base has three of its own - never three between them.
         self.assertIsNotNone(panels.panel_allowance(config, history, by_uid['rbl0'], 1))
         # A crossing is a reserve's move, and counts against the reserve.
@@ -2281,23 +2271,19 @@ class PanelMoveTestCase(DealtPanels, TestCase):
                               'unit': {'uid': 'rbr4', 'color': 'white'}}]
         self.assertEqual(len(panels.panel_movers(crossed, 1, 'white')['reserve']), 4)
 
-    def test_the_movers_allowance_is_read_off_the_config(self):
-        # rules.panelMoversPerTurn, and rules.postmatchEntries for the reserve
-        # in a postmatch: tuning either is a config edit. Ply 27 is turn 14,
-        # Phase 1's postmatch.
+    def test_category_limits_follow_the_stage_for_both_sides(self):
         config, radius, board, at = self._setup()
-        config = {**config, 'rules': {**config['rules'],
-                                      'panelMoversPerTurn': 2, 'postmatchEntries': 1}}
-        two = [_panel_step(uid, 'x', 'white', at[uid], at[uid], 1, 'br')
-               for uid in ('rbr0', 'rbr1')]
-        by_uid = {u['uid']: u for u in
-                  panels.panel_occupancy(config, radius, two, ply=1).values()}
-        self.assertIsNone(panels.panel_allowance(config, two, by_uid['rbr3'], 1))
-        one = [_panel_step('rbr0', 'x', 'white', at['rbr0'], at['rbr0'], 27, 'br')]
-        by_uid = {u['uid']: u for u in
-                  panels.panel_occupancy(config, radius, one, ply=27).values()}
-        self.assertIsNone(panels.panel_allowance(config, one, by_uid['rbr3'], 27))
-        self.assertIsNotNone(panels.panel_allowance(config, one, by_uid['rbr0'], 27))
+        for first, cap in ((1, 1), (3, 2), (5, 3), (7, 1), (27, 3), (49, 3), (71, 3), (73, 1), (89, 2), (99, 3)):
+            for color, ply, base, reserve in (('white', first, 'bl', 'br'), ('black', first + 1, 'tr', 'tl')):
+                for panel in (base, reserve):
+                    history = [_panel_step(f'u{i}', 'pawn', color, '0,0', '0,0', ply, panel, cost=0) for i in range(cap)]
+                    unit = dict(uid='fresh', unit_id='pawn', color=color, panel=panel, vet=3)
+                    self.assertIsNone(panels.panel_allowance(config, history, unit, ply), (ply, panel))
+                    unit['uid'] = f'u{cap - 1}'
+                    self.assertEqual(panels.panel_allowance(config, history, unit, ply), 6)
+                    if cap > 1:
+                        unit['uid'] = 'u0'
+                        self.assertIsNone(panels.panel_allowance(config, history, unit, ply))
 
     def test_through_the_opening_a_unit_moves_once_for_the_whole_phase(self):
         config, radius, board, at = self._setup()
@@ -2331,14 +2317,14 @@ class PanelMoveTestCase(DealtPanels, TestCase):
         sixth['uid'] = 'not-one-of-them'
         # Four started, and a fifth still may.
         self.assertIsNotNone(
-            panels.panel_allowance(config, walked(reserve[:4], 27), sixth, 27))
+            panels.panel_allowance(config, walked(reserve[:2], 27), sixth, 27))
         # Five started, and a sixth may not.
         self.assertIsNone(
-            panels.panel_allowance(config, walked(reserve[:5], 27), sixth, 27))
+            panels.panel_allowance(config, walked(reserve[:3], 27), sixth, 27))
         # One of the five walks on regardless: the cap is on how many are
         # started, not on how far they go.
         self.assertIsNotNone(
-            panels.panel_allowance(config, walked(reserve[:5], 27), dict(reserve[0]), 27))
+            panels.panel_allowance(config, walked(reserve[:3], 27), dict(reserve[2]), 27))
 
         # Off a postmatch the reserve is back to three, on either side of it.
         # Ply 25 is turn 13, the last turn of Phase 1's halftime; ply 29 is
@@ -2466,18 +2452,47 @@ class PointsTestCase(TestCase):
     def _cfg(self):
         return load_config(None)
 
+    def test_starting_points_are_added_once_and_explicit_zero_is_preserved(self):
+        config = self._cfg()
+        self.assertEqual([economy.points_of('white', 0, [], config),
+                          economy.points_of('black', 1, [], config)], [10, 10])
+        self.assertEqual([economy.points_of('white', 1, [], config),
+                          economy.points_of('black', 2, [], config)], [11, 11])
+        self.assertEqual(economy.points_of('white', 7, [], config), 34)
+        self.assertEqual(economy.points_of('white', 73, [], config), 129)
+        config['economy']['pointsAtStart'] = 0
+        self.assertEqual(economy.points_of('white', 73, [], config), 119)
+        config['economy']['pointsAtStart'] = 250
+        self.assertEqual(economy.points_of('white', 100, [], config), 369)
+
+    def test_withdrawal_refunds_use_current_wounds_floor_at_one_and_keep_owner_attribution(self):
+        config = self._cfg()
+        unit = {'unit_id': 'pawn', 'color': 'white', 'uid': 'p', 'hp': 9, 'max_hp': 14, 'vet': 1}
+        self.assertEqual(economy.withdrawal_refund(config, {**unit, 'hp': 14}), 12)
+        self.assertEqual(economy.withdrawal_refund(config, unit), 7)
+        self.assertEqual(economy.withdrawal_refund(config, {'unit_id': 'shieldman', 'hp': 2, 'max_hp': 30}), 1)
+        config['units']['rich'] = {'value': 250, 'hp': 99}
+        self.assertEqual(economy.withdrawal_refund(config, {'unit_id': 'rich', 'hp': 95, 'max_hp': 99}), 245)
+        old = {'units': {'pawn': {'value': 16, 'hp': 12}}}
+        self.assertEqual(economy.withdrawal_refund(old, {'unit_id': 'pawn', 'hp': 12}), 15)
+        self.assertEqual(economy.withdrawal_refund(old, {'unit_id': 'pawn', 'hp': 7}), 10)
+        history = [{'withdrawn': True, 'color': 'white', 'refundColor': 'black', 'unit_id': 'pawn', 'unit': unit},
+                   {'panelEffect': True, 'unit': {**unit, 'hp': 14}, 'defenderHp': 14}]
+        self.assertEqual([economy.unit_points_of(color, history, config) for color in ('white', 'black')], [10, 17])
+        self.assertEqual(economy.unit_points_of('white', [{'color': 'black', 'unit_id': 'pawn', 'attacker_eliminated': True}], config), 22)
+
     def test_a_point_for_every_turn_begun(self):
         """White's first turn begins at ply 1, black's at ply 2."""
         config = self._cfg()
         self.assertEqual([economy.points_of('white', p, [], config) for p in (1, 2, 3, 4)],
-                         [1, 1, 2, 2])
+                         [11, 11, 12, 12])
         self.assertEqual([economy.points_of('black', p, [], config) for p in (1, 2, 3, 4)],
-                         [0, 1, 1, 2])
+                         [10, 11, 11, 12])
 
     def test_each_phase_pays_its_number_a_turn_from_its_halftime(self):
         """
         1 a turn to Phase 2's halftime, 2 from it, 3 from Phase 3's, and
-        nothing in overtime - and each phase's grant as it begins: 10, 20, 30.
+        nothing in overtime - and each phase's grant as it begins: 20 for each numbered phase.
         *The owner, 24 Sep 2026: "1x, 2x, 3x regular point accumation now
         happens at the start of half time of each phase instead of start of a
         phase"*, *"OT stops gaining points"*, and *"at the start of each phase
@@ -2491,14 +2506,14 @@ class PointsTestCase(TestCase):
         white = [economy.points_of('white', 2 * t - 1, [], config)
                  for t in (3, 4, 8, 9, 14, 15, 19, 20, 26, 30, 31, 36, 37, 50)]
         # The rates: 19 at one apiece, 11 x 2 (to 41), 6 x 3 (to 59). The
-        # grants: 10 on turn 4, 20 on turn 15, 30 on turn 26. Then nothing.
-        self.assertEqual(white, [3, 14, 18, 19, 24, 45, 49, 51, 93, 101, 104, 119, 119, 119])
+        # grants: 20 on turns 4, 15 and 26, plus 10 starting points.
+        self.assertEqual(white, [13, 34, 38, 39, 44, 65, 69, 71, 103, 111, 114, 129, 129, 129])
         # Black is paid at the start of its OWN turn, one hand-over behind -
         # grant and all.
-        self.assertEqual(economy.points_of('black', 2 * 4 - 1, [], config), 3)
-        self.assertEqual(economy.points_of('black', 2 * 4, [], config), 14)
-        self.assertEqual(economy.points_of('black', 2 * 20 - 1, [], config), 49)
-        self.assertEqual(economy.points_of('black', 2 * 20, [], config), 51)
+        self.assertEqual(economy.points_of('black', 2 * 4 - 1, [], config), 13)
+        self.assertEqual(economy.points_of('black', 2 * 4, [], config), 34)
+        self.assertEqual(economy.points_of('black', 2 * 20 - 1, [], config), 69)
+        self.assertEqual(economy.points_of('black', 2 * 20, [], config), 71)
         # And what one of white's turns pays: the sum at its ply less the sum
         # before it - the rate, and on a phase's first turn its grant too.
         def pay(turn):
@@ -2506,7 +2521,7 @@ class PointsTestCase(TestCase):
                     - phases.turn_points_by('white', 2 * turn - 2))
         self.assertEqual([pay(t) for t in (1, 8, 9, 16, 19, 20, 30, 31, 36, 37, 50, 500)],
                          [1, 1, 1, 1, 1, 2, 2, 3, 3, 0, 0, 0])
-        self.assertEqual([pay(t) for t in (4, 15, 26)], [1 + 10, 1 + 20, 2 + 30])
+        self.assertEqual([pay(t) for t in (4, 15, 26)], [1 + 20, 1 + 20, 2 + 20])
 
     def test_the_victory_points_turn_into_points_as_overtime_begins(self):
         """
@@ -2520,19 +2535,19 @@ class PointsTestCase(TestCase):
         bank = {'1': {'white': 5, 'black': 1}, '2': {'white': 9, 'black': 0},
                 '3': {'white': 0, 'black': 3}}
         before = economy.points_of('white', 72, [], config, bank)
-        self.assertEqual(before, 119)
-        self.assertEqual(economy.points_of('white', 73, [], config, bank), 119 + 14)
-        self.assertEqual(economy.points_of('white', 99, [], config, bank), 119 + 14)
+        self.assertEqual(before, 129)
+        self.assertEqual(economy.points_of('white', 73, [], config, bank), 129 + 14)
+        self.assertEqual(economy.points_of('white', 99, [], config, bank), 129 + 14)
         # Black's first overtime turn is the hand-over after white's.
-        self.assertEqual(economy.points_of('black', 73, [], config, bank), 119)
-        self.assertEqual(economy.points_of('black', 74, [], config, bank), 119 + 4)
+        self.assertEqual(economy.points_of('black', 73, [], config, bank), 129)
+        self.assertEqual(economy.points_of('black', 74, [], config, bank), 129 + 4)
         # No bank, nothing to convert.
-        self.assertEqual(economy.points_of('white', 73, [], config), 119)
+        self.assertEqual(economy.points_of('white', 73, [], config), 129)
         # And a match won on points ends ON hand-over 73, never reaching
         # overtime: its finished position converts nothing.
-        won = {'1': {'white': 30, 'black': 0}, '2': {'white': 0, 'black': 0},
+        won = {'1': {'white': 51, 'black': 0}, '2': {'white': 0, 'black': 0},
                '3': {'white': 0, 'black': 0}}
-        self.assertEqual(economy.points_of('white', 73, [], config, won), 119)
+        self.assertEqual(economy.points_of('white', 73, [], config, won), 129)
 
     def test_a_kill_pays_the_dead_unit_s_worth_and_a_counter_kill_pays_the_defender(self):
         """The 4 Oct revision pays attack/counter rewards in UP, separately from ability points."""
@@ -2547,8 +2562,8 @@ class PointsTestCase(TestCase):
             economy.unit_points_of('white', history, config),
             10 + queen_value + knight_value,
         )
-        self.assertEqual(economy.points_of('black', 1, history, config), 0)
-        self.assertEqual(economy.points_of('white', 1, history, config), 1)
+        self.assertEqual(economy.points_of('black', 1, history, config), 10)
+        self.assertEqual(economy.points_of('white', 1, history, config), 11)
         self.assertEqual(economy.unit_points_of('black', history, config), 10)
 
     def test_a_kill_in_a_panel_pays_nobody(self):
@@ -2570,8 +2585,8 @@ class PointsTestCase(TestCase):
             # ... and a reserve unit's counter kills white's knight.
             {**into, 'panel': 'tl', 'unit_id': 'knight', 'attacker_eliminated': True},
         ]
-        self.assertEqual(economy.points_of('white', 1, history, config), 1)
-        self.assertEqual(economy.points_of('black', 1, history, config), 0)
+        self.assertEqual(economy.points_of('white', 1, history, config), 11)
+        self.assertEqual(economy.points_of('black', 1, history, config), 10)
 
     def test_unit_casts_and_controlled_refunds_use_up_and_ability_deaths_only_charge_attrition(self):
         from game.engine import scoring
@@ -2583,7 +2598,7 @@ class PointsTestCase(TestCase):
             {'turn': 57, 'withdrawn': True, 'unit_id': 'pawn', 'color': 'white', 'refundColor': 'black'},
         ]
         self.assertEqual(economy.unit_points_of('white', history, config), 15)
-        self.assertEqual(economy.unit_points_of('black', history, config), 10 + config['units']['pawn']['value'])
+        self.assertEqual(economy.unit_points_of('black', history, config), 10 + config['units']['pawn']['value'] - 1)
         self.assertEqual(scoring.deaths_of(config, history, 'white', 3),
                          config['units']['pawn']['value'] + config['units']['king']['value'])
         self.assertEqual(scoring.deaths_of(config, history, 'black', 3), 0)
@@ -2592,10 +2607,10 @@ class PointsTestCase(TestCase):
         """Only the turn's own action ever paid for a kill in the client."""
         config = self._cfg()
         history = [{'panelEffect': True, 'color': 'white', 'defender_eliminated': True}]
-        self.assertEqual(economy.points_of('white', 1, history, config), 1)
+        self.assertEqual(economy.points_of('white', 1, history, config), 11)
         self.assertEqual(economy.unit_points_of('white', history, config), 10)
 
-    def test_a_round_trip_out_over_the_wrap_and_home_again_costs_nothing(self):
+    def test_a_full_health_round_trip_over_the_wrap_and_home_costs_one_up(self):
         config = self._cfg()
         value = config['units']['knight']['value']
         wrap = _panel_step('rbl3', 'knight', 'white', '-12,6', '11,1', 15, 'bl',
@@ -2604,7 +2619,7 @@ class PointsTestCase(TestCase):
                 'unit': {'uid': 'rbl3', 'color': 'white'}}
         base = economy.unit_points_of('white', [], config)
         self.assertEqual(economy.unit_points_of('white', [wrap], config), base - value)
-        self.assertEqual(economy.unit_points_of('white', [wrap, home], config), base)
+        self.assertEqual(economy.unit_points_of('white', [wrap, home], config), base - 1)
         self.assertEqual(economy.points_of('white', 21, [wrap], config),
                          economy.points_of('white', 21, [], config))
         # And none of it is black's business.
@@ -2754,7 +2769,7 @@ class ScoringTestCase(TestCase):
         from game.engine import scoring
         blow = {'intoPanel': True, 'panelAttack': True, 'color': 'white', 'unit_id': 'pawn',
                 'captured': 'pawn', 'defender_eliminated': True, 'turn': 8}
-        self.assertEqual(scoring.deaths_of(self.PAWN, [{**blow, 'panel': 'tr'}], 'black', 1), 0)
+        self.assertEqual(scoring.deaths_of(self.PAWN, [{**blow, 'panel': 'tr'}], 'black', 1), 5)
         self.assertEqual(scoring.deaths_of(self.PAWN, [{**blow, 'panel': 'tl'}], 'black', 1), 5)
         # A reserve's counter that kills the attacker counts against the
         # attacker's side.
@@ -2770,17 +2785,19 @@ class ScoringTestCase(TestCase):
                 '1': {'white': white, 'black': black},
                 '2': {'white': 0, 'black': 0}, '3': {'white': 0, 'black': 0}})
 
-        # White has to be more than 10 clear; black only more than 5.
-        self.assertEqual(settle(11, 0), 'white')
-        self.assertIsNone(settle(10, 0))
-        self.assertEqual(settle(0, 6), 'black')
-        self.assertIsNone(settle(0, 5))
+        self.assertEqual(settle(51, 0), 'white')
+        self.assertIsNone(settle(50, 0))
+        self.assertEqual(settle(0, 26), 'black')
+        self.assertIsNone(settle(0, 25))
+        self.assertIsNone(settle(0, 0))
+        self.assertEqual(scoring.decided_on_points({'1': {'white': 20, 'black': 0},
+            '2': {'white': 20, 'black': 0}, '3': {'white': 11, 'black': 0}}), 'white')
         # Nothing is decided on two phases of three.
         self.assertIsNone(scoring.decided_on_points({'1': {'white': 99, 'black': 0}}))
 
     def test_points_end_it_as_phase_three_banks_and_turn_fifty_ends_it_for_black(self):
         from game.engine import scoring
-        clear = {'1': {'white': 12, 'black': 0}, '2': {'white': 0, 'black': 0},
+        clear = {'1': {'white': 51, 'black': 0}, '2': {'white': 0, 'black': 0},
                  '3': {'white': 0, 'black': 0}}
         level = {**clear, '1': {'white': 0, 'black': 0}}
         # All three in and white past the margin: known from the hand-over
@@ -2808,7 +2825,7 @@ class ScoringTestCase(TestCase):
                          {'1': True, '2': True, '3': True})
         # A bank with a late phase in it decides nothing on points, however
         # clear it reads - and a late Phase 1 spoils an on-time Phase 3.
-        clear_but_late = {'1': {'white': 12, 'black': 0, 'late': True},
+        clear_but_late = {'1': {'white': 51, 'black': 0, 'late': True},
                           '2': {'white': 0, 'black': 0}, '3': {'white': 0, 'black': 0}}
         self.assertIsNone(scoring.decided_on_points(clear_but_late))
         self.assertIsNone(scoring.schedule_ending(clear_but_late, 73))
@@ -2885,10 +2902,10 @@ class PhaseVeterancyTestCase(SimpleTestCase):
         effects = panels.promotion_heals(config, board, history, 71)
         self.assertEqual([board[k]['hp'] for k in board], [14, 14, 1, 0])
         self.assertEqual({e['unit']['uid'] for e in effects}, {'w11,1', 'b-11,-1'})
-        self.assertTrue(all(e['defenderHp'] == 14 and e['promotionHeal'] for e in effects))
+        self.assertTrue(all(e['defenderHp'] == 12 and e['promotionHeal'] for e in effects))
         standing = panels.panel_occupancy(config, 11, [*history, *effects], ply=71)
-        self.assertEqual(standing['11,1']['hp'], 14)
-        self.assertEqual(standing['-11,-1']['hp'], 14)
+        self.assertEqual(standing['11,1']['hp'], 12)
+        self.assertEqual(standing['-11,-1']['hp'], 12)
         self.assertEqual(panels.promotion_heals(config, board, [*history, *effects], 72), [])
 
     def test_server_handovers_and_serialization_carry_rank(self):
@@ -2937,6 +2954,51 @@ class HealingEngineTestCase(SimpleTestCase):
         config['units']['medic']['heal'] = [7, 5]
         board.set(2, 0, 'rook', 'white', hp=1, max_hp=50)
         self.assertEqual(resolve_heal(board, (0, 0), (2, 0), config)['healed_amount'], 5)
+
+
+class KingCaptureTestCase(SimpleTestCase):
+    def test_unlock_in_all_zones_and_enemy_occupied_hex_exception(self):
+        from game.engine import scoring
+        for zone in scoring.capture_zones(11):
+            q, r = map(int, zone['center'].split(','))
+            at, enemy_at = f'{q + 2},{r}', f'{q - 1},{r}'
+            for color, enemy in [('white', 'black'), ('black', 'white')]:
+                for vet in range(4):
+                    board = {at: dict(unit_id='king', color=color, vet=vet),
+                             enemy_at: dict(unit_id='queen', color=enemy, vet=0)}
+                    claims = scoring.capture_claims(board, 11, DEFAULT_CONFIG)
+                    self.assertEqual(sum(claims.get(k) == color for k in zone['hexes']),
+                                     len(zone['hexes']) - 1 if vet >= 2 else 1, (zone['center'], color, vet))
+                    if vet >= 2:
+                        self.assertEqual(claims[enemy_at], enemy)
+
+    def test_opposing_active_passives_cancel_without_rank_priority(self):
+        from game.engine import scoring
+        legacy = copy.deepcopy(DEFAULT_CONFIG)
+        legacy['units']['king']['passive'] = 'persuade'
+        for white in range(4):
+            for black in range(4):
+                board = {'2,0': dict(unit_id='king', color='white', vet=white),
+                         '-2,0': dict(unit_id='king', color='black', vet=black)}
+                claims = scoring.capture_claims(board, 11, DEFAULT_CONFIG)
+                if (white >= 2) == (black >= 2):
+                    self.assertEqual(claims, scoring.capture_claims(board, 11, legacy))
+                else:
+                    active, enemy = ('white', 'black') if white >= 2 else ('black', 'white')
+                    self.assertEqual(scoring.capture_score(claims, active, 11), 36)
+                    self.assertEqual(scoring.capture_score(claims, enemy, 11), 2)
+
+    def test_opaque_kits_eligibility_and_leaving_the_zone(self):
+        from game.engine import scoring
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['units']['flagbearer'] = {**config['units']['king'], 'passive': 'custom-capture', 'captureZones': ['middle']}
+        config['abilities']['catalogue']['custom-capture'] = {**config['abilities']['catalogue']['capture'], 'id': 'custom-capture'}
+        unit = dict(unit_id='flagbearer', color='white', vet=2)
+        pawn = dict(unit_id='pawn', color='black', vet=3)
+        self.assertEqual(scoring.cap_of({'2,0': unit, '0,0': pawn}, 11, 'white', config), 38)
+        self.assertEqual(len(scoring.capture_claims({'2,0': unit}, 11, config)), 19)
+        self.assertEqual(scoring.capture_claims({'9,0': unit}, 11, config), {})
+        self.assertEqual(scoring.capture_claims({'0,0': pawn}, 11, config), {})
 
 
 class CapturePermissionsTestCase(SimpleTestCase):
@@ -3040,7 +3102,7 @@ class VeteranStatsTestCase(SimpleTestCase):
         healed = resolve_heal(restored, (-2, 0), (0, 0), config)
         self.assertEqual(healed['healed_amount'], 6)
         self.assertEqual(restored.get(0, 0)['hp'], 11)
-        self.assertEqual(unit_stats('king', DEFAULT_CONFIG, 1)['attack'], [24, 20])
+        self.assertEqual(unit_stats('king', DEFAULT_CONFIG, 1)['attack'], [14, 20])
         self.assertEqual(config, before)
 
     def test_reserve_hp_promotes_once_and_preserves_rank_through_wounds_and_withdrawal(self):
@@ -3054,17 +3116,17 @@ class VeteranStatsTestCase(SimpleTestCase):
         pre = panels.panel_occupancy(config, 11, history, ply=6)
         self.assertEqual((pre['11,1']['hp'], pre['11,1']['max_hp']), (5, 12))
         first = panels.panel_occupancy(config, 11, history, ply=7)
-        self.assertEqual((first['11,1']['hp'], first['11,1']['max_hp'], first['11,1']['vet']), (7, 14, 1))
+        self.assertEqual((first['11,1']['hp'], first['11,1']['max_hp'], first['11,1']['vet']), (5, 12, 1))
         self.assertEqual((first['-12,1']['hp'], first['-12,1']['max_hp'], first['-12,1']['vet']), (5, 12, 0))
         history.append(dict(turn=7, intoPanel=True, panelEffect=True, panel='br',
                             attackedHex='11,1', unit=first['11,1'], defenderHp=4))
         after = panels.panel_occupancy(config, 11, json.loads(json.dumps(history)), ply=8)['11,1']
-        self.assertEqual((after['hp'], after['max_hp']), (4, 14))
+        self.assertEqual((after['hp'], after['max_hp']), (4, 12))
         history += [dict(turn=9, entered=True, unit=after, **{'from': '11,1', 'to': '3,8'}),
                     dict(turn=10, withdrawn=True, unit=after, **{'from': '3,8', 'to': '-12,9'})]
         home = panels.panel_occupancy(config, 11, history, ply=27)['-12,9']
-        self.assertEqual((home['vet'], home['max_hp']), (1, 14))
-        self.assertLessEqual(home['hp'], 14)
+        self.assertEqual((home['vet'], home['max_hp']), (1, 12))
+        self.assertLessEqual(home['hp'], 12)
 
     def test_panel_wounds_apply_in_order_without_repromoting_a_newer_withdrawal(self):
         config = copy.deepcopy(DEFAULT_CONFIG)
@@ -3079,7 +3141,7 @@ class VeteranStatsTestCase(SimpleTestCase):
                  **{'from': '-10,9', 'to': '-12,11'}),
         ]
         home = panels.panel_occupancy(config, 11, json.loads(json.dumps(history)), ply=73)['-12,11']
-        self.assertEqual((home['hp'], home['max_hp'], home['vet']), (8, 14, 3))
+        self.assertEqual((home['hp'], home['max_hp'], home['vet']), (8, 12, 3))
         history.append(dict(turn=73, intoPanel=True, unit=home, defenderHp=5, attackedHex='-12,11', panel='bl'))
         wounded = panels.panel_occupancy(config, 11, history, ply=73)['-12,11']
-        self.assertEqual((wounded['hp'], wounded['max_hp'], wounded['vet']), (5, 14, 3))
+        self.assertEqual((wounded['hp'], wounded['max_hp'], wounded['vet']), (5, 12, 3))

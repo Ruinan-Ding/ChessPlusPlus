@@ -1,7 +1,4 @@
-import {
-  ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, OnDestroy, OnInit,
-  ViewChild,
-} from '@angular/core';
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
@@ -29,6 +26,7 @@ export const SAVE_ANSWER_MS = 8000;
 })
 export class SetupConfigComponent implements OnInit, OnDestroy {
   jsonConfig = '';
+  migrationNotice = '';
   savedConfig = '';
   savedSuccessfully = false;
   /**
@@ -241,7 +239,11 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   }
 
   saveConfig(): boolean {
+    let importedVersion: string | undefined;
+    try { importedVersion = JSON.parse(this.jsonConfig)?.version; } catch {}
     const result = this.configService.updateConfig(this.jsonConfig);
+    if (result.valid) this.migrationNotice = importedVersion === '1.0'
+      ? 'Format 1.0 upgraded to 2.0; its original game rules are preserved.' : '';
 
     if (!result.valid) {
       this.errors = result.errors?.length ? result.errors : ['Invalid configuration'];
@@ -299,6 +301,7 @@ export class SetupConfigComponent implements OnInit, OnDestroy {
   }
 
   onConfigChange(): void {
+    this.migrationNotice = '';
     this.savedSuccessfully = false;
   }
 

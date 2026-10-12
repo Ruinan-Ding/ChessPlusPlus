@@ -33,6 +33,12 @@ That is why the split is worth it. A CDN never sleeps and costs nothing, so sing
 always instant; the backend can be a small machine that sleeps when nobody is playing against
 anybody.
 
+The backend imports the repository's `shared/` directory at runtime. Include
+`default-config.json`, `game-config.schema.json`, both `legacy-*-v1.json` files and
+playback timing data; installing `server/requirements.txt` includes the pinned
+`jsonschema` validator. The Angular build reads the same shared files and pins `ajv`.
+The proposed Docker steps below must retain this repository layout.
+
 ### The one rule that shapes everything below
 
 **The server must run as exactly one process on one machine.**
@@ -58,7 +64,7 @@ The remaining database and container steps apply to this proposed Fly deployment
 
 ### 0.1 A split deployment needs an explicit backend host
 
-`client/src/app/services/websocket.service.ts` uses the page's own origin, except on
+`websocketUrl()` in `client/src/app/services/websocket.config.ts` uses the page's own origin, except on
 `WEBSOCKET_CONFIG.DEV_SERVER_PORT` (4200), where it uses `BACKEND_PORT` (8000). That works for
 a same-origin deployment. From GitHub Pages it would dial the Pages host itself, which has no
 WebSocket server, so this split deployment needs the separate Fly hostname.
@@ -78,18 +84,20 @@ export const WEBSOCKET_CONFIG = {
 };
 ```
 
-Then in `websocket.service.ts`, where `wsUrl` is built:
+Then update the shared `websocketUrl(path)` helper in that same file:
 
 ```ts
-const { protocol, hostname, port, host } = window.location;
-const wsProtocol = protocol === 'https:' ? 'wss' : 'ws';
-const wsHost = port === WEBSOCKET_CONFIG.DEV_SERVER_PORT
-  ? `${hostname}:${WEBSOCKET_CONFIG.BACKEND_PORT}`
-  : host;
-const wsUrl = WEBSOCKET_CONFIG.BACKEND_HOST
-  ? `wss://${WEBSOCKET_CONFIG.BACKEND_HOST}/ws/game/${roomName}/`
-  : `${wsProtocol}://${wsHost}/ws/game/${roomName}/`;
+export function websocketUrl(path: string): string {
+  const { protocol, hostname, port, host } = window.location;
+  const wsHost = port === WEBSOCKET_CONFIG.DEV_SERVER_PORT
+    ? `${hostname}:${WEBSOCKET_CONFIG.BACKEND_PORT}` : host;
+  return WEBSOCKET_CONFIG.BACKEND_HOST
+    ? `wss://${WEBSOCKET_CONFIG.BACKEND_HOST}${path}`
+    : `${protocol === 'https:' ? 'wss' : 'ws'}://${wsHost}${path}`;
+}
 ```
+
+This address applies to both game/lobby sockets and `/ws/cpu/` analysis.
 
 Leaving `BACKEND_HOST` empty keeps `./start.sh` working exactly as it does now. You fill it in
 at Part 2 step 1, once Fly has told you your hostname.
@@ -510,7 +518,10 @@ and single player keeps working, because it always did.
 ## What survives a restart, and what does not
 
 **Survives** - it is all in the database on the volume: rooms, board state, whose turn it is,
-move history, the frozen config snapshot, ready status.
+move history, the frozen config snapshot, ready status, state revision and authoritative
+ability state. Recorded matches also retain their replay journal (migration 0015);
+older matches keep a null journal and cannot export a complete replay. Apply all
+migrations before starting the updated backend.
 
 **The timer tasks do not survive**: `_pending_turn_timers` and
 `_pending_disconnect_timers` in `consumers.py` are in-process `asyncio` tasks, so a deploy or
@@ -544,3 +555,25 @@ recover; the entry screens warn players not to use a password as one.
 `/admin/` is exposed on the Fly host. There is no superuser until you make one
 (`fly ssh console` then `python manage.py createsuperuser`), so it is a login page nobody can
 pass - but if you do create one, that password is the keys to every game record.
+
+## CPU analysis
+
+CPU opponents require the backend; Myself and imported replays remain offline.
+Forward `/ws/cpu/` as well as `/ws/game/`. Both use `websocketUrl()` in
+`client/src/app/services/websocket.config.ts`; apply any split-host deployment
+address there so lobby, matches and CPU analysis use the same server.
+Analysis uses a standard-library process pool and writes no game rows. Requests
+are limited to 2 MiB and 10,000 recorded actions; configurations with more than
+256 initial units or 32 capture zones are refused with manual continuation available.
+`CPP_CPU_WORKERS` defaults to 1 (bounded to 1-4). Each difficulty also accepts
+`CPP_CPU_EASY_SECONDS`, `CPP_CPU_NORMAL_SECONDS`, `CPP_CPU_HARD_SECONDS`
+(defaults 0.5/2/5; bounded to 0.01-5), and the corresponding `_BEAM` settings
+(defaults 8/16/32; bounded to 2-64). Restart the backend after changing them.
+The clock can shorten any search budget. Busy or disconnected analysis offers
+Retry or manual continuation, without discarding the browser save.
+
+For a reproducible legal baseline comparison, from `server/` run:
+`DJANGO_DEBUG=true python scripts/benchmark_cpu.py --games 4 --difficulty normal hard`.
+Each seed plays both seats; `--config` accepts an exported configuration and
+`--seconds` permits quicker development checks. This measures the scripted
+baseline, not a human skill rating. No training or external model API is used.

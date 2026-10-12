@@ -16,7 +16,8 @@ import os
 
 from django.test import SimpleTestCase
 
-from game.engine.config_loader import DEFAULT_CONFIG, build_initial_board, load_config
+from game.engine.config_loader import build_initial_board, load_config
+from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG
 
 FIXTURES = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), '..', '..', '..',
@@ -60,6 +61,7 @@ class ConfigParityTestCase(SimpleTestCase):
                 load_config(config)
 
     def test_default_fallback_returns_an_independent_config(self):
+        from game.engine.config_loader import DEFAULT_CONFIG
         for raw in (None, {}):
             with self.subTest(raw=raw):
                 config = load_config(raw)
@@ -73,6 +75,17 @@ class ConfigParityTestCase(SimpleTestCase):
             del config['rules']['objective']
             with self.subTest(value=value), self.assertRaises(ValueError):
                 load_config(config)
+
+    def test_zero_pair_delay_and_older_radial_skills_remain_valid(self):
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['abilities']['pairPickDelay'] = 0
+        for ability in ('anchor', 'cleave', 'surge'):
+            for field in ('area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov'):
+                config['abilities']['catalogue'][ability].pop(field, None)
+        config['abilities']['catalogue']['cleave'].pop('heal', None)
+        build_initial_board(load_config(config))
+        del config['abilities']['pairPickDelay']
+        build_initial_board(load_config(config))
 
     def test_every_refused_edit_is_refused(self):
         for case in self.fixtures['refused']:
@@ -101,3 +114,21 @@ class ConfigParityTestCase(SimpleTestCase):
             (color, key) for color in ('white', 'black')
             for key in config['setup'][color] if key in board]
         self.assertEqual(len(board), len(on_board))
+
+    def test_integer_valued_json_floats_are_accepted_and_normalized_before_engine_use(self):
+        for edit in self.fixtures['accepted']:
+            with self.subTest(edit=edit):
+                raw = _edited(edit['path'], edit['value'])
+                config = load_config(raw)
+                build_initial_board(config)
+                original = raw
+                for key in edit['path']: original = original[key]
+                if edit['path'][0] == 'rules':
+                    from game.engine.game_rules import rule_of
+                    node = rule_of(config, edit['path'][1])
+                else:
+                    node = config
+                    for key in edit['path']: node = node[key]
+                self.assertEqual(node, edit['value'])
+                self.assertIs(type(node), int)
+                self.assertIs(type(original), float)

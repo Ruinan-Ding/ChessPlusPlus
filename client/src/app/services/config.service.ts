@@ -1,6 +1,8 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import SHIPPED_CONFIG from '../../../../shared/default-config.json';
+import { PREVIOUS_GAME_CONFIG, domainErrors, legacyRules, migrateConfig, ruleValue } from './game-rules';
+export { PREVIOUS_GAME_CONFIG } from './game-rules';
 
 /**
  * The shipped config: shared/default-config.json, the one file both engines
@@ -14,19 +16,9 @@ import SHIPPED_CONFIG from '../../../../shared/default-config.json';
  */
 export const DEFAULT_GAME_CONFIG = SHIPPED_CONFIG;
 
-/**
- * The rules a config may leave out and be read at their default. Each is a
- * whole number >= 0. Mirrors COUNTED_RULES in config_loader.py.
- *
- * `postmatchEntries` was `phaseInitEntries` while a phase's extra turn opened
- * it rather than closing it. The old key is not carried over: nothing here
- * rejects a rule key it does not know, so a config that still says
- * `phaseInitEntries` loads, and reads `postmatchEntries` at its default.
- * `cpPhaseOffset` replaced `cpPerPhase` - a flat 100 every phase - the same
- * way, when CP became something a phase's play earns.
- */
+/** Optional whole-number economy rules, mirrored by COUNTED_RULES in Python. */
 export const COUNTED_RULES = [
-  'panelMoversPerTurn', 'postmatchEntries', 'homecomingsPerSetupTurn', 'cpAtStart', 'cpPhaseOffset', 'upAtStart',
+  'cpAtStart', 'cpPhaseOffset', 'upAtStart', 'pointsAtStart',
 ] as const;
 export type CountedRule = typeof COUNTED_RULES[number];
 
@@ -35,10 +27,7 @@ export type CountedRule = typeof COUNTED_RULES[number];
  * room's config is normalised before it is played; the fallback is for the
  * callers handed no config at all. Mirrors rule_of() in config_loader.py.
  */
-export function ruleOf(config: any, key: CountedRule): number {
-  const value = config?.rules?.[key];
-  return typeof value === 'number' ? value : DEFAULT_GAME_CONFIG.rules[key];
-}
+export function ruleOf(config: any, key: string): any { return ruleValue(config, key); }
 
 /**
  * Every field a unit type may carry. Anything else is a typo, and a typo is a
@@ -60,17 +49,19 @@ const UNIT_NUMBERS: ReadonlyArray<readonly [string, number]> = [
 /** Every field a catalogue entry may carry. */
 const ABILITY_FIELDS = new Set([
   'id', 'name', 'description', 'target', 'cost', 'cooldown', 'turns', 'uses', 'usesScope',
-  'mov', 'atk', 'def', 'damage', 'heal', 'points', 'testing', 'effect', 'counterAttack', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef',
-  'minVet', 'stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'hel', 'setHel', 'splashHel',
+  'mov', 'atk', 'def', 'damage', 'heal', 'points', 'testing', 'effect', 'counterAttack', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius',
+  'minVet', 'stars', 'battlefieldActions', 'secondCounter', 'freeOrder', 'recharge', 'refundMultiplier', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'baseMov', 'costReduction', 'minimumCost', 'hel', 'setHel', 'splashHel', 'area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov',
 ]);
 
 /** A catalogue entry's whole numbers, and the least of each - null for none. */
 const ABILITY_NUMBERS: ReadonlyArray<readonly [string, number | null]> = [
+  ['baseMov', 0], ['costReduction', 0], ['minimumCost', 1],
   ['cost', 0], ['cooldown', 0], ['turns', 1], ['uses', 1],
   ['mov', null], ['atk', null], ['def', null], ['damage', 0], ['heal', 0], ['points', 0],
-  ['up', 0], ['enemyDamage', 0], ['enemyAtk', null], ['enemyDef', null],
-  ['minVet', 0], ['stars', 1], ['recharge', 0], ['splashDamage', 0],
+  ['up', 0], ['enemyDamage', 0], ['enemyAtk', null], ['enemyDef', null], ['enemyMov', null], ['radius', 1],
+  ['minVet', 0], ['stars', 1], ['battlefieldActions', 0], ['recharge', 0], ['refundMultiplier', 0], ['splashDamage', 0],
   ['splashAtk', null], ['splashMov', null], ['setAtk', 0], ['enemyDefSet', 0], ['hel', null], ['setHel', 0], ['splashHel', null],
+  ['splashRange', 1], ['outerRange', 1], ['outerAtk', 0], ['outerHel', 0], ['outerMov', 0],
 ];
 
 /**
@@ -95,30 +86,35 @@ export const UNIT_EFFECT_FIELDS: Record<string, string[]> = {
   'deflect': ['atk'],
   'on-hit-drain': ['atk', 'def', 'turns'],
   'regenerate': [],
-  'intimidate': ['atk', 'def', 'mov', 'turns'],
-  'persuade': ['atk', 'def', 'mov', 'turns'],
+  'intimidate': ['atk', 'def', 'mov', 'turns', 'radius'],
+  'persuade': ['atk', 'def', 'mov', 'turns', 'radius'],
+  'capture': [],
+  'checkmate': ['atk', 'def', 'mov'],
   'rapid-movement': [],
 };
 export const UNIT_PASSIVES = Object.keys(UNIT_EFFECT_FIELDS);
-export const UNIT_ACTIVES = ['sacrifice', 'attack-drain', 'taunt', 'cleave', 'charge', 'control', 'nullify', 'call'];
+export const UNIT_ACTIVES = ['sacrifice', 'attack-drain', 'taunt', 'cleave', 'charge', 'control', 'nullify', 'leech', 'call'];
 Object.assign(UNIT_EFFECT_FIELDS, {
-  'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up'],
+  'sacrifice': ['cost', 'cooldown', 'turns', 'mov', 'atk', 'def', 'heal', 'up', 'stars', 'battlefieldActions'],
   'attack-drain': ['cost', 'cooldown', 'turns', 'mov'],
   'taunt': ['cost', 'cooldown', 'turns'],
-  'cleave': ['cost', 'cooldown', 'turns'],
+  'cleave': ['cost', 'cooldown', 'turns', 'radius'],
   'charge': ['cost', 'cooldown', 'turns'],
-  'control': ['cost', 'cooldown', 'turns'],
+  'control': ['cost', 'cooldown', 'turns', 'radius'],
   'nullify': ['cost', 'cooldown', 'turns'],
-  'call': ['cost', 'cooldown', 'turns', 'heal', 'def', 'enemyDamage', 'enemyAtk', 'enemyDef'],
+  'leech': ['cost', 'cooldown', 'turns', 'atk', 'def'],
+  'call': ['cost', 'cooldown', 'turns', 'heal', 'atk', 'def', 'mov', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius'],
 });
 
 const PATH_EFFECT_FIELDS: Record<string, string[]> = {
   'defensive-armor': ['def', 'minVet'],
+  'offensive-power': ['atk', 'hel', 'minVet'],
+  'mobility-economy': ['mov', 'baseMov', 'costReduction', 'minimumCost', 'minVet'],
   'promote': ['cost', 'cooldown', 'uses', 'stars'],
-  'recharge': ['cost', 'cooldown', 'uses', 'recharge'],
-  'hex-sap': ['cost', 'cooldown', 'uses', 'turns', 'setAtk', 'splashAtk', 'setHel', 'splashHel'],
-  'hex-cleave': ['cost', 'cooldown', 'uses', 'damage', 'splashDamage'],
-  'hex-trap': ['cost', 'cooldown', 'uses', 'turns', 'splashMov'],
+  'recharge': ['cost', 'cooldown', 'uses', 'recharge', 'refundMultiplier'],
+  'hex-sap': ['cost', 'cooldown', 'uses', 'turns', 'setAtk', 'splashAtk', 'setHel', 'splashHel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel'],
+  'hex-cleave': ['cost', 'cooldown', 'uses', 'damage', 'splashDamage', 'splashRange', 'heal'],
+  'hex-trap': ['cost', 'cooldown', 'uses', 'turns', 'splashMov', 'splashRange', 'outerMov'],
   'fortress': ['cost', 'cooldown', 'uses', 'turns', 'enemyDefSet'],
   'ruin': ['cost', 'cooldown', 'uses', 'damage', 'heal'],
   'blitz': ['cost', 'cooldown', 'uses', 'turns', 'mov', 'atk', 'def', 'hel'],
@@ -154,6 +150,10 @@ function abilityNumberErrors(abilities: any): string[] {
   // nothing could fill.
   if (pool.length % 2) {
     errors.push('"abilities.pool" must hold an even number of abilities - they are picked in pairs');
+  }
+  if (abilities && Object.prototype.hasOwnProperty.call(abilities, 'pairPickDelay')
+      && (!Number.isInteger(abilities.pairPickDelay) || abilities.pairPickDelay < 0)) {
+    errors.push('abilities.pairPickDelay must be a nonnegative whole number');
   }
   const slots = abilities?.slots;
   if (slots !== undefined && (!Number.isInteger(slots) || slots < 0 || slots % 2)) {
@@ -191,11 +191,24 @@ function abilityNumberErrors(abilities: any): string[] {
       }
       if (a.target !== (PATH_TARGETS[a.effect] ?? (a.effect === 'control' ? 'enemy' : 'friendly'))) errors.push(`${at}.target does not match the configured effect`);
     }
+    if (a.refundMultiplier !== undefined && a.effect !== 'recharge') errors.push(`${at}.refundMultiplier requires Recharge`);
+    if (['baseMov', 'costReduction', 'minimumCost'].some(field => a[field] !== undefined) && a.effect !== 'mobility-economy') errors.push(`${at}: Sprint-only fields require mobility-economy`);
+    if (['offensive-power', 'mobility-economy'].includes(a.effect) && pool.includes(id)) errors.push(`${at}: path passives cannot be pool casts`);
+    if (a.area !== undefined && a.area !== ({ 'hex-cleave': 'horizontal', 'hex-trap': 'cross' } as Record<string, string>)[a.effect]) errors.push(`${at}.area does not match its hex effect`);
+    if ((a.outerAtk !== undefined || a.outerHel !== undefined) && a.outerRange === undefined) errors.push(`${at}.outerRange is required for outer-ring boosts`);
+    if (Number.isInteger(a.outerRange) && Number.isInteger(a.splashRange === undefined ? 1 : a.splashRange) && a.outerRange <= (a.splashRange === undefined ? 1 : a.splashRange)) errors.push(`${at}.outerRange must exceed splashRange`);
+    if (a.outerMov !== undefined && a.area !== 'cross') errors.push(`${at}.outerMov requires a cross area`);
+    if (a.effect === 'hex-cleave' && a.heal !== undefined && a.area !== 'horizontal') errors.push(`${at}.heal requires a horizontal area`);
     if (a.scope !== undefined && (!['field-reserve', 'all'].includes(a.scope)
-        || a.effect === 'recharge' || !(passives.has(id) || PATH_EFFECT_FIELDS[a.effect]))) errors.push(`${at}.scope is invalid`);
+        || a.effect === 'recharge' || !(passives.has(id) || PATH_EFFECT_FIELDS[a.effect]
+          || (a.effect === undefined && ['friendly', 'enemy'].includes(a.target))))) errors.push(`${at}.scope is invalid`);
+    if (a.freeOrder !== undefined && (typeof a.freeOrder !== 'boolean' || a.effect !== 'rapid-movement')) errors.push(`${at}.freeOrder requires a boolean on rapid movement`);
+    if (a.secondCounter !== undefined && (typeof a.secondCounter !== 'boolean' || a.effect !== 'charge')) errors.push(`${at}.secondCounter requires a boolean on Charge`);
+    if (a.battlefieldActions !== undefined && a.stars === undefined) errors.push(`${at}.battlefieldActions requires selected Sacrifice`);
+    if (a.radius !== undefined && !['call', 'control', 'cleave', 'persuade', 'intimidate'].includes(a.effect)) errors.push(`${at}.radius requires a range-aware unit effect`);
     if (a.minVet !== undefined && (!passives.has(id) || a.minVet > 3)) errors.push(`${at}.minVet requires a path passive and must be at most 3`);
-    for (const field of ['stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'setHel', 'splashHel', 'hel']) {
-      if (a[field] !== undefined && !PATH_EFFECT_FIELDS[a.effect]) errors.push(`${at}.${field} requires a path effect`);
+    for (const field of ['stars', 'recharge', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'setHel', 'splashHel', 'hel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov']) {
+      if (a[field] !== undefined && !PATH_EFFECT_FIELDS[a.effect] && !(field === 'stars' && a.effect === 'sacrifice')) errors.push(`${at}.${field} requires a path effect`);
     }
     if (a.counterAttack !== undefined && (a.effect !== 'counter' || !Array.isArray(a.counterAttack)
         || a.counterAttack.length < 1 || a.counterAttack.length > 4
@@ -204,8 +217,8 @@ function abilityNumberErrors(abilities: any): string[] {
     }
     if (a.effect === 'counter' && a.counterAttack === undefined) errors.push(`${at}.counterAttack is required`);
     if (a.effect === 'deflect' && a.atk === undefined) errors.push(`${at}.atk is required`);
-    for (const field of ['up', 'enemyDamage', 'enemyAtk', 'enemyDef']) {
-      if (a[field] !== undefined && a.effect === undefined) errors.push(`${at}.${field} requires a unit effect`);
+    for (const field of ['up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov']) {
+      if (a[field] !== undefined && a.effect === undefined && !(field === 'up' && a.target === 'universal' && !passives.has(id))) errors.push(`${at}.${field} requires a unit effect`);
     }
     const kind = a.effect !== undefined ? a.effect : passives.has(id) ? 'passive' : a.target;
     for (const field of Array.isArray(IGNORED_BY[kind]) ? IGNORED_BY[kind] : []) {
@@ -285,6 +298,7 @@ export class ConfigService {
         if (unit && typeof unit === 'object' && unit.defense === undefined) unit.defense = 0;
       }
     }
+    if (config?.version === '2.0') return;
     if (config && config.rules === undefined) config.rules = {};
     const rules = config?.rules;
     // Absent means the current default, not whatever floor happened to be in
@@ -294,7 +308,7 @@ export class ConfigService {
     // mention it, and filling in the old 0 would hand every new custom config
     // the dead matchups the floor exists to remove.
     if (rules && typeof rules === 'object' && rules.minStrikeDamage === undefined) {
-      rules.minStrikeDamage = DEFAULT_GAME_CONFIG.rules['minStrikeDamage'];
+      rules.minStrikeDamage = PREVIOUS_GAME_CONFIG.rules['minStrikeDamage'];
     }
     if (rules && typeof rules === 'object' && rules.objective === undefined) {
       const setup = config.setup;
@@ -309,7 +323,7 @@ export class ConfigService {
     // number every game was played under.
     if (rules && typeof rules === 'object') {
       for (const key of COUNTED_RULES) {
-        if (rules[key] === undefined) rules[key] = DEFAULT_GAME_CONFIG.rules[key];
+        if (rules[key] === undefined) rules[key] = PREVIOUS_GAME_CONFIG.rules[key];
       }
     }
   }
@@ -335,6 +349,12 @@ export class ConfigService {
     }
     if (errors.length) return { valid: false, errors };
     this.normaliseConfig(config);
+    if (!['1.0', '2.0'].includes(config.version)) return { valid: false, errors: ['Unsupported configuration format; supported formats: 1.0, 2.0'] };
+    if (config.version === '2.0') {
+      try { config = migrateConfig(config); } catch (error) { return { valid: false, errors: [String(error)] }; }
+      const problems = domainErrors(config);
+      if (problems.length) return { valid: false, errors: problems };
+    }
 
     if (!config.version) {
       errors.push('Missing "version"');
@@ -494,10 +514,11 @@ export class ConfigService {
       }
     }
 
+    const rules = legacyRules(config);
     // Rules
     // normaliseConfig supplies an absent one, so anything left that is not a
     // plain object is malformed - _validate_config says the same.
-    if (!config.rules || typeof config.rules !== 'object' || Array.isArray(config.rules)) {
+    if (!rules || typeof rules !== 'object' || Array.isArray(rules)) {
       errors.push('"rules" must be an object');
     } else {
       // **Absent and null are two different things here**, as they are to
@@ -505,7 +526,7 @@ export class ConfigService {
       // missing, and hands an explicit null on to be refused. Coalescing with
       // `??` read that null as absent, so the setup screen passed a config the
       // server then turned away - the same mistake minStrikeDamage made below.
-      const falloff = config.rules.rangeFalloff === undefined ? 0 : config.rules.rangeFalloff;
+      const falloff = rules.rangeFalloff === undefined ? 0 : rules.rangeFalloff;
       if (typeof falloff !== 'number' || falloff < 0 || falloff > 1) {
         errors.push('rules.rangeFalloff must be a number between 0 and 1');
       }
@@ -513,7 +534,7 @@ export class ConfigService {
       // Both read as whole numbers on every hand-over or clock: a null
       // maxTurns reached `None > 0` on the server and failed every move.
       for (const key of ['maxTurns', 'turnTimeLimit']) {
-        const count = config.rules[key];
+        const count = rules[key];
         if (count !== undefined && (!Number.isInteger(count) || count < 0)) {
           errors.push(`rules.${key} must be an integer >= 0`);
         }
@@ -531,13 +552,13 @@ export class ConfigService {
       // the screen had said would not happen. normaliseConfig has already
       // supplied a missing one, so anything left that is not a whole number
       // was written that way on purpose.
-      const floor = config.rules.minStrikeDamage;
+      const floor = rules.minStrikeDamage;
       if (!Number.isInteger(floor) || floor < 0) {
         errors.push('rules.minStrikeDamage must be an integer >= 0');
       }
 
       for (const key of COUNTED_RULES) {
-        const count = config.rules[key];
+        const count = rules[key];
         if (!Number.isInteger(count) || count < 0) {
           errors.push(`rules.${key} must be an integer >= 0`);
         }
@@ -547,7 +568,7 @@ export class ConfigService {
       // satisfy it is unplayable rather than merely odd: under regicide a
       // side with no commander has already lost before the first move.
       // normaliseConfig has filled in an absent one; a null is left to fail.
-      const objective = config.rules.objective;
+      const objective = rules.objective;
       if (objective !== 'regicide' && objective !== 'elimination') {
         errors.push(`rules.objective must be 'regicide' or 'elimination'`);
       } else if (objective === 'regicide' && config.setup) {
@@ -568,15 +589,17 @@ export class ConfigService {
     // Abilities. Optional, but if present the ids have to join up: the pool
     // and every path name abilities out of the catalogue, and a name with
     // nothing behind it reaches the room as a blank slot rather than an
-    // error. **Only the client reads abilities**, so this is the only place
-    // that can catch it - the server's `_validate_config` deliberately does
-    // not, the engine never touching them (see the `config-sync` skill).
+    // error. The server checks these references too; both engines execute
+    // configured abilities, while the setup screen additionally rejects
+    // unknown fields (see the `config-sync` skill).
     if (config.abilities !== undefined) {
-      if (typeof config.abilities !== 'object' || config.abilities === null) {
+      if (typeof config.abilities !== 'object' || config.abilities === null || Array.isArray(config.abilities)) {
         errors.push('"abilities" must be an object');
       } else {
         const abilities = config.abilities;
         const catalogue = abilities.catalogue ?? {};
+        if (abilities.catalogue !== undefined && (typeof abilities.catalogue !== 'object'
+            || abilities.catalogue === null || Array.isArray(abilities.catalogue))) errors.push('"abilities.catalogue" must be an object');
         const known = (id: unknown) => typeof id === 'string' && Object.hasOwn(catalogue, id);
         if (abilities.pool !== undefined && !Array.isArray(abilities.pool)) {
           errors.push('"abilities.pool" must be an array of catalogue ids');
@@ -589,6 +612,8 @@ export class ConfigService {
           errors.push('"abilities.paths" must be an array');
         } else {
           for (const path of abilities.paths ?? []) {
+            if (!path || typeof path.id !== 'string' || !path.id) errors.push('abilities.paths entries need a path id');
+            if (!Number.isInteger(path?.cost) || path.cost < 0) errors.push('abilities.paths.cost must be a nonnegative integer');
             for (const slot of ['passive', 'skill', 'ultimate', ...(path?.utility !== undefined ? ['utility'] : [])]) {
               if (!known(path?.[slot])) {
                 errors.push(
@@ -624,7 +649,7 @@ export class ConfigService {
       return gameValidation;
     }
 
-    this.configSubject.next(config);
+    this.configSubject.next(migrateConfig(config));
     return { valid: true };
   }
 }

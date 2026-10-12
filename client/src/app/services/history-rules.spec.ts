@@ -1,8 +1,7 @@
 import {
-  boardMovesAt, homecomingsAt, lockedPanelUnits,
+  boardMovesAt, finishedUnitUids, battlefieldActionBonus, extraActionUids, homecomingsAt, lockedPanelUnits,
   openingMovedHexes, panelMoverAllowed, panelMoversAt, unitVeterancy, promotionHeals,
 } from './history-rules';
-import { ruleOf } from './config.service';
 
 /**
  * These read the opening's lock and the panels' allowance off the record, and
@@ -22,6 +21,29 @@ describe('history-rules', () => {
   const panelStep = (uid: string, color: string, turn: number, over: any = {}) => ({
     from: 'bl-1', to: 'bl-2', turn, panelMove: true,
     unit: { uid, color, unit_id: 'pawn' }, panel: 'bl', ...over,
+  });
+
+  it('grants general Sacrifice slots only to the casting side and ply, with Undo restoring the allowance', () => {
+    const grant = { turn: 55, color: 'white', battlefieldActions: 2 };
+    const history = [grant, { ...grant, battlefieldActions: 1 }];
+    expect(battlefieldActionBonus(history, 55, 'white')).toBe(3);
+    expect(battlefieldActionBonus(history, 56, 'black')).toBe(0);
+    expect(battlefieldActionBonus(history, 57, 'white')).toBe(0);
+    expect(battlefieldActionBonus(history.slice(0, 1), 55, 'white')).toBe(2);
+    expect(battlefieldActionBonus([], 55, 'white')).toBe(0);
+    expect(boardMovesAt(history, 55, 'white')).toBe(0);
+    expect(extraActionUids(history, 55, 'white')).toEqual([]);
+  });
+
+  it('closes an earlier battlefield actor after a different unit casts, with Undo and ply isolation', () => {
+    const move = { turn: 99, color: 'white', uid: 'a', from: '0,0', to: '1,0' };
+    const cast = { turn: 99, unitCast: { uid: 'b', color: 'white', at: '2,0' } };
+    const history = [move, { turn: 99, color: 'white', abilityCast: { id: 'warcry', unitUid: 'b' } }, cast];
+    expect([...finishedUnitUids(history, 99, 'white')]).toEqual(['a']);
+    expect(finishedUnitUids(history.slice(0, -1), 99, 'white').size).toBe(0);
+    expect(finishedUnitUids(history, 100, 'black').size).toBe(0);
+    expect(finishedUnitUids(history, 101, 'white').size).toBe(0);
+    expect(finishedUnitUids([move, { ...cast, unitCast: { ...cast.unitCast, uid: 'a', at: '1,0' } }], 99, 'white').size).toBe(0);
   });
 
   describe('openingMovedHexes', () => {
@@ -44,7 +66,7 @@ describe('history-rules', () => {
         { ...moved('white', '-7,8', 1), panelMove: true },
         { ...moved('white', '-8,8', 1), panelEffect: true },
       ];
-      expect(openingMovedHexes(history, 'white').size).toBe(0);
+      expect([...openingMovedHexes(history, 'white')]).toEqual(['-5,8']);
     });
 
     it('keys a hex the same however the message spelled it', () => {
@@ -95,67 +117,29 @@ describe('history-rules', () => {
     });
   });
 
-  describe('panelMoverAllowed', () => {
-    const three = [0, 1, 2].map(i => panelStep(`b${i}`, 'white', 1));
-
-    it('turns a fourth unit of the same panel away', () => {
-      expect(ruleOf(undefined, 'panelMoversPerTurn')).toBe(3);
-      expect(panelMoverAllowed(three, 1, 'white', 'b9', 'bl')).toBeFalse();
-    });
-
-    it('lets one of the three keep walking', () => {
-      // The cap is on how many units are started, not on how far they go.
-      expect(panelMoverAllowed(three, 1, 'white', 'b1', 'bl')).toBeTrue();
-    });
-
-    it("keeps each panel's allowance to itself", () => {
-      // Three out of the base does not spend the reserve's three.
-      expect(panelMoverAllowed(three, 1, 'white', 'r9', 'br')).toBeTrue();
-    });
-
-    it('lets five out of a reserve in a postmatch', () => {
-      // The owner's number, and it stands INSTEAD of the three rather than
-      // beside it. Ply 27 is turn 14 - Phase 1's own postmatch.
-      // `panelStep` walks inside the BASE by default; these are the reserve's.
-      const five = [0, 1, 2, 3, 4].map(
-        i => panelStep(`r${i}`, 'white', 27, { panel: 'br' }));
-      expect(ruleOf(undefined, 'postmatchEntries')).toBe(5);
-      expect(panelMoverAllowed(five.slice(0, 4), 27, 'white', 'r9', 'br')).toBeTrue();
-      expect(panelMoverAllowed(five, 27, 'white', 'r9', 'br')).toBeFalse();
-      // One of the five may still walk on.
-      expect(panelMoverAllowed(five, 27, 'white', 'r2', 'br')).toBeTrue();
-      // Black's half of the turn is the postmatch too: ply 28.
-      const blacks = [0, 1, 2, 3].map(
-        i => panelStep(`s${i}`, 'black', 28, { panel: 'tl' }));
-      expect(panelMoverAllowed(blacks, 28, 'black', 's9', 'tl')).toBeTrue();
-    });
-
-    it('leaves the base at three on that turn, and both at three off it', () => {
-      // Nothing in the rule was about the base, and the wrap is shut on a
-      // postmatch anyway.
-      const four = [0, 1, 2, 3].map(i => panelStep(`b${i}`, 'white', 27));
-      expect(panelMoverAllowed(four.slice(0, 3), 27, 'white', 'b9', 'bl')).toBeFalse();
-      // Either side of it the reserve is back to three: ply 25 is turn 13, the
-      // last of Phase 1's play, and ply 29 is turn 15, the first of Phase 2's.
-      // Ply 7 is turn 4, which used to be Phase 1's initialization and now
-      // plays - so it is three there too.
-      for (const at of [7, 25, 29]) {
-        const fourReserve = [0, 1, 2, 3].map(
-          i => panelStep(`r${i}`, 'white', at, { panel: 'br' }));
-        expect(panelMoverAllowed(fourReserve.slice(0, 3), at, 'white', 'r9', 'br'))
-          .withContext(`ply ${at}`).toBeFalse();
+  describe('panelMoverAllowed' , () => {
+    it('uses independent stage limits for base and reserve on both sides', () => {
+      for (const [whitePly, cap] of [[1, 1], [3, 2], [5, 3], [7, 1], [27, 3], [49, 3], [71, 3], [73, 1], [89, 2], [99, 3]]) {
+        for (const [color, ply, base, reserve] of [['white', whitePly, 'bl', 'br'], ['black', whitePly + 1, 'tr', 'tl']] as const) {
+          const history = Array.from({ length: cap }, (_, i) => panelStep(`b${i}`, color, ply, { panel: base }));
+          expect(panelMoverAllowed(history, ply, color, 'fresh', base)).withContext(`${color} ${ply}`).toBeFalse();
+          expect(panelMoverAllowed(history, ply, color, `b${cap - 1}`, base)).toBeTrue();
+          expect(panelMoverAllowed(history, ply, color, 'fresh', reserve)).toBeTrue();
+        }
       }
     });
 
-    it("reads both allowances off the game's config", () => {
-      // Tuning them is a config edit: a room that says two stops the third.
-      const config = { rules: { panelMoversPerTurn: 2, postmatchEntries: 1 } };
-      const two = [0, 1].map(i => panelStep(`b${i}`, 'white', 1));
-      expect(panelMoverAllowed(two, 1, 'white', 'b9', 'bl')).toBeTrue();
-      expect(panelMoverAllowed(two, 1, 'white', 'b9', 'bl', config)).toBeFalse();
-      const one = [panelStep('r0', 'white', 27, { panel: 'br' })];
-      expect(panelMoverAllowed(one, 27, 'white', 'r9', 'br')).toBeTrue();
-      expect(panelMoverAllowed(one, 27, 'white', 'r9', 'br', config)).toBeFalse();
+    it('keeps Cast’s immediate reserve action separate from the ordinary reserve allowance', () => {
+      const control = { turn: 55, control: { unit_id: 'pawn', color: 'white', uid: 'controlled', controlTurn: 55, controlledUntil: 57, hp: 12, max_hp: 12 } };
+      expect(panelMoverAllowed([control, panelStep('ordinary', 'white', 55, { panel: 'br' })], 55, 'white', 'controlled', 'tl')).toBeTrue();
+      expect(panelMoverAllowed([control, panelStep('controlled', 'white', 55, { panel: 'tl' })], 55, 'white', 'ordinary', 'br')).toBeTrue();
+    });
+
+    it('ends the prior walk after switching units, and Undo restores it', () => {
+      const history = [panelStep('a', 'white', 27), panelStep('b', 'white', 27)];
+      expect(panelMoverAllowed(history, 27, 'white', 'a', 'bl')).toBeFalse();
+      expect(panelMoverAllowed(history, 27, 'white', 'b', 'bl')).toBeTrue();
+      expect(panelMoverAllowed(history.slice(0, 1), 27, 'white', 'a', 'bl')).toBeTrue();
     });
   });
 
@@ -248,7 +232,7 @@ describe('boardMovesAt', () => {
     expect(boardMovesAt(home, 89, 'white')).toBe(1);
     // Ply 27 is turn 14, Phase 1’s postmatch.
     const setup = [move({ withdrawn: true, turn: 27 })] as any[];
-    expect(boardMovesAt(setup, 27, 'white')).toBe(0);
+    expect(boardMovesAt(setup, 27, 'white')).toBe(1);
   });
 });
 
@@ -293,6 +277,21 @@ describe('phase awards and Strengthen veterancy', () => {
     expect(rank('11,1', 7, history)).toBe(0);
     expect(rank('11,1', 8, history)).toBe(0);
     expect(rank('11,1', 27, history)).toBe(1);
+  });
+
+  it('resets withdrawals in history, discards old promotions and resumes with new awards', () => {
+    const history: any[] = [{ turn: 9, promotion: { uid: 'u', vet: 3 } },
+      step(28, '3,8', '-12,9', { panelMove: false, withdrawn: true, veterancyReset: true }),
+      step(50, '-12,9', '11,1')];
+    const uid = history[1].unit.uid;
+    history[0].promotion.uid = uid;
+    expect(rank('3,8', 27, history)).toBe(3);
+    expect(rank('-12,9', 28, history)).toBe(0);
+    expect(rank('-12,9', 49, history)).toBe(0);
+    expect(rank('11,1', 50, JSON.parse(JSON.stringify(history)))).toBe(0);
+    expect(rank('11,1', 71, history)).toBe(1);
+    history.push({ turn: 51, promotion: { uid, vet: 2 } });
+    expect(rank('11,1', 71, history)).toBe(3);
   });
 
   it('keeps earned stars in a base, earns none there, and resumes in reserve', () => {

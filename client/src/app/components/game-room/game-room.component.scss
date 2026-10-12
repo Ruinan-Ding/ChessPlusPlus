@@ -567,16 +567,6 @@
     &:disabled { background: #b3bfb6; cursor: default; }
   }
 
-  // "Coming soon", where a panel has nothing yet. One rule: it was two, the
-  // later overriding the margin and the colour of the earlier.
-  .coming-soon {
-    margin: u(0.25) 0 u(0.5);
-    padding: u(0.75) 0;
-    text-align: center;
-    color: #f1c40f;
-    font-style: italic;
-  }
-
   // A slot being taken up: a short white flash, distinct from the swell a
   // slot makes when it is used.
   .scaffold-btn.picking,
@@ -604,8 +594,8 @@
   .path-choices {
     grid-column: 1 / -1;
     display: grid;
-    grid-template-columns: repeat(3, auto);
-    gap: u(0.375);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: u(0.125);
     margin-top: u(0.375);
     // As tall as the two rows each one opens into - passive, then the pair -
     // so choosing one changes what is in the panel, never how much room it
@@ -618,24 +608,24 @@
   .path-pair {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: u(0.375);
+    gap: u(0.125);
   }
 
   .path-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: u(0.25);
+    gap: u(0.125);
     min-width: 0;
     // Full height of the row it sits in - which is as tall as the rows it
     // opens into, so choosing one shifts nothing.
     height: 100%;
-    padding: u(0.25) u(0.125);
+    padding: u(0.25) u(0.0625);
     border: 1px dashed #b39ddb;
     border-radius: 6px;
     background: #f6f2fc;
     color: #4a3c68;
-    font-size: t(0.8);
+    font-size: t(0.75);
     font-weight: 700;
     white-space: nowrap;
     overflow: hidden;
@@ -791,6 +781,17 @@
   // The unit panel itself does not scroll - the effects box does, and it is
   // the only part of it that can outgrow the panel.
   .stats-panel .panel-body { overflow: hidden; }
+
+  .veterancy-row {
+    flex: 0 0 auto;
+    min-height: 2.4em;
+    margin: 0;
+    font-size: t(0.75);
+    line-height: 1.2;
+    color: #6b7280;
+
+    &.active { color: #15803d; }
+  }
 
   .effects-box {
     display: flex;
@@ -1068,10 +1069,30 @@
   .ability-detail {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
     gap: u(0.5);
   }
 
+  .unit-kit-stack {
+    position: relative;
+    flex: 1 1 0;
+    min-height: u(7);
+
+    > .ability-detail { position: absolute; inset: 0; }
+    > .unit-kit-content {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      &.behind { visibility: hidden; }
+    }
+  }
+
   .ability-detail-content {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: row;
     align-items: baseline;
@@ -1079,11 +1100,14 @@
     flex-wrap: wrap;
 
     p {
+      min-width: 0;
+      overflow-wrap: anywhere;
       margin: 0;
     }
   }
 
   .ability-detail-actions {
+    flex: 0 0 auto;
     display: flex;
     flex-direction: row;
     gap: u(0.375);
@@ -1237,9 +1261,7 @@
     width: 100%;
     flex-shrink: 0;
 
-    // One shape for every control in these rows, so the pre-game pair
-    // (You: White / Start Game) is the same size as Resign / Offer Draw.
-    // The per-button rules below carry colour only.
+    // Shared sizing for Flip / Start Game and Resign / Offer Draw.
     > button {
       flex: 1 1 0;
       min-width: 0;
@@ -1687,11 +1709,13 @@
         }
       }
       
-      .start-game-btn {
+      .start-game-btn, .flip-btn {
+        padding-inline: u(0.375);
+        white-space: nowrap;
         background-color: #3498db;
         color: white;
         
-        &:hover {
+        &:hover, &.active {
           background-color: #2980b9;
         }
         
@@ -2080,3 +2104,29 @@
 .scaffold-btn.cooling, .scaffold-btn.cooling:hover:not(:disabled) {
   background: #8d98a3 !important; color: #17212b !important; animation: none !important;
 }
+
+.replay-controls {
+  display: flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 4px;
+  font-size: 12px; white-space: nowrap;
+  button { min-width: 24px; min-height: 24px; font: inherit; padding: 2px 6px; }
+  .replay-position { margin-left: auto; }
+}
+.replay-notice {
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  font-size: 12px; background: #fff2cf; color: #553600;
+  span { flex: 1; }
+  button { min-height: 24px; font: inherit; }
+}
+
+.game-room-container .game-board-panel.replay-view {
+  display: flex; flex-direction: column;
+  app-game-board { position: relative; inset: auto; flex: 1; min-height: 0; }
+}
+
+.ai-choice { background: transparent; border: 0; color: inherit; font: inherit; opacity: 0.5; cursor: pointer; min-height: 24px; }
+
+.ai-choice input { pointer-events: none; }
+
+.cpu-options .radio-option { min-height: 24px; min-width: 24px; white-space: nowrap; }
+
+.ai-choice button { min-width: 24px; min-height: 24px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
