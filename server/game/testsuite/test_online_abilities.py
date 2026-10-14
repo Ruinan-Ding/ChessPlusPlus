@@ -1552,6 +1552,51 @@ class OnlineAbilityDraftTests(TransactionTestCase):
 class OnlineAbilityPanelTests(SimpleTestCase):
     setUp = OnlineAbilityRulesTests.setUp
     put = OnlineAbilityRulesTests.put
+    async def test_cast_expires_after_halftime_awards_and_phase_tallies(self):
+        for phase, ply, halftime in [(1, 17, True), (2, 39, True), (3, 61, True),
+                                     (1, 27, False), (2, 49, False), (3, 71, False)]:
+            with self.subTest(phase=phase, halftime=halftime):
+                self.setUp()
+                self.state.turn_number = ply - 1
+                self.state.current_turn = 'bob'
+                self.state.phase_bank = {str(i): {'white': 57 * i, 'black': 57 * i} for i in range(1, phase)}
+                self.state.board_state = {}
+                self.put('-3,6', 'king', uid='wk')
+                king = self.put('3,-6', 'king', 'black', 'bk')
+                king.update(owner='black', color='white', controlledUntil=ply, controlTurn=ply - 2)
+                self.state.ability_state['controls']['bk'] = dict(king)
+                self.state.move_history = [{'turn': ply - 2, 'color': 'white', 'control': dict(king)}]
+                result = await GameConsumer()._preview_turn(self.state, [])
+                self.assertEqual(result.board_state['3,-6']['color'], 'black')
+                if halftime:
+                    award = {'turn': ply, 'halftimeUp': {'phase': phase, 'white': 114 * phase, 'black': 0}}
+                    self.assertEqual([m for m in result.move_history if m.get('halftimeUp')], [award])
+                else:
+                    bank = {'white': 114 * phase, 'black': 0}
+                    if phase == 2:
+                        bank['pendingLoss'] = 'black'
+                    self.assertEqual(result.phase_bank[str(phase)], bank)
+                    self.assertFalse(result.is_finished)
+                    result = await GameConsumer()._preview_turn(result, [])
+                    result = await GameConsumer()._preview_turn(result, [])
+                    self.assertEqual(result.phase_bank[str(phase)], bank)
+                    if phase == 3:
+                        self.assertEqual((result.winner, result.end_reason), ('alice', 'points'))
+
+    async def test_disabled_battlefield_kit_does_not_extend_a_withdrawal(self):
+        self.config['veterancy']['kitZones'] = []
+        self.state.turn_number = 49
+        self.put('-5,9', 'archer', uid='archer')
+        with self.assertRaisesRegex(ValidationError, 'cannot walk home'):
+            await GameConsumer()._preview_turn(self.state, [
+                {'type': 'make_move', 'from': '-5,9', 'to': '-12,11', 'withdraw': True}], finish=False)
+        self.assertIn('-5,9', self.state.board_state)
+        self.assertEqual(self.state.move_history, [])
+        self.config['veterancy']['kitZones'] = ['battlefield']
+        result = await GameConsumer()._preview_turn(self.state, [
+            {'type': 'make_move', 'from': '-5,9', 'to': '-12,11', 'withdraw': True}], finish=False)
+        self.assertTrue(result.move_history[-1]['withdrawn'])
+
     async def test_controlled_reserve_uses_physical_gateway_and_keeps_owner_on_entry(self):
         self.state.turn_number = self.ctx.ply = 27
         self.config['setup']['black']['-3,-9'] = 'rook'

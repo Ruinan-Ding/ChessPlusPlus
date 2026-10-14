@@ -67,7 +67,7 @@ from .engine.phases import (
 )
 from .engine.phases import attacks_allowed, stage_rules
 from .engine.scoring import bank_ended_phases, halftime_up_awards, schedule_ending
-from .engine.unit_stats import cap_stat, cap_unit, kit_active, ranked_unit, unit_stats
+from .engine.unit_stats import active_vet, cap_stat, cap_unit, kit_active, ranked_unit, unit_stats
 
 logger = logging.getLogger('game')
 
@@ -2188,7 +2188,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     config, radius, list(state.move_history), orientation, ply=state.turn_number, ability_state=state.ability_state or None)
                 home = panels.homecoming_targets(
                     config, radius, occupancy, board.to_dict(), from_key, orientation,
-                    moves_left=max(0, cap_stat(unit_stats(piece['unit_id'], config, piece.get('vet', 0)).get('move', 0)
+                    moves_left=max(0, cap_stat(unit_stats(piece['unit_id'], config, active_vet(piece, config)).get('move', 0)
                                             + bonus(piece, config, state.ability_state, 'mov', key=from_key))
                                       - state.ability_state.get('unitProgress', {}).get(piece.get('uid'), {}).get('spent', 0)) if state.ability_state else None,
                     hop=bool(state.ability_state and passive(piece, config).get('effect') == 'hop'))
@@ -2250,7 +2250,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     await send_error(self, 'INVALID_MOVE', 'Illegal move for this piece')
                     return
                 if state.ability_state:
-                    limit = max(0, cap_stat(unit_stats(piece['unit_id'], config, piece.get('vet', 0)).get('move', 0) + bonus(piece, config, state.ability_state, 'mov', key=from_coord)) - spent)
+                    limit = max(0, cap_stat(unit_stats(piece['unit_id'], config, active_vet(piece, config)).get('move', 0) + bonus(piece, config, state.ability_state, 'mov', key=from_coord)) - spent)
                     costs, _ = panels.move_costs(board.to_dict(), fq, fr, config, radius, limit,
                         hop=passive(piece, config).get('effect') == 'hop')
                     walk_cost = costs.get(to_coord, 0)
@@ -2282,7 +2282,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if not target or target['color'] == my_color:
                     await send_error(self, 'INVALID_MOVE', 'No enemy unit on the attacked hex')
                     return
-                unit_def = unit_stats(piece['unit_id'], config, piece.get('vet', 0))
+                unit_def = unit_stats(piece['unit_id'], config, active_vet(piece, config))
                 if not (attack_allowed(piece, hex_distance((tq, tr), (aq, ar)), config, state.ability_state, key=to_coord) if state.ability_state else can_attack(unit_def, hex_distance((tq, tr), (aq, ar)))):
                     await send_error(self, 'INVALID_MOVE', 'That hex is out of attack range')
                     return

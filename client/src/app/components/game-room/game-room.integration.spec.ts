@@ -176,6 +176,37 @@ describe('Solo game through the rendered room and real services', () => {
     expect(state.snapshot.boardState['0,0']).toBeDefined();
   }));
 
+  it('opens native modal dialogs, restores focus and keeps room shortcuts outside them', run(() => {
+    configure();
+    const trigger = fixture.nativeElement.querySelector('.ai-choice button') as HTMLButtonElement;
+    trigger.focus(); click('.ai-choice button');
+    let dialog = fixture.nativeElement.querySelector('dialog') as HTMLDialogElement;
+    expect(dialog?.open).toBeTrue();
+    expect(dialog?.matches(':modal')).toBeTrue();
+    expect(dialog?.contains(document.activeElement)).toBeTrue();
+    const numbers = room.showHexNumbers;
+    dialog?.querySelector('button')?.dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true }));
+    expect(room.showHexNumbers).toBe(numbers);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true }));
+    expect(room.showHexNumbers).toBe(numbers);
+    click('dialog button', 'OK');
+    expect(document.activeElement).toBe(trigger);
+    room.requestReplayBranch(); (room as any).cdr.markForCheck(); settle();
+    dialog = fixture.nativeElement.querySelector('dialog') as HTMLDialogElement;
+    expect(dialog?.matches(':modal')).toBeTrue();
+    expect(dialog?.contains(document.activeElement)).toBeTrue();
+    click('dialog button', 'Cancel');
+    expect(room.showBranchWarning).toBeFalse();
+    expect(document.activeElement).toBe(trigger);
+    room.cpuError = 'No server'; (room as any).cdr.markForCheck(); settle();
+    dialog = fixture.nativeElement.querySelector('dialog') as HTMLDialogElement;
+    expect(dialog?.matches(':modal')).toBeTrue();
+    const cancel = new Event('cancel', { cancelable: true });
+    dialog?.dispatchEvent(cancel);
+    expect(cancel.defaultPrevented).toBeTrue();
+    expect(room.cpuError).toBe('No server');
+  }));
+
   it('restores a failed CPU turn and offers retry, lobby and manual continuation', run(() => {
     configure();
     spyOn(TestBed.inject(CpuService), 'think').and.callFake(() => Promise.reject(new Error('No server')));

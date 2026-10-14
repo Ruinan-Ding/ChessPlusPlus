@@ -295,6 +295,47 @@ describe('LocalGameService', () => {
     }
   });
 
+  it('awards halftime UP before Cast expires, preserving the award through reload', async () => {
+    for (const [phase, ply] of [[1, 17], [2, 39], [3, 61]]) {
+      const g = (service as any).game;
+      g.config = structuredClone(CURRENT_GAME_CONFIG);
+      const control = { uid: 'bk', owner: 'black', color: 'white', controlledUntil: ply, controlTurn: ply - 2 };
+      Object.assign(g, { turnNumber: ply - 1, currentTurn: LOCAL_OPPONENT, phaseBank: {}, endReason: '', winner: '',
+        moveHistory: [{ turn: ply - 2, color: 'white', control }],
+        boardState: { '-3,6': { ...fullUnit('king', 'white', 'wk'), vet: 3 },
+          '3,-6': { ...fullUnit('king', 'black', 'bk'), vet: 3, ...control } } });
+      service.send({ type: 'pass_turn' }); await flush();
+      const award = { turn: ply, halftimeUp: { phase, white: 114 * phase, black: 0 } };
+      expect(g.moveHistory.filter((m: any) => m.halftimeUp)).toEqual([award]);
+      expect(g.boardState['3,-6'].color).toBe('black');
+      const restored = new LocalGameService(TestBed.inject(ConfigService));
+      expect((restored as any).game.moveHistory.filter((m: any) => m.halftimeUp)).toEqual([award]);
+      service.send({ type: 'pass_turn' }); await flush();
+      expect(g.moveHistory.filter((m: any) => m.halftimeUp)).toEqual([award]);
+    }
+  });
+
+  it('banks the finished phase before Cast expires and settles its frozen points after postmatch', async () => {
+    for (const [phase, ply] of [[1, 27], [2, 49], [3, 71]]) {
+      const g = (service as any).game;
+      g.config = structuredClone(CURRENT_GAME_CONFIG);
+      const control = { uid: 'bk', owner: 'black', color: 'white', controlledUntil: ply, controlTurn: ply - 2 };
+      const earlier = Object.fromEntries(Array.from({ length: phase - 1 }, (_, i) => [String(i + 1), { white: 57 * (i + 1), black: 57 * (i + 1) }]));
+      Object.assign(g, { turnNumber: ply - 1, currentTurn: LOCAL_OPPONENT, phaseBank: earlier, endReason: '', winner: '',
+        moveHistory: [{ turn: ply - 2, color: 'white', control }],
+        boardState: { '-3,6': { ...fullUnit('king', 'white', 'wk'), vet: 3 },
+          '3,-6': { ...fullUnit('king', 'black', 'bk'), vet: 3, ...control } } });
+      service.send({ type: 'pass_turn' }); await flush();
+      const bank = { white: 114 * phase, black: 0, ...(phase === 2 ? { pendingLoss: 'black' } : {}) };
+      expect(g.phaseBank[String(phase)]).withContext(`phase ${phase}`).toEqual(bank);
+      expect(g.boardState['3,-6'].color).toBe('black');
+      expect(g.endReason).toBe('');
+      service.send({ type: 'pass_turn' }); service.send({ type: 'pass_turn' }); await flush();
+      expect(g.phaseBank[String(phase)]).toEqual(bank);
+      if (phase === 3) { expect(g.winner).toBe('Solo'); expect(g.endReason).toBe('points'); }
+    }
+  });
+
   it('commits Cast with its extra action, preserves king ownership and returns control at the next caster turn', async () => {
     const g = (service as any).game; g.turnNumber = 55; g.currentTurn = 'Solo'; g.moveHistory = [];
     const target = { ...fullUnit('king', 'black', 'bk'), vet: 3, owner: 'black', color: 'white', controlledUntil: 57, controlTurn: 55 };

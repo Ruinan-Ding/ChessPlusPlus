@@ -138,6 +138,14 @@ free wraps still obey the doorway schedule. Solo and server derive wrap prices a
 unit value times `economy.wrapPriceMultiplier`. The board computes zone worths during
 rebuilds, then template queries read the map; radius alone cannot key custom zones.
 
+**Handover scoring precedes control expiry.** The finished turn's promotion effects,
+halftime UP snapshot and phase tally use its final controlled position. Cast returns units
+to their original side afterward, before that side's next actions. Solo and multiplayer
+must preserve this order at every phase/halftime boundary; moving expiry before tally
+can change the winner. Movement limits and recorded step costs use active veterancy,
+including withdrawal overrides: earned stars cannot enable a kit outside `kitZones`.
+CPU target limits apply after filtering legal range and excluding the source unit.
+
 **Combat ring eligibility is mirrored.** `canAttack` / `can_attack` checks the attack
 at the requested ring, so a positive tier elsewhere cannot arm a zero tier. Both suites
 consume the hand-written `combat-parity.json` cases, including minimum-range blind spots,
@@ -410,6 +418,13 @@ Decided so far:
   clock, cooldowns and pick markers, including after solo reload or Q. Saved
   choices without prior-state metadata cannot fabricate an Undo. Online autosave
   replaces the private command batch after Undo; committed picks remain final.
+
+- **Replay/CPU dialogs, 14 Oct 2026:** Branch confirmation, AI explanation and CPU
+  recovery use native modal dialogs. Background controls remain inert, focus returns
+  to the triggering control when it remains available after the popup closes, and room shortcuts remain quiet
+  while a dialog is open, including when browser Tab navigation focuses the body.
+  Escape dismisses Branch/AI; CPU outages retain their explicit recovery choices.
+  Dialog text remains unscaled when the surrounding desktop room shrinks.
 
 - **Portable replay files, 10 Oct 2026:** Finished solo/online matches recorded
   from their initial position can export a versioned file of config, display

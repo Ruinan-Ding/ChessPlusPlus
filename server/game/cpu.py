@@ -273,8 +273,9 @@ def candidate_commands(state, deadline):
         if mode == 'recharge':
             out.extend({**base, 'pairId': i} for i in abilities['loadouts'][color][::2])
         elif mode == 'control' or (source and mode == 'sacrifice' and 'stars' in entry):
-            out.extend({**base, 'targetUid': u['uid']} for k, u in (valid_enemies if mode == 'control' else valid_friends)[:3]
-                       if (not source or u['uid'] != source['uid']) and (mode != 'control' or distance(source_key, k) <= entry.get('radius', 1)))
+            targets = [(k, u) for k, u in (valid_enemies if mode == 'control' else valid_friends)
+                       if (not source or u['uid'] != source['uid']) and (mode != 'control' or distance(source_key, k) <= entry.get('radius', 1))]
+            out.extend({**base, 'targetUid': u['uid']} for k, u in targets[:3])
             if mode == 'sacrifice' and 'battlefieldActions' not in entry:
                 extras = [(k, u) for k, u in friends if k in state.board_state and u['uid'] != source['uid']]
                 if extras:

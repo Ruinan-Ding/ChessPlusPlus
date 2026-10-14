@@ -1081,8 +1081,9 @@
       </div>
     </div>
 
-    <div class="end-overlay" *ngIf="showBranchWarning">
-      <div class="end-modal" role="dialog" aria-modal="true" aria-labelledby="branch-title">
+    <dialog #branchDialog class="end-overlay" [style.zoom]="1 / roomZoom" *ngIf="showBranchWarning" aria-labelledby="branch-title"
+            (cancel)="showBranchWarning = false">
+      <div class="end-modal">
         <h2 id="branch-title">Branch from this position?</h2>
         <p>The later recorded moves will be discarded from your branch. Forward playback will be disabled.
            You can play both sides and save a new replay. The original file is preserved.</p>
@@ -1091,9 +1092,10 @@
           <button type="button" (click)="confirmReplayBranch()">Branch here</button>
         </div>
       </div>
-    </div>
-    <div class="end-overlay" *ngIf="aiUnavailable || cpuError">
-      <div #cpuDialog class="end-modal" role="dialog" aria-modal="true" aria-labelledby="cpu-dialog-title">
+    </dialog>
+    <dialog #cpuDialog class="end-overlay" [style.zoom]="1 / roomZoom" *ngIf="aiUnavailable || cpuError" aria-labelledby="cpu-dialog-title"
+            (cancel)="aiUnavailable ? aiUnavailable = false : $event.preventDefault()">
+      <div class="end-modal">
         <h2 id="cpu-dialog-title">{{ aiUnavailable ? 'AI unavailable' : 'CPU unavailable' }}</h2>
         <p>{{ aiUnavailable ? 'AI opponent is not implemented yet.' : cpuError }}</p>
         <div class="end-actions" *ngIf="aiUnavailable; else cpuRecovery">
@@ -1105,7 +1107,7 @@
           <button type="button" (click)="cpuBackToLobby()">Back to Lobby</button>
         </div></ng-template>
       </div>
-    </div>
+    </dialog>
     <!-- END OF ROOM: match over, or everyone else left. -->
     <div class="end-overlay" *ngIf="showEndModal">
       <div class="end-modal">

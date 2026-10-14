@@ -59,7 +59,7 @@ def run():
             if ply == 2:
                 commands = [{'type': 'make_move', 'from': '5,0', 'to': '4,0', 'more': True}]
             if ply == 7:
-                commands = [{'type': 'cast_ability', 'id': 'strengthen', 'targetUid': 'w0,0'},
+                commands = [{'type': 'cast_ability', 'id': 'convert'},
                             {'type': 'cast_ability', 'id': 'warcry', 'targetUid': 'w0,0'}]
             if ply == 9:
                 commands = [{'type': 'make_move', 'from': '2,0', 'to': '3,0', 'attack': '4,0', 'more': True},

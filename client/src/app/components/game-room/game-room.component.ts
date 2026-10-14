@@ -746,6 +746,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   ngOnDestroy(): void {
+    this.branchDialogElement?.close(); this.cpuDialogElement?.close();
     this.cancelCpu(); this.cpu.cancel(true);
     this.destroy$.next();
     this.destroy$.complete();
@@ -5238,6 +5239,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   onShortcut(event: KeyboardEvent): void {
     if (!this.shortcutsActive || event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target as HTMLElement | null;
+    if (this.branchDialogElement?.open || this.cpuDialogElement?.open) return;
     // Never steal keys from a field, even one outside the chat boxes.
     if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
 
@@ -5924,8 +5926,31 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   /** Which side the host takes in a solo game; the placeholder gets the other. */
   soloColor: 'white' | 'black' = 'white';
 
-  @ViewChild('cpuDialog') private set cpuDialog(ref: ElementRef<HTMLElement> | undefined) {
-    if (ref) queueMicrotask(() => { if (ref.nativeElement.isConnected) ref.nativeElement.querySelector('button')?.focus(); });
+  private branchDialogElement?: HTMLDialogElement;
+  private cpuDialogElement?: HTMLDialogElement;
+  private modalReturnFocus = new WeakMap<HTMLDialogElement, HTMLElement | SVGElement>();
+
+  @ViewChild('branchDialog') private set branchDialog(ref: ElementRef<HTMLDialogElement> | undefined) {
+    this.branchDialogElement = this.updateModal(ref, this.branchDialogElement);
+  }
+
+  @ViewChild('cpuDialog') private set cpuDialog(ref: ElementRef<HTMLDialogElement> | undefined) {
+    this.cpuDialogElement = this.updateModal(ref, this.cpuDialogElement);
+  }
+
+  private updateModal(ref: ElementRef<HTMLDialogElement> | undefined, previous?: HTMLDialogElement): HTMLDialogElement | undefined {
+    if (previous) {
+      previous.close();
+      this.modalReturnFocus.get(previous)?.focus();
+    }
+    const dialog = ref?.nativeElement;
+    if (dialog) queueMicrotask(() => {
+      if (!dialog.isConnected || dialog.open) return;
+      const focus = document.activeElement;
+      if (focus instanceof HTMLElement || focus instanceof SVGElement) this.modalReturnFocus.set(dialog, focus);
+      dialog.showModal();
+    });
+    return dialog;
   }
 
   opponentKind: OpponentKind = 'myself';

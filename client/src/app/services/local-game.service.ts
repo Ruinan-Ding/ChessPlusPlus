@@ -1413,12 +1413,12 @@ export class LocalGameService {
     g.currentTurn = this.other(g.currentTurn);
     g.abilityBuffs = advanceBuffs(g.abilityBuffs ?? {}, this.colorOf(g.currentTurn), g.turnNumber);
     g.turnStartedAt = new Date().toISOString();
-    const controls = controlsAt(g.moveHistory, g.turnNumber);
-    for (const [at, piece] of Object.entries(g.boardState)) g.boardState[at] = controlledUnit(piece, controls, g.turnNumber);
     this.rankBoard();
     g.moveHistory = [...g.moveHistory, ...promotionHeals(g.config, g.boardState, g.moveHistory, g.turnNumber),
       ...halftimeUpAwards(g.config, g.boardState, g.moveHistory, g.turnNumber)];
     g.phaseBank = bankEndedPhases(g.phaseBank, g.config, g.boardState, g.moveHistory, g.turnNumber);
+    const controls = controlsAt(g.moveHistory, g.turnNumber);
+    for (const [at, piece] of Object.entries(g.boardState)) g.boardState[at] = controlledUnit(piece, controls, g.turnNumber);
     this.persist();
     if (beaten.length === 2) return { winner: '', reason: 'draw_mutual' };
     if (beaten.length) {

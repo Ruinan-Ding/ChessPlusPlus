@@ -24,18 +24,20 @@ player's **base** and **reserve**. Coordinates are axial `q,r`; a hex is on the 
 turn, and overtime if the points are close. What a turn may do depends on where the match is:
 the opening and each postmatch are for setting out, with no attacks.
 
-**Sides alternate, and a side moves one unit on the battlefield a turn** - two in Overtime 2
-and three in Overtime 3, where switching to another unit ends the first one's move. Besides
-that, and as the stage allows, a side may start units moving in its panels, bring them out of
-its reserve onto the board, or walk them home into its base. Picking a unit shows two layers at
-once: pale green for every hex it could stand on, red for hexes it could not reach but could
+**Sides alternate. Each side may act with one unit per category** — base, reserve and
+battlefield — during regular play and Overtime 1. Initialization allows one, two, then three
+units per category; postmatch and Overtime 3 allow three, and Overtime 2 allows two.
+Switching units within a category ends the earlier unit's action until Undo. As the stage
+allows, a side may bring units from reserve onto the board or walk them home into its base.
+Picking a unit shows two layers at once: pale green for every hex it could stand on, red for hexes it could not reach but could
 still strike from where it can get to. Hovering shows the same for anyone's unit, your
 opponent's included - knowing what a thing threatens is half the game.
 
 **Movement** is a flood fill bounded by the unit's `MOV`. A unit walks **through its own side's
 units** but may not stop on one; **an enemy blocks** both its hex and the way past it, so going
-round one costs the detour. A unit keeps walking on what is left of its budget until it attacks,
-heals or the turn ends.
+round one costs the detour. A unit keeps walking on its remaining budget until it uses its
+unit ability, attacks, heals or finishes its action. Archer's active Withdraw permits its own
+movement, attack and unit ability in any order within that same budget.
 
 **Attacking** is separate from moving. Reach is a band of hex-distance rings from optional
 `attackMinRange` (default 1) through `attackRange`, ignoring obstacles. Explicit attack lists
@@ -224,8 +226,10 @@ Sacrifice selects another friendly battlefield/green-reserve unit: permanently
 add one star (max 3), fully heal it, and grant +2 MOV/+6 ATK/+6 DEF for one full
 turn. Repeated casts refresh this temporary bonus without stacking; each still
 promotes and fully heals, and separate recipients can each receive it. The pawn
-dies and counts as its side’s loss; independently select an unused
-friendly battlefield unit for an extra action. Cost 24 UP/CD 5, no UP reward.
+dies and counts as its side’s loss, and the caster gains one general battlefield
+unit action this turn. Any unused friendly battlefield unit may take it; it does not reopen a
+finished action or increase panel allowances. Cost 24 UP/CD 5, no UP reward. Older saved
+catalogues without `battlefieldActions` retain their nominated extra actor.
 Only Fortress, Ruin and Blitz remain army-wide activated effects; Call affects
 adjacent units. Convert is a no-target currency operation and path passives
 remain army-wide passives. Solo and multiplayer retain staging, Undo and reload.
@@ -298,8 +302,11 @@ the nearest two hexes in each diagonal direction lose 4 MOV, and farther X occup
 2 MOV. All three shapes include panel hexes and affect current occupants of either side.
 Blitz boosts HEL only on existing healers. Older saved catalogues retain their rules.
 Unit values now cost 12 UP for pawn/archer/shieldman, 24 for rook, 30 for knight,
-32 for bishop, 48 for queen and 64 for king. Those values set battlefield kill payouts and attrition losses; withdrawal refunds
-deduct one UP and current missing HP, with a one-UP floor. Starting UP remains 10; the shipped setup already
+32 for bishop, 48 for queen and 64 for king. Those values set battlefield kill payouts and attrition losses.
+Withdrawal refunds use the departure rank: Vet 0 deducts one UP and missing HP, with a
+one-UP floor; Vet 1 waives the fee; Vet 2 also waives the wound deduction; Vet 3 refunds
+exactly three times full unit value regardless of wounds. Every withdrawal then resets Vet
+to 0. Starting UP remains 10; the shipped setup already
 places 24 battlefield units per side. Vet 3 ability costs are Sacrifice 24, Snare 8,
 Taunt 6, Bash/Charge 16, Cast 32, Leech 8 and Call 4 UP.
 Leech adds 4 ATK/2 DEF for one full turn, with cooldown 3. Normal attacks heal
@@ -394,13 +401,19 @@ Authoritative multiplayer ability coverage is in `test_online_abilities.py`; ren
 room tests and separate native Chrome checks cover staging, targeting and reconnect.
 Regression coverage includes Strengthen followed by phase promotion, reserve ability
 casualties, stationary panel action locks, and completed panel/multi-step Replay after reload.
+Cast expires after halftime awards and completed-phase tallies in both engines. Tests also
+cover disabled-kit withdrawal limits, CPU Cast targets behind stronger unreachable enemies,
+and native Branch/AI/CPU dialog focus and shortcut isolation.
 Equivalent coordinate spellings share movement costs; pass broadcasts refresh ability
 expiry/cooldowns, and protected counters and Charge strikes remain visible in completed
 Replay even when they deal zero damage. Panel attack replay follows the attacker’s UID.
 Replay also retains actors that died or moved again after combat, including Rapid Movement
 and a Charge victim's counter. Older saved frames recover missing actor identity from history.
-Upgrading the backend requires migration **0014_ability_state** before starting the new
-server. Existing rows keep an empty default until their first batched turn.
+Before starting an upgraded backend, apply all pending migrations with
+`DJANGO_DEBUG=true python manage.py migrate` locally (use production settings when deployed).
+The current schema includes **0014_ability_state** and **0015_gamestate_replay_journal**.
+Older matches initialize empty ability state on their first batched turn and retain null replay
+journals because their complete initial recording is unavailable.
 
 ## Maintenance
 

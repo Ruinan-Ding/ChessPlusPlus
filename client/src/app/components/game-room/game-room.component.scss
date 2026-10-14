@@ -1762,6 +1762,19 @@
     box-sizing: border-box;
   }
 
+  dialog.end-overlay {
+    margin: 0;
+    border: 0;
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    color: inherit;
+
+    &:not([open]) { display: none; }
+    &::backdrop { background: transparent; }
+  }
+
   .reconnect-modal,
   .end-modal {
     background: #fff;

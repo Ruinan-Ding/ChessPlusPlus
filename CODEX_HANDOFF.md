@@ -1,4 +1,4 @@
-# Handoff: ChessPlusPlus, 12 Oct 2026
+# Handoff: ChessPlusPlus, 14 Oct 2026
 
 Updated by Codex from Claude Code's 2 Oct handoff, for the next agent.
 **AGENTS.md is the source of truth** for how this repo works: architecture, the rules the owner
@@ -18,8 +18,9 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
   The tested implementation commit is `64efecd`, "Add solo rewind, portable replay
   and CPU opponents". It includes 6.135-6.137 and 6.139-6.143; the earlier config
   checkpoint `69d6e36` and dev23 checkpoint `fcb263b` are merged into `main` too.
-  All previously uncommitted work through 6.143 is published. Dated uncommitted
-  notes below describe their original checkpoints and are superseded by 6.144.
+  Work through 6.143 is published in 6.144; the review fixes at 6.145 are published
+  on `feature/dev24` in 6.146. Dated uncommitted notes describe their original
+  checkpoints and are superseded by the corresponding publication records.
   The short ATK marker (6.105), CP positioning/pool delay (6.106), authoritative
   multiplayer abilities (6.107), board colours (6.108), manual Replay (6.109) and relocated
   Flip (6.110), review/Replay fixes (6.112-6.115), the unit-stat cap (6.116) and
@@ -29,10 +30,45 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
   **Migration 0015 is applied to the local database** (6.138), following the owner's
   explicit migration/restart request. All 126 rooms, 107 saved matches and prior
   application data are preserved; old matches retain null replay journals.
-  Updated backend serves 8000 (PID 93624); frontend 4200 (PID 23616)
-  stayed running. Backup: `server/backups/db-before-0015-20261011T031130Z.sqlite3`.
+  At that migration checkpoint, the updated backend served 8000 (PID 93624)
+  and frontend 4200 (PID 23616) stayed running; these are historical process IDs. Backup: `server/backups/db-before-0015-20261011T031130Z.sqlite3`.
   Earlier 0014 migration/backup remains recorded under 6.111. The later 6.139
   backend gameplay/default changes, including 6.140-6.143, are on disk and await its next normal restart.
+  - **Current publication checkpoint (6.146), 14 Oct:** the owner requested commit
+    and push of all verified review fixes at 6.145 on `feature/dev24`. The commit is
+    titled "Fix Cast scoring, withdrawal movement and CPU targeting"; its exact SHA
+    is available from `git log -1 feature/dev24`. All 15 implementation/test/doc files
+    matched the verification hashes before publication metadata was updated. Local
+    evidence remains 575 backend tests, 1,053 client specs, production/configuration/
+    migration checks, 490 layouts, 125 live-socket checks, 37 native dialog assertions,
+    CPU recovery flows and two complete online-to-solo replay comparisons.
+    [Branch CI](https://github.com/Ruinan-Ding/ChessPlusPlus/actions?query=branch%3Afeature%2Fdev24)
+    reports this publication's commit. No merge, balance release, migration or
+    owner-service restart accompanies the push. Revision remains null; owner
+    inspection status stays WRITTEN. Backend fixes load on its next normal restart.
+  - **Verified review fixes (6.145), 14 Oct:** all six findings from the
+    resumed end-to-end review are resolved. Solo banks completed phases and halftime
+    UP before Cast control expires, matching the server. Server withdrawal and step
+    accounting use active kit rank; CPU Cast filters legal range before its target cap.
+    The recorded-match script uses Onslaught's current Convert utility. Branch and
+    CPU/AI popups use native modal dialogs with inert background, focus restoration,
+    suppressed room shortcuts and unscaled readable content. README rules, refunds
+    and upgrade instructions now match the implementation; schema/defaults are unchanged.
+    **575 backend tests (571 canonical + four legacy), 1,053 client specs, production
+    build, configuration validation/migration checks, all 490 layouts and 125 live-socket
+    checks pass.** Thirty-seven native dialog assertions cover keyboard navigation,
+    focus return, Escape, shortcuts and six desktop/tablet/phone sizes. CPU turn/Q/R/
+    recovery flows pass. Two complete multiplayer recordings (109 actions through
+    overtime and 73 actions through a final-phase Cast points win) import and replay
+    with matching solo boards, banks and results, without corruption or console errors.
+    Six regression tests were added; five failed against the original implementation.
+    Three deliberate private/in-memory faults were caught and restored without
+    altering repository source. Evidence: Windows Temp
+    `cpp-review-fixes-20261014-bxdu0e_6/RESULTS.md`. Owner services/database are untouched;
+    verification uses isolated ports 8244/4244 and a temporary SQLite database, then
+    stops its own services. This verification preceded publication 6.146. No migration
+    or balance release; revision remains null. Backend changes load on its next normal
+    restart. WRITTEN, not owner-SEEN.
   - **Current publication checkpoint (6.144), 12 Oct:** the owner requested commit,
     push, merge, pulling `main` and creating the next branch. Source `64efecd`
     is pushed on `feature/configuration`; both
