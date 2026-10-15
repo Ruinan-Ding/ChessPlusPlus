@@ -7,9 +7,6 @@ import { RouterOutlet } from '@angular/router';
   imports: [RouterOutlet],
   template: `
     <router-outlet></router-outlet>
-  `,
-  styles: []
+  `
 })
-export class AppComponent {
-  title = 'ChessPlusPlus';
-}
+export class AppComponent {}

@@ -12,7 +12,7 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   type?: MessageType;
-  room?: string; // Optional room property to identify which chat room the message belongs to
+  room?: string;
 }
 
 export interface User {

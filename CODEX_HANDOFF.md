@@ -1,4 +1,4 @@
-# Handoff: ChessPlusPlus, 14 Oct 2026
+# Handoff: ChessPlusPlus, 15 Oct 2026
 
 Updated by Codex from Claude Code's 2 Oct handoff, for the next agent.
 **AGENTS.md is the source of truth** for how this repo works: architecture, the rules the owner
@@ -15,12 +15,14 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
   `shared/`.
 - **Current branch:** `feature/dev24`, the next development branch from synchronized
   `main` after publication 6.144 (12 Oct). Source `feature/configuration` is retained.
-  The tested implementation commit is `64efecd`, "Add solo rewind, portable replay
+  The original rewind/replay/CPU implementation is `64efecd`, "Add solo rewind, portable replay
   and CPU opponents". It includes 6.135-6.137 and 6.139-6.143; the earlier config
   checkpoint `69d6e36` and dev23 checkpoint `fcb263b` are merged into `main` too.
   Work through 6.143 is published in 6.144; the review fixes at 6.145 are published
   on `feature/dev24` in 6.146. Dated uncommitted notes describe their original
   checkpoints and are superseded by the corresponding publication records.
+  The latest published source is `7f139bb` on `feature/dev24`; the verified
+  maintenance/workflow/readiness work at 6.147-6.154 remains uncommitted below.
   The short ATK marker (6.105), CP positioning/pool delay (6.106), authoritative
   multiplayer abilities (6.107), board colours (6.108), manual Replay (6.109) and relocated
   Flip (6.110), review/Replay fixes (6.112-6.115), the unit-stat cap (6.116) and
@@ -34,6 +36,158 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
   and frontend 4200 (PID 23616) stayed running; these are historical process IDs. Backup: `server/backups/db-before-0015-20261011T031130Z.sqlite3`.
   Earlier 0014 migration/backup remains recorded under 6.111. The later 6.139
   backend gameplay/default changes, including 6.140-6.143, are on disk and await its next normal restart.
+  - **Current pre-publication readiness review (6.154), 15 Oct:** all 57 entries
+    in 6.150's final manifest match except the five workflow-updated root docs;
+    application/CI/test source and expected deletions retain that verification:
+    576 backend tests, 1,069 client specs and production/type/system/migration
+    checks. No full suites were rerun here. Pages/Fly deployment remains an
+    unimplemented plan: split-host URL, persistent DB setting and deployment
+    files are absent. Simulated production checks use a synthetic key/host and
+    DEBUG=False, reporting W004/W008/W012/W016 (HSTS, HTTPS redirect, secure
+    session/CSRF cookies). Actual target/proxy configuration is unverified.
+    DEPLOYMENT records current readiness; commit/push/green candidate CI and
+    target setup/smoke testing remain before deployment. Preserve one Daphne
+    application process with the current channel layer, production data/key,
+    backups and applied migrations. Evidence: Windows Temp
+    `cpp-release-readiness-20261015-nquio_3b/RESULTS.md`.
+    Source/link/whitespace checks pass. No game code, setting or migration is
+    changed; no push/deploy, owner service/database write or balance release
+    performed. Current changes remain uncommitted; revision null; not owner-SEEN.
+  - **Current workflow operating guidance (6.153), 15 Oct:** added explicit
+    scope-change/urgent-defect handling, meaningful baseline and flaky-test
+    failure handling, and brief rationale/alternatives/compatibility records for
+    significant decisions in existing guides. Skill and Scrum Master/quality/
+    architect profiles reflect the additions. Clarified one reusable profile per
+    role, additional instances for independent work and a shared senior-level
+    quality standard. All profiles retain model inheritance; seniority is an
+    expectation assessed by evidence, not a capability upgrade or credential.
+    The next owner-selected bounded story changing behavior is the practical
+    trial; no story or Sprint is invented.
+    **Skill/YAML/local-link checks, unchanged native frontmatter/settings,
+    instruction walkthroughs and byte preservation of unrelated source pass.**
+    Evidence: Windows Temp `cpp-workflow-operations-20261015-961t3g8j/RESULTS.md`.
+    No new native discovery, model/team trial or gameplay checks are claimed.
+    No new role, framework, dependency, CI job, permission setting, game/config
+    change, publication, migration or owner service/database write. Workflow
+    source remains uncommitted; revision null; WRITTEN, not owner-SEEN.
+  - **Current workflow practicality review (6.152), 15 Oct:** clarified that the
+    Claude Scrum setup is this project's enterprise-style delivery workflow;
+    organization identity, managed policies and retention are separate controls,
+    not configured or verified by repo instructions. Added proportionate staffing,
+    a main-conversation/worker boundary, a readable diff/new-file/evidence packet
+    for tool-limited reviewers and source-bound review/check results. Published
+    evidence references actual CI/review results; private Temp logs supplement
+    tracked outcomes. The workflow explicitly distinguishes current CI jobs from
+    procedural BDD/TDD/review and separately required browser/layout checks.
+    Skill, architect/release profiles, README and backlog reflect these fixes.
+    **Agent/skill YAML, skill validation, unchanged frontmatter/settings, local
+    links, scenario review and byte preservation of unrelated source pass.** No
+    native discovery rerun or live-team/model test is claimed; 6.151's discovery
+    result remains its own checkpoint. Evidence: Windows Temp
+    `cpp-workflow-review-20261015-a979qv19/RESULTS.md`.
+    Workflow-only, uncommitted; no game/config/default/dependency/CI-job change,
+    publication, migration, owner service/database write or release. Revision
+    remains null; WRITTEN, not owner-SEEN.
+  - **Current Claude workflow (6.151), 15 Oct:** established native project
+    profiles for Scrum facilitation, product analysis, architecture, frontend,
+    backend, quality, UX/accessibility, security/reliability and delivery. The
+    human owner remains Product Owner; specialists share one Increment and DoD.
+    `/scrum` uses SCRUM_WORKFLOW and the persistent SCRUM_BACKLOG, with BDD
+    discovery/formulation/automation, evidenced Red/Green/Refactor, source/file
+    ownership, independent review when available and proportionate acceptance
+    checks. Project settings enable experimental in-process teams without
+    changing permissions or selecting a model; profiles inherit the parent's
+    model. SDD means specification-driven development and remains optional.
+    **All nine agents and the skill are discovered by Claude Code 2.1.288's
+    local UI in an isolated fixture.** Skill/frontmatter/settings/link checks,
+    ten instruction-scenario walkthroughs and baseline source preservation pass.
+    Walkthroughs are self-review, not live-team/model evaluations. No teammates
+    or gameplay suites ran; no Sprint/event or stakeholder acceptance is claimed.
+    First Sprint dates/goal and the next product priority await actual planning.
+    Evidence: Windows Temp `cpp-scrum-20261015-c8c0osf_/RESULTS.md`.
+    AGENTS/CLAUDE/README link the workflow; earlier application evidence stays
+    scoped to 6.148-6.150. No gameplay/default/schema/save/wire/dependency change,
+    publication, migration, balance release or owner application-service/database
+    write. Existing uncommitted source is preserved; revision null. WRITTEN,
+    not owner-SEEN. Native team execution requires an interactive Claude session
+    and the user-scoped Ponytail installation described in AGENTS.md.
+  - **Current cleanup (6.150), 15 Oct:** removed the unused root title/empty
+    styles and two redundant Angular starter tests, retaining outlet rendering
+    and every gameplay regression. Trimmed redundant/orphaned comments and updated
+    panel healing, configured endings and ASGI/WSGI documentation. Removed generic
+    tsconfig headers and an inherited duplicate setting. README/client README,
+    the CLAUDE pointer, blueprint and historical review status are current.
+    **576 backend tests, 1,069 client specs with coverage, production build,
+    TypeScript, system/migration checks pass.** Python/TypeScript syntax comparisons
+    preserve executable logic outside the known unused root fields; root markup
+    and CI YAML structure are unchanged. Local documentation links resolve;
+    numeric defaults remain intact.
+    Evidence: Windows Temp `cpp-cleanup-20261015-jgchzg0l/RESULTS.md`.
+    No template/CSS/gameplay/save/wire change, release, owner database/service
+    write or publication. Earlier live/browser/layout evidence remains scoped
+    to 6.148-6.149. Uncommitted; balance revision null; WRITTEN, not owner-SEEN.
+  - **Current test-coverage audit (6.149), 15 Oct:** reviewed the unit, rendered,
+    ASGI, shared-parity and live test boundaries. Added nine client and two backend
+    regressions for command trust boundaries, legacy staging chronology, replay
+    controls/cache/cancellation, CPU queue/failure races, invalid CPU batches and
+    two-player ability rollback, privacy, commit, reload, expiry and action locks.
+    The new CPU tests reproduced duplicate analysis after cancel/requeue and a
+    late failure restoring an expired turn; both are fixed. The replay fixture
+    now marks its arranged OnPush session before testing actual rendered controls.
+    **576 backend tests, 1,071 client specs with coverage, production build,
+    TypeScript, system and migration-drift checks pass.** Final protocol rerun:
+    10 cases. All 121 real-socket checks pass. Native Chrome plays real CPU turns,
+    Q/R and outage recovery, then imports a fresh 109-action online recording
+    through overtime with matching full board, bank, turn, ending and winner.
+    No replay corruption or runtime errors. Six private JavaScript faults and
+    one in-memory backend lock fault are caught; restored checks pass.
+    README maps the suites and states their limits. Templates/styles are unchanged
+    by this follow-up; 6.148's 490-layout result is retained, not rerun here.
+    Evidence: Windows Temp `cpp-test-audit-20261015-9yevbj0v/RESULTS.md`.
+    Uncommitted on `feature/dev24`; no gameplay/default/schema or save/wire change,
+    publication, owner-service restart, owner database write or balance release.
+    Only a private test database was migrated; private services are stopped.
+    Revision remains null. WRITTEN, not owner-SEEN.
+  - **Current uncommitted refactors (6.148), 15 Oct:** all five recommendations
+    at 6.147 are implemented. Typed command decoding/recording and history variants
+    separate raw imports from validated intent. A shared staged-event timeline now
+    feeds online/solo command builders and unit-action budget projections. Replay
+    and CPU controllers own their lifecycle state behind room view/clock adapters.
+    Battlefield action, slot and progress resolution lives in `engine/actions.py`;
+    the consumer retains authorization, conditional writes, clocks and broadcasts.
+    Mine/opponent ability panels share one template. CI records a real match using
+    its frozen fixture config and supplies the artifact to rendered solo playback,
+    checking the board, bank, turn, end reason and winner colour.
+    **574 backend tests, 1,062 client specs, production build, TypeScript checks,
+    490 layouts and 121 real-socket checks pass.** The final rendered integration
+    rerun passes all 134 cases, including the winner assertion. Native Chrome
+    replays all 109 recorded actions through overtime without corruption and drives
+    CPU turns, Q/R, network failure and Continue as Myself. Four private JavaScript
+    faults and one in-memory backend actor fault are caught; restored checks pass.
+    Three backend and nine client regressions were added; no game rule, wire/save
+    format, balance default or schema changed. Evidence: Windows Temp
+    `cpp-refactor-20261014-1fs2lhx5/RESULTS.md`. Uncommitted on `feature/dev24`;
+    no publication, owner-service restart, owner database write or balance release.
+    Only an isolated test database was migrated. Revision stays null. WRITTEN,
+    not owner-SEEN; the owner's backend loads the refactor on its next normal restart.
+  - **Current uncommitted maintenance review (6.147), 14 Oct:** runtime, UI,
+    tests, configuration and CI reviewed after publication 6.146. Removed unused
+    imports/locals/helper arguments, consolidated touched imports, restored two
+    actual Python module docstrings and corrected the solo wrap-pricing comment.
+    Removed the four legacy tests because their ASTs exactly match retained
+    canonical cases; bare Django discovery and CI now run the same 571 tests.
+    TypeScript checks unused parameters; Pyright's editor target matches Python
+    3.14. **571 backend tests, 1,053 client specs, production build and spec/app
+    compilation pass.** Gameplay, defaults, schema, templates and styles are
+    unchanged; this pass does not rerun 6.145's live-socket/layout audit.
+    Priorities are typed validated commands/history, one staged-event chronology,
+    separate replay/CPU lifecycle, deterministic action transitions outside the
+    consumer and shared mine/opponent ability markup. These are recommendations,
+    not missing game functionality or newly reproduced gameplay bugs.
+    Evidence: Windows Temp `cpp-maintainability-20261014-puiu7lt8/REVIEW.md` and
+    `RESULTS.md`. Uncommitted on `feature/dev24`; no publication, migration,
+    owner-service restart or balance release. Revision remains null. WRITTEN,
+    not owner-SEEN.
   - **Current publication checkpoint (6.146), 14 Oct:** the owner requested commit
     and push of all verified review fixes at 6.145 on `feature/dev24`. The commit is
     titled "Fix Cast scoring, withdrawal movement and CPU targeting"; its exact SHA
@@ -1455,8 +1609,10 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
 The owner has supplied the unit stats and capture rules; they are implemented in the shared
 config and both engines. The four requested cleanups are complete in the dev22 follow-up:
 `PieceData`/`BoardState` are shared from `game-state.service.ts`, `SelectedUnit.atk` stays numeric,
-and `ability-rules.ts` owns existing solo stacking, expiry and cooldown calculations. The room
-still owns targeting, staging, animation and persistence. Older saves keep their effect shape
+and `ability-rules.ts` owns existing solo stacking, expiry and cooldown calculations.
+Following 6.148, `turn-staging.ts` owns chronological projections/command adapters,
+and replay/CPU controllers own lifecycle state. The room integrates targeting,
+visual staging, animation, storage and clock adapters. Older saves keep their effect shape
 and caster fallback. These cleanups add no new abilities or gameplay rules.
 
 The first four pairs now use the owner's rules: Warcry/Sap, Bulwark/Weakening, Dash/Mire,
@@ -1706,6 +1862,16 @@ still run, then the pending loss resolves at new ply 29/51. King death takes pri
 The frozen phase bank carries the result through reload. Old/late banks do not infer
 historical occupancy from later boards. Both engines and 382 scoring parity cases
 agree. No new config field or online ability implementation was introduced.
+
+**Maintenance refactors implemented (6.148, 15 Oct):** the five 6.147
+recommendations now have concrete boundaries: `game-command.ts` / `game-history.ts`,
+`turn-staging.ts`, `replay-controller.ts` / `cpu-turn-controller.ts`,
+`engine/actions.py`, and the shared `abilityPanel` template. The real-socket
+recording is an artifact between CI's server/client jobs; its fixed scenario uses
+the frozen test config, independently of current balance edits. Existing independent
+rule assertions remain. Storage/wire formats and game rules are unchanged; this
+work introduces no framework or dependency. Details and scoped verification are
+in the 6.148 checkpoint above and its review artifact.
 
 **Implementation status and deferred work:**
 

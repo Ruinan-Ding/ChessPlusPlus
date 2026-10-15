@@ -1,9 +1,5 @@
-# Both test suites and the production build, on every push and pull request.
-#
-# The server and the client each hold a copy of the rules (see AGENTS.md), so
-# both suites run on every change: the scoring parity tests in each
-# (test_scoring_parity.py, scoring-parity.spec.ts) read the same fixtures, and
-# a rule changed on one side alone fails here.
+# Both engines read the shared config. Parity fixtures and recorded-match
+# playback check their agreement on every push and pull request.
 name: tests
 
 on:
@@ -33,13 +29,50 @@ jobs:
         env:
           DJANGO_DEBUG: 'true'
 
+      - name: Record a complete online match for the solo engine
+        env:
+          DJANGO_DEBUG: 'true'
+          CPP_DEAL_PANELS: '1'
+          E2E_PORT: '8250'
+          REPLAY_OUTPUT: '../shared/recording/match.json'
+          REPLAY_CONFIG: '../shared/recording/match.json'
+        run: |
+          python manage.py migrate --noinput
+          daphne -b 127.0.0.1 -p 8250 core.asgi:application > "$RUNNER_TEMP/recording-server.log" 2>&1 &
+          task_server_pid=$!
+          trap 'kill "$task_server_pid"' EXIT
+          python - <<'PY'
+          import socket, time
+          for attempt in range(100):
+              try:
+                  socket.create_connection(('127.0.0.1', 8250), timeout=1).close()
+                  break
+              except OSError:
+                  time.sleep(0.1)
+          else:
+              raise RuntimeError('Recording server did not start')
+          PY
+          python scripts/e2e/recording.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recorded-match
+          path: |
+            shared/recording/match.json
+            shared/recording/match.json.expected.json
+          if-no-files-found: error
+
   client:
+    needs: server
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: client
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: recorded-match
+          path: shared/recording
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

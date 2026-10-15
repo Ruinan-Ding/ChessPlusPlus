@@ -1,3 +1,4 @@
+import type { MoveRecord } from './game-history';
 import { ruleOf } from './config.service';
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
@@ -34,37 +35,7 @@ export type PieceIdentity = Pick<PieceData, 'unit_id' | 'color' | 'uid'>;
 /** Battlefield cells keyed by axial "q,r"; panels are derived separately. */
 export type BoardState = Record<string, PieceData>;
 
-/** Committed action history from either engine. */
-export interface MoveRecord {
-  from: string;
-  to: string;
-  unit_id: string;
-  color: string;
-  turn: number;
-  captured: string | null;
-  attacked: boolean;
-  damage_dealt: number;
-  leech_heal?: number;
-  defender_eliminated: boolean;
-  moved: boolean;
-  defender_hp?: number;
-  /** Actual combat beats are independent of damage prevented by protection. */
-  countered?: boolean;
-  counterActor?: PieceIdentity;
-  secondStrike?: boolean;
-  attackFrom?: string;
-  healedHex?: string;
-  healed_amount?: number;
-  healed_hp?: number;
-  healed_unit?: string;
-  /** Only present on a move that attacked - see move_record in consumers.py. */
-  attacker_eliminated?: boolean;
-  /** Panel entry; the unit record retains its identity and HP. */
-  entered?: boolean;
-  /** Withdrawal; the unit record rebuilds its base presence after reload. */
-  withdrawn?: boolean;
-  unit?: PieceData;
-}
+export type { MoveRecord } from './game-history';
 
 /** Full snapshot of the client-side game state. */
 export interface GameSnapshot {

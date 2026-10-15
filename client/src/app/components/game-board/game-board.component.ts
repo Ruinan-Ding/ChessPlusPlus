@@ -1,5 +1,5 @@
+import type { LocalPanelStep, TimedCommand } from '../../services/turn-staging';
 import { sectionOf } from '../../services/game-rules';
-import { attacksAllowed, movesPerTurn, stageRules } from '../../services/phases';
 import playbackTimings from '../../../../../shared/playback-timings.json';
 import { actionTime } from '../../services/action-time';
 import { controlledUnit } from '../../services/unit-control';
@@ -7,9 +7,8 @@ import { combatExchange, tauntAllows, carries, attackStats, combatStatuses } fro
 import { AfterViewInit, Component, Input, Output, EventEmitter, NgZone, OnChanges, OnInit, OnDestroy, SimpleChanges, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { positionalBonus, attackTiers, captureClaims, captureZones, captureZoneValues, computeAttackZone, computeMoveCosts, canAttack, healingAmount, hexDistanceKeys, hexEffectBand, inHomeRows, isInsideBoard, panelOfHex, BASE_PANELS, HEX_DIRS, PANELS_DEALT } from '../../services/hex-rules';
-import { boardMovesPerTurn, overtimeTollAt, overtimeTollOver, isEntryOpen, isHomecomingOpen, isInitialization, isOvertime, isPostmatch, isSetupTurn, isWrapOpen, sideOfPly, stageAt, turnOf } from '../../services/phases';
+import { attacksAllowed, boardMovesPerTurn, movesPerTurn, overtimeTollAt, overtimeTollOver, isEntryOpen, isHomecomingOpen, isInitialization, isOvertime, isWrapOpen, sideOfPly, stageAt, stageRules, turnOf } from '../../services/phases';
 import { passiveStat, statSetting, PathPassive } from '../../services/ability-rules';
-import { ruleOf } from '../../services/config.service';
 import { withdrawalRefund } from '../../services/match-score';
 import { kitActive, activeVet, capStat, capUnit, rankedUnit, canReceiveBoost, unitPassive, unitStats } from '../../services/unit-stats';
 import { AudioService } from '../../services/audio.service';
@@ -4437,14 +4436,8 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
    * out - so a server refused exactly that crossing, and the other player
    * never saw a shuffle happen.
    */
-  get pendingPanelSteps(): Array<
-    | {
-      type: 'panel_move'; from: string; to: string;
-      unit?: PieceData; panel?: string; cost: number; price: number;
-    }
-    | { type: 'enter_board'; from: string; to: string; unit: PieceData }
-  > {
-    const out: Array<any> = [];
+  get pendingPanelSteps(): LocalPanelStep[] {
+    const out: LocalPanelStep[] = [];
     for (const step of this.panelHistory) {
       if (step.entry) {
         const unit = this.entered[step.to];
@@ -4462,7 +4455,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
     return out;
   }
 
-  get timedPanelSteps(): Array<{ at: number; command: any }> {
+  get timedPanelSteps(): TimedCommand[] {
     return this.panelHistory.map(step => ({ at: step.at, command: {
       type: step.entry ? 'enter_board' : 'panel_move', from: step.from, to: step.to,
     } }));
@@ -4528,15 +4521,6 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
   /** The opening phase, where the rules above apply. */
   private get initializing(): boolean {
     return isInitialization(this.turnNumber, this.config);
-  }
-
-  /**
-   * Any turn given to setting out - the opening, or a phase's postmatch.
-   * Deliberately not the same question as `initializing`: the one-move-per-
-   * phase lock above is the opening's alone, but nobody attacks on either.
-   */
-  private get settingOut(): boolean {
-    return isSetupTurn(this.turnNumber, this.config);
   }
 
   /** Each category follows the stage limit; switching units ends the previous walk. */

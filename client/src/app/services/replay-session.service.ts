@@ -1,30 +1,12 @@
-import commandFields from '../../../../shared/replay-command-fields.json';
+import { CommandInput, ReplayAction, replayCommand } from './game-command';
 import { Injectable } from '@angular/core';
 import { ConfigService } from './config.service';
 import { readStore, writeStore } from './storage';
 import { migrateConfig } from './game-rules';
 
-export interface ReplayCommand extends Record<string, any> {
-  type?: any;
-  from?: any;
-  to?: any;
-  attack?: any;
-  heal?: any;
-  withdraw?: any;
-  more?: any;
-  id?: any;
-  unitUid?: any;
-  targetUid?: any;
-  extraUid?: any;
-  hex?: any;
-  pairId?: any;
-  reason?: any;
-}
-export interface ReplayAction {
-  ply: number;
-  color: 'white' | 'black';
-  command: ReplayCommand;
-}
+export { replayCommand, REPLAY_COMMANDS } from './game-command';
+export type { ReplayAction, RecordedAction } from './game-command';
+export type ReplayCommand = CommandInput;
 export interface ReplayFile {
   type: 'chessplusplus-replay';
   version: 1;
@@ -47,15 +29,6 @@ export const REPLAY_MAX_ACTIONS = 100000;
 export const REPLAY_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 export const REPLAY_CACHE_BYTES = 16 * 1024 * 1024;
 export const replayFrameBytes = (frame: ReplayFrame): number => JSON.stringify(frame).length * 2;
-export const REPLAY_COMMANDS = new Set(Object.keys(commandFields));
-
-export function replayCommand(raw: any): ReplayCommand {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
-  const fields = typeof raw.type === 'string' && Object.hasOwn(commandFields, raw.type)
-    ? (commandFields as Record<string, string[]>)[raw.type] : ['type'];
-  return Object.fromEntries(fields.filter(key => Object.hasOwn(raw, key)).map(key => [key, raw[key]]));
-}
-
 export function parseReplay(text: string, configService: ConfigService): ReplayFile {
   if (new TextEncoder().encode(text).length > REPLAY_MAX_BYTES) throw new Error('Replay exceeds 20 MiB.');
   let depth = 0, quoted = false, escaped = false;

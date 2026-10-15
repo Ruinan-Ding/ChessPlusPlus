@@ -1,0 +1,57 @@
+{
+  "board": {
+    "-3,6": {
+      "unit_id": "king",
+      "color": "white",
+      "hp": 32,
+      "max_hp": 60,
+      "uid": "w-3,6",
+      "vet": 3,
+      "veterancyHpActive": false
+    },
+    "3,-6": {
+      "unit_id": "king",
+      "color": "black",
+      "hp": 32,
+      "max_hp": 60,
+      "uid": "b3,-6",
+      "vet": 3,
+      "veterancyHpActive": false
+    },
+    "4,0": {
+      "unit_id": "pawn",
+      "color": "black",
+      "hp": 14,
+      "max_hp": 14,
+      "uid": "b5,0",
+      "vet": 3,
+      "veterancyHpActive": true
+    },
+    "3,0": {
+      "unit_id": "pawn",
+      "color": "white",
+      "hp": 14,
+      "max_hp": 14,
+      "uid": "w0,0",
+      "vet": 3,
+      "veterancyHpActive": true
+    }
+  },
+  "turn": 101,
+  "phaseBank": {
+    "1": {
+      "white": 57,
+      "black": 57
+    },
+    "2": {
+      "white": 114,
+      "black": 114
+    },
+    "3": {
+      "white": 171,
+      "black": 171
+    }
+  },
+  "endReason": "overtime",
+  "winnerColor": "black"
+}

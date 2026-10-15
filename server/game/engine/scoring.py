@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from .board import HEX_DIRECTIONS, coord_key, hex_distance, parse_coord
+from .board import coord_key, hex_distance, parse_coord
 from .config_loader import rule_of
 from .game_rules import section_of
 from .phases import phases_of, scoring_phases, overtime_first_ply, overtime_last_turn
@@ -374,23 +374,11 @@ def decided_on_points(bank: Optional[Dict[str, Any]], config=None) -> Optional[s
 
 
 def schedule_ending(bank: Optional[Dict[str, Any]], ply: int, config=None) -> Optional[Tuple[str, str]]:
-    """
-    ``(winning colour, end reason)`` if the schedule ends the match at *ply* -
-    the hand-over just made - or ``None``.
+    """Return the scheduled winner/reason after tallying the completed turn.
 
-    Asked after the hand-over has banked what it closed, and only when nothing
-    on the board ended the match first: a king killed on the turn Phase 3
-    banks, or on turn 50, has already decided it.
-
-    * ``'phase_result'``: a frozen Phase 1/2 loss, after both postmatch halves.
-    * ``'points'``: all three phases are in, none of them late, and one side is
-      past the other's margin - **once Phase 3's postmatch has been played**,
-      on the hand-over into turn 37 (``OVERTIME_FIRST_PLY``). The result is
-      known as the postmatch begins, but the postmatch is still played: *the
-      owner, 24 Sep 2026: "phase 3 post match still happens even if overtime
-      isnt triggered."*
-    * ``'overtime'``: turn 50 has been played out - the hand-over is into
-      turn 51 - with both kings standing. Black's.
+    Commander deaths take priority and are resolved by the caller. Pending
+    phase losses and points wins wait until the relevant postmatch finishes.
+    After the final configured overtime turn, use the configured winner or draw.
     """
     for phase in scoring_phases(config):
         entry = (bank or {}).get(str(phase), {})

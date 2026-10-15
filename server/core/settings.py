@@ -3,7 +3,6 @@
 import os
 from pathlib import Path
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -14,19 +13,10 @@ def _env_bool(name: str, default: bool) -> bool:
     return val.strip().lower() in ('1', 'true', 'yes', 'on')
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
-#
-# DEBUG defaults to False (production-safe posture: a real SECRET_KEY
-# becomes mandatory and ALLOWED_HOSTS must be configured explicitly, no
-# wildcard fallback). Local dev must set DJANGO_DEBUG=true explicitly - see
-# README.md - so forgetting to set it in a real deployment fails loudly
-# instead of silently shipping debug mode.
-
-# SECURITY WARNING: don't run with debug turned on in production!
+# Production requires an explicit secret and allowed hosts; local development
+# opts in with DJANGO_DEBUG=true. Missing production settings fail at startup.
 DEBUG = _env_bool('DJANGO_DEBUG', False)
 
-# SECURITY WARNING: keep the secret key used in production secret!
 _DEV_ONLY_SECRET_KEY = 'django-insecure-yqgrqaj9753gjio58mygl6i^%r=1+ayq0fde$zq&^*bw)efz(q'
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY') or (_DEV_ONLY_SECRET_KEY if DEBUG else None)
 if not SECRET_KEY:

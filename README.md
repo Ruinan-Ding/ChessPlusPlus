@@ -261,12 +261,9 @@ king: allies heal 1 and gain +1 ATK/DEF/MOV; enemies take 1 damage and lose
 Bishop’s Regenerate heals only on the battlefield. Red-base deaths now count
 for attrition VP, while panel kills still grant no UP bounty. Knight costs 30 UP.
 
-Each side has separate battlefield, base and reserve allowances: 1/2/3 units
-in Initialization turns 1/2/3, one in normal play, three at postmatch and 1/2/3
-in Overtime stages. Moving a different unit in a category ends the previous
-walk until Undo. Units move only once through Initialization. Walking home
-spends a battlefield action; reserve entry ends that unit’s action, stops in
-the first three home rows and cannot attack on the same turn.
+Units move only once through Initialization. Walking home spends a battlefield
+action; reserve entry ends that unit’s action, stops in the first three home
+rows and cannot attack on the same turn.
 
 The owner's current roster and first-star numbers
 are in [shared/default-config.json](shared/default-config.json), with the earned-star schedule
@@ -318,6 +315,25 @@ are Drain 50/Fortress 250, Cleave 50/Ruin 250 and Trap 50/Blitz 250; Strengthen 
 Recharge each cost 25 CP. The shared configuration supplies these prices; path purchases,
 cooldowns, effects and use limits are unchanged.
 The full costs, cooldowns, scopes and interactions are recorded in [AGENTS.md](AGENTS.md).
+
+## Development workflow
+
+Claude development uses a cross-functional Scrum team with you as Product Owner.
+[SCRUM_WORKFLOW.md](SCRUM_WORKFLOW.md) defines the roles, events, BDD examples,
+TDD cycle, shared Definition of Done and optional future SDD. The
+[backlog](SCRUM_BACKLOG.md) tracks goals and current work without duplicating
+[AGENTS.md](AGENTS.md)'s game rules or the handoff's implementation history.
+
+Start a fresh Claude Code session in the repository and run `/scrum <task>`.
+The project supplies nine specialist profiles and enables native experimental
+agent teams in-process; no model or permission override is added. The lead
+selects relevant roles, using subagents or sequential work when appropriate.
+Interactive team support is required for native teammates; non-interactive runs
+use ordinary subagents. This is the project's enterprise-style delivery process;
+organization identity, managed policies and audit retention remain a separate
+administrative setup. See the workflow for source ownership, integration and
+honest verification when a capability is unavailable. Sprint dates and the next
+product priority remain for first planning; no Sprint is claimed as completed.
 
 ## Running the Application
 
@@ -385,6 +401,33 @@ revision ordering and restored results. `TurnDraftTests` and `TurnDraftProtocolT
 check private staging, malformed inputs, stale seats and revisions, atomic panel/combat/heal
 batches, deadline races, phase boundaries and disconnected-player commits. These run
 automatically in the existing CI jobs.
+
+CI also records a complete match over real sockets, then hands that recording and
+its expected result to the rendered solo integration suite. The comparison covers
+the full board, phase bank, turn, ending and winner colour. The recorder uses the
+frozen config in `shared/recording/match.json` so balance edits do not invalidate
+its fixed scenario; the fixture is test data, not the game's default config.
+Local client runs use the checked-in recording. `REPLAY_CONFIG` selects frozen
+rules when running `server/scripts/e2e/recording.py` manually.
+
+The coverage is split across these boundaries; unit coverage alone does not establish
+that a control reaches the rule it represents:
+
+| Boundary | Automated checks |
+|---|---|
+| Config migration, custom rules and client/server agreement | Config, combat, scoring and schedule parity suites read shared fixtures; legacy fixtures stay frozen. |
+| Movement, combat, unit kits, panel crossings and refunds | Engine/service suites plus rendered targeting, Undo, commit and reload scenarios. |
+| Pool, unit and CP abilities | `test_online_abilities.py`, `ability-rules.spec.ts` and rendered room scenarios check costs, recipients, action order and expiry. |
+| Income, captures, phase endings and overtime | Scoring/phase suites and complete two-seat ASGI and rendered solo matches. |
+| Multiplayer staging and concurrency | Draft protocol tests use two real ASGI connections and the test database; failed ability batches preserve the last valid draft and cannot partly spend or move. |
+| Replay and whole-turn rewind | Rendered step/turn buttons, autoplay pause, branch/R edits, corruption rollback, cache reconstruction and saved-state restoration. |
+| CPU control and recovery | Transport/controller and rendered room tests cover illegal batches, cancellation/requeue, expired-turn failures, partial execution rollback and manual recovery. |
+
+The headless suite skips animation delays and stubs CPU analysis in rendered tests.
+Native browser checks exercise the real CPU endpoint and replay presentation; real-socket
+scripts exercise network transport. The layout sweep checks geometry and accessibility
+sizes separately. None of these establishes that every possible custom configuration,
+move sequence, browser or network timing has been exercised.
 
 From `client/`, run `npx ng test --watch=false --browsers=ChromeHeadless --code-coverage`.
 From `server/`, run `DJANGO_DEBUG=true python manage.py test` (or `game.testsuite` for the

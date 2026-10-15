@@ -14,11 +14,10 @@ import { sectionOf } from './game-rules';
  * there; these keep a solo game honest about the same rules.
  */
 
-import { ruleOf } from './config.service';
 import { activeVet, kitActive, capStat, capUnit, rankedUnit, unitPassive } from './unit-stats';
 import { controlledUnit, controlsAt } from './unit-control';
 import { BASE_PANELS, isInsideBoard, panelOfHex } from './hex-rules';
-import { phasesOf, PLIES_PER_TURN, scoringPhases, phaseStartTurn, boardMovesPerTurn, movesPerTurn, isInitialization, isPostmatch, isSetupTurn } from './phases';
+import { phasesOf, PLIES_PER_TURN, scoringPhases, phaseStartTurn, movesPerTurn, isInitialization } from './phases';
 
 /**
  * A move record, as loosely as the history actually holds one: what a record
@@ -204,7 +203,7 @@ export function boardMovesAt(history: Move[] | undefined, ply: number, color: st
  * go.
  */
 export function boardMoveLandings(
-  history: Move[] | undefined, ply: number, color: string,config?: any
+  history: Move[] | undefined, ply: number, color: string
 ): Set<string> {
   const out = new Set<string>();
   for (const move of history ?? []) {
@@ -307,8 +306,7 @@ export function promotionHeals(config: any, board: Record<string, any>, history:
 }
 
 export function regenerationHeals(config: any, board: Record<string, any>, history: Move[], ply: number, color: string): Move[] {
-  return healVeterans(config, board, history, ply, (unit, at) => {
-    const [q, r] = at.split(',').map(Number);
+  return healVeterans(config, board, history, ply, unit => {
     return unit.color === color
     && unitPassive(unit.unit_id, config, activeVet(unit, unit.panel, config))?.effect === 'regenerate';
   }, 'regenerationHeal');

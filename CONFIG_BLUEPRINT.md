@@ -3,7 +3,8 @@
 **Current shipped match rules, with implemented JSON paths.** Tick a rule after owner review.
 **Bold** values are the draft defaults. Nothing reads this document; both engines read
 `shared/default-config.json`. Units and abilities remain outside this checklist.
-See [CONFIGURATION.md](CONFIGURATION.md) for editing and compatibility. Last updated 11 Oct 2026.
+See [CONFIGURATION.md](CONFIGURATION.md) for editing and compatibility. Rules last changed
+11 Oct 2026; checked against the shared defaults on 15 Oct 2026.
 
 ## New since the last review
 

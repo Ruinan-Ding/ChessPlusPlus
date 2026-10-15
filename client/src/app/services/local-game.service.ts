@@ -1,18 +1,16 @@
-import { ReplayAction, ReplayFile, ReplayFrame } from './replay-session.service';
-import { sectionOf } from './game-rules';
-import { attacksAllowed, stageRules } from './phases';
-import { migrateConfig } from './game-rules';
+import { RecordedAction, ReplayFile, ReplayFrame } from './replay-session.service';
+import { migrateConfig, sectionOf } from './game-rules';
 import { advanceBuffs, UnitBuff } from './ability-rules';
 import { controlsAt, controlledUnit } from './unit-control';
 import { combatExchange, CombatBonuses, attackStats, carries } from './unit-combat';
 import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 import { ConfigService, ruleOf } from './config.service';
-import { activeVet, kitActive, capStat, capUnit, rankedUnit, unitPassive, unitStats } from './unit-stats';
+import { activeVet, capStat, capUnit, rankedUnit, unitPassive, unitStats } from './unit-stats';
 import type { BoardState } from './game-state.service';
 import { BASE_PANELS, computeLegalMoves, computeMoveCosts, canAttack, healingAmount, hexDistanceKeys, inHomeRows, isInsideBoard, panelOfHex } from './hex-rules';
 import { boardMoveLandings, boardMoveUids, boardMovesAt, unitActionActor, unitActionUids, finishedUnitUids, battlefieldActionBonus, extraActionUids, lockedPanelUnits, openingMovedHexes, panelMoverAllowed, unitVeterancy, promotionHeals, regenerationHeals } from './history-rules';
-import { boardMovesPerTurn, movesPerTurn, overtimeTollAt, isEntryOpen, isHomecomingOpen, isInitialization, isSetupTurn, isWrapOpen, noAttackMessage } from './phases';
+import { attacksAllowed, boardMovesPerTurn, movesPerTurn, stageRules, overtimeTollAt, isEntryOpen, isHomecomingOpen, isInitialization, isSetupTurn, isWrapOpen, noAttackMessage } from './phases';
 import { PhaseBank, bankEndedPhases, halftimeUpAwards, scheduleEnding, withdrawalRefund, withdrawnUnit, unitPoints } from './match-score';
 
 /**
@@ -113,7 +111,7 @@ interface LocalGame {
   phaseBank?: PhaseBank;
   abilityBuffs?: Record<string, UnitBuff>;
   turnCheckpoints?: TurnCheckpoint[];
-  replayJournal?: { version: 1; actions: ReplayAction[] };
+  replayJournal?: { version: 1; actions: RecordedAction[] };
 }
 
 /**
@@ -133,7 +131,7 @@ export class LocalGameService {
 
   private game: LocalGame | null = null;
   replayMode = false;
-  private pendingRecording: { ply: number; actions: ReplayAction[] } | null = null;
+  private pendingRecording: { ply: number; actions: RecordedAction[] } | null = null;
   private rejected = false;
 
   captureReplayFrame(ui: any): ReplayFrame {
@@ -289,7 +287,7 @@ export class LocalGameService {
         break;
 
       case 'panel_move':
-        this.walkInPanel(msg.from, msg.to, msg.unit, msg.panel, msg.cost, msg.price, msg.effectsBefore);
+        this.walkInPanel(msg.from, msg.to, msg.unit, msg.panel, msg.cost, msg.effectsBefore);
         break;
 
       case 'panel_attack':
@@ -650,11 +648,11 @@ export class LocalGameService {
    * These used to reach no engine at all. The board moved the unit in its own
    * memory, so a reload re-dealt it to where it began and the other player
    * never saw it move. Recorded, the panels are replayed from the history in
-   * order - here and on the server, which re-derives the walk's cost and the
-   * wrap's price where this engine takes them as sent, having nobody to cheat.
+   * order here and on the server. Both engines derive the wrap price from
+   * the match config; this engine takes the staged movement cost from the board.
    */
   private walkInPanel(
-    from: string, to: string, unit: any, panel?: string, cost?: number, price?: number, effectsBefore?: any[],
+    from: string, to: string, unit: any, panel?: string, cost?: number, effectsBefore?: any[],
   ): void {
     const g = this.game;
     if (!g || !g.started || g.endReason) return;
@@ -789,7 +787,7 @@ export class LocalGameService {
       });
       return;
     }
-    if (boardMoveLandings(g.moveHistory, g.turnNumber, movingColor, this.game?.config).has(from)) {
+    if (boardMoveLandings(g.moveHistory, g.turnNumber, movingColor).has(from)) {
       this.emit({ type: 'invalid_move', message: 'That unit has already moved this turn' });
       return;
     }
@@ -1211,7 +1209,7 @@ export class LocalGameService {
     // The allowance counts moves; the owner's rule counts units. Without this
     // a side with three could play A, then B, then A again - each message
     // legal on its own, so the unit covered twice its MOV in one turn.
-    if (boardMoveLandings(g.moveHistory, g.turnNumber, movingColor, this.game?.config).has(from)) {
+    if (boardMoveLandings(g.moveHistory, g.turnNumber, movingColor).has(from)) {
       this.emit({ type: 'invalid_move', message: 'That unit has already moved this turn' });
       return;
     }
@@ -1436,39 +1434,13 @@ export class LocalGameService {
       ? 'regicide' : 'elimination';
   }
 
-  /**
-   * Overtime's toll, taken at the very end of a turn: the side that just
-   * played loses HP off its commander.
-   *
-   * **Real damage, not a mark.** A king on the toll or less dies of it, which
-   * is the owner's rule - and it is what eventually settles a deathmatch
-   * neither side is winning on points. How much climbs 1, 3, 5 through
-   * overtime's three stretches, so a match that will not end has its ending
-   * brought forward rather than merely waited for. It lands after everything else the turn did, so a blow
-   * struck this turn is resolved before the toll rather than after it, and a
-   * king killed in the fight is already gone when this looks for one.
-   *
-   * Read off `currentTurn` rather than off the ply's parity: the side that
-   * just played is known here for certain, and cannot drift from it.
-   *
-   * Returns the side it felled, if it felled one - which a pass needs, since
-   * a pass has no other reason to look at whether anybody is beaten and must
-   * not start doing so for a board that was already in that state.
-   *
-   * Not the browser engine's alone any more: `game_logic.overtime_toll` takes
-   * the same toll on a move, a pass and the clock's pass, which is why the
-   * board's mark is over HP that really moved in a networked room too. The
-   * schedule is the fourth mirror that made possible, and `phases.py` carries
-   * the warning about keeping it in step.
+  /** Apply the configured commander toll after combat and before ply advance.
+   * Read the side from currentTurn and return it only if the toll kills its
+   * commander. Matches game_logic.overtime_toll.
    */
   private overtimeToll(board: Record<string, any>): 'white' | 'black' | null {
     const g = this.game!;
-    // Still the ply just played: it is bumped after this. How much it costs is
-    // the ply's business - overtime runs in three stretches and the toll
-    // climbs 1, 3, 5 through them - and `overtimeTollAt` answers 0 outside
-    // overtime, so it is the "not yet" gate as well as the amount. A
-    // `turnNumber < OVERTIME_FIRST_PLY` test beside it would be a second
-    // place holding the schedule, and the two could come to disagree.
+    // The saved schedule supplies the toll and returns zero outside overtime.
     const toll = overtimeTollAt(g.turnNumber, this.game?.config);
     if (!toll) return null;
     const color = this.colorOf(g.currentTurn);

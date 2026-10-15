@@ -1,6 +1,7 @@
 """Record a complete real-socket match and optionally export it for browser playback.
 
 E2E_PORT selects an isolated server; REPLAY_OUTPUT selects the downloaded fixture.
+REPLAY_CONFIG optionally supplies frozen fixture rules, independent of new balance edits.
 """
 import json
 import os
@@ -32,7 +33,9 @@ def run():
             ws.send({'type': 'join_game_room', 'gameId': game, 'username': name,
                      'token': seat['token'], 'secret': name + '-secret'})
             ws.type('join_game_room_success'); players.append(ws)
-        config = json.loads((Path(__file__).parents[3] / 'shared/default-config.json').read_text(encoding='utf-8'))
+        source = Path(os.environ.get('REPLAY_CONFIG', Path(__file__).parents[3] / 'shared/default-config.json'))
+        supplied = json.loads(source.read_text(encoding='utf-8'))
+        config = supplied.get('config', supplied)
         config['match']['turnTimeLimit'] = 0
         config['match']['cpAtStart'] = 500
         config['economy']['pointsAtStart'] = 500
@@ -87,7 +90,8 @@ def run():
             Path(output).write_text(json.dumps(archive))
             Path(output + '.expected.json').write_text(json.dumps({
                 'board': state['boardState'], 'turn': state['turnNumber'],
-                'phaseBank': state['phaseBank'], 'endReason': state['endReason']}))
+                'phaseBank': state['phaseBank'], 'endReason': state['endReason'],
+                'winnerColor': 'white' if state.get('winner') == state['playerWhite'] else 'black' if state.get('winner') == state['playerBlack'] else ''}))
         check('archive contains no seat secret or private draft', all('secret' not in json.dumps(a) and 'token' not in json.dumps(a) for a in tape))
     finally:
         for ws in sockets:

@@ -1,3 +1,5 @@
+import recordedMatch from '../../../../../shared/recording/match.json';
+import recordedResult from '../../../../../shared/recording/match.json.expected.json';
 import { CpuService } from '../../services/cpu.service';
 import configuredMatch from '../../services/game-rules-parity.json';
 import { DEFAULT_GAME_CONFIG as CURRENT_GAME_CONFIG, ConfigService } from '../../services/config.service';
@@ -128,15 +130,28 @@ describe('Solo game through the rendered room and real services', () => {
     writeStore('session', 'cpp.replayActive', '1');
     engine.openReplay(file.config, 'Flow', ws.captureReplayFrame(ui));
     room.replayReady = true;
-    (room as any).rememberReplayFrame(0, ws.captureReplayFrame(ui));
-    settle();
+    (room as any).replayController.remember(0, ws.captureReplayFrame(ui));
+    (room as any).cdr.markForCheck(); settle();
   };
   const seek = (target: number) => {
     let done = false, error: unknown;
-    (room as any).seekReplay(target, false).then(() => done = true).catch((failure: unknown) => { error = failure; done = true; });
+    (room as any).replayController.seek(target, false).then(() => done = true).catch((failure: unknown) => { error = failure; done = true; });
     for (let i = 0; i < 60 && !done; i++) { tick(25); flushMicrotasks(); fixture.detectChanges(); }
     expect(error).toBeUndefined(); expect(done).toBeTrue();
   };
+
+  it('replays a complete real online recording with the same board, phase bank and ending', run(() => {
+    start('White', recordedMatch.config);
+    enableReplay(recordedMatch.actions);
+    seek(recordedMatch.actions.length);
+    expect(room.replayCorruptions).toEqual([]);
+    expect(room.replayCursor).toBe(recordedMatch.actions.length);
+    expect<unknown>(state.snapshot.boardState).toEqual(recordedResult.board);
+    expect(state.snapshot.phaseBank).toEqual(recordedResult.phaseBank);
+    expect(state.snapshot.turnNumber).toBe(recordedResult.turn);
+    expect(state.snapshot.endReason).toBe(recordedResult.endReason);
+    expect<string>(state.myColor(state.snapshot.winner)).toBe(recordedResult.winnerColor);
+  }));
 
   it('offers Myself, CPU and an unavailable AI explanation beneath Me', run(() => {
     configure();
@@ -349,6 +364,49 @@ describe('Solo game through the rendered room and real services', () => {
     expect(localStorage.getItem('cpp.localGame.v1')).toBe(normal);
   }));
 
+  it('navigates replay steps and completed turns through the controls, pauses autoplay and edits a branch', run(() => {
+    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king', '4,0': 'pawn' } };
+    start('White', config);
+    enableReplay([
+      { ply: 1, color: 'white', command: { type: 'make_move', from: '0,0', to: '1,0', more: true } },
+      { ply: 1, color: 'white', command: { type: 'make_move', from: '1,0', to: '2,0', more: true } },
+      { ply: 1, color: 'white', command: { type: 'pass_turn' } },
+      { ply: 2, color: 'black', command: { type: 'make_move', from: '4,0', to: '3,0', more: true } },
+      { ply: 2, color: 'black', command: { type: 'pass_turn' } },
+    ]);
+    expect(fixture.nativeElement.querySelector('[aria-label="Previous step"]').disabled).toBeTrue();
+    click('[aria-label="Next step"]');
+    expect(room.replayCursor).toBe(1); expect(room.stagedBoard!['1,0'].uid).toBe('w0,0');
+    click('[aria-label="Next turn"]');
+    expect(room.replayCursor).toBe(2); expect(state.snapshot.turnNumber).toBe(1);
+    expect(room.stagedBoard!['2,0'].uid).toBe('w0,0');
+    click('[aria-label="Next turn"]');
+    expect(room.replayCursor).toBe(4); expect(state.snapshot.turnNumber).toBe(2);
+    expect(room.stagedBoard!['3,0'].uid).toBe('b4,0');
+    click('[aria-label="Previous turn"]');
+    expect(room.replayCursor).toBe(2); expect(state.snapshot.turnNumber).toBe(1);
+    click('[aria-label="Previous step"]');
+    expect(room.replayCursor).toBe(1);
+    click('[aria-label="Autoplay replay"]');
+    expect(room.replayPlaying).toBeTrue(); expect(room.replayCursor).toBe(2);
+    click('[aria-label="Pause replay"]'); tick(150); settle();
+    expect(room.replayPlaying).toBeFalse(); expect(room.replayCursor).toBe(2);
+    click('.replay-controls button', 'Branch here');
+    expect(room.showBranchWarning).toBeTrue();
+    click('dialog button', 'Branch here');
+    for (const label of ['Next step', 'Next turn', 'Autoplay replay']) {
+      expect(fixture.nativeElement.querySelector(`[aria-label="${label}"]`).disabled).withContext(label).toBeTrue();
+    }
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true })); settle();
+    expect(room.stagedActions.length).toBe(1); expect(room.stagedBoard!['1,0'].uid).toBe('w0,0');
+    expect(ws.replay.session!.branchActions?.length).toBe(1);
+    finish();
+    expect(state.snapshot.boardState['1,0'].uid).toBe('w0,0');
+    expect(ws.replay.session!.branchActions?.map(action => action.command.type)).toEqual(['make_move', 'pass_turn']);
+    expect(room.replayCorruptions).toEqual([]);
+  }));
+
   it('skips a corrupt compound action atomically and continues with a valid move', run(() => {
     const config: any = structuredClone(CURRENT_GAME_CONFIG);
     config.stageRules.opening.attack = true;
@@ -406,7 +464,7 @@ describe('Solo game through the rendered room and real services', () => {
     start('White', config);
     enableReplay([{ ply: 1, color: 'black', command: { type: 'result', reason: 'resign' } }]);
     seek(1); expect(room.gameOver).toBeTrue(); expect(state.snapshot.winner).toBe('Flow'); expect(room.replayError).toBe('');
-    (room as any).clearReplayFrames(); seek(0);
+    (room as any).replayController.clear(); seek(0);
     expect(room.gameOver).toBeFalse(); expect(state.snapshot.turnNumber).toBe(1); expect(state.snapshot.boardState['0,0'].hp).toBe(12);
   }));
 
@@ -495,11 +553,11 @@ describe('Solo game through the rendered room and real services', () => {
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config); enableReplay([]);
     const base = ws.captureReplayFrame((room as any).localUiState());
-    for (let i = 1; i <= 6; i++) (room as any).rememberReplayFrame(i, { core: base.core,
+    for (let i = 1; i <= 6; i++) (room as any).replayController.remember(i, { core: base.core,
       ui: { ...base.ui, gameRoomMessages: [{ content: 'x'.repeat(2 * 1024 * 1024) }] } });
-    expect((room as any).replayFrames.size).toBeLessThan(6);
-    expect((room as any).replayCacheSize).toBeLessThanOrEqual(16 * 1024 * 1024);
-    expect((room as any).replayFrames.get(0).core.config).toBeUndefined();
+    expect((room as any).replayController.frames.size).toBeLessThan(6);
+    expect((room as any).replayController.cacheSize).toBeLessThanOrEqual(16 * 1024 * 1024);
+    expect((room as any).replayController.frames.get(0).core.config).toBeUndefined();
   }));
 
   const reload = () => {

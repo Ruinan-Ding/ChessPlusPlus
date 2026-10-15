@@ -8,10 +8,8 @@ export type NavigationContext = 'setup' | 'game-room' | 'lobby' | 'none';
   providedIn: 'root'
 })
 export class NavigationStateService {
-  // Track whether we're intentionally navigating between connected components
   private intentionalNavigationSubject = new BehaviorSubject<boolean>(false);
   
-  // Track the current navigation context
   private navigationContextSubject = new BehaviorSubject<NavigationContext>('none');
   
   /**

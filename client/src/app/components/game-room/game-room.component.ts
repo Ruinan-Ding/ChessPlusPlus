@@ -1,13 +1,14 @@
-import { downloadReplay, ReplayAction, ReplayFile, ReplayFrame, REPLAY_COMMANDS, replayCommand, replayFrameBytes, REPLAY_MAX_FRAME_BYTES, REPLAY_CACHE_BYTES } from '../../services/replay-session.service';
+import { CpuTurnController } from '../../services/cpu-turn-controller';
+import { ReplayController } from '../../services/replay-controller';
+import { StagedAction, StagedEffect, AbilitySpend, StagedTurnEvent, LocalTurnCommand, TimedCommand, actionUid, boardActions, stagedActionRecords, stagedTurnEvents, onlineTurnCommands, soloTurnCommands } from '../../services/turn-staging';
+import { GameCommand, RecordedAction, parseGameCommand, recordCommand } from '../../services/game-command';
+import { downloadReplay, ReplayAction, ReplayFile } from '../../services/replay-session.service';
 import { CpuService, CpuDifficulty, OpponentKind } from '../../services/cpu.service';
 import { abilityDescription, rechargeRefundNote } from '../../services/ability-description';
 import { sectionOf } from '../../services/game-rules';
-import { overtimeFirstPly, attacksAllowed, stageRules } from '../../services/phases';
-import { phasesOf, scoringPhases } from '../../services/phases';
 
 import { actionTime } from '../../services/action-time';
 import { controlsAt } from '../../services/unit-control';
-import { UNIT_ACTIVES } from '../../services/config.service';
 import { carries, combatExchange, tauntAllows, CombatBonuses, attackStats, combatStatuses } from '../../services/unit-combat';
 import { AfterViewChecked, Component, DoCheck, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef, HostListener, NgZone, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
@@ -21,20 +22,20 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { SharedDataService, ChatMessage, User, selfFirst } from '../../services/shared-data.service';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import { GameStateService } from '../../services/game-state.service';
-import type { BoardState, PieceData, PieceIdentity } from '../../services/game-state.service';
+import type { BoardState, PieceData } from '../../services/game-state.service';
 import { advanceBuffs, advanceUnitCooldowns, cooldownAfterTurn, stackEffect, passiveStat, discountedAbilityCost, statSetting, stripPositiveEffects } from '../../services/ability-rules';
 import type { UnitBuff, UnitCooldown } from '../../services/ability-rules';
 import { AuthService } from '../../services/auth.service';
 import { AnimStep, FallenUnit, GameBoardComponent, SelectedUnit, hexNumberMap, panelOfHex } from '../game-board/game-board.component';
 import { positionalBonus, attackTiers, canAttack, healingAmount, hexDistanceKeys, hexEffectBand, HexEffectArea, isInsideBoard, BASE_PANELS } from '../../services/hex-rules';
-import { PhaseBank, capOf, cpAwarded, deathsOf, decidedOnPoints, matchVerdict, phaseTotal, scheduledPoints, withdrawalRefund, withdrawnUnit, unitPoints } from '../../services/match-score';
+import { PhaseBank, capOf, cpAwarded, deathsOf, decidedOnPoints, matchVerdict, phaseTotal, scheduledPoints, withdrawnUnit, unitPoints } from '../../services/match-score';
 import { buildPlayback, historyPlayback } from '../../services/playback';
 import playbackTimings from '../../../../../shared/playback-timings.json';
 import { fitHeader } from './banner-fit';
-import { ConfigService, DEFAULT_GAME_CONFIG, ruleOf, UNIT_PASSIVES } from '../../services/config.service';
+import { ConfigService, DEFAULT_GAME_CONFIG, ruleOf, UNIT_ACTIVES, UNIT_PASSIVES } from '../../services/config.service';
 import { kitActive, activeVet, capStat, capUnit, canReceiveBoost, rankedUnit, unitEffect, unitPassive, unitStats } from '../../services/unit-stats';
 import { boardMoveUids, unitActionActor, unitActionUids, finishedUnitUids, battlefieldActionBonus, extraActionUids, openingMovedHexes, unitVeterancy } from '../../services/history-rules';
-import { boardMovesPerTurn, movesPerTurn, handOversBy, isInitialization, isOvertime, isPostmatch, isSetupTurn, phaseIndexAt, stageAt, turnHeading, turnOf } from '../../services/phases';
+import { attacksAllowed, boardMovesPerTurn, movesPerTurn, handOversBy, isInitialization, isOvertime, isPostmatch, overtimeFirstPly, phaseIndexAt, phasesOf, scoringPhases, stageAt, stageRules, turnHeading, turnOf } from '../../services/phases';
 import { AudioService } from '../../services/audio.service';
 import { readStore, removeStore, writeStore } from '../../services/storage';
 import { closeUserMenu, openUserMenu as showUserMenu } from '../../services/user-menu';
@@ -152,7 +153,7 @@ interface ChoiceUndo {
   swapDebt: number;
   picked: Array<{ side: 'mine' | 'opponent'; id: string }>;
 }
-interface PendingChoice { at: number; command: any; undo?: ChoiceUndo; }
+interface PendingChoice extends TimedCommand { undo?: ChoiceUndo; }
 
 interface LocalUiState {
   replay?: ReplayFrameState;
@@ -262,16 +263,6 @@ interface Standing {
 /** Compatibility message for a backend that predates authoritative abilities. */
 const ABILITIES_SOLO_ONLY = 'Unavailable: abilities are single-player only for now.';
 
-/**
- * An HP back per turn for every unit standing in a **base** - the squad dealt
- * there at the start as much as a unit that walked home to mend. One rule for
- * both: they stand in the same panel, and a wound closing itself for one of
- * them while the identical wound stayed open on the unit beside it is the
- * kind of thing a player reads as a bug, because it is.
- *
- * A reserve does not mend. It is a staging area, not a hospital.
- */
-
 /** Seconds of quiet between the toll's knell and the mend's chime when a turn ends on both. */
 const UPKEEP_SOUND_GAP = 0.08;
 
@@ -279,115 +270,6 @@ const UPKEEP_SOUND_GAP = 0.08;
 export interface WithdrawnUnit {
   at: string;
   unit: PieceData;
-}
-
-interface StagedAction {
-  board: BoardState;
-  /** Where the unit stood at the start of the turn. */
-  from: string;
-  /** Where it stands after this action. */
-  to: string;
-  /** Steps walked so far this turn. */
-  used: number;
-  /** Hex it struck, or null for a plain step. */
-  attack: string | null;
-  /** Friendly battlefield hex healed instead of attacking. No ability spend. */
-  heal?: string;
-  priorBuffs?: Record<string, UnitBuff>;
-  combatBonuses?: CombatBonuses;
-  moveBonus?: number;
-  pathMov?: number;
-  effects?: any[];
-  extraDeaths?: FallenUnit[];
-  endsAction?: boolean;
-  sourcePanel?: string;
-  secondStrike?: boolean;
-  secondCounter?: boolean;
-  actor?: PieceIdentity;
-  counterActor?: PieceIdentity;
-  refundColor?: string;
-  unitUid?: string;
-  attackFrom?: string;
-  afterAttackWalk?: boolean;
-  /** When it was staged, so Undo can tell it from a panel walk. */
-  at?: number;
-  /** What walking home into the base paid back, for Undo to take away again. */
-  refund?: number;
-  killed?: string;
-  /** What died there, so the board can draw its ghost under the skull. */
-  killedUnit?: { unit_id: string; color: 'white' | 'black' };
-  /** Simultaneous damage marks for an attack with splash. */
-  impactTargets?: AnimStep[];
-  /** What an ability cast charged, for Undo to hand back. */
-  spend?: AbilitySpend;
-  /**
-   * Set when the swing came out of a panel: the reserve unit that made it,
-   * and what it has left once the answer landed. No board holds a reserve, so
-   * both ride here - which also means they are dropped wherever staging is.
-   */
-  panelUnit?: PieceData;
-  panelUnitHp?: number;
-  /** Which panel it landed in - a base mends its wounded, a reserve does not. */
-  panelName?: string;
-  /** Whether the defender answered. A base never does, nor does anything out of reach. */
-  countered?: boolean;
-  /**
-   * Set when an ability moved the HP of a unit standing on the BOARD: the hex
-   * and what it has left. No engine holds an ability, so - exactly like the
-   * panel pair above - the change has to be sent as its own message or the
-   * next state update rolls it straight back. Healing a king off 1 HP and
-   * watching overtime kill it anyway was this: the staged board knew, and
-   * nothing else did.
-   */
-  hexHp?: number;
-  hexKey?: string;
-  /** Who it was, so the engine can find it if the walk has moved it since. */
-  hexUid?: string;
-  /** What to write over the unit as the cast plays: `+20`, `-14`. */
-  mark?: string;
-  /** The panel end was the defender, not the attacker. */
-  intoPanel?: boolean;
-  /** Whether that panel unit strikes back - a reserve does, a base does not. */
-  counters?: boolean;
-}
-
-/**
- * Everything a cast took, and what the unit held before it. Data rather than
- * a closure because the staged stack is persisted as JSON.
- */
-interface AbilitySpend {
-  /** Whose points paid. */
-  side: 'mine' | 'opponent';
-  /** Which cooldown row was armed - the unit's own, or a side's. */
-  row: 'mine' | 'opponent' | 'unit';
-  index: number;
-  cost: number;
-  /** The hex it landed on, or '' for a universal ability that named none. */
-  hex?: string;
-  /** Points the cast handed back, to take away again on Undo. */
-  gain?: number;
-  upGain?: number;
-  uid: string;
-  targetUid?: string;
-  extraUid?: string;
-  priorCooldown: number;
-  priorPairCooldowns?: Array<{ index: number; turns: number }>;
-  /** For a unit's own ability: its cooldown before the cast, or null for none. */
-  priorUnitCooldown?: UnitCooldown | null;
-  /** Whose `uses` the cast counted against - a side, or a unit's uid. */
-  holder?: string;
-  /** How many of them had been spent before it. */
-  priorUses?: number;
-  useKey?: string;
-  /** Read from stacks saved before `uses`; nothing writes it now. */
-  priorUltimate?: boolean;
-  priorBuff: UnitBuff | null;
-  priorUsed: boolean;
-  up?: boolean;
-  /** Recipient animations retained for staging, recap and reload. */
-  visuals?: AnimStep[];
-  /** The recipients captured by a universal debuff, for atomic Undo and reload. */
-  targets?: Array<{ uid: string; priorBuff: UnitBuff | null; priorUsed: boolean }>;
 }
 
 /** One fallen unit for the board, or nothing if this action killed nobody. */
@@ -759,7 +641,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
 
     this.clearRevealCountdown();
     this.clearTurnClock();
-    this.replayPlaying = false; this.replaySeekToken++;
+    this.replayPlaying = false; this.replayController.cancel();
     if (this.endModalTimer) {
       clearTimeout(this.endModalTimer);
       this.endModalTimer = null;
@@ -878,19 +760,38 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   get replayForwardEnabled(): boolean {
     return this.replayReady && !this.replayBusy && this.replayReadOnly && this.replayCursor < this.replayActions.length;
   }
-  replayBusy = false;
-  replayReady = false;
+  private readonly replayController = new ReplayController({
+    session: () => this.wsService.replay?.session ?? null,
+    capture: () => this.wsService.captureReplayFrame(this.localUiState()),
+    restore: frame => this.wsService.restoreReplayFrame(frame),
+    render: () => this.replayRender(), execute: (action, animate) => this.executeReplayAction(action, animate),
+    disposed: () => this.destroy$.isStopped, beforeSeek: () => this.cancelManualReplay(),
+    changed: () => this.cdr.markForCheck(),
+    settled: () => {
+      this.replayExecuting = false; this.restoringOnlineDraft = false;
+      this.saveReplaySession(); this.cdr.markForCheck();
+    },
+    reset: async () => {
+      const session = this.wsService.replay.session!, file = session.file;
+      const saved = session.frame; delete session.frame;
+      await this.wsService.openReplay(this.username); session.frame = saved;
+      this.wsService.sendMessage({ type: 'request_game_state' }); await this.replayRender();
+      this.handleWebSocketMessage({ type: 'game_started', ...this.gameState.snapshot, config: file.config, gameId: 'local' });
+      await this.replayRender();
+    },
+  });
+  get replayBusy(): boolean { return this.replayController.busy; }
+  set replayBusy(value: boolean) { this.replayController.busy = value; }
+  get replayReady(): boolean { return this.replayController.ready; }
+  set replayReady(value: boolean) { this.replayController.ready = value; }
+  get replayPlaying(): boolean { return this.replayController.playing; }
+  set replayPlaying(value: boolean) { this.replayController.playing = value; }
+  get replayError(): string { return this.replayController.error; }
+  set replayError(value: string) { this.replayController.error = value; }
+  get replayCorruptions(): string[] { return this.replayController.corruptions; }
   replayExecuting = false;
-  replayPlaying = false;
-  replayError = '';
-  replayCorruptions: string[] = [];
   showBranchWarning = false;
-  private replaySeekToken = 0;
-  private replayFrames = new Map<number, ReplayFrame>();
-  private replaySkipped = new Set<number>();
-  private replayFrameSizes = new Map<number, number>();
-  private replayCacheSize = 0;
-  private matchJournal: { version: number; actions: ReplayAction[] } | null = null;
+  private matchJournal: { version: number; actions: RecordedAction[] } | null = null;
 
   get canSaveReplay(): boolean {
     return this.replayActive ? !this.replayBusy : this.gameOver && !!(this.isSinglePlayer ? this.wsService.replayRecording : this.matchJournal);
@@ -918,7 +819,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       if (this.destroy$.isStopped) return;
     }
     const session = this.wsService.replay.session!;
-    this.replaySkipped = new Set(session.skipped);
+    this.replayController.restoreSkipped(session.skipped);
     if (session.frame) {
       this.wsService.restoreReplayFrame(session.frame);
       await this.replayRender();
@@ -927,26 +828,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       await this.replayRender();
     }
     this.freshGameStart = false;
-    this.rememberReplayFrame(session.cursor, this.wsService.captureReplayFrame(this.localUiState()));
+    this.replayController.remember(session.cursor, this.wsService.captureReplayFrame(this.localUiState()));
     this.replayReady = true;
     this.saveReplaySession(); this.cdr.markForCheck();
-  }
-
-  private clearReplayFrames(): void {
-    this.replayFrames.clear(); this.replayFrameSizes.clear(); this.replayCacheSize = 0;
-  }
-
-  private rememberReplayFrame(cursor: number, frame: ReplayFrame): void {
-    const bytes = replayFrameBytes(frame);
-    this.replayCacheSize -= this.replayFrameSizes.get(cursor) ?? 0;
-    this.replayFrameSizes.delete(cursor); this.replayFrames.delete(cursor);
-    if (bytes > REPLAY_MAX_FRAME_BYTES) return;
-    while (this.replayFrames.size && (this.replayFrames.size >= 12 || this.replayCacheSize + bytes > REPLAY_CACHE_BYTES)) {
-      const key = [...this.replayFrames.keys()].find(index => index !== 0) ?? 0;
-      this.replayCacheSize -= this.replayFrameSizes.get(key) ?? 0;
-      this.replayFrameSizes.delete(key); this.replayFrames.delete(key);
-    }
-    this.replayFrames.set(cursor, frame); this.replayFrameSizes.set(cursor, bytes); this.replayCacheSize += bytes;
   }
 
   private async replayRender(): Promise<void> {
@@ -970,8 +854,8 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     if (this.gameOver) return;
     const color = this.gameState.myColor(this.gameState.snapshot.currentTurn) as 'white' | 'black';
     const draft = this.onlineTurnCommands().filter(command => command.type !== 'pass_turn')
-      .map(command => ({ ply, color, command: replayCommand(command) }));
-    session.branchActions = [...(session.branchActions ?? []).filter(action => action.ply < ply), ...draft];
+      .map(command => ({ ply, color, command: recordCommand(command) }));
+    session.branchActions = [...(session.branchActions ?? []).filter(action => typeof action.ply === 'number' && action.ply < ply), ...draft];
     session.cursor = session.branchActions.length;
   }
 
@@ -986,130 +870,21 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   requestReplayBranch(): void { this.replayPlaying = false; this.showBranchWarning = true; }
 
   confirmReplayBranch(): void {
-    const session = this.wsService.replay.session;
-    if (!session || this.replayBusy || session.branched) return;
-    this.replayPlaying = false;
-    const skipped = new Set(session.skipped);
-    session.branchActions = session.file.actions.slice(0, session.cursor).filter((_, i) => !skipped.has(i));
-    this.replaySkipped.clear();
-    session.cursor = session.branchActions.length; session.skipped = []; session.branched = true;
-    this.showBranchWarning = false;
-    this.clearReplayFrames(); this.rememberReplayFrame(session.cursor, this.wsService.captureReplayFrame(this.localUiState()));
-    this.saveReplaySession(); this.cdr.markForCheck();
+    if (this.replayBusy || !this.replayReadOnly) return;
+    this.replayController.branch(); this.showBranchWarning = false;
   }
-
-  async replayNavigate(kind: 'step-back' | 'step-next' | 'turn-back' | 'turn-next'): Promise<void> {
-    if (this.replayBusy || !this.replayReady) return;
-    if (kind.endsWith('next') && !this.replayForwardEnabled) return;
-    this.replayPlaying = false;
-    const cursor = this.replayCursor, tape = this.replayActions;
-    let target = kind === 'step-back' ? cursor - 1 : cursor + 1;
-    if (kind === 'turn-next') {
-      const next = tape.findIndex((action, i) => i >= cursor && (action.command.type === 'pass_turn' || action.command.type === 'result'));
-      target = next < 0 ? tape.length : next > cursor ? next : (() => {
-        const later = tape.findIndex((action, i) => i > cursor && (action.command.type === 'pass_turn' || action.command.type === 'result'));
-        return later < 0 ? tape.length : later;
-      })();
-    } else if (kind === 'turn-back') {
-      const endings = tape.map((action, i) => ['pass_turn', 'result'].includes(action.command.type) && i < cursor ? i : -1).filter(i => i >= 0);
-      target = endings.at(-1) ?? 0;
-    }
-    await this.seekReplay(Math.max(0, Math.min(tape.length, target)), true);
+  replayNavigate(kind: 'step-back' | 'step-next' | 'turn-back' | 'turn-next'): Promise<void> {
+    return this.replayController.navigate(kind);
   }
-
-  async toggleReplayAutoplay(): Promise<void> {
-    if (this.replayPlaying) { this.replayPlaying = false; return; }
-    if (!this.replayForwardEnabled) return;
-    this.replayPlaying = true;
-    while (this.replayPlaying && this.replayReadOnly && this.replayCursor < this.replayActions.length) {
-      await this.seekReplay(this.replayCursor + 1, true);
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    this.replayPlaying = false; this.cdr.markForCheck();
-  }
-
-  cancelReplaySeek(): void { this.replayPlaying = false; this.replaySeekToken++; }
-
-  private async seekReplay(target: number, animate: boolean): Promise<void> {
-    const session = this.wsService.replay.session;
-    if (!session || this.replayBusy) return;
-    this.cancelManualReplay();
-    this.replayBusy = true;
-    const token = ++this.replaySeekToken;
-    try {
-      if (target < session.cursor) {
-        const closest = [...this.replayFrames.keys()].filter(i => i <= target).sort((a, b) => b - a)[0];
-        if (closest !== undefined) {
-          this.wsService.restoreReplayFrame(this.replayFrames.get(closest)!); session.cursor = closest;
-          await this.replayRender();
-        } else {
-          const file = session.file;
-          const saved = session.frame; delete session.frame;
-          await this.wsService.openReplay(this.username);
-          session.frame = saved;
-          this.wsService.sendMessage({ type: 'request_game_state' }); await this.replayRender();
-          this.handleWebSocketMessage({ type: 'game_started', ...this.gameState.snapshot, config: file.config, gameId: 'local' });
-          await this.replayRender(); session.cursor = 0;
-        }
-      }
-      while (session.cursor < target && token === this.replaySeekToken && !this.destroy$.isStopped) {
-        const index = session.cursor, action = this.replayActions[index];
-        const before = this.wsService.captureReplayFrame(this.localUiState());
-        let error = '';
-        try {
-          if (replayFrameBytes(before) > REPLAY_MAX_FRAME_BYTES) throw new Error('Replay state exceeds the 8 MiB processing limit.');
-          await this.executeReplayAction(action, animate && index === target - 1);
-          if (replayFrameBytes(this.wsService.captureReplayFrame(this.localUiState())) > REPLAY_MAX_FRAME_BYTES) {
-            throw new Error('Replay state exceeds the 8 MiB processing limit.');
-          }
-        }
-        catch (failure) {
-          error = failure instanceof Error ? failure.message : 'Invalid action';
-          this.wsService.restoreReplayFrame(before); await this.replayRender();
-        }
-        if (error) {
-          const message = `Step ${index + 1}: ${error}`;
-          if (!this.replaySkipped.has(index)) {
-            this.replaySkipped.add(index); session.skipped.push(index);
-            this.replayCorruptions.push(message);
-            if (this.replayCorruptions.length > 100) this.replayCorruptions.shift();
-          }
-          this.replayError = `Move corrupted (${session.skipped.length}). ${message}`;
-        }
-        session.cursor++;
-        this.rememberReplayFrame(session.cursor, this.wsService.captureReplayFrame(this.localUiState()));
-        await new Promise(resolve => setTimeout(resolve));
-      }
-      if (session.branched) {
-        session.branchActions = session.branchActions!.slice(0, session.cursor);
-        session.skipped = session.skipped.filter(i => i < session.cursor);
-        this.replaySkipped = new Set(session.skipped);
-        for (const key of this.replayFrames.keys()) if (key > session.cursor) {
-          this.replayCacheSize -= this.replayFrameSizes.get(key) ?? 0;
-          this.replayFrameSizes.delete(key); this.replayFrames.delete(key);
-        }
-      }
-    } finally {
-      this.replayExecuting = false; this.restoringOnlineDraft = false; this.replayBusy = false;
-      this.saveReplaySession(); this.cdr.markForCheck();
-    }
-  }
+  toggleReplayAutoplay(): Promise<void> { return this.replayController.toggleAutoplay(); }
+  cancelReplaySeek(): void { this.replayController.cancel(); }
 
   private async executeReplayAction(action: ReplayAction, animate: boolean, source: 'replay' | 'cpu' = 'replay'): Promise<void> {
     const ply = this.gameState.snapshot.turnNumber;
-    if (!action || action.ply !== ply || !['white', 'black'].includes(action.color)
+    if (!action || action.ply !== ply || (action.color !== 'white' && action.color !== 'black')
         || (action.command.type !== 'result' && action.color !== this.gameState.myColor(this.gameState.snapshot.currentTurn))
         || this.gameOver) throw new Error('Action belongs to a different turn.');
-    const command = replayCommand(action.command);
-    for (const field of ['attack', 'heal']) if (command[field] === null) delete command[field];
-    if (command.withdraw === false) delete command.withdraw;
-    if (!REPLAY_COMMANDS.has(command.type) || Object.values(command).some(value =>
-        value !== null && !['string', 'boolean'].includes(typeof value))) throw new Error('Invalid action fields.');
-    for (const field of ['from', 'to', 'attack', 'heal', 'hex']) if (command[field] !== undefined) {
-      if (typeof command[field] !== 'string' || !/^-?\d+,-?\d+$/.test(command[field])) throw new Error('Invalid coordinates.');
-      command[field] = command[field].split(',').map(Number).join(',');
-    }
-    if (Object.values(command).some(value => typeof value === 'string' && value.length > 256)) throw new Error('Invalid action identifier.');
+    const command = parseGameCommand(action.command);
     this.replayExecuting = source === 'replay'; this.cpuExecuting = source === 'cpu'; this.restoringOnlineDraft = !animate;
     await this.replayRender();
     if (command.type === 'result') {
@@ -1127,7 +902,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       const produced = after.slice(before), received = produced.at(-1);
       if (command.pairId) command.pairId = this.abilityIds[this.pairOf(this.slotOfAbility(command.pairId))[0]];
       if (!Object.entries(command).filter(([key]) => key !== 'more').every(([key, value]) =>
-          key === 'from' ? produced[0][key] === value : received[key] === value)) {
+          key === 'from' ? produced[0].from === value : Object.entries(received ?? {}).some(([field, actual]) => field === key && actual === value))) {
         throw new Error('The complete action could not be applied.');
       }
     }
@@ -1140,7 +915,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     this.replayExecuting = false; this.cpuExecuting = false; this.restoringOnlineDraft = false;
   }
 
-  private async stageRecordedCommand(command: any, side: 'mine' | 'opponent'): Promise<void> {
+  private async stageRecordedCommand(command: GameCommand, side: 'mine' | 'opponent'): Promise<void> {
     if (command.type === 'pick_path') this.unlockPath(side, this.abilityPaths.findIndex(path => path.id === command.id));
     else if (command.type === 'pick_pair') this.pickAbility(side, this.slotOfAbility(command.id));
     else if (command.type === 'reset_pair') { this.swapArmed = side; this.resetAbility(side, this.slotOfAbility(command.id)); }
@@ -1195,7 +970,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         await this.boardRef?.restoreDraftCommands(draft.commands, () => this.cdr.detectChanges());
       } else for (const command of draft.commands) {
         if (!this.gameStarted || this.gameId !== gameId || this.gameState.snapshot.turnNumber !== ply) return;
-        if (command.type !== 'pass_turn') await this.stageRecordedCommand(command, 'mine');
+        if (command.type !== 'pass_turn') await this.stageRecordedCommand(parseGameCommand(command), 'mine');
         this.cdr.detectChanges(); await new Promise(resolve => setTimeout(resolve));
       }
       this.lastDraftSignature = JSON.stringify([ply, this.gameState.snapshot.revision, this.turnCommands()]);
@@ -2600,21 +2375,10 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     return out;
   }
 
-  /**
-   * What a unit has mended since the turn its HP was last written down -
-   * **for the turns it ended in a base**, and only those. Shared by the two
-   * derivations that feed a base - the units dealt there and the units that
-   * walked home - so they cannot drift apart. Mirrors `mended_in_base`.
-   *
-   * Counted in that side's OWN hand-overs, not in plies: a base mends at the
-   * end of its owner's turn, so a unit standing through a full turn takes one
-   * HP back and not the two a ply count would have given it. `now` is the ply
-   * about to be played, so the last one finished is `now - 1`.
-   *
-   * `inBase` is where it was when the HP was written, and `stays` where it
-   * went after (`inBaseAfter`). Reading only the first was the bug: a unit
-   * wounded in its base and wrapped out into its reserve went on mending
-   * there, which the owner's rule says a reserve never does.
+  /** Scheduled healing across recorded panel stays; mirrors mended_in_base.
+   * Count completed owner turns at each panel's configured rate. Location
+   * changes must select the new rate rather than continue healing a base
+   * wound at the base rate after the unit wraps into reserve.
    */
   private mendedInBase(
     color: 'white' | 'black', since: number, inBase: boolean,
@@ -2803,22 +2567,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   private panelHpCache:
     { history: unknown; turn: number; hp: Record<string, number> } | null = null;
 
-  /**
-   * Every panel unit that has been in a fight, against what it has left -
-   * a base's mending included.
-   *
-   * Derived from the record rather than tallied: the panel is re-dealt from
-   * the roster on every rebuild, so a wound written only into the deal would
-   * heal itself on the next one - and this way it reads the same after a
-   * reload. The staged wounds of the turn in progress go on top, so a swing
-   * shows its cost before it is committed.
-   *
-   * **A base mends and a reserve does not**, so this reads the panel off the
-   * record rather than the unit: a blow in a base closes an HP a turn on the
-   * same arithmetic `withdrawnUnits` uses for a unit that walked home there,
-   * and a blow in a reserve stays open. Which is why the cache is keyed on
-   * the ply as well as on the history: nothing is recorded when a unit mends,
-   * so a turn passing is the whole of what changed.
+  /** Reconstruct panel HP from committed wounds and configured healing,
+   * then overlay staged wounds. Include the ply in the cache key because
+   * healing advances without adding a history record.
    */
   get panelHp(): Record<string, number> {
     const history = this.gameState.snapshot.moveHistory;
@@ -3137,7 +2888,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const spend = this.spendOf(effect.effect === 'promote' ? targets[0].piece.uid ?? targets[0].key : '', side, side, index, key);
     const priorBuffs = this.buffs;
     const board = { ...(this.stagedBoard ?? this.gameState.snapshot.boardState) };
-    const effects: any[] = [], extraDeaths: FallenUnit[] = [];
+    const effects: StagedEffect[] = [], extraDeaths: FallenUnit[] = [];
     const expiresAt = this.gameState.snapshot.turnNumber + 2 * effect.turns;
     const change = (cell: typeof targets[number], hp: number, promotion?: PieceData) => {
       const piece = promotion ?? cell.piece;
@@ -3209,7 +2960,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       return { kind: 'ability', from: cell.key, to: cell.key, uid: cell.piece.uid ?? cell.key,
         color: cell.piece.color,
         hostile: effect.target === 'hex' ? bandOf(cell.key) !== 'outer' : cell.piece.color !== caster,
-        ...(change ? this.hpMark(change.hp - cell.piece.hp) : {}) };
+        ...(change?.hp !== undefined ? this.hpMark(change.hp - cell.piece.hp) : {}) };
     });
     const prev = this.lastBoardAction;
     this.stagedActions.push({ at: actionTime(), board, from: prev?.from ?? '', to: prev?.to ?? '',
@@ -3546,7 +3297,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       || 'Pick to take the path.';
   }
 
-  private rememberChoice(side: 'mine' | 'opponent', command: any): void {
+  private rememberChoice(side: 'mine' | 'opponent', command: GameCommand): void {
     const chosen = side === 'mine' ? this.myPath : this.opponentPath;
     this.onlineChoices.push({ at: actionTime(), command, undo: {
       side, loadout: this.idsOfSlots(this.loadout(side)), path: chosen === null ? null : this.abilityPaths[chosen].id,
@@ -4005,7 +3756,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   activeBoardAbilityCasterColor(): 'white' | 'black' | '' {
-    if (this.pendingSacrificeAction) return this.pendingSacrificeAction.effects!.find(e => e.unitCast).unitCast.color;
+    if (this.pendingSacrificeAction) return this.pendingSacrificeAction.effects?.find(e => e.unitCast)?.unitCast?.color as 'white' | 'black' ?? '';
     return this.pendingUnitCast ? this.pendingUnitCast.unit.color : this.pendingAbility ? this.casterColor(this.pendingAbility.side) as 'white' | 'black' : '';
   }
 
@@ -4110,7 +3861,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const castId = `${unit.uid}|${this.gameState.snapshot.turnNumber}|${Date.now()}|${this.stagedActions.length}`;
     const extraDeaths: FallenUnit[] = [];
     const visuals: AnimStep[] = [];
-    const effects: any[] = [{ castId, unitCast: { uid: unit.uid, id: effect.id, color: unit.color, at: unit.key,
+    const effects: StagedEffect[] = [{ castId, unitCast: { uid: unit.uid, id: effect.id, color: unit.color, at: unit.key,
       cost: spend.cost, gain: effect.up ?? 0 } }];
     if (selectedSacrifice && effect.battlefieldActions) effects.push({ battlefieldActions: effect.battlefieldActions, color: unit.color });
     this.chargeFor(side, index, spend.cost);
@@ -4943,7 +4694,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       }
       for (const e of step.effects ?? []) {
         if (e.abilityCast?.up && !snapshot.moveHistory.some(move => (move as any).castId === e.castId)) {
-          this.awardUnitPoints(e.color, e.abilityCast.up);
+          this.awardUnitPoints(e.color ?? '', e.abilityCast.up);
         }
         if (e.unitCast && !snapshot.moveHistory.some(move => (move as any).castId === e.castId)) {
           this.awardUnitPoints(e.unitCast.color, (e.unitCast.gain ?? 0) - e.unitCast.cost);
@@ -5753,28 +5504,16 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   private uidOfAction(step: StagedAction): string | undefined {
-    return step.unitUid ?? this.gameState.snapshot.boardState?.[step.from]?.uid ?? step.board?.[step.to]?.uid;
+    return actionUid(step, this.gameState.snapshot.boardState);
   }
 
   get ordinaryBoardMoves(): StagedAction[] {
     return this.boardMoves.filter(step => !this.extraActionUids.includes(this.uidOfAction(step) ?? ''));
   }
 
-  private get actionHistory(): any[] {
+  private get actionHistory() {
     const s = this.gameState.snapshot, color = this.gameState.myColor(s.currentTurn) ?? '';
-    const events = this.stagedActions.flatMap<any>(step => [
-      ...(step.spend?.row === 'unit' ? [{ at: step.at, record: { turn: s.turnNumber, color,
-        unitCast: { uid: step.spend.uid, at: step.spend.hex } } }]
-        : !step.spend && step.from ? [{ at: step.at, record: { turn: s.turnNumber, color, from: step.from, uid: this.uidOfAction(step) } }] : []),
-      ...(step.effects ?? []).filter(effect => effect.battlefieldActions || effect.extraUnit || effect.control)
-        .map(effect => ({ at: step.at, record: { turn: s.turnNumber, ...effect } })),
-    ]);
-    for (const [i, step] of (this.boardRef?.pendingPanelSteps ?? []).entries()) events.push({
-      at: this.boardRef?.timedPanelSteps?.[i]?.at ?? 0,
-      record: { ...step, turn: s.turnNumber, color: step.unit?.color ?? color,
-        entered: step.type === 'enter_board', panelMove: step.type === 'panel_move' },
-    });
-    return [...(s.moveHistory ?? []), ...events.sort((a, b) => (a.at ?? 0) - (b.at ?? 0)).map(event => event.record)];
+    return [...(s.moveHistory ?? []), ...stagedActionRecords(this.stagedTurnEvents(), s.turnNumber, color, s.boardState)];
   }
 
   get unitActionsSpent(): number {
@@ -5852,16 +5591,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   /** One staged battlefield action per unit, including withdrawals; casts alone do not count. */
-  get boardMoves(): StagedAction[] {
-    const out: StagedAction[] = [];
-    for (const step of this.stagedActions) {
-      if ((step.spend && !step.endsAction) || !step.from) continue;
-      const last = out[out.length - 1];
-      if (last && last.from === step.from) out[out.length - 1] = step;
-      else out.push(step);
-    }
-    return out;
-  }
+  get boardMoves(): StagedAction[] { return boardActions(this.stagedActions); }
 
   /**
    * Where this turn's finished board moves have left their units - every one
@@ -5956,14 +5686,46 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   opponentKind: OpponentKind = 'myself';
   cpuDifficulty: CpuDifficulty = 'normal';
   readonly cpuDifficulties: CpuDifficulty[] = ['easy', 'normal', 'hard'];
-  cpuThinking = false;
-  cpuError = '';
+  private readonly cpuController = new CpuTurnController({
+    ply: () => this.gameState.snapshot.turnNumber,
+    canQueue: () => this.cpuTurnLocked && !this.recapRunning && !this.playbackRunning && !this.turnSubmitted
+      && !!this.boardRef && !this.destroy$.isStopped,
+    current: ply => this.gameState.snapshot.turnNumber === ply && this.cpuTurnLocked,
+    playbackRunning: () => this.playbackRunning || this.recapRunning,
+    capture: () => ({ ui: structuredClone(this.localUiState()), core: this.wsService.captureCpuState() as unknown }),
+    analyze: async ply => {
+      const file = this.wsService.replayFile;
+      if (!file) throw new Error('CPU requires a complete turn recording. You can continue as Myself.');
+      const color = this.gameState.myColor(this.gameState.snapshot.currentTurn);
+      if (color !== 'white' && color !== 'black') throw new Error('CPU has no active seat.');
+      const seconds = this.selectedTurnTimeLimit ? Math.max(0.01, this.secondsRemaining() - 0.25) : 5;
+      const commands = await this.cpu.think(file.config, file.actions, ply, color, this.cpuDifficulty, seconds);
+      return { commands, color };
+    },
+    apply: (command, ply, color) => this.executeReplayAction({ ply, color, command }, false, 'cpu'),
+    recover: prior => {
+      this.replayExecuting = false; this.restoringOnlineDraft = false;
+      this.boardVisible = false; this.cdr.detectChanges();
+      this.gameState.applyFullState(this.wsService.restoreCpuState(prior.core));
+      this.restoreLocalUiState(prior.ui);
+      this.submittedTurn = -1; this.submittedRecap = null; this.recapRunning = false; this.playbackRunning = false;
+      this.pendingAbility = null; this.pendingUnitCast = null; this.abilityFocus = null; this.unitAbilityFocus = null;
+      this.boardVisible = true;
+    },
+    paused: () => { this.clearTurnClock(); this.persistLocalUiState(); },
+    settled: () => { this.replayExecuting = false; this.restoringOnlineDraft = false; },
+    changed: () => this.cdr.markForCheck(), cancelRequest: () => this.cpu.cancel(),
+  });
+  get cpuThinking(): boolean { return this.cpuController.thinking; }
+  get cpuError(): string { return this.cpuController.error; }
+  set cpuError(value: string) { this.cpuController.error = value; }
+  get cpuManualTurn(): boolean { return this.cpuController.manualTurn; }
+  set cpuManualTurn(value: boolean) { this.cpuController.manualTurn = value; }
+  get cpuExecuting(): boolean { return this.cpuController.executing; }
+  set cpuExecuting(value: boolean) { this.cpuController.executing = value; }
+  private get cpuOutageAt(): number { return this.cpuController.outageAt; }
+  private set cpuOutageAt(value: number) { this.cpuController.outageAt = value; }
   aiUnavailable = false;
-  cpuManualTurn = false;
-  cpuExecuting = false;
-  private cpuGeneration = 0;
-  private cpuQueuedPly = -1;
-  private cpuOutageAt = 0;
 
   get cpuTurnLocked(): boolean {
     return this.isSinglePlayer && !this.replayActive && this.opponentKind === 'cpu'
@@ -5976,69 +5738,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     this.opponentKind = kind; this.persistLocalUiState(); this.cdr.markForCheck();
   }
 
-  private cancelCpu(): void {
-    this.cpuGeneration++; this.cpuQueuedPly = -1;
-    this.cpuThinking = false; this.cpuExecuting = false; this.cpuError = '';
-    this.cpu.cancel();
-  }
-
-  private queueCpuTurn(): void {
-    if (!this.cpuTurnLocked || this.cpuThinking || this.cpuError || this.recapRunning || this.playbackRunning
-        || this.turnSubmitted || !this.boardRef || this.destroy$.isStopped) return;
-    const ply = this.gameState.snapshot.turnNumber;
-    if (this.cpuQueuedPly === ply) return;
-    this.cpuQueuedPly = ply;
-    queueMicrotask(() => {
-      if (this.cpuQueuedPly === ply && this.cpuTurnLocked && !this.recapRunning && !this.playbackRunning) void this.playCpuTurn(ply);
-      else if (this.cpuQueuedPly === ply) this.cpuQueuedPly = -1;
-    });
-  }
-
-  private async playCpuTurn(ply: number): Promise<void> {
-    const generation = ++this.cpuGeneration;
-    const priorUi = structuredClone(this.localUiState());
-    const priorCore = this.wsService.captureCpuState();
-    this.cpuThinking = true; this.cdr.markForCheck();
-    try {
-      const file = this.wsService.replayFile;
-      if (!file) throw new Error('CPU requires a complete turn recording. You can continue as Myself.');
-      const color = this.gameState.myColor(this.gameState.snapshot.currentTurn);
-      const seconds = this.selectedTurnTimeLimit ? Math.max(0.01, this.secondsRemaining() - 0.25) : 5;
-      const commands = await this.cpu.think(file.config, file.actions, ply, color, this.cpuDifficulty, seconds);
-      if (generation !== this.cpuGeneration || this.gameState.snapshot.turnNumber !== ply || !this.cpuTurnLocked) return;
-      while (this.playbackRunning || this.recapRunning) {
-        if (generation !== this.cpuGeneration || this.gameState.snapshot.turnNumber !== ply) return;
-        await new Promise(resolve => setTimeout(resolve, 20));
-      }
-      if (commands.length > 128 || commands.some(command => !command || !REPLAY_COMMANDS.has(command.type) || command.type === 'result')) throw new Error('Invalid CPU turn commands.');
-      if (commands.at(-1)?.type !== 'pass_turn' || commands.slice(0, -1).some(c => c.type === 'pass_turn')) throw new Error('Invalid CPU turn.');
-      for (const command of commands) {
-        if (generation !== this.cpuGeneration || this.gameState.snapshot.turnNumber !== ply) return;
-        await this.executeReplayAction({ ply, color: color as 'white' | 'black', command }, false, 'cpu');
-      }
-    } catch (error: any) {
-      if (generation !== this.cpuGeneration) return;
-      this.cpuExecuting = false; this.replayExecuting = false; this.restoringOnlineDraft = false;
-      this.boardVisible = false; this.cdr.detectChanges();
-      this.gameState.applyFullState(this.wsService.restoreCpuState(priorCore));
-      this.restoreLocalUiState(priorUi);
-      this.submittedTurn = -1; this.submittedRecap = null; this.recapRunning = false; this.playbackRunning = false;
-      this.pendingAbility = null; this.pendingUnitCast = null; this.abilityFocus = null; this.unitAbilityFocus = null;
-      this.boardVisible = true;
-      this.cpuError = error?.message || 'CPU analysis failed. Please retry.';
-      this.cpuOutageAt = Date.now(); this.clearTurnClock();
-      this.persistLocalUiState();
-    } finally {
-      if (generation === this.cpuGeneration) {
-        this.cpuExecuting = false; this.replayExecuting = false; this.restoringOnlineDraft = false;
-        this.cpuThinking = false; this.cdr.markForCheck();
-      }
-    }
-  }
+  private cancelCpu(): void { this.cpuController.cancel(); }
+  private queueCpuTurn(): void { this.cpuController.queue(); }
 
   retryCpu(): void {
-    if (this.cpuOutageAt) this.playbackOwed += Date.now() - this.cpuOutageAt;
-    this.cpuOutageAt = 0; this.cpuError = ''; this.cpuQueuedPly = -1;
+    this.playbackOwed += this.cpuController.resume();
     this.startTurnClock(); this.persistLocalUiState(); this.cdr.markForCheck();
   }
 
@@ -6248,7 +5952,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     if (exchange.attackerHp <= 0) {
       delete board[event.to]; killed = event.to; killedUnit = { unit_id: attacker.unit_id, color: attacker.color };
     } else board[event.to] = { ...attacker, hp: exchange.attackerHp };
-    const effects: any[] = [];
+    const effects: StagedEffect[] = [];
     const extraDeaths: FallenUnit[] = [];
     const impactTargets: AnimStep[] = [];
     if (exchange.leechHeal > 0) {
@@ -6980,11 +6684,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const color = this.gameState.myColor(this.gameState.snapshot.currentTurn) as 'white' | 'black';
     const recording = this.isSinglePlayer && this.wsService.replayRecording;
     const intents = (recording || this.wsService.replay?.session?.branched ? this.onlineTurnCommands() : [])
-      .map(command => ({ ply, color, command: replayCommand(command) }));
+      .map(command => ({ ply, color, command: recordCommand(command) }));
     if (recording) this.wsService.recordTurn(ply, intents);
     if (this.replayActive && this.wsService.replay.session?.branched && !this.replayExecuting) {
       const session = this.wsService.replay.session;
-      session.branchActions = [...(session.branchActions ?? []).filter(action => action.ply < ply), ...intents];
+      session.branchActions = [...(session.branchActions ?? []).filter(action => typeof action.ply === 'number' && action.ply < ply), ...intents];
       session.cursor = session.branchActions.length;
     }
     this.cpuManualTurn = false;
@@ -7082,183 +6786,22 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     })) as Record<string, number>;
   }
 
-  private onlineTurnCommands(): any[] {
-    const events = [...this.onlineChoices, ...(this.boardRef?.timedPanelSteps ?? [])];
-    let before = this.gameState.snapshot.boardState;
-    for (const step of this.stagedActions) {
-      const spend = step.spend;
-      if (spend) {
-        const effect = this.abilityEffects[spend.index];
-        const command: any = { type: 'cast_ability', id: effect.id };
-        if (spend.row === 'unit') {
-          command.unitUid = spend.uid;
-          const control = step.effects?.find(e => e.control)?.control;
-          if (control) command.targetUid = control.uid;
-          if (spend.targetUid) command.targetUid = spend.targetUid;
-          if (spend.extraUid) command.extraUid = spend.extraUid;
-        } else if (effect.target === 'hex') command.hex = spend.hex;
-        else if (effect.target === 'pair') command.pairId = this.abilityEffects[spend.priorPairCooldowns![0].index].id;
-        else if (['friendly', 'enemy'].includes(effect.target)) command.targetUid = spend.uid;
-        events.push({ at: step.at ?? 0, command });
-      } else {
-        const uid = this.uidOfAction(step);
-        const from = Object.keys(before).find(key => before[key].uid === uid) ?? step.from;
-        const attack = step.afterAttackWalk ? undefined : step.attack ?? undefined;
-        const command = { type: step.intoPanel && attack ? 'panel_attack' : 'make_move', from, to: step.to,
-          ...(attack ? { attack } : {}), ...(step.heal ? { heal: step.heal } : {}),
-          ...(step.refund !== undefined ? { withdraw: true } : {}), more: true };
-        events.push({ at: step.at ?? 0, command });
-      }
-      before = step.board;
-    }
-    return [...events.sort((a, b) => a.at - b.at).map(e => e.command), { type: 'pass_turn' }];
+  private stagedTurnEvents(): StagedTurnEvent[] {
+    return stagedTurnEvents(this.stagedActions, this.boardRef?.pendingPanelSteps ?? [],
+      this.boardRef?.timedPanelSteps ?? [], this.onlineChoices);
   }
 
-  private turnCommands(): any[] {
+  private onlineTurnCommands(): GameCommand[] {
+    return onlineTurnCommands(this.stagedTurnEvents(), this.gameState.snapshot.boardState, this.abilityEffects);
+  }
+
+  private turnCommands(): Array<GameCommand | LocalTurnCommand> {
     if (!this.isSinglePlayer && this.onlineAbilitiesSupported) return this.onlineTurnCommands();
-    const commands: any[] = [], moves = this.boardMoves;
-    const panelRewards = new Set<any>();
-    // Resolve an earlier UP grant before a panel crossing's affordability check.
-    // Panel and battlefield commands retain their chronological order.
-    for (const [i, step] of (this.boardRef?.pendingPanelSteps ?? []).entries()) {
-      const at = this.boardRef?.timedPanelSteps?.[i]?.at ?? 0;
-      const rewards = this.stagedActions.filter(action => (action.at ?? 0) <= at
-        && !moves.some(move => (move.at ?? 0) >= (action.at ?? 0) && (move.at ?? 0) < at))
-        .flatMap(action => action.effects ?? []).filter(effect => effect.abilityCast?.up && !panelRewards.has(effect));
-      for (const reward of rewards) panelRewards.add(reward);
-      commands.push({ ...step, ...(rewards.length ? { effectsBefore: rewards } : {}) });
-    }
-    // Solo sends resolved ability HP with the action it belongs to, so the
-    // next local snapshot retains it before applying combat and overtime. Both kinds, because a unit keeps its HP in one of two places: a
-    // panel unit's lives in the move history (`unit` + `panel`), a board
-    // unit's on the board (`at` + `uid`).
-    //
-    // **Each cast rides on the message it happened before**, as that message's
-    // `effectsBefore`; those made after the turn's last board move ride on the
-    // last message as `effects` - see landEffects in the browser engine. Sent
-    // as messages of their own, a cast after the blow was struck over again,
-    // and a move the engine refused came back half-played with the casts
-    // already kept. Piled onto the first message instead, a mend cast between
-    // two units' moves landed before the first unit's blow, and that blow's
-    // counter then came off the mended figure a second time.
-    // Rapid Movement can put a cast between the exchange and the remaining
-    // walk. Resolve it there so a killed defender vacates the landing hex;
-    // casts after the final walk still land after that walk.
-    const ends = moves.map(step => this.stagedActions.indexOf(step));
-    const attacks = moves.map(step => step.afterAttackWalk
-      ? this.stagedActions.findIndex(action => action.from === step.from && action.attack && !action.afterAttackWalk)
-      : -1);
-    const before: any[][] = moves.map(() => []);
-    const afterAttack: any[][] = moves.map(() => []);
-    const after: any[] = [];
-    this.stagedActions.forEach((step, i) => {
-      const owner = ends.findIndex(end => step.endsAction ? end >= i : end > i);
-      const list = owner < 0 ? after : attacks[owner] >= 0 && i > attacks[owner]
-        ? afterAttack[owner] : before[owner];
-      const effects = step.effects?.filter(effect => !panelRewards.has(effect));
-      if (effects?.length && !step.afterAttackWalk) {
-        const attackIndex = moves.findIndex(move => move.from === step.from && move.attack === step.attack);
-        if (step.attack && attackIndex >= 0) {
-          const next = attackIndex + 1;
-          (attacks[attackIndex] >= 0 ? afterAttack[attackIndex]
-            : next < moves.length ? before[next] : after).push(...effects);
-        } else list.push(...effects);
-      }
-      if (step.attack !== null) return;
-      const effect = step.panelUnit
-        ? { unit: step.panelUnit, hp: step.panelUnitHp, panel: step.panelName }
-        // The uid as well as the hex: a unit can be walked after the cast
-        // lands on it, so the hex named here is where the client has it, not
-        // where the engine does. The uid is what survives that.
-        : step.hexKey && step.hexHp !== undefined && step.mark
-          ? { at: step.hexKey, uid: step.hexUid, hp: step.hexHp }
-          : null;
-      if (!effect) return;
-      list.push(effect);
+    return soloTurnCommands(this.stagedTurnEvents(), {
+      moveBonusFor: key => this.moveBonusFor(key), pathMoveFor: key => this.pathMoveFor(key),
+      bonusFor: (key, stat, unit, base, counter) => this.bonusFor(key, stat, unit, base, counter),
+      offBoard: key => this.offBoard(key),
     });
-    if (!moves.length) {
-      // Doing nothing is a legal turn - and every cast came before it.
-      commands.push({ type: 'pass_turn', ...(after.length ? { effectsBefore: after } : {}) });
-      return commands;
-    }
-    // **Every board move the turn made, and only the last hands it over.**
-    // One message each, in the order they were played, with `more` on all but
-    // the last - both engines answer a held move as a deployment: the same
-    // seat, the same ply, the same clock, and the toll untaken until the end.
-    // A blow into a panel is one of them: it goes as `panel_attack` in its own
-    // place in the order. It used to go alone and end the turn, which dropped
-    // every other move an overtime turn had staged, before it or after it.
-    // With one move - every turn of the schedule proper - this is exactly the
-    // one message it always sent.
-    moves.forEach((step, i) => {
-      const swing = step.attack ?? undefined;
-      // Solo re-checks the staged walk using its recorded movement modifiers.
-      const moveBonus = step.moveBonus ?? this.moveBonusFor(step.to);
-      const pathMov = step.pathMov ?? this.pathMoveFor(step.to);
-      // Online commands carry ability IDs; the server derives combat modifiers
-      // from its own state instead of trusting these solo values.
-      const bonuses = step.combatBonuses ?? {
-        atk: this.bonusFor(step.to, 'atk'),
-        def: this.bonusFor(step.to, 'def'),
-        targetAtk: swing ? this.bonusFor(swing, 'atk', step.panelUnit, false, true) : 0,
-        targetDef: swing ? this.bonusFor(swing, 'def', step.panelUnit) : 0,
-      };
-      const boosted = !!(swing || step.heal) && Object.entries(bonuses).some(([key, value]) => key.endsWith('Set') || value !== 0);
-      const casts = {
-        ...(step.attackFrom && step.attackFrom !== step.to ? { afterAttackTo: step.to } : {}),
-        more: true,
-        ...(before[i].length ? { effectsBefore: before[i] } : {}),
-        ...(afterAttack[i].length ? { effectsAfterAttack: afterAttack[i] } : {}),
-        ...(i === moves.length - 1 && after.length ? { effects: after } : {}),
-      };
-      if (swing && step.panelUnit) {
-        // A swing into a panel. `to` as well as `from`: a unit may walk and
-        // then swing, and there is no make_move behind this to carry the walk.
-        // Without it the engine resolved the blow from where the unit started
-        // and left it there, which read as being teleported back.
-        commands.push({
-          type: 'panel_attack',
-          from: step.from, to: step.attackFrom ?? step.to, attack: swing, unit: step.panelUnit,
-          // Which panel took the blow. The engine keeps it on the record and
-          // nothing else: it is what tells the mending a base from a reserve
-          // after a reload, when the board that knew is long gone.
-          panel: step.panelName,
-          ...(moveBonus ? { moveBonus } : {}),
-          ...(pathMov ? { pathMov } : {}),
-          // The same bonuses `make_move` carries, for the same reason: the
-          // engine re-resolves the blow and would otherwise disagree with the
-          // preview the room already drew. `targetDef`/`targetAtk` are the
-          // panel unit's, which stands on `attack`.
-          bonuses,
-          // Whether the panel answers is the panel's rule, and the client owns
-          // panels - the browser engine has no idea which one a unit is in.
-          counters: step.counters !== false,
-          ...casts,
-        });
-        return;
-      }
-      commands.push({
-        type: 'make_move',
-        from: step.from,
-        to: step.attackFrom ?? step.to,
-        ...(swing ? { attack: swing } : {}),
-        ...(step.heal ? { heal: step.heal } : {}),
-        ...(step.endsAction ? { unitAction: true } : {}),
-        ...(moveBonus ? { moveBonus } : {}),
-        ...(pathMov ? { pathMov } : {}),
-        ...(boosted ? { bonuses } : {}),
-        // Walking off the board into a base. Both engines answer it: the
-        // browser one takes the walk on trust, and the server re-derives it -
-        // the real doorways, the MOV to reach them - from its own panel model.
-        ...(this.offBoard(step.to) ? { withdraw: true } : {}),
-        ...casts,
-      });
-    });
-    commands.push({ type: 'pass_turn' });
-    const panels = this.boardRef?.pendingPanelSteps?.length ?? 0;
-    return commands.map((command, i) => ({ command, at: i < panels
-      ? this.boardRef?.timedPanelSteps?.[i]?.at ?? 0 : moves[i - panels]?.at ?? Infinity }))
-      .sort((a, b) => a.at - b.at).map(event => event.command);
   }
 
   private playTurnSoundIfNeeded(previousTurn: string | null): void {

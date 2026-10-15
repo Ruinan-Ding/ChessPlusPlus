@@ -42,4 +42,11 @@ describe('CPU transport', () => {
     tick(20000);
     expect(message).toContain('retry'); expect(socket.close).toHaveBeenCalled();
   }));
+  it('rejects malformed semantic commands before releasing the pending request', fakeAsync(() => {
+    let message = '';
+    service.think({}, [], 1, 'white', 'normal', 2).catch(error => message = error.message);
+    socket.onmessage({ data: JSON.stringify({ type: 'cpu_turn', ply: 1, commands: [{ type: 'make_move', from: [], to: '1,0' }] }) });
+    tick(); expect(message).toContain('Invalid CPU response'); expect(socket.close).toHaveBeenCalled();
+  }));
+
 });

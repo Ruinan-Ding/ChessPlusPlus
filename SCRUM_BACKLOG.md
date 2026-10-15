@@ -1,0 +1,113 @@
+# Scrum backlog
+
+Updated 15 Oct 2026. The human owner orders this backlog and owns product/game
+decisions. [SCRUM_WORKFLOW.md](SCRUM_WORKFLOW.md) defines the process;
+[CODEX_HANDOFF.md](CODEX_HANDOFF.md) records current source/environment and
+[PUNCHLIST.md](PUNCHLIST.md) retains implementation checkpoints. Do not duplicate
+their historical fixes here or treat this file as a second game specification.
+
+## Product Goal
+
+Proposed for owner confirmation at first planning: deliver a maintainable,
+configurable tactical game with consistent solo/multiplayer rules and usable,
+verifiable player journeys. This proposal creates no new mechanics or release.
+
+## Current Sprint
+
+No Sprint dates, cadence or Sprint Goal have been agreed. No Sprint is claimed
+as started or finished. At first planning, agree them and select achievable
+stories; two weeks is a suggested cadence, not a scheduled commitment.
+
+## Ordered work
+
+### WF-001 — Establish the Claude Scrum delivery workflow
+
+- **Source/outcome:** owner's 15 Oct request for a complete agile Scrum team,
+  using TDD/BDD with possible SDD later.
+- **Scope:** native project agent profiles, team configuration, `/scrum`, shared
+  responsibilities/events/artifacts, acceptance/testing, review and current docs.
+  No gameplay, balance, deployment or release change.
+- **Owner:** current implementing session; one writer for workflow/shared docs.
+- **Status:** Done for workflow configuration; native discovery and structural
+  checks pass. No live-team development story or independent agent review ran.
+- **Dependencies:** installed Claude Code and repo skills; native team behavior
+  needs an interactive session. Other runtimes follow their own delegation policy.
+
+| Example | Given / When / Then | Verification |
+|---|---|---|
+| WF-001-A | Given a fresh project Claude session, when work is requested, then the skill and relevant specialist profiles are discoverable and use the shared workflow without changing permissions/models. | Agent/skill/settings validation; session discovery check, with runtime limits stated. |
+| WF-001-B | Given a behavior change, when the team refines it, then product/development/quality agree observable examples and follow Red/Green/Refactor with evidence. | Workflow and role contract review; no gameplay test required for this workflow-only change. |
+| WF-001-C | Given an unspecified gameplay rule or dirty source, when work is delegated, then the owner decides that rule and workers preserve the intended source with one writer per file. | Scenario walkthrough of decision and handoff rules. |
+| WF-001-D | Given a docs-only task, unavailable teammates or a later SDD request, when planning work, then checks are proportionate, missing independent review is visible and SDD is not silently enabled. | Structural checks and scenario walkthrough; no fabricated team execution. |
+
+Verification: Claude Code 2.1.288's local `/context` reports all nine custom agents;
+`/skills` shows project `scrum` and `config-sync`. YAML/JSON, skill validation,
+local links, working-source preservation and ten scenario walkthroughs pass.
+Walkthroughs are instruction reviews, not model behavior tests. Evidence:
+Windows Temp `cpp-scrum-20261015-c8c0osf_/RESULTS.md`; implementation checkpoint
+6.151 in PUNCHLIST. No gameplay tests rerun for this workflow-only change.
+
+### WF-002 — Review enterprise scope and practical operation
+
+- **Source/outcome:** owner's follow-up asking whether this is the enterprise
+  Claude workflow and whether it makes sense in practice.
+- **Scope:** clarify project versus organization controls, proportionate staffing,
+  worker/orchestrator boundaries, usable read-only review inputs and evidence.
+- **Owner/status:** current session; Done for the instruction/documentation scope.
+- **Acceptance:** a read-only reviewer receives the actual story delta/new files
+  and source-bound check evidence; a worker reports to the lead instead of starting
+  another team; later edits require review/check reassessment; docs distinguish
+  configured roles and current CI from unverified live collaboration/admin controls.
+- **Verification:** YAML/skill/link and unchanged-frontmatter/settings checks,
+  focused instruction walkthroughs and preservation of unrelated source. Evidence:
+  Windows Temp `cpp-workflow-review-20261015-a979qv19/RESULTS.md`, checkpoint 6.152.
+  Self-review only; no new live-team, model evaluation or gameplay run claimed.
+
+### WF-003 — Add practical operating guidance
+
+- **Source/outcome:** owner's follow-ups about additions, role counts and whether
+  every agent works to a senior standard.
+- **Scope:** handling scope changes/urgent defects, baseline and flaky-test
+  failures, brief significant-decision records, reusable staffing/senior-level
+  expectations and a real-story workflow trial.
+- **Owner/status:** current session; Done for the instruction/documentation scope.
+- **Acceptance:** changed requests update the active story; defects have concrete
+  reproduction/impact and retain regression/review checks; a passing retry cannot
+  erase an unresolved failure; significant decisions retain rationale in an
+  existing record; the next actual story evaluates collaboration without inventing
+  product work, Sprint dates or a claimed trial result. Roles can have multiple
+  independent instances; senior-level expectations do not claim upgraded models
+  or proven expertise from a label.
+- **Verification:** skill/YAML/link checks, unchanged native frontmatter/settings,
+  instruction walkthroughs and unrelated-source preservation; checkpoint 6.153.
+  Evidence: Windows Temp `cpp-workflow-operations-20261015-961t3g8j/RESULTS.md`.
+  Self-review only; no live-team or gameplay evaluation is claimed.
+
+### REL-001 — Review readiness before pushing and deploying
+
+- **Source/outcome:** owner's request for any remaining concerns before publication.
+- **Status:** readiness review complete; deployment preparation remains outstanding.
+- **Evidence:** application source matches the last verified 6.150 snapshot; no
+  full gameplay suites rerun. Production-default checks with synthetic key/host
+  report four security warnings; the actual target/proxy remains untested.
+- **Remaining delivery work:** publish the candidate and verify its CI, implement
+  the selected hosting configuration/persistence, resolve production checks and
+  smoke-test real solo/CPU/two-player HTTPS/WSS behavior. Publication/deployment
+  was not performed by this review. Hosting scope and target are still to be set.
+- **Record:** PUNCHLIST 6.154 and Windows Temp
+  `cpp-release-readiness-20261015-nquio_3b/RESULTS.md`.
+
+No further product priorities have been assigned through this workflow yet.
+Append owner-requested stories in their actual priority order during refinement.
+
+## Impediments and improvement
+
+- First Sprint planning and Product Goal confirmation are pending; this does not
+  block the authorized workflow setup.
+- No stakeholder review or retrospective has been held for this new process.
+- Proposed first improvement experiment: use the next owner-selected bounded
+  story that changes behavior as a real workflow trial. The facilitator traces an
+  accepted example through Red/Green, relevant integration and independent review where permitted,
+  checks that evidence is complete and records avoidable handoff delays or missing
+  capabilities. Review at the first actual retrospective and select a correction
+  from observed friction. No development story has been selected or trial run.

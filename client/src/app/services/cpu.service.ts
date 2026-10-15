@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { websocketUrl } from './websocket.config';
-import type { ReplayAction } from './replay-session.service';
+import { GameCommand, ReplayAction, parseGameCommand } from './game-command';
 
 export type CpuDifficulty = 'easy' | 'normal' | 'hard';
 export type OpponentKind = 'myself' | 'cpu';
@@ -11,7 +11,7 @@ export class CpuService {
   private sequence = 0;
   private pending?: { id: number; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 
-  think(config: any, actions: ReplayAction[], ply: number, color: string, difficulty: CpuDifficulty, seconds: number): Promise<any[]> {
+  think(config: any, actions: readonly ReplayAction[], ply: number, color: string, difficulty: CpuDifficulty, seconds: number): Promise<GameCommand[]> {
     this.cancel(false);
     const id = ++this.sequence;
     const socket = this.socket ?? (this.socket = new WebSocket(websocketUrl('/ws/cpu/')));
@@ -34,8 +34,9 @@ export class CpuService {
           if (message.type === 'cpu_error') { fail(message.message); return; }
           if (message.type !== 'cpu_turn' || message.ply !== ply || !Array.isArray(message.commands)) { fail('Invalid CPU response.'); return; }
           if (this.pending?.id !== id) return;
+          const commands = message.commands.map(parseGameCommand);
           clearTimeout(this.pending.timer); this.pending = undefined;
-          resolve(message.commands);
+          resolve(commands);
         } catch { fail('Invalid CPU response.'); }
       };
       socket.onerror = () => fail('CPU server is unavailable.');
