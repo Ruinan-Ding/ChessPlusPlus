@@ -361,7 +361,7 @@ describe('GameRoomComponent ability panel', () => {
     it('renders the incoming snapshot before restoring draft clicks and refreshes between commands', async () => {
       const c = online(); let bound = false;
       c.cdr.detectChanges = jasmine.createSpy('detect').and.callFake(() => bound = true);
-      c.boardRef = { restoreDraftCommands: jasmine.createSpy('restore').and.callFake(async (commands: any[], refresh: () => void) => {
+      c.boardRef = { restoreDraftCommands: jasmine.createSpy('restore').and.callFake(async (_commands: any[], refresh: () => void) => {
         expect(bound).toBeTrue(); bound = false; refresh(); expect(bound).toBeTrue();
       }) };
       const commands = [{ type: 'make_move', from: '0,0', to: '1,0' }];

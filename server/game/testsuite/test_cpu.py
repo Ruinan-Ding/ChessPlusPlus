@@ -135,6 +135,25 @@ class CpuTests(SimpleTestCase):
         after = await GameConsumer()._preview_turn(state, commands)
         self.assertEqual(after.winner, 'white')
 
+    async def test_cast_filters_range_before_limiting_preferred_targets(self):
+        import time
+        state = self.state()
+        state.config_snapshot['economy']['upAtStart'] = 1000
+        def unit(kind, color, uid):
+            definition = state.config_snapshot['units'][kind]
+            return ranked_unit({'unit_id': kind, 'color': color, 'uid': uid,
+                'hp': definition['hp'], 'max_hp': definition['hp'], 'vet': 0}, state.config_snapshot, 3)
+        state.board_state = {'0,0': unit('bishop', 'white', 'bishop'),
+            '-8,0': unit('king', 'white', 'wk'), '1,0': unit('pawn', 'black', 'adjacent'),
+            '8,0': unit('king', 'black', 'bk'), '7,0': unit('queen', 'black', 'queen'),
+            '6,0': unit('rook', 'black', 'rook')}
+        casts = [command for command in candidate_commands(state, time.monotonic() + 2)
+                 if command.get('id') == 'bishop-cast']
+        self.assertEqual(casts, [{'type': 'cast_ability', 'id': 'bishop-cast',
+                                 'unitUid': 'bishop', 'targetUid': 'adjacent'}])
+        result = await GameConsumer()._preview_turn(state, casts, finish=False)
+        self.assertEqual(result.board_state['1,0']['color'], 'white')
+
     def test_every_configured_unit_ability_has_a_candidate(self):
         import time
         state = self.state()

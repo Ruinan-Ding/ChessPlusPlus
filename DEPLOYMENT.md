@@ -1,11 +1,23 @@
 # Deploying ChessPlusPlus
 
-> **Status checked 7 Oct 2026: a plan, not a tested deployment.** The split-host changes
+> **Status rechecked 15 Oct 2026: a plan, not a tested deployment.** The split-host changes
 > below are still unimplemented: settings have no `DJANGO_DB_PATH`, the socket config has no
 > `BACKEND_HOST`, and this repo has no Dockerfile or Pages deployment workflow. The client now
 > uses the page's origin outside its configured dev port, which supports a same-origin server;
 > the GitHub Pages/Fly split below still needs an explicit backend host. No deployment has been
 > performed. Prices and service details below belong to the original 26 Sep plan.
+>
+> **Release readiness, 15 Oct (6.154):** application files still match the snapshot
+> verified by 576 backend tests, 1,069 client specs and the production build.
+> Candidate `3df74dc` is published and merged in 6.155; its recorded-match CI
+> [passes both jobs](https://github.com/Ruinan-Ding/ChessPlusPlus/actions/runs/38826276661).
+> This does not complete the hosting work below. A local simulated production check with
+> a synthetic secret/host reports `security.W004`, `W008`, `W012` and `W016`:
+> HSTS, HTTPS redirection and secure session/CSRF cookies. Resolve settings or
+> document the actual proxy's handling before public deployment; no deployed
+> host or production configuration has been tested. Keep one Daphne application
+> process with the current channel layer. Verify persistent database storage,
+> backups/migrations and real HTTPS/WSS solo/CPU/two-player flows on the target.
 
 
 Step by step, assuming you have never used any of this before. Follow it top to bottom.

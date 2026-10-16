@@ -1,11 +1,10 @@
 """Authoritative ability state and config-driven effects for networked turns."""
 
 from .game_rules import section_of
-from .phases import stage_rules
 from .board import coord_key, hex_distance, parse_coord
 from .config_loader import rule_of, UNIT_ACTIVES, DEFAULT_CONFIG
 from .economy import points_of, unit_points_of
-from .phases import moves_per_turn, board_moves_per_turn, is_initialization, phase_index_at, turn_of
+from .phases import board_moves_per_turn, is_initialization, phase_index_at, stage_rules, turn_of
 from .scoring import cp_awarded
 from .unit_stats import kit_active, MAX_UNIT_STAT, active_vet, positional_bonus, cap_stat, cap_unit, ranked_unit, unit_stats
 from . import panels

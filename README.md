@@ -24,18 +24,20 @@ player's **base** and **reserve**. Coordinates are axial `q,r`; a hex is on the 
 turn, and overtime if the points are close. What a turn may do depends on where the match is:
 the opening and each postmatch are for setting out, with no attacks.
 
-**Sides alternate, and a side moves one unit on the battlefield a turn** - two in Overtime 2
-and three in Overtime 3, where switching to another unit ends the first one's move. Besides
-that, and as the stage allows, a side may start units moving in its panels, bring them out of
-its reserve onto the board, or walk them home into its base. Picking a unit shows two layers at
-once: pale green for every hex it could stand on, red for hexes it could not reach but could
+**Sides alternate. Each side may act with one unit per category** — base, reserve and
+battlefield — during regular play and Overtime 1. Initialization allows one, two, then three
+units per category; postmatch and Overtime 3 allow three, and Overtime 2 allows two.
+Switching units within a category ends the earlier unit's action until Undo. As the stage
+allows, a side may bring units from reserve onto the board or walk them home into its base.
+Picking a unit shows two layers at once: pale green for every hex it could stand on, red for hexes it could not reach but could
 still strike from where it can get to. Hovering shows the same for anyone's unit, your
 opponent's included - knowing what a thing threatens is half the game.
 
 **Movement** is a flood fill bounded by the unit's `MOV`. A unit walks **through its own side's
 units** but may not stop on one; **an enemy blocks** both its hex and the way past it, so going
-round one costs the detour. A unit keeps walking on what is left of its budget until it attacks,
-heals or the turn ends.
+round one costs the detour. A unit keeps walking on its remaining budget until it uses its
+unit ability, attacks, heals or finishes its action. Archer's active Withdraw permits its own
+movement, attack and unit ability in any order within that same budget.
 
 **Attacking** is separate from moving. Reach is a band of hex-distance rings from optional
 `attackMinRange` (default 1) through `attackRange`, ignoring obstacles. Explicit attack lists
@@ -224,8 +226,10 @@ Sacrifice selects another friendly battlefield/green-reserve unit: permanently
 add one star (max 3), fully heal it, and grant +2 MOV/+6 ATK/+6 DEF for one full
 turn. Repeated casts refresh this temporary bonus without stacking; each still
 promotes and fully heals, and separate recipients can each receive it. The pawn
-dies and counts as its side’s loss; independently select an unused
-friendly battlefield unit for an extra action. Cost 24 UP/CD 5, no UP reward.
+dies and counts as its side’s loss, and the caster gains one general battlefield
+unit action this turn. Any unused friendly battlefield unit may take it; it does not reopen a
+finished action or increase panel allowances. Cost 24 UP/CD 5, no UP reward. Older saved
+catalogues without `battlefieldActions` retain their nominated extra actor.
 Only Fortress, Ruin and Blitz remain army-wide activated effects; Call affects
 adjacent units. Convert is a no-target currency operation and path passives
 remain army-wide passives. Solo and multiplayer retain staging, Undo and reload.
@@ -257,12 +261,9 @@ king: allies heal 1 and gain +1 ATK/DEF/MOV; enemies take 1 damage and lose
 Bishop’s Regenerate heals only on the battlefield. Red-base deaths now count
 for attrition VP, while panel kills still grant no UP bounty. Knight costs 30 UP.
 
-Each side has separate battlefield, base and reserve allowances: 1/2/3 units
-in Initialization turns 1/2/3, one in normal play, three at postmatch and 1/2/3
-in Overtime stages. Moving a different unit in a category ends the previous
-walk until Undo. Units move only once through Initialization. Walking home
-spends a battlefield action; reserve entry ends that unit’s action, stops in
-the first three home rows and cannot attack on the same turn.
+Units move only once through Initialization. Walking home spends a battlefield
+action; reserve entry ends that unit’s action, stops in the first three home
+rows and cannot attack on the same turn.
 
 The owner's current roster and first-star numbers
 are in [shared/default-config.json](shared/default-config.json), with the earned-star schedule
@@ -298,8 +299,11 @@ the nearest two hexes in each diagonal direction lose 4 MOV, and farther X occup
 2 MOV. All three shapes include panel hexes and affect current occupants of either side.
 Blitz boosts HEL only on existing healers. Older saved catalogues retain their rules.
 Unit values now cost 12 UP for pawn/archer/shieldman, 24 for rook, 30 for knight,
-32 for bishop, 48 for queen and 64 for king. Those values set battlefield kill payouts and attrition losses; withdrawal refunds
-deduct one UP and current missing HP, with a one-UP floor. Starting UP remains 10; the shipped setup already
+32 for bishop, 48 for queen and 64 for king. Those values set battlefield kill payouts and attrition losses.
+Withdrawal refunds use the departure rank: Vet 0 deducts one UP and missing HP, with a
+one-UP floor; Vet 1 waives the fee; Vet 2 also waives the wound deduction; Vet 3 refunds
+exactly three times full unit value regardless of wounds. Every withdrawal then resets Vet
+to 0. Starting UP remains 10; the shipped setup already
 places 24 battlefield units per side. Vet 3 ability costs are Sacrifice 24, Snare 8,
 Taunt 6, Bash/Charge 16, Cast 32, Leech 8 and Call 4 UP.
 Leech adds 4 ATK/2 DEF for one full turn, with cooldown 3. Normal attacks heal
@@ -311,6 +315,25 @@ are Drain 50/Fortress 250, Cleave 50/Ruin 250 and Trap 50/Blitz 250; Strengthen 
 Recharge each cost 25 CP. The shared configuration supplies these prices; path purchases,
 cooldowns, effects and use limits are unchanged.
 The full costs, cooldowns, scopes and interactions are recorded in [AGENTS.md](AGENTS.md).
+
+## Development workflow
+
+Claude development uses a cross-functional Scrum team with you as Product Owner.
+[SCRUM_WORKFLOW.md](SCRUM_WORKFLOW.md) defines the roles, events, BDD examples,
+TDD cycle, shared Definition of Done and optional future SDD. The
+[backlog](SCRUM_BACKLOG.md) tracks goals and current work without duplicating
+[AGENTS.md](AGENTS.md)'s game rules or the handoff's implementation history.
+
+Start a fresh Claude Code session in the repository and run `/scrum <task>`.
+The project supplies nine specialist profiles and enables native experimental
+agent teams in-process; no model or permission override is added. The lead
+selects relevant roles, using subagents or sequential work when appropriate.
+Interactive team support is required for native teammates; non-interactive runs
+use ordinary subagents. This is the project's enterprise-style delivery process;
+organization identity, managed policies and audit retention remain a separate
+administrative setup. See the workflow for source ownership, integration and
+honest verification when a capability is unavailable. Sprint dates and the next
+product priority remain for first planning; no Sprint is claimed as completed.
 
 ## Running the Application
 
@@ -379,6 +402,33 @@ check private staging, malformed inputs, stale seats and revisions, atomic panel
 batches, deadline races, phase boundaries and disconnected-player commits. These run
 automatically in the existing CI jobs.
 
+CI also records a complete match over real sockets, then hands that recording and
+its expected result to the rendered solo integration suite. The comparison covers
+the full board, phase bank, turn, ending and winner colour. The recorder uses the
+frozen config in `shared/recording/match.json` so balance edits do not invalidate
+its fixed scenario; the fixture is test data, not the game's default config.
+Local client runs use the checked-in recording. `REPLAY_CONFIG` selects frozen
+rules when running `server/scripts/e2e/recording.py` manually.
+
+The coverage is split across these boundaries; unit coverage alone does not establish
+that a control reaches the rule it represents:
+
+| Boundary | Automated checks |
+|---|---|
+| Config migration, custom rules and client/server agreement | Config, combat, scoring and schedule parity suites read shared fixtures; legacy fixtures stay frozen. |
+| Movement, combat, unit kits, panel crossings and refunds | Engine/service suites plus rendered targeting, Undo, commit and reload scenarios. |
+| Pool, unit and CP abilities | `test_online_abilities.py`, `ability-rules.spec.ts` and rendered room scenarios check costs, recipients, action order and expiry. |
+| Income, captures, phase endings and overtime | Scoring/phase suites and complete two-seat ASGI and rendered solo matches. |
+| Multiplayer staging and concurrency | Draft protocol tests use two real ASGI connections and the test database; failed ability batches preserve the last valid draft and cannot partly spend or move. |
+| Replay and whole-turn rewind | Rendered step/turn buttons, autoplay pause, branch/R edits, corruption rollback, cache reconstruction and saved-state restoration. |
+| CPU control and recovery | Transport/controller and rendered room tests cover illegal batches, cancellation/requeue, expired-turn failures, partial execution rollback and manual recovery. |
+
+The headless suite skips animation delays and stubs CPU analysis in rendered tests.
+Native browser checks exercise the real CPU endpoint and replay presentation; real-socket
+scripts exercise network transport. The layout sweep checks geometry and accessibility
+sizes separately. None of these establishes that every possible custom configuration,
+move sequence, browser or network timing has been exercised.
+
 From `client/`, run `npx ng test --watch=false --browsers=ChromeHeadless --code-coverage`.
 From `server/`, run `DJANGO_DEBUG=true python manage.py test` (or `game.testsuite` for the
 canonical suite). Windows installs used from WSL need the `cmd.exe` commands in
@@ -394,13 +444,19 @@ Authoritative multiplayer ability coverage is in `test_online_abilities.py`; ren
 room tests and separate native Chrome checks cover staging, targeting and reconnect.
 Regression coverage includes Strengthen followed by phase promotion, reserve ability
 casualties, stationary panel action locks, and completed panel/multi-step Replay after reload.
+Cast expires after halftime awards and completed-phase tallies in both engines. Tests also
+cover disabled-kit withdrawal limits, CPU Cast targets behind stronger unreachable enemies,
+and native Branch/AI/CPU dialog focus and shortcut isolation.
 Equivalent coordinate spellings share movement costs; pass broadcasts refresh ability
 expiry/cooldowns, and protected counters and Charge strikes remain visible in completed
 Replay even when they deal zero damage. Panel attack replay follows the attacker’s UID.
 Replay also retains actors that died or moved again after combat, including Rapid Movement
 and a Charge victim's counter. Older saved frames recover missing actor identity from history.
-Upgrading the backend requires migration **0014_ability_state** before starting the new
-server. Existing rows keep an empty default until their first batched turn.
+Before starting an upgraded backend, apply all pending migrations with
+`DJANGO_DEBUG=true python manage.py migrate` locally (use production settings when deployed).
+The current schema includes **0014_ability_state** and **0015_gamestate_replay_journal**.
+Older matches initialize empty ability state on their first batched turn and retain null replay
+journals because their complete initial recording is unavailable.
 
 ## Maintenance
 

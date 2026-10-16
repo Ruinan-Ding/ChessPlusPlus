@@ -70,22 +70,9 @@ export function panelOfHex(key: string, orientation = 'edge-up'): string {
   return `${y < 0 ? 't' : 'b'}${x < 0 ? 'l' : 'r'}`;
 }
 
-/**
- * Whether a new game gets the **placeholder** squads instead of the setup's.
- * Mirrors `PANELS_DEALT` in `server/game/engine/panels.py`, and the two go on
- * together or the two sides of a networked game disagree about who is
- * standing where.
- *
- * A real game stands in its panels what the config's setup puts there - since
- * 25 Sep 2026 the owner's base squads, and nothing in the reserves. The
- * placeholder deal (one of each of the first five unit types, on every third
- * hex of all four panels) is what the panel specs were written against - the
- * walk, the wrap, the crossing, the blow, the walk home - so they turn this on
- * and keep their fixtures. With it on the placeholder squads stand **instead
- * of** the setup's panel entries, never beside them.
- *
- * Mutable so the specs can deal a board to test that machinery on; nothing in
- * the app writes to it. `setPanelsDealt` is the only writer.
+/** Test-only squads replace config panel entries; ordinary games use setup.
+ * Specs toggle this with setPanelsDealt; socket checks enable the matching
+ * server fixture with CPP_DEAL_PANELS=1.
  */
 export let PANELS_DEALT = false;
 

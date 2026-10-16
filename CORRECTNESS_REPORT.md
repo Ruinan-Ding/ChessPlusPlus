@@ -4,9 +4,10 @@
 > For current branch status and verification, read [CODEX_HANDOFF.md](CODEX_HANDOFF.md).
 
 > **Status, 26 Sep 2026: all eleven findings are fixed**, each with a regression test, in
-> `2b01cb5` (merged as PR #19) - see PUNCHLIST 6.38. The readiness gaps and the recommendations
-> that are not bugs (cross-engine parity for move/combat/panel histories, deployment, moving the
-> rules checklist into config) are still open. The report below is unchanged.
+> `2b01cb5` (merged as PR #19) - see PUNCHLIST 6.38. Later work added configurable
+> match rules, shared parity fixtures and recorded online-to-solo comparisons.
+> The report below remains historical; current verification is in the handoff,
+> and the proposed hosting work is described in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 The current working tree has a coherent game architecture and substantial automated coverage, but it is **not ready for public competitive multiplayer or an enterprise deployment**. This review found an authorization bypass, a reproducible lost-update condition, and several gameplay errors that the passing suites do not exercise.
 

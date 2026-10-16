@@ -1,0 +1,1867 @@
+{
+  "type": "chessplusplus-replay",
+  "version": 1,
+  "config": {
+    "version": "2.0",
+    "ruleset": {
+      "id": "default",
+      "revision": null
+    },
+    "board": {
+      "radius": 11,
+      "orientation": "edge-up"
+    },
+    "units": {
+      "king": {
+        "id": "king",
+        "name": "King",
+        "symbol": "K",
+        "display": {
+          "white": "\u2654",
+          "black": "\u265a"
+        },
+        "move": 6,
+        "value": 64,
+        "hp": 60,
+        "attack": 14,
+        "attackRange": 1,
+        "commander": true,
+        "defense": 8,
+        "ability": "king-call",
+        "captureZones": [
+          "home",
+          "middle",
+          "side",
+          "enemy"
+        ],
+        "veterancy": {
+          "attack": [
+            14,
+            20
+          ],
+          "attackRange": 2,
+          "move": 2
+        },
+        "passive": "capture"
+      },
+      "queen": {
+        "id": "queen",
+        "name": "Queen",
+        "symbol": "Q",
+        "display": {
+          "white": "\u2655",
+          "black": "\u265b"
+        },
+        "move": 6,
+        "value": 48,
+        "hp": 32,
+        "attack": [
+          16,
+          12
+        ],
+        "attackRange": 2,
+        "defense": 8,
+        "ability": "queen-leech",
+        "captureZones": [
+          "home",
+          "middle",
+          "side",
+          "enemy"
+        ],
+        "veterancy": {
+          "move": 1,
+          "hp": 2
+        },
+        "passive": "persuade"
+      },
+      "rook": {
+        "id": "rook",
+        "name": "Rook",
+        "symbol": "R",
+        "display": {
+          "white": "\u2656",
+          "black": "\u265c"
+        },
+        "move": 4,
+        "value": 24,
+        "hp": 24,
+        "attack": 12,
+        "attackRange": 1,
+        "defense": 10,
+        "ability": "rook-cleave",
+        "captureZones": [
+          "home",
+          "middle",
+          "side"
+        ],
+        "veterancy": {
+          "defense": 2,
+          "attack": 2
+        },
+        "passive": "rook-bog"
+      },
+      "bishop": {
+        "id": "bishop",
+        "name": "Bishop",
+        "symbol": "B",
+        "display": {
+          "white": "\u2657",
+          "black": "\u265d"
+        },
+        "move": 6,
+        "value": 32,
+        "hp": 8,
+        "attack": 0,
+        "attackRange": 1,
+        "defense": 2,
+        "ability": "bishop-cast",
+        "heal": [
+          8,
+          6
+        ],
+        "captureZones": [
+          "home",
+          "middle",
+          "side"
+        ],
+        "veterancy": {
+          "hp": 2,
+          "heal": [
+            8,
+            6,
+            4,
+            2
+          ]
+        },
+        "passive": "regenerate"
+      },
+      "knight": {
+        "id": "knight",
+        "name": "Knight",
+        "symbol": "N",
+        "display": {
+          "white": "\u2658",
+          "black": "\u265e"
+        },
+        "move": 8,
+        "value": 30,
+        "hp": 18,
+        "attack": 12,
+        "attackRange": 1,
+        "defense": 6,
+        "ability": "knight-charge",
+        "captureZones": [
+          "home",
+          "middle",
+          "side"
+        ],
+        "veterancy": {
+          "attack": 2,
+          "hp": 2
+        },
+        "passive": "hop"
+      },
+      "archer": {
+        "id": "archer",
+        "name": "Archer",
+        "symbol": "A",
+        "display": {
+          "white": "\ud83c\udff9\ufe0e",
+          "black": "\ud83c\udff9\ufe0e"
+        },
+        "move": 6,
+        "value": 12,
+        "hp": 6,
+        "attack": [
+          4,
+          3,
+          2,
+          1
+        ],
+        "attackRange": 6,
+        "defense": 2,
+        "ability": "archer-bog",
+        "attackMinRange": 3,
+        "captureZones": [
+          "home"
+        ],
+        "veterancy": {
+          "move": 2
+        },
+        "passive": "quick"
+      },
+      "shieldman": {
+        "id": "shieldman",
+        "name": "Shieldman",
+        "symbol": "S",
+        "display": {
+          "white": "\ud83d\udee1\ufe0e",
+          "black": "\ud83d\udee1\ufe0e"
+        },
+        "move": 4,
+        "value": 12,
+        "hp": 28,
+        "attack": 0,
+        "attackRange": 1,
+        "defense": 12,
+        "ability": "shield-taunt",
+        "captureZones": [
+          "home"
+        ],
+        "veterancy": {
+          "defense": 2,
+          "hp": 2
+        },
+        "passive": "counter"
+      },
+      "pawn": {
+        "id": "pawn",
+        "name": "Pawn",
+        "symbol": "P",
+        "display": {
+          "white": "\u2659",
+          "black": "\u265f"
+        },
+        "move": 6,
+        "value": 12,
+        "hp": 12,
+        "attack": 6,
+        "attackRange": 1,
+        "defense": 4,
+        "ability": "unit-sacrifice",
+        "captureZones": [
+          "home"
+        ],
+        "veterancy": {
+          "hp": 2,
+          "attack": 2,
+          "defense": 2
+        },
+        "passive": "checkmate"
+      }
+    },
+    "abilities": {
+      "slots": 4,
+      "pool": [
+        "warcry",
+        "sap",
+        "bulwark",
+        "weakening",
+        "dash",
+        "mire",
+        "mend",
+        "strike"
+      ],
+      "paths": [
+        {
+          "id": "bastion",
+          "name": "Bastion",
+          "cost": 5,
+          "passive": "bastion",
+          "skill": "anchor",
+          "ultimate": "fortress",
+          "utility": "strengthen"
+        },
+        {
+          "id": "onslaught",
+          "name": "Onslaught",
+          "cost": 50,
+          "passive": "onslaught",
+          "skill": "cleave",
+          "ultimate": "ruin",
+          "utility": "convert"
+        },
+        {
+          "id": "tempo",
+          "name": "Sprint",
+          "cost": 100,
+          "passive": "tempo",
+          "skill": "surge",
+          "ultimate": "blitz",
+          "utility": "recharge"
+        }
+      ],
+      "catalogue": {
+        "warcry": {
+          "id": "warcry",
+          "name": "Warcry",
+          "target": "friendly",
+          "cost": 25,
+          "cooldown": 3,
+          "turns": 1,
+          "atk": 8
+        },
+        "sap": {
+          "id": "sap",
+          "name": "Sap",
+          "target": "enemy",
+          "cost": 35,
+          "cooldown": 5,
+          "turns": 1,
+          "atk": -8,
+          "scope": "field-reserve"
+        },
+        "bulwark": {
+          "id": "bulwark",
+          "name": "Bulwark",
+          "target": "friendly",
+          "cost": 25,
+          "cooldown": 3,
+          "turns": 1,
+          "def": 8
+        },
+        "weakening": {
+          "id": "weakening",
+          "name": "Weakening",
+          "target": "enemy",
+          "cost": 15,
+          "cooldown": 1,
+          "turns": 1,
+          "def": -8,
+          "scope": "field-reserve"
+        },
+        "dash": {
+          "id": "dash",
+          "name": "Dash",
+          "target": "friendly",
+          "cost": 20,
+          "cooldown": 4,
+          "turns": 1,
+          "mov": 4
+        },
+        "mire": {
+          "id": "mire",
+          "name": "Mire",
+          "target": "enemy",
+          "cost": 10,
+          "cooldown": 3,
+          "turns": 1,
+          "mov": -2,
+          "scope": "field-reserve"
+        },
+        "mend": {
+          "id": "mend",
+          "name": "Mend",
+          "target": "friendly",
+          "cost": 10,
+          "cooldown": 1,
+          "heal": 2
+        },
+        "strike": {
+          "id": "strike",
+          "name": "Strike",
+          "target": "enemy",
+          "cost": 20,
+          "cooldown": 4,
+          "damage": 4
+        },
+        "rally": {
+          "id": "rally",
+          "name": "Rally",
+          "target": "universal",
+          "cost": 0,
+          "cooldown": 3,
+          "points": 300,
+          "testing": true
+        },
+        "bastion": {
+          "id": "bastion",
+          "name": "Bastion",
+          "target": "friendly",
+          "effect": "defensive-armor",
+          "def": 1,
+          "minVet": 0,
+          "scope": "all",
+          "description": "{sign:def} DEF while receiving an attack or counterattack. Applies to {scope}; needs rank {minVet}."
+        },
+        "anchor": {
+          "id": "anchor",
+          "name": "Drain",
+          "target": "hex",
+          "effect": "hex-sap",
+          "cost": 50,
+          "cooldown": 1,
+          "turns": 1,
+          "uses": 3,
+          "setAtk": 0,
+          "splashAtk": -4,
+          "description": "Choose any hex. Centre ATK/HEL becomes {setAtk}/{setHel}; through ring {splashRange}, ATK {sign:splashAtk}/HEL {sign:splashHel}; through ring {outerRange}, ATK {sign:outerAtk}/HEL {sign:outerHel}. Affects either side; boosts existing attack/heal profiles only. Lasts {duration}; costs {cost} CP; {uses} uses per match.",
+          "setHel": 0,
+          "splashHel": -4,
+          "splashRange": 1,
+          "outerRange": 2,
+          "outerAtk": 2,
+          "outerHel": 2
+        },
+        "fortress": {
+          "id": "fortress",
+          "name": "Fortress",
+          "target": "universal",
+          "effect": "fortress",
+          "cost": 250,
+          "uses": 1,
+          "turns": 1,
+          "enemyDefSet": 0,
+          "scope": "all",
+          "description": "Owned units in {scope} take no damage, including overtime king damage, for {duration}. Enemy DEF becomes {enemyDefSet}. Costs {cost} CP; {uses} use per match."
+        },
+        "onslaught": {
+          "id": "onslaught",
+          "name": "Onslaught",
+          "target": "friendly",
+          "atk": 2,
+          "minVet": 0,
+          "scope": "all",
+          "description": "{sign:atk} ATK on initiated attacks only, excluding counters, and {sign:hel} HEL for existing healers in {scope}. Needs rank {minVet}.",
+          "effect": "offensive-power",
+          "hel": 2
+        },
+        "cleave": {
+          "id": "cleave",
+          "name": "Cleave",
+          "target": "hex",
+          "effect": "hex-cleave",
+          "cost": 50,
+          "cooldown": 1,
+          "uses": 3,
+          "damage": 5,
+          "splashDamage": 3,
+          "description": "Choose any hex for a board-wide horizontal line. Centre takes {damage} HP damage; the nearest {splashRange} hexes on each side take {splashDamage}; farther occupants heal {heal} HP. Affects either side. Costs {cost} CP; {uses} uses per match.",
+          "area": "horizontal",
+          "splashRange": 2,
+          "heal": 1
+        },
+        "ruin": {
+          "id": "ruin",
+          "name": "Ruin",
+          "target": "universal",
+          "effect": "ruin",
+          "cost": 250,
+          "uses": 1,
+          "damage": 3,
+          "heal": 3,
+          "scope": "all",
+          "description": "Deal {damage} HP damage to every unit in {scope}, then heal your survivors by {heal}, capped at max HP. Does not revive casualties. Costs {cost} CP; {uses} use per match."
+        },
+        "tempo": {
+          "id": "tempo",
+          "name": "Sprint",
+          "target": "friendly",
+          "mov": 1,
+          "minVet": 0,
+          "scope": "all",
+          "description": "{sign:mov} MOV in {scope}, with another {sign:baseMov} MOV in red bases. Your pool, unit UP and CP ability casts cost {costReduction} less in their own currency, minimum {minimumCost}. Needs rank {minVet}.",
+          "effect": "mobility-economy",
+          "baseMov": 4,
+          "costReduction": 3,
+          "minimumCost": 1
+        },
+        "surge": {
+          "id": "surge",
+          "name": "Trap",
+          "target": "hex",
+          "effect": "hex-trap",
+          "cost": 50,
+          "cooldown": 1,
+          "turns": 1,
+          "uses": 3,
+          "splashMov": -4,
+          "description": "Choose any hex for a board-wide X. Centre loses positive temporary buffs and cannot move, attack, heal normally or use its unit ability; counters remain allowed. The nearest {splashRange} hexes in each diagonal direction receive {sign:splashMov} MOV; farther occupants receive {sign:outerMov} MOV. Affects either side for {duration}. Costs {cost} CP; {uses} uses per match.",
+          "area": "cross",
+          "splashRange": 2,
+          "outerMov": 2
+        },
+        "blitz": {
+          "id": "blitz",
+          "name": "Blitz",
+          "target": "universal",
+          "effect": "blitz",
+          "cost": 250,
+          "uses": 1,
+          "turns": 1,
+          "mov": 8,
+          "atk": 2,
+          "def": 2,
+          "scope": "all",
+          "description": "Owned units in {scope} gain {sign:mov} MOV/{sign:atk} ATK/{sign:def} DEF; existing healers gain {sign:hel} HEL. Enemy units cannot move, attack, heal normally or use unit abilities, but may counter and use pool/CP abilities. Lasts {duration}; costs {cost} CP; {uses} use per match.",
+          "hel": 4
+        },
+        "counter": {
+          "id": "counter",
+          "name": "Counter",
+          "target": "friendly",
+          "effect": "counter",
+          "counterAttack": [
+            4
+          ],
+          "description": "At rank {passiveUnlock}, counter with ATK {counterProfile} before DEF. Does not grant a normal attack."
+        },
+        "hop": {
+          "id": "hop",
+          "name": "Hop",
+          "target": "friendly",
+          "effect": "hop",
+          "description": "At rank {passiveUnlock}, pass through consecutive enemy hexes and open panel crossings, paying normal movement costs. End on an empty hex."
+        },
+        "rapid-movement": {
+          "id": "rapid-movement",
+          "name": "Rapid Movement",
+          "target": "friendly",
+          "effect": "rapid-movement",
+          "description": "At rank {passiveUnlock}, use remaining MOV after attacking."
+        },
+        "deflect": {
+          "id": "deflect",
+          "name": "Shove",
+          "target": "friendly",
+          "effect": "deflect",
+          "description": "At rank {passiveUnlock}, attack with ATK {atk} before DEF. Cannot counterattack, even with ATK buffs.",
+          "atk": 4
+        },
+        "rook-bog": {
+          "id": "rook-bog",
+          "name": "Bog",
+          "target": "friendly",
+          "effect": "on-hit-drain",
+          "description": "At rank {passiveUnlock}, after each attack/counter exchange apply {sign:atk} ATK/{sign:def} DEF to the enemy for {duration}. Each exchange adds one stack; no cap.",
+          "atk": -1,
+          "def": -1,
+          "turns": 1
+        },
+        "regenerate": {
+          "id": "regenerate",
+          "name": "Regenerate",
+          "target": "friendly",
+          "effect": "regenerate",
+          "description": "At rank {passiveUnlock}, fully heal at the end of your turn in an active unit-kit zone, even without acting."
+        },
+        "intimidate": {
+          "id": "intimidate",
+          "name": "Intimidate",
+          "target": "friendly",
+          "effect": "intimidate",
+          "description": "At rank {passiveUnlock}, at your turn start apply {sign:atk} ATK/{sign:def} DEF/{sign:mov} MOV to battlefield units within {radius} hex(es) of the caster: enemies for {duration}.",
+          "atk": -1,
+          "def": -1,
+          "mov": -1,
+          "turns": 1,
+          "radius": 1
+        },
+        "persuade": {
+          "id": "persuade",
+          "name": "Persuade",
+          "target": "friendly",
+          "effect": "persuade",
+          "description": "At rank {passiveUnlock}, at your turn start apply {sign:atk} ATK/{sign:def} DEF/{sign:mov} MOV to battlefield units within {radius} hex(es) of the caster: allies for {duration}.",
+          "atk": 1,
+          "def": 1,
+          "mov": 1,
+          "turns": 1,
+          "radius": 1
+        },
+        "unit-sacrifice": {
+          "id": "unit-sacrifice",
+          "name": "Sacrifice",
+          "description": "Choose another friendly battlefield or green-reserve unit: permanently add {stars} star(s), capped at 3, fully heal and grant {sign:mov} MOV/{sign:atk} ATK/{sign:def} DEF for {duration}. Repeated casts refresh these temporary stats without stacking. Spend the caster\u2019s battlefield action and remove it, counting it as your loss; gain +{battlefieldActions} battlefield unit action(s) this turn, usable by any unused friendly battlefield unit. Finished actions cannot be reopened. UP reward: {up}. Costs {cost} UP; cooldown {cooldown}.",
+          "target": "friendly",
+          "effect": "sacrifice",
+          "cost": 24,
+          "cooldown": 5,
+          "turns": 1,
+          "atk": 6,
+          "def": 6,
+          "mov": 2,
+          "up": 0,
+          "stars": 1,
+          "battlefieldActions": 1
+        },
+        "archer-bog": {
+          "id": "archer-bog",
+          "name": "Snare",
+          "description": "Attacks apply {sign:mov} MOV to their enemy target for {duration}; counters do not trigger it.",
+          "target": "friendly",
+          "effect": "attack-drain",
+          "cost": 8,
+          "cooldown": 3,
+          "turns": 1,
+          "mov": -4
+        },
+        "shield-taunt": {
+          "id": "shield-taunt",
+          "name": "Taunt",
+          "description": "Enemy attacks must choose a reachable taunting unit. Moving and using abilities without attacking remain allowed.",
+          "target": "friendly",
+          "effect": "taunt",
+          "cost": 6,
+          "cooldown": 1,
+          "turns": 1
+        },
+        "rook-cleave": {
+          "id": "rook-cleave",
+          "name": "Bash",
+          "description": "Attacks also strike enemies within {radius} hex(es) around this unit using normal ATK against each DEF; only the primary target counters.",
+          "target": "friendly",
+          "effect": "cleave",
+          "cost": 16,
+          "cooldown": 5,
+          "turns": 1,
+          "radius": 1
+        },
+        "knight-charge": {
+          "id": "knight-charge",
+          "name": "Charge",
+          "description": "After an actual counterattack, attack once more if still alive, with no second counter unless the defender also has that Charge permission. {chargeCounterRule} Lasts {duration}. Costs {cost} UP; cooldown {cooldown}.",
+          "target": "friendly",
+          "effect": "charge",
+          "cost": 16,
+          "cooldown": 5,
+          "turns": 1,
+          "secondCounter": true
+        },
+        "bishop-cast": {
+          "id": "bishop-cast",
+          "name": "Cast",
+          "description": "Choose an enemy within {radius} hex(es) on the battlefield or in green reserve. End the caster action and immediately grant that unit an extra action. Control lasts {duration}.",
+          "target": "enemy",
+          "effect": "control",
+          "cost": 32,
+          "cooldown": 5,
+          "turns": 1,
+          "radius": 1
+        },
+        "queen-leech": {
+          "id": "queen-leech",
+          "name": "Leech",
+          "description": "Gain {sign:atk} ATK/{sign:def} DEF for {duration}. Normal attacks immediately heal this unit by the actual HP damage dealt, capped at max HP, before a possible counterattack. Counters do not heal. Costs {cost} UP; cooldown {cooldown}.",
+          "target": "friendly",
+          "effect": "leech",
+          "cost": 8,
+          "cooldown": 3,
+          "turns": 1,
+          "atk": 4,
+          "def": 2
+        },
+        "queen-nullify": {
+          "id": "queen-nullify",
+          "name": "Nullify",
+          "description": "Enemies attacked by this unit cannot counter for {duration}.",
+          "target": "friendly",
+          "effect": "nullify",
+          "cost": 12,
+          "cooldown": 1,
+          "turns": 1
+        },
+        "king-call": {
+          "id": "king-call",
+          "name": "Call",
+          "description": "Within {radius} hex(es), friendly battlefield/reserve units heal {heal} HP and gain {sign:atk} ATK/{sign:def} DEF/{sign:mov} MOV. Enemies take {enemyDamage} HP damage and receive {sign:enemyAtk} ATK/{sign:enemyDef} DEF/{sign:enemyMov} MOV for {duration}. Excludes the caster. Costs {cost} UP; cooldown {cooldown}.",
+          "target": "friendly",
+          "effect": "call",
+          "cost": 4,
+          "cooldown": 1,
+          "turns": 1,
+          "heal": 1,
+          "def": 1,
+          "enemyDamage": 1,
+          "enemyAtk": -1,
+          "enemyDef": -1,
+          "atk": 1,
+          "mov": 1,
+          "enemyMov": -1,
+          "radius": 1
+        },
+        "convert": {
+          "id": "convert",
+          "name": "Convert",
+          "target": "universal",
+          "cost": 25,
+          "cooldown": 1,
+          "description": "Spend {cost} CP to gain {up} UP. {uses} uses per phase; cooldown {cooldown}.",
+          "uses": 5,
+          "usesScope": "phase",
+          "up": 50
+        },
+        "strengthen": {
+          "id": "strengthen",
+          "name": "Strengthen",
+          "target": "friendly",
+          "effect": "promote",
+          "cost": 25,
+          "cooldown": 1,
+          "stars": 1,
+          "scope": "field-reserve",
+          "description": "Give a selected friendly unit in {scope} {stars} star(s), capped at 3. First-star HP raises current and maximum together when its kit is active. Costs {cost} CP; cooldown {cooldown}; {uses} uses per phase.",
+          "uses": 5,
+          "usesScope": "phase"
+        },
+        "recharge": {
+          "id": "recharge",
+          "name": "Recharge",
+          "target": "pair",
+          "effect": "recharge",
+          "cost": 25,
+          "cooldown": 1,
+          "recharge": 1,
+          "description": "Choose a carried pool pair. Each cooldown above 1 decreases by {recharge}, stopping at 1. Each ability already at 0 or 1 CD instead grants {refundMultiplier} times its full configured regular-point cost, before Sprint discounts; its cooldown stays unchanged. Costs {cost} CP; cooldown {cooldown}; {uses} uses per phase.",
+          "uses": 5,
+          "usesScope": "phase",
+          "refundMultiplier": 1
+        },
+        "capture": {
+          "id": "capture",
+          "name": "Capture",
+          "target": "friendly",
+          "effect": "capture",
+          "description": "At rank {passiveUnlock}, hold the capture zone you occupy, except eligible enemies keep their occupied hexes. Opposing active Capture restores normal capture rules; higher rank has no priority."
+        },
+        "quick": {
+          "id": "quick",
+          "name": "Withdraw",
+          "target": "friendly",
+          "effect": "rapid-movement",
+          "description": "{movementOrder} Keep one total MOV budget, one attack and one unit cast. Switching to another battlefield actor ends this action.",
+          "freeOrder": true
+        },
+        "checkmate": {
+          "id": "checkmate",
+          "name": "Checkmate",
+          "target": "friendly",
+          "effect": "checkmate",
+          "atk": 6,
+          "def": 6,
+          "mov": 2,
+          "description": "At rank {passiveUnlock}, gain {sign:atk} ATK/{sign:def} DEF in the enemy\u2019s first {homeRows} battlefield rows; lose them on leaving. An action starting there gets {sign:mov} MOV for its whole walk, including leaving; arriving does not extend the walk."
+        }
+      },
+      "pairPickDelay": 3
+    },
+    "setup": {
+      "white": {
+        "-3,6": "king",
+        "0,0": "pawn"
+      },
+      "black": {
+        "3,-6": "king",
+        "5,0": "pawn"
+      }
+    },
+    "match": {
+      "objective": "regicide",
+      "turnTimeLimit": 0,
+      "maxTurns": 0,
+      "cpAtStart": 500,
+      "opening": {
+        "name": "Initialization",
+        "turns": 3,
+        "pointsPerTurn": 1,
+        "grant": 0
+      },
+      "phases": [
+        {
+          "name": "Phase 1",
+          "turns": 10,
+          "halftimeAfter": 5,
+          "postmatchTurns": 1,
+          "pointsPerTurn": 1,
+          "grant": 20,
+          "vpMultiplier": 1,
+          "cpAward": 10,
+          "pointsBeforeHalftime": 1,
+          "postmatchPointsPerTurn": 1
+        },
+        {
+          "name": "Phase 2",
+          "turns": 10,
+          "halftimeAfter": 5,
+          "postmatchTurns": 1,
+          "pointsPerTurn": 2,
+          "grant": 20,
+          "vpMultiplier": 2,
+          "cpAward": 20,
+          "pointsBeforeHalftime": 1,
+          "postmatchPointsPerTurn": 2
+        },
+        {
+          "name": "Phase 3",
+          "turns": 10,
+          "halftimeAfter": 5,
+          "postmatchTurns": 1,
+          "pointsPerTurn": 3,
+          "grant": 20,
+          "vpMultiplier": 3,
+          "cpAward": 30,
+          "pointsBeforeHalftime": 2,
+          "postmatchPointsPerTurn": 3
+        }
+      ],
+      "overtime": {
+        "name": "Overtime",
+        "pointsPerTurn": 0,
+        "stages": [
+          {
+            "name": "Overtime 1",
+            "turns": 8,
+            "kingToll": 1,
+            "moves": {
+              "battlefield": 1,
+              "reserve": 1,
+              "base": 1
+            }
+          },
+          {
+            "name": "Overtime 2",
+            "turns": 5,
+            "kingToll": 3,
+            "moves": {
+              "battlefield": 2,
+              "reserve": 2,
+              "base": 2
+            }
+          },
+          {
+            "name": "Overtime 3",
+            "turns": 1,
+            "kingToll": 5,
+            "moves": {
+              "battlefield": 3,
+              "reserve": 3,
+              "base": 3
+            }
+          }
+        ]
+      },
+      "winConditions": {
+        "earlyPhaseLosses": [
+          {
+            "phase": 1,
+            "side": "white",
+            "condition": "no-eligible-capture-occupant",
+            "threshold": 0
+          },
+          {
+            "phase": 2,
+            "side": "black",
+            "condition": "vp-at-most",
+            "threshold": 0
+          }
+        ],
+        "points": {
+          "enabled": true,
+          "leadToWin": {
+            "white": 50,
+            "black": 25
+          }
+        },
+        "overtimeWinner": "black"
+      }
+    },
+    "stageRules": {
+      "opening": {
+        "attack": false,
+        "normalHeal": false,
+        "poolAbilities": false,
+        "unitAbilities": false,
+        "cpUtilities": true,
+        "cpSkills": false,
+        "cpUltimates": false,
+        "wrap": true,
+        "reserveEntry": true,
+        "homecoming": true,
+        "moves": {
+          "battlefield": [
+            1,
+            2,
+            3
+          ],
+          "reserve": [
+            1,
+            2,
+            3
+          ],
+          "base": [
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "firstHalf": {
+        "attack": true,
+        "normalHeal": true,
+        "poolAbilities": true,
+        "unitAbilities": true,
+        "cpUtilities": true,
+        "cpSkills": true,
+        "cpUltimates": true,
+        "wrap": true,
+        "reserveEntry": false,
+        "homecoming": false,
+        "moves": {
+          "battlefield": 1,
+          "reserve": 1,
+          "base": 1
+        }
+      },
+      "secondHalf": {
+        "attack": true,
+        "normalHeal": true,
+        "poolAbilities": true,
+        "unitAbilities": true,
+        "cpUtilities": true,
+        "cpSkills": true,
+        "cpUltimates": true,
+        "wrap": false,
+        "reserveEntry": true,
+        "homecoming": false,
+        "moves": {
+          "battlefield": 1,
+          "reserve": 1,
+          "base": 1
+        }
+      },
+      "postmatch": {
+        "attack": false,
+        "normalHeal": true,
+        "poolAbilities": true,
+        "unitAbilities": true,
+        "cpUtilities": true,
+        "cpSkills": true,
+        "cpUltimates": true,
+        "wrap": true,
+        "reserveEntry": true,
+        "homecoming": true,
+        "moves": {
+          "battlefield": 3,
+          "reserve": 3,
+          "base": 3
+        }
+      },
+      "overtime": {
+        "attack": true,
+        "normalHeal": true,
+        "poolAbilities": true,
+        "unitAbilities": true,
+        "cpUtilities": true,
+        "cpSkills": true,
+        "cpUltimates": true,
+        "wrap": false,
+        "reserveEntry": false,
+        "homecoming": true
+      },
+      "movedUnitsLockedInOpening": true
+    },
+    "economy": {
+      "pointsAtStart": 500,
+      "upAtStart": 10,
+      "killPayMultiplier": 1,
+      "killPayZones": [
+        "battlefield"
+      ],
+      "walkHomeRefund": {
+        "valueMultiplier": 1,
+        "fee": 1,
+        "missingHpMultiplier": 1,
+        "minimum": 1,
+        "veterancy": [
+          {
+            "valueMultiplier": 1,
+            "fee": 0,
+            "missingHpMultiplier": 1
+          },
+          {
+            "valueMultiplier": 1,
+            "fee": 0,
+            "missingHpMultiplier": 0
+          },
+          {
+            "valueMultiplier": 3,
+            "fee": 0,
+            "missingHpMultiplier": 0
+          }
+        ],
+        "resetVeterancy": true
+      },
+      "wrapPriceMultiplier": 1,
+      "halftimeUpMultiplier": 1,
+      "overtimeVpToPointsMultiplier": 1,
+      "cpOwnScoreMultiplier": 1,
+      "cpOpponentScoreMultiplier": 1,
+      "cpBehindGapMultiplier": 1
+    },
+    "scoring": {
+      "layout": {
+        "columnRatio": 0.6363636363636364,
+        "rowRatio": 0.5454545454545454
+      },
+      "zones": [
+        {
+          "kind": "middle",
+          "owner": "",
+          "anchor": "middle",
+          "radius": 2,
+          "worth": 2
+        },
+        {
+          "kind": "side",
+          "owner": "",
+          "anchor": "right",
+          "radius": 2,
+          "worth": 1
+        },
+        {
+          "kind": "side",
+          "owner": "",
+          "anchor": "left",
+          "radius": 2,
+          "worth": 1
+        },
+        {
+          "kind": "base",
+          "owner": "black",
+          "anchor": "black-home",
+          "radius": 2,
+          "worth": 3
+        },
+        {
+          "kind": "base",
+          "owner": "white",
+          "anchor": "white-home",
+          "radius": 2,
+          "worth": 3
+        }
+      ],
+      "floorAtZero": true,
+      "deathCostMultiplier": 1,
+      "deathZones": [
+        "battlefield",
+        "reserve",
+        "base"
+      ],
+      "innerClaimReach": 1,
+      "outerClaimReach": 0,
+      "neutralizeReach": 1,
+      "centerControl": true
+    },
+    "combat": {
+      "rangeFalloff": 0.25,
+      "minStrikeDamage": 1,
+      "minRangedDamage": 1,
+      "counterattacks": true,
+      "baseCounters": false,
+      "reserveCounters": true
+    },
+    "panels": {
+      "homeRows": 3,
+      "crossingStepCost": 1,
+      "baseHealPerTurn": 1,
+      "reserveHealPerTurn": 0
+    },
+    "veterancy": {
+      "startingRank": 0,
+      "statUnlock": 1,
+      "passiveUnlock": 2,
+      "abilityUnlock": 3,
+      "award": 1,
+      "firstPhaseStartAward": true,
+      "postmatchAwards": true,
+      "awardZones": [
+        "battlefield",
+        "reserve"
+      ],
+      "kitZones": [
+        "battlefield"
+      ],
+      "fullHealPhase": "last",
+      "fullHealRank": 3
+    }
+  },
+  "players": {
+    "white": "ReplayAb9ed1480",
+    "black": "ReplayBb9ed1480"
+  },
+  "actions": [
+    {
+      "ply": 1,
+      "color": "white",
+      "command": {
+        "type": "pick_pair",
+        "id": "warcry"
+      }
+    },
+    {
+      "ply": 1,
+      "color": "white",
+      "command": {
+        "type": "pick_path",
+        "id": "onslaught"
+      }
+    },
+    {
+      "ply": 1,
+      "color": "white",
+      "command": {
+        "type": "make_move",
+        "from": "0,0",
+        "to": "1,0",
+        "more": true
+      }
+    },
+    {
+      "ply": 1,
+      "color": "white",
+      "command": {
+        "type": "make_move",
+        "from": "1,0",
+        "to": "2,0",
+        "more": true
+      }
+    },
+    {
+      "ply": 1,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 2,
+      "color": "black",
+      "command": {
+        "type": "make_move",
+        "from": "5,0",
+        "to": "4,0",
+        "more": true
+      }
+    },
+    {
+      "ply": 2,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 3,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 4,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 5,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 6,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 7,
+      "color": "white",
+      "command": {
+        "type": "cast_ability",
+        "id": "convert"
+      }
+    },
+    {
+      "ply": 7,
+      "color": "white",
+      "command": {
+        "type": "cast_ability",
+        "id": "warcry",
+        "targetUid": "w0,0"
+      }
+    },
+    {
+      "ply": 7,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 8,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 9,
+      "color": "white",
+      "command": {
+        "type": "make_move",
+        "from": "2,0",
+        "to": "3,0",
+        "attack": "4,0",
+        "more": true
+      }
+    },
+    {
+      "ply": 9,
+      "color": "white",
+      "command": {
+        "type": "cast_ability",
+        "id": "cleave",
+        "hex": "4,0"
+      }
+    },
+    {
+      "ply": 9,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 10,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 11,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 12,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 13,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 14,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 15,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 16,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 17,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 18,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 19,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 20,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 21,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 22,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 23,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 24,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 25,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 26,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 27,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 28,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 29,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 30,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 31,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 32,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 33,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 34,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 35,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 36,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 37,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 38,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 39,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 40,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 41,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 42,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 43,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 44,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 45,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 46,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 47,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 48,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 49,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 50,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 51,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 52,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 53,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 54,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 55,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 56,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 57,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 58,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 59,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 60,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 61,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 62,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 63,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 64,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 65,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 66,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 67,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 68,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 69,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 70,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 71,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 72,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 73,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 74,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 75,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 76,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 77,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 78,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 79,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 80,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 81,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 82,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 83,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 84,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 85,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 86,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 87,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 88,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 89,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 90,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 91,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 92,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 93,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 94,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 95,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 96,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 97,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 98,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 99,
+      "color": "white",
+      "command": {
+        "type": "pass_turn"
+      }
+    },
+    {
+      "ply": 100,
+      "color": "black",
+      "command": {
+        "type": "pass_turn"
+      }
+    }
+  ]
+}

@@ -5,6 +5,8 @@ import uuid
 
 from .validators import MAX_USERNAME_LENGTH, name_key
 
+# Django adds managers and exception classes dynamically; annotate them for static checks.
+
 
 def generate_uuid():
     """Generate a UUID string for use as default primary key."""
@@ -22,7 +24,7 @@ class GameRoom(models.Model):
     
     game_id = models.CharField(max_length=36, unique=True, primary_key=True, default=generate_uuid)
     host = models.CharField(max_length=MAX_USERNAME_LENGTH)  # Username of the host/inviter
-    opponent = models.CharField(max_length=MAX_USERNAME_LENGTH)  # Username of the opponent
+    opponent = models.CharField(max_length=MAX_USERNAME_LENGTH)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='waiting')
     game_mode = models.CharField(max_length=10, default='default')  # 'default' or 'custom'
     game_options = models.JSONField(default=dict)  # {'reveal': True/False, etc}
@@ -47,9 +49,7 @@ class GameRoom(models.Model):
     
     def __str__(self):
         return f"Game {self.game_id} - {self.host} vs {self.opponent} ({self.status})"
-    # Explicit manager annotation for static analysis
     objects: Any = models.Manager()
-    # Explicit DoesNotExist annotation for static analysis
     DoesNotExist: Any
 
 
@@ -83,9 +83,7 @@ class GameChallenge(models.Model):
     
     def is_expired(self):
         return timezone.now() > self.expires_at
-    # Explicit manager annotation for static analysis
     objects: Any = models.Manager()
-    # Explicit DoesNotExist annotation for static analysis
     DoesNotExist: Any
 
 
@@ -124,9 +122,7 @@ class PlayerConnection(models.Model):
         self.name_key = name_key(self.username)
         super().save(*args, **kwargs)
 
-    # Explicit manager annotation for static analysis
     objects: Any = models.Manager()
-    # Explicit DoesNotExist annotation for static analysis
     DoesNotExist: Any
 
 
@@ -145,9 +141,7 @@ class PlayerReadyStatus(models.Model):
     
     def __str__(self):
         return f"{self.username} in {self.game_id} - {'Ready' if self.is_ready else 'Not Ready'}"
-    # Explicit manager annotation for static analysis
     objects: Any = models.Manager()
-    # Explicit DoesNotExist annotation for static analysis
     DoesNotExist: Any
 
 
@@ -222,9 +216,7 @@ class GameState(models.Model):
     def is_finished(self) -> bool:
         return self.end_reason != ''
 
-    # Explicit manager annotation for static analysis
     objects: Any = models.Manager()
-    # Explicit DoesNotExist annotation for static analysis
     DoesNotExist: Any
 
 

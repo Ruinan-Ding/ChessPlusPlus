@@ -20,6 +20,22 @@ the engine's config-driven design means a *small* diff in the wrong place silent
 invariants below — read the code a change touches before picking a rung. And the game spec is
 the owner's call, never a "reasonable default" (see **Game spec** below).
 
+## Claude Scrum delivery
+
+Use [SCRUM_WORKFLOW.md](SCRUM_WORKFLOW.md) for the cross-functional Claude team,
+BDD acceptance examples, TDD, peer review and Definition of Done. `/scrum <task>`
+is the project entry point; `.claude/agents/` supplies the specialist profiles.
+The human owner is Product Owner. The team shares delivery responsibility;
+specialties are not sequential departments or additional approval gates.
+
+Apply this workflow to development tasks, scaled to scope and runtime capability.
+Delegate independent work only when the session's policy permits; never pretend
+an unavailable independent review happened. Preserve the dirty working source
+and assign one writer per file. [SCRUM_BACKLOG.md](SCRUM_BACKLOG.md) holds goals,
+ordered stories and current work; CODEX_HANDOFF/PUNCHLIST retain their existing
+roles. SDD (specification-driven development) remains a future option. This
+workflow changes no game rules, balance revision or publication authorization.
+
 ## What this is
 
 A hex-grid tactical game (Fire-Emblem-style combat, chess-derived turn structure) with a
@@ -32,7 +48,7 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (563 tests, 11 Oct 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (576 tests, 15 Oct 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
@@ -67,6 +83,20 @@ LAYOUT_URL=http://localhost:4201 node scripts/layout-sweep.mjs
 # them. banner-fit.spec.ts fixed one (1300px) and CI was red from 29 Sep to 1 Oct 2026 while
 # every spec passed on Windows.
 ```
+
+The client's strict compiler also checks unused parameters (`noUnusedParameters`).
+Use an underscore prefix for an intentionally unused callback argument. Private
+`@ViewChild` setters are framework entry points even when no TypeScript caller
+references them; do not remove them as unused code. The Python editor target follows
+CI and the local runtime (3.14).
+
+CI also records a complete real-socket match in the server job, uploads its
+canonical intents/result, and replays that artifact through the rendered solo
+integration suite in the client job. `shared/recording/` supplies a checked-in
+fallback and the frozen config for this scenario; it is test data, not shipped
+balance. `REPLAY_CONFIG` selects these frozen rules for the recorder, so numerical
+balance edits do not invalidate its fixed actions. This cross-engine comparison
+complements the independent rule/parity assertions; it does not replace them.
 
 `DJANGO_DEBUG=true` is required for **every** local `manage.py` invocation. Without it
 `core/settings.py` demands a real `DJANGO_SECRET_KEY`/`DJANGO_ALLOWED_HOSTS` and refuses to
@@ -138,10 +168,47 @@ free wraps still obey the doorway schedule. Solo and server derive wrap prices a
 unit value times `economy.wrapPriceMultiplier`. The board computes zone worths during
 rebuilds, then template queries read the map; radius alone cannot key custom zones.
 
+**Handover scoring precedes control expiry.** The finished turn's promotion effects,
+halftime UP snapshot and phase tally use its final controlled position. Cast returns units
+to their original side afterward, before that side's next actions. Solo and multiplayer
+must preserve this order at every phase/halftime boundary; moving expiry before tally
+can change the winner. Movement limits and recorded step costs use active veterancy,
+including withdrawal overrides: earned stars cannot enable a kit outside `kitZones`.
+CPU target limits apply after filtering legal range and excluding the source unit.
+
 **Combat ring eligibility is mirrored.** `canAttack` / `can_attack` checks the attack
 at the requested ring, so a positive tier elsewhere cannot arm a zero tier. Both suites
 consume the hand-written `combat-parity.json` cases, including minimum-range blind spots,
 scalar attacks and healing profiles.
+
+**Turn intent, staging and playback have separate boundaries (6.148).**
+`game-command.ts` defines the typed semantic command union. Imported replay actions
+remain untrusted until `parseGameCommand` validates the reached step; engine rules
+still determine legality. `recordCommand` strips fields using the shared allowlist
+without imposing replay-input validation on live UI staging. `game-history.ts`
+models existing movement/effect/choice/upkeep markers without adding wire fields.
+
+`turn-staging.ts` builds one chronological event view of battlefield actions,
+panel steps and choices. Its pure online and solo adapters, and its unit-action
+budget projection, share that view. The solo adapter retains resolved effects;
+the online adapter sends intent only. Keep intervening effects after combat but
+before Withdraw, and UP grants before the crossing they fund, without duplicate
+payment. Original staging stacks and Undo metadata retain their saved format.
+
+`ReplayController` owns navigation, bounded frame caching, corruption rollback,
+branching and cancellation; `CpuTurnController` owns queued requests, late-reply
+guards and recovery state. The room supplies rendering, input, storage and clock
+adapters. Restore a failed CPU draft before setting its new error/outage state,
+otherwise restoring its old UI can erase the recovery prompt and pause.
+Queued callbacks retain their request generation; an obsolete callback cannot start
+a replacement request. Recover a failed analysis only while its generation and turn
+are still current, so a late failure cannot overwrite an advanced position.
+
+`engine/actions.py` resolves battlefield actions, slot claims and progress without
+sockets or database writes. It operates on the caller's private working state;
+`GameConsumer` retains seat/turn authorization, revision-guarded writes, clocks
+and broadcasts. Preview and CPU still reuse the same handler/transition path.
+Both ability panels render the same side/cooldown-parameterized `ng-template`.
 
 **The scoring rules are mirrored too, and a test holds the two copies together.** The capture
 zones, the phase bank, deaths, the endings, the CP award, UP transactions and halftime
@@ -410,6 +477,13 @@ Decided so far:
   clock, cooldowns and pick markers, including after solo reload or Q. Saved
   choices without prior-state metadata cannot fabricate an Undo. Online autosave
   replaces the private command batch after Undo; committed picks remain final.
+
+- **Replay/CPU dialogs, 14 Oct 2026:** Branch confirmation, AI explanation and CPU
+  recovery use native modal dialogs. Background controls remain inert, focus returns
+  to the triggering control when it remains available after the popup closes, and room shortcuts remain quiet
+  while a dialog is open, including when browser Tab navigation focuses the body.
+  Escape dismisses Branch/AI; CPU outages retain their explicit recovery choices.
+  Dialog text remains unscaled when the surrounding desktop room shrinks.
 
 - **Portable replay files, 10 Oct 2026:** Finished solo/online matches recorded
   from their initial position can export a versioned file of config, display
@@ -3636,8 +3710,9 @@ formats them, so stat calculations never parse presentation text.
 - **Movement still cannot land on an occupied hex** — attacking is its own thing, carried by the
   optional `attack` field on `make_move` (see Combat). An "attack by moving onto an enemy" click
   does nothing; that path is gone for good.
-- `server/game/tests_disabled/` is **not** disabled. Its 4 tests match Django's `test*.py`
-  discovery pattern and run under a bare `manage.py test` in addition to `game.testsuite`.
+- `server/game/testsuite/` is the canonical backend suite. The duplicate
+  `tests_disabled` package was removed in 6.147; bare Django discovery and CI now
+  run the same cases. Historical counts that include four legacy tests stay historical.
 - `client/src/app/components/setup-config/setup-config.component.html` edits the full
   match config through a JSON `<textarea>`, with validation and format-1 migration
   feedback. `CONFIGURATION.md` lists the editable rules.

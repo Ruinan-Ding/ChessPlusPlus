@@ -1,4 +1,3 @@
-// Centralized WebSocket configuration
 export const WEBSOCKET_CONFIG = {
   HEARTBEAT_INTERVAL_MS: 15000,
   /**

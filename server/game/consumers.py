@@ -1,4 +1,3 @@
-from .engine.game_rules import rule_of, section_of
 """
 WebSocket consumer for game lobby and game room management
 Uses Django ORM models instead of in-memory class-level dictionaries
@@ -15,6 +14,7 @@ import time
 import uuid
 from collections import deque
 from datetime import timedelta
+from typing import Optional, Any, Dict, List, NamedTuple, cast, Union
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
@@ -22,7 +22,6 @@ from django.db import IntegrityError, transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
-from typing import Optional, Any, Dict, List, NamedTuple, cast, Union
 from .models import (
     GameRoom,
     GameChallenge,
@@ -43,31 +42,20 @@ from .utils import (
     send_json_response, send_error, broadcast_to_group, expire_stale_challenges,
     get_challenge_expiration_time, structured_log, get_idempotency, set_idempotency
 )
-from .engine import load_config, build_initial_board, DEFAULT_CONFIG
-from .engine.config_loader import rule_of
-from .engine import economy, panels
-from .engine.ability_rules import AbilityContext, actions_used, battlefield_action_bonus, initial_state, bonus, carries, passive, state_of
-from .engine.unit_combat import attack_allowed, after_exchange, taunt_allows
-from .engine.board import HexBoard, parse_coord, hex_distance
+from .engine import economy, panels, load_config, build_initial_board, DEFAULT_CONFIG
+from .engine.game_rules import rule_of
+from .engine.ability_rules import AbilityContext, initial_state, passive, state_of
+from .engine.actions import ActionRefused, claim_board_move, record_unit_progress, resolve_move
+from .engine.unit_combat import after_exchange
+from .engine.board import HexBoard, parse_coord
 from .engine.game_logic import (
-    board_move_landings,
-    board_moves_at,
-    can_attack,
     defeated_sides,
-    get_legal_moves_filtered,
-    opening_moved_hexes,
     overtime_toll,
-    resolve_combat,
-    resolve_heal,
     resolve_panel_attack,
 )
-from .engine.phases import (
-    board_moves_per_turn, is_entry_open,
-    is_homecoming_open, is_initialization, is_setup_turn, no_attack_message,
-)
-from .engine.phases import attacks_allowed, stage_rules
+from .engine.phases import attacks_allowed, is_entry_open, no_attack_message
 from .engine.scoring import bank_ended_phases, halftime_up_awards, schedule_ending
-from .engine.unit_stats import cap_stat, cap_unit, kit_active, ranked_unit, unit_stats
+from .engine.unit_stats import cap_unit, ranked_unit
 
 logger = logging.getLogger('game')
 
@@ -2050,14 +2038,12 @@ class GameConsumer(AsyncWebsocketConsumer):
     # ==================== Gameplay Handlers ====================
 
     async def _handle_make_move(self, data):
-        """Handle a player submitting a move during an active game."""
+        """Authorize the turn, resolve its action, then revision-guard the write."""
         try:
             validate_required_fields(data, ['from', 'to'])
-
             if not self.game_id or not self.username:
                 await send_error(self, 'NOT_IN_GAME', 'You are not in an active game')
                 return
-
             state = await self._get_game_state(self.game_id)
             if not state:
                 await send_error(self, 'GAME_NOT_STARTED', 'Game state not found')
@@ -2068,373 +2054,30 @@ class GameConsumer(AsyncWebsocketConsumer):
             if state.current_turn != self.username:
                 await send_error(self, 'NOT_YOUR_TURN', 'It is not your turn')
                 return
-            mover = state.current_turn
-
-            # Healing replaces the strike, never supplements it or a walk home.
-            if data.get('heal') and (data.get('attack') or data.get('withdraw')):
-                await send_error(self, 'INVALID_MOVE', 'Heal, attack or walk home: choose one')
-                return
-
-            from_coord = data['from']  # "q,r"
-            to_coord = data['to']      # "q,r"
-
-            config = state.config_snapshot
-            radius = config.get('board', {}).get('radius', DEFAULT_CONFIG['board']['radius'])
-            board = HexBoard.from_dict(radius, state.board_state)
-
-            # Coordinates come straight off the wire - reject malformed input
-            # as a client error, not an INTERNAL_ERROR with a traceback.
-            try:
-                fq, fr = parse_coord(from_coord)
-                tq, tr = parse_coord(to_coord)
-                from_coord = panels.coord_key(fq, fr)
-                to_coord = panels.coord_key(tq, tr)
-            except ValueError:
-                await send_error(self, 'INVALID_MOVE', 'Malformed move coordinates')
-                return
-
-            piece = board.get(fq, fr)
-            if not piece:
-                await send_error(self, 'INVALID_MOVE', 'No piece at source coordinate')
-                return
-
-            my_color = 'white' if mover == state.player_white else 'black'
-            if piece['color'] != my_color:
-                await send_error(self, 'INVALID_MOVE', 'That piece is not yours')
-                return
-            if state.ability_state and (carries(state.ability_state.get('buffs', {}).get(piece.get('uid')), 'action-lock')
-                    or state.ability_state.get('endedUnits', {}).get(piece.get('uid')) == state.turn_number):
-                await send_error(self, 'INVALID_MOVE', 'That unit cannot take another action')
-                return
-
-            # The setup turns' rules. The board enforced these in its click
-            # handler and nowhere else - neither engine had a phase schedule to
-            # know what the opening was - so a crafted message could attack on
-            # the first turn. Checked before the walk home, because the board
-            # locks a unit out before it offers it one.
-            #
-            # Two predicates, deliberately. **Nobody attacks** on any turn given
-            # to setting out, the opening's three and each phase's postmatch;
-            # **the one-move-per-phase lock** is the opening's alone, and
-            # handing it to a single postmatch turn would stop a unit that had
-            # moved in some earlier turn of a phase it has nothing to do with.
-            if not attacks_allowed(state.turn_number, config=config):
-                if data.get('attack'):
-                    await send_error(
-                        self, 'INVALID_MOVE', no_attack_message(state.turn_number, config=config))
-                    return
-                # Moving onto an enemy is an attack too, by another road.
-                landing = board.get(tq, tr)
-                if landing and landing.get('color') != my_color:
-                    await send_error(
-                        self, 'INVALID_MOVE', no_attack_message(state.turn_number, config=config))
-                    return
-            if data.get('heal') and not stage_rules(state.turn_number, config)['normalHeal']:
-                await send_error(self, 'INVALID_MOVE', 'Healing is disabled in this stage')
-                return
-            if is_initialization(state.turn_number, config=config) and not state.ability_state.get('unitProgress', {}).get(piece.get('uid')):
-                if panels.coord_key(fq, fr) in opening_moved_hexes(
-                        list(state.move_history), my_color, config=config):
-                    await send_error(
-                        self, 'INVALID_MOVE', 'That unit has had its move for the opening')
-                    return
-
-            # Checked here for every board move, the walk home included.
-            holding = await self._claim_board_move(
-                state, my_color, panels.coord_key(fq, fr), data)
-            if holding is None:
-                return
-
-            # Walking off the board into your own base. It ends the turn like
-            # any other move, but its destination is a panel hex the board
-            # cannot hold, so it is checked against the panels rather than the
-            # legal-move flood - and against the real doorways and the walk to
-            # them, not the browser engine's rule of "any off-board hex whose q
-            # has the right sign", which would let a unit land in the wrong
-            # panel, or come home from anywhere on the board for free.
-            if data.get('withdraw'):
-                if data.get('attack'):
-                    await send_error(
-                        self, 'INVALID_MOVE', 'A unit cannot strike and walk home in one turn')
-                    return
-                # Said by name: `homecoming_targets` offers him nowhere, and
-                # "cannot walk home there" would send the player looking for
-                # a doorway that works.
-                if config.get('units', {}).get(piece['unit_id'], {}).get('commander'):
-                    await send_error(self, 'INVALID_MOVE', 'The king never walks home')
-                    return
-                # The window, then the allowance. A phase's play shuts the base
-                # doorways entirely; a setup turn opens them for three units,
-                # and overtime opens them with no count at all - a walk home
-                # there is an ordinary move that happens to end off the board,
-                # and the turn's own move allowance is the only cap it needs.
-                if not is_homecoming_open(state.turn_number, config=config):
-                    await send_error(self, 'INVALID_MOVE', 'The way home is shut')
-                    return
-                # Said by name, before the generic refusal below can swallow
-                # it. `homecoming_targets` returns nothing at all for a unit
-                # standing too far up the board, and "cannot walk home there"
-                # would send the player looking for a doorway that works when
-                # the trouble is where the unit is standing. The same words the
-                # browser engine uses, so the two engines cannot disagree.
-                if not panels.in_home_rows(my_color, fr, radius, config=config):
-                    await send_error(
-                        self, 'INVALID_MOVE', 'Only your own first three rows walk home')
-                    return
-                from_key = panels.coord_key(fq, fr)
-                to_key = panels.coord_key(tq, tr)
-                orientation = config.get('board', {}).get('orientation', 'edge-up')
-                occupancy = panels.panel_occupancy(
-                    config, radius, list(state.move_history), orientation, ply=state.turn_number, ability_state=state.ability_state or None)
-                home = panels.homecoming_targets(
-                    config, radius, occupancy, board.to_dict(), from_key, orientation,
-                    moves_left=max(0, cap_stat(unit_stats(piece['unit_id'], config, piece.get('vet', 0)).get('move', 0)
-                                            + bonus(piece, config, state.ability_state, 'mov', key=from_key))
-                                      - state.ability_state.get('unitProgress', {}).get(piece.get('uid'), {}).get('spent', 0)) if state.ability_state else None,
-                    hop=bool(state.ability_state and passive(piece, config).get('effect') == 'hop'))
-                if to_key not in home:
-                    await send_error(self, 'INVALID_MOVE', 'That unit cannot walk home there')
-                    return
-
-                leaving = board.remove(fq, fr)
-                move_record = {
-                    'from': from_key,
-                    'to': to_key,
-                    'unit_id': leaving['unit_id'],
-                    'color': leaving['color'],
-                    'turn': state.turn_number,
-                    'captured': None,
-                    'attacked': False,
-                    'damage_dealt': 0,
-                    'defender_eliminated': False,
-                    'moved': True,
-                    # The unit as it stood when it left, HP and uid and all:
-                    # once it is off the board this record is the only place it
-                    # survives, and what the base is rebuilt from on a reload.
-                    'withdrawn': True,
-                    'unit': economy.withdrawn_unit(config, leaving, panels.panel_of(*panels.axial_to_pixel(
-                        *parse_coord(to_key), config.get('board', {}).get('orientation', 'edge-up')))),
-                    **({'veterancyReset': True} if section_of(config, 'economy')['walkHomeRefund'].get('resetVeterancy') else {}),
-                    'refund': economy.withdrawal_refund(config, leaving),
-                    'refundColor': leaving.get('owner', leaving['color']),
-                }
-                # Setup withdrawals hold the seat for remaining category actions and the final pass.
-                if is_setup_turn(state.turn_number, config=config) or holding:
-                    if not await self._commit_deployment(
-                            state, board.to_dict(), move_record, 'walk home'):
-                        return
-                else:
-                    next_player = (state.player_black if mover == state.player_white
-                                   else state.player_white)
-                    if not await self._commit_turn(
-                            state, board, move_record, config, next_player):
-                        return
-                logger.info(
-                    f"Withdrawal in game {self.game_id}: {from_key}->{to_key} by {self.username}")
-                return
-
-            walk_cost = 0
-            # A turn is "walk, then optionally swing": `to` is where the unit
-            # ends up (possibly where it already stands) and `attack` names a
-            # hex it strikes from there.
-            attack_coord = data.get('attack')
-            heal_coord = data.get('heal')
-            # A message may also carry moveBonus/bonuses - one-turn ability
-            # boosts. Ignore those outcomes; only persisted server ability
-            # state can change a networked unit's stats.
-            if (tq, tr) != (fq, fr):
-                spent = state.ability_state.get('unitProgress', {}).get(piece.get('uid'), {}).get('spent', 0)
-                legal_dests = get_legal_moves_filtered(
-                    board, (fq, fr), config, my_color, -spent, ability_state=state.ability_state or None)
-                if (tq, tr) not in legal_dests:
-                    await send_error(self, 'INVALID_MOVE', 'Illegal move for this piece')
-                    return
-                if state.ability_state:
-                    limit = max(0, cap_stat(unit_stats(piece['unit_id'], config, piece.get('vet', 0)).get('move', 0) + bonus(piece, config, state.ability_state, 'mov', key=from_coord)) - spent)
-                    costs, _ = panels.move_costs(board.to_dict(), fq, fr, config, radius, limit,
-                        hop=passive(piece, config).get('effect') == 'hop')
-                    walk_cost = costs.get(to_coord, 0)
-            elif not attack_coord and not heal_coord:
-                await send_error(self, 'INVALID_MOVE', 'A move must change hexes')
-                return
-
-            if heal_coord:
-                try:
-                    hq, hr = parse_coord(heal_coord)
-                    if (tq, tr) != (fq, fr):
-                        board.move(fq, fr, tq, tr)
-                    combat = resolve_heal(board, (tq, tr), (hq, hr), config, state.ability_state or None)
-                    combat['moved'] = (tq, tr) != (fq, fr)
-                except ValueError as e:
-                    await send_error(self, 'INVALID_MOVE', str(e))
-                    return
-            elif attack_coord:
-                if config.get('units', {}).get(piece['unit_id'], {}).get('heal'):
-                    await send_error(self, 'INVALID_MOVE', 'This unit heals instead of attacking')
-                    return
-                try:
-                    aq, ar = parse_coord(attack_coord)
-                    attack_coord = panels.coord_key(aq, ar)
-                except ValueError:
-                    await send_error(self, 'INVALID_MOVE', 'Malformed attack coordinate')
-                    return
-                target = board.get(aq, ar)
-                if not target or target['color'] == my_color:
-                    await send_error(self, 'INVALID_MOVE', 'No enemy unit on the attacked hex')
-                    return
-                unit_def = unit_stats(piece['unit_id'], config, piece.get('vet', 0))
-                if not (attack_allowed(piece, hex_distance((tq, tr), (aq, ar)), config, state.ability_state, key=to_coord) if state.ability_state else can_attack(unit_def, hex_distance((tq, tr), (aq, ar)))):
-                    await send_error(self, 'INVALID_MOVE', 'That hex is out of attack range')
-                    return
-                if state.ability_state:
-                    occupied = AbilityContext(state).recipients()
-                    occupied[to_coord] = piece
-                    if not taunt_allows(occupied, to_coord, attack_coord, config, state.ability_state):
-                        await send_error(self, 'INVALID_MOVE', 'Attack a reachable taunting unit')
-                        return
-                if (tq, tr) != (fq, fr):
-                    board.move(fq, fr, tq, tr)
-                combat = resolve_combat(board, (tq, tr), (aq, ar), config, state.ability_state or None)
-                combat['moved'] = (tq, tr) != (fq, fr)
+            resolved = resolve_move(state, data)
+            if resolved.holding:
+                applied = await self._commit_deployment(state, resolved.board.to_dict(), resolved.record,
+                                                        'walk home' if resolved.record.get('withdrawn') else 'move')
             else:
-                combat = resolve_combat(board, (fq, fr), (tq, tr), config, state.ability_state or None)
-
-            next_player = state.player_black if mover == state.player_white else state.player_white
-            next_color = 'black' if my_color == 'white' else 'white'
-
-            move_record: dict = {
-                'from': from_coord,
-                'to': to_coord,
-                'unit_id': piece['unit_id'], 'uid': piece.get('uid'), 'steps': walk_cost,
-                'color': my_color,
-                'turn': state.turn_number,
-                'captured': combat['captured_unit']['unit_id'] if combat['captured_unit'] else None,
-                'attacked': combat['attacked'],
-                'damage_dealt': combat['damage_dealt'],
-                'defender_eliminated': combat['defender_eliminated'],
-                'moved': combat['moved'],
-            }
-            if attack_coord:
-                move_record['attackedHex'] = attack_coord
-                move_record['counter_damage'] = combat.get('counter_damage', 0)
-                if combat.get('leech_heal'):
-                    move_record['leech_heal'] = combat['leech_heal']
-                move_record['countered'] = combat.get('countered', combat.get('counter_damage', 0) > 0)
-                target = combat.get('defender_before')
-                if target:
-                    move_record['counterActor'] = {key: target.get(key) for key in ('unit_id', 'color', 'uid')}
-                move_record['attacker_eliminated'] = combat.get('attacker_eliminated', False)
-            if heal_coord:
-                for key in ('healedHex', 'healed_amount', 'healed_hp', 'healed_unit'):
-                    move_record[key] = combat[key]
-            if combat['defender_hp'] is not None:
-                move_record['defender_hp'] = combat['defender_hp']
-
-            if state.ability_state and combat.get('attacker_before'):
-                ctx = AbilityContext(state, board.to_dict(), list(state.move_history))
-                after_exchange(ctx, to_coord, attack_coord or to_coord, combat['attacker_before'], combat['defender_before'],
-                               {'target_hp': combat.get('defender_hp') or 0, 'attacker_hp': combat.get('attacker_hp') or 0})
-                state.move_history = ctx.history
-                board = HexBoard.from_dict(radius, ctx.board)
-                if combat.get('second_strike'):
-                    move_record['secondStrike'] = True
-                if combat.get('second_counter'):
-                    move_record['secondCounter'] = True
-                    move_record['second_counter_damage'] = combat['second_counter_damage']
-                move_record['uid'] = piece.get('uid')
-
-            # Not the turn's last move: the same seat, the same ply, the same
-            # clock, and the next message plays the next unit. The turn ends on
-            # whichever move comes without `more` - or on the last one the
-            # allowance permits, whatever it claims.
-            if holding:
-                if not await self._commit_deployment(
-                        state, board.to_dict(), move_record, 'move'):
-                    return
-            elif not await self._commit_turn(
-                    state, board, move_record, config, next_player):
-                return
-
-            logger.info(f"Move in game {self.game_id}: {from_coord}->{to_coord} by {self.username}")
-        except ValidationError as e:
-            await send_error(self, e.code, e.message)
-        except Exception as e:
-            logger.error(f"Error in _handle_make_move: {e}", exc_info=True)
+                next_player = state.player_black if state.current_turn == state.player_white else state.player_white
+                applied = await self._commit_turn(state, resolved.board, resolved.record, state.config_snapshot, next_player)
+            if applied:
+                logger.info('Move in game %s: %s->%s by %s', self.game_id,
+                            resolved.record['from'], resolved.record['to'], self.username)
+        except ActionRefused as error:
+            await send_error(self, 'INVALID_MOVE', str(error))
+        except ValidationError as error:
+            await send_error(self, error.code, error.message)
+        except Exception:
+            logger.exception('Error in _handle_make_move')
             await send_error(self, 'INTERNAL_ERROR', 'Failed to process move')
 
     async def _claim_board_move(self, state, color, from_key, data) -> Optional[bool]:
-        """Claim a battlefield slot, allowing only the current unit to continue.
-
-        `more` holds the seat for independent panel actions, even when the
-        battlefield allowance is full; an explicit pass finishes an atomic batch.
-        """
-        history = list(state.move_history)
-        piece = state.board_state.get(from_key, {})
-        uid = piece.get('uid')
-        from .engine.game_logic import finished_unit_uids
-        if uid in finished_unit_uids(history, state.turn_number, color, state.config_snapshot, 'battlefield'):
-            await send_error(self, 'INVALID_MOVE', 'That unit has already moved this turn')
+        try:
+            return claim_board_move(state, color, from_key, data)
+        except ActionRefused as error:
+            await send_error(self, 'INVALID_MOVE', str(error))
             return None
-        if uid and any(move.get('entered') and move.get('turn') == state.turn_number
-                       and move.get('color') == color and (move.get('unit') or {}).get('uid') == uid
-                       for move in history if isinstance(move, dict)):
-            await send_error(self, 'INVALID_MOVE', 'That unit has crossed onto the board this turn')
-            return None
-        if state.ability_state:
-            progress = state.ability_state.get('unitProgress', {}).get(uid, {})
-            destination = panels.coord_key(*parse_coord(data.get('to', from_key)))
-            occupant = state.board_state.get(destination)
-            walking = destination != from_key and not (occupant and occupant.get('color') != color and not data.get('attack'))
-            if state.ability_state.get('usedUnits', {}).get(uid) == state.turn_number and walking and not (
-                    passive(piece, state.config_snapshot).get('effect') == 'rapid-movement' and (progress.get('attacked') or passive(piece, state.config_snapshot).get('freeOrder'))):
-                await send_error(self, 'INVALID_MOVE', 'Movement ends after using a unit ability')
-                return None
-            if state.ability_state.get('endedUnits', {}).get(uid) == state.turn_number or progress.get('ended'):
-                await send_error(self, 'INVALID_MOVE', 'That unit has already moved this turn')
-                return None
-            if progress:
-                rapid = passive(piece, state.config_snapshot).get('effect') == 'rapid-movement'
-                if (state.ability_state.get('activeUnit') != uid) or progress.get('healed') or (
-                        progress.get('attacked') and (not rapid or data.get('attack') or data.get('heal'))):
-                    await send_error(self, 'INVALID_MOVE', 'That unit has already moved this turn')
-                    return None
-                return bool(data.get('more'))
-            if state.ability_state.get('extraUnits', {}).get(uid) == state.turn_number:
-                return bool(data.get('more'))
-        from .engine.game_logic import board_move_uids
-        if uid in board_move_uids(history, state.turn_number, color, state.config_snapshot):
-            return bool(data.get('more'))
-        moves_allowed = board_moves_per_turn(state.turn_number, config=state.config_snapshot) + battlefield_action_bonus(history, state.turn_number, color)
-        moves_used = board_moves_at(history, state.turn_number, color, state.config_snapshot)
-        if state.ability_state:
-            moves_used = actions_used(state, color)
-        if moves_used >= moves_allowed:
-            await send_error(
-                self, 'INVALID_MOVE',
-                f'That side has had all {moves_allowed} of its moves this turn')
-            return None
-        if from_key in board_move_landings(history, state.turn_number, color, config=state.config_snapshot):
-            await send_error(
-                self, 'INVALID_MOVE', 'That unit has already moved this turn')
-            return None
-        return bool(data.get('more'))
-
-    @staticmethod
-    def _record_unit_progress(state, record):
-        if not state.ability_state or record.get('panelMove') or record.get('entered'):
-            return
-        uid = record.get('uid') or (record.get('unit') or {}).get('uid')
-        if not uid:
-            return
-        existing = uid in state.ability_state.get('unitProgress', {})
-        if existing:
-            record['continuedAction'] = True
-        progress = state.ability_state.setdefault('unitProgress', {}).setdefault(uid, {'spent': 0, 'origin': record.get('from')})
-        progress['spent'] += record.get('steps', record.get('cost', 0))
-        progress['attacked'] = progress.get('attacked', False) or record.get('attacked', False)
-        progress['healed'] = progress.get('healed', False) or bool(record.get('healedHex'))
-        progress['ended'] = bool(record.get('withdrawn') or record.get('entered'))
-        state.ability_state['activeUnit'] = uid
 
     async def _commit_turn(self, state, board, move_record, config, next_player) -> bool:
         """
@@ -2449,7 +2092,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         Returns False, having told the client, if a concurrent write won - a
         turn timer that ended the game while this move was in flight.
         """
-        self._record_unit_progress(state, move_record)
+        record_unit_progress(state, move_record)
         if state.ability_state and state.ability_state.get('extraUnits', {}).get(move_record.get('uid') or (move_record.get('unit') or {}).get('uid')) == state.turn_number:
             move_record['extraAction'] = True
         new_history = list(state.move_history) + [move_record]
@@ -2761,7 +2404,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         turn-ending action: two copies of one rule drift. Returns False, having
         told the client, if a concurrent write won.
         """
-        self._record_unit_progress(state, move_record)
+        record_unit_progress(state, move_record)
         if state.ability_state and state.ability_state.get('extraUnits', {}).get(move_record.get('uid') or (move_record.get('unit') or {}).get('uid')) == state.turn_number:
             move_record['extraAction'] = True
         new_history = list(state.move_history) + [move_record]

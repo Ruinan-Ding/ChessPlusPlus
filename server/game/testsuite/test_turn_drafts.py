@@ -495,6 +495,111 @@ class TurnDraftProtocolTests(TransactionTestCase):
                 await new.disconnect()
             await self.close()
 
+    async def test_rejected_ability_batch_keeps_the_saved_draft_and_a_corrected_batch_commits_once(self):
+        state = await self.position()
+        config = copy.deepcopy(state.config_snapshot)
+        config['match']['cpAtStart'] = 1000
+        config['economy']['pointsAtStart'] = 1000
+        board = copy.deepcopy(state.board_state)
+        board['0,0'].update(vet=1, hp=14, max_hp=14, veterancyHpActive=True)
+        await GameState.objects.filter(pk=self.game.game_id).aupdate(config_snapshot=config, board_state=board,
+            replay_journal={'version': 1, 'actions': []})
+        state = await GameState.objects.aget(pk=self.game.game_id)
+        commands = [{'type': 'pick_pair', 'id': 'warcry'}, {'type': 'pick_path', 'id': 'bastion'},
+                    {'type': 'cast_ability', 'id': 'warcry', 'targetUid': 'wp'},
+                    {'type': 'cast_ability', 'id': 'strengthen', 'targetUid': 'wp'},
+                    {'type': 'make_move', 'from': '0,0', 'to': '1,0', 'more': True}]
+        try:
+            await self.white.send_json_to(self.request(state))
+            await _receive_until(self.white, 'turn_draft_saved')
+            bad = [*commands, {'type': 'make_move', 'from': '1,0', 'to': '99,99'}]
+            for kind in ('save_turn_draft', 'commit_turn'):
+                await self.white.send_json_to(self.request(state, commands=bad, kind=kind, sequence=2))
+                refused = await _receive_until(self.white, ('error', 'turn_draft_saved'))
+                self.assertEqual(refused.get('code'), 'INVALID_MOVE', refused)
+                unchanged = await GameState.objects.aget(pk=self.game.game_id)
+                self.assertEqual((unchanged.board_state, unchanged.ability_state, unchanged.move_history,
+                                  unchanged.replay_journal, unchanged.revision),
+                                 (state.board_state, state.ability_state, state.move_history,
+                                  state.replay_journal, state.revision))
+                self.assertEqual((await TurnDraft.objects.aget(pk=self.game.game_id)).commands,
+                                 self.request(state)['commands'])
+            await self.white.send_json_to(self.request(state, commands=commands, sequence=3))
+            await _receive_until(self.white, 'turn_draft_saved')
+            await self.black.send_json_to({'type': 'request_game_state'})
+            hidden = await _receive_until(self.black, 'game_state_update')
+            self.assertNotIn('turnDraft', hidden)
+            self.assertEqual(hidden['boardState'], state.board_state)
+            self.assertEqual(hidden['abilityState'], state.ability_state)
+            await self.white.send_json_to(self.request(state, commands=commands, kind='commit_turn', sequence=4))
+            own = await _receive_until(self.white, 'game_state_update')
+            other = await _receive_until(self.black, 'game_state_update')
+            self.assertEqual(own, other)
+            self.assertEqual((own['turnNumber'], own['revision']), (8, state.revision + 1))
+            self.assertEqual(own['boardState']['1,0']['uid'], 'wp')
+            self.assertEqual(own['boardState']['1,0']['vet'], 2)
+            abilities = own['abilityState']
+            self.assertEqual(abilities['cpSpent']['white'], 30)
+            self.assertEqual(abilities['pointDelta']['white'], -25)
+            self.assertEqual(abilities['buffs']['wp']['atk'], 8)
+            self.assertNotIn('bk', abilities['buffs'])
+            self.assertEqual([a['command'] for a in own['replayJournal']['actions']],
+                             [*commands, {'type': 'pass_turn'}])
+            self.assertFalse(await TurnDraft.objects.filter(pk=self.game.game_id).aexists())
+            await self.white.send_json_to({'type': 'request_game_state'})
+            restored = await _receive_until(self.white, 'game_state_update')
+            for key in ('boardState', 'abilityState', 'replayJournal', 'revision'):
+                self.assertEqual(restored[key], own[key])
+            black = await GameState.objects.aget(pk=self.game.game_id)
+            await self.black.send_json_to(self.request(black, commands=[], kind='commit_turn', sequence=1))
+            advanced = await _receive_until(self.white, 'game_state_update')
+            self.assertEqual(advanced['turnNumber'], 9)
+            self.assertNotIn('wp', advanced['abilityState']['buffs'])
+            self.assertEqual(advanced['abilityState']['cooldowns']['white']['warcry'], 2)
+            self.assertEqual(advanced['boardState']['1,0']['vet'], 2)
+        finally:
+            await self.close()
+
+    async def test_action_lock_blocks_stationary_panel_attacks_but_preserves_counters_over_the_socket(self):
+        from game.engine.ability_rules import AbilityContext
+
+        state = await self.position()
+        state.config_snapshot['setup']['black']['-3,-9'] = 'pawn'
+        state.board_state['-2,-9'] = state.board_state.pop('0,0')
+        state.board_state['-2,-8'] = {'unit_id': 'pawn', 'color': 'black', 'uid': 'bp',
+                                         'hp': 12, 'max_hp': 12, 'vet': 0}
+        ctx = AbilityContext(state)
+        ctx.add_buff(state.board_state['-2,-9'], ctx.catalogue['surge'], {'effect': 'action-lock'}, True)
+        await state.asave()
+        attack = [{'type': 'panel_attack', 'from': '-2,-9', 'to': '-2,-9', 'attack': '-3,-9'}]
+        try:
+            for kind in ('save_turn_draft', 'commit_turn'):
+                await self.white.send_json_to(self.request(state, commands=attack, kind=kind))
+                refused = await _receive_until(self.white, ('error', 'turn_draft_saved'))
+                self.assertEqual(refused.get('code'), 'INVALID_MOVE', refused)
+                saved = await GameState.objects.aget(pk=self.game.game_id)
+                self.assertEqual((saved.board_state, saved.move_history, saved.revision),
+                                 (state.board_state, [], state.revision))
+                self.assertFalse(await TurnDraft.objects.filter(pk=self.game.game_id).aexists())
+            await self.white.send_json_to(self.request(state, commands=[], kind='commit_turn'))
+            passed = await _receive_until(self.white, 'game_state_update')
+            self.assertEqual(passed['turnNumber'], 8)
+            self.assertIn('wp', passed['abilityState']['buffs'])
+            self.assertEqual(await _receive_until(self.black, 'game_state_update'), passed)
+            state = await GameState.objects.aget(pk=self.game.game_id)
+            await self.black.send_json_to(self.request(state, kind='commit_turn', commands=[
+                {'type': 'make_move', 'from': '-2,-8', 'to': '-2,-8', 'attack': '-2,-9'}]))
+            result = await _receive_until(self.white, 'game_state_update')
+            self.assertEqual(await _receive_until(self.black, 'game_state_update'), result)
+            self.assertEqual(result['turnNumber'], 9)
+            self.assertEqual(result['boardState']['-2,-9']['hp'], passed['boardState']['-2,-9']['hp'] - 2)
+            self.assertEqual(result['boardState']['-2,-8']['hp'], passed['boardState']['-2,-8']['hp'] - 2)
+            combat = next(move for move in result['moveHistory'] if move.get('attacked'))
+            self.assertTrue(combat['countered'])
+            self.assertEqual(combat['counter_damage'], 2)
+        finally:
+            await self.close()
+
     async def test_panel_walk_then_crossing_then_heal_commits_as_one_authoritative_turn(self):
         state = await self.position(ply=27)
         config = copy.deepcopy(state.config_snapshot)

@@ -1,32 +1,10 @@
-"""
-The four off-battlefield panels: what is in them, and where they join the board.
+"""Panel geometry, occupancy, crossings and homecoming.
 
-Until now the panels were the browser's alone. The board rejects a panel
-coordinate outright (``HexBoard.set_cell`` raises outside the radius), so a
-networked game could not offer a crossing at all and the client gated the whole
-feature behind ``entryBind``.
-
-Nothing here is persisted, and no migration adds a panel table, because none is
-needed: **the panels are entirely derivable from what the server already has.**
-
-* A new game's *deal* is the config's: every ``setup`` entry that falls on a
-  hex of that side's own panels (:func:`set_up_panels`) - each side's base
-  squad, and nothing in the reserves.
-* The *geometry* - where a panel joins the board - is a pure function of radius.
-* Everything that happens to a panel unit afterwards is written into
-  ``GameState.move_history``, which the server already stores verbatim.
-
-So this module is arithmetic, not state. It mirrors the client, and the client
-is the specification: ``buildReserves()`` / ``gridCoords()`` / ``addGateway()``
-in ``game-board.component.ts`` and ``BASE_PANELS`` in ``hex-rules.ts``. Where a
-number here looks arbitrary it is because the client chose it; the tests pin the
-radius-11 values both sides must agree on.
-
-A warning for anyone extending this: the browser engine (``local-game.service``)
-is **not** the specification. It validates almost none of this - entering takes
-the unit, the hex and the HP on trust, and whether a panel answers a blow
-arrives as a boolean off the wire. It says so itself, and the reason is that it
-has nobody to cheat. A server does.
+Panel cells lie outside HexBoard. Their units and HP are reconstructed from
+saved config and move history, including scheduled healing when a ply is known.
+Geometry mirrors game-board.component.ts and hex-rules.ts. Online operations
+derive occupancy, prices and combat context here; solo staging supplies resolved
+panel data to its local engine.
 """
 
 from __future__ import annotations
@@ -270,21 +248,8 @@ def panel_roster(config: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
     return roster[:PANEL_SQUAD]
 
 
-#: Whether a new game gets the **placeholder** squads instead of the setup's.
-#:
-#: A real game stands in its panels what the config's ``setup`` puts there
-#: (:func:`set_up_panels`) - since 25 Sep 2026 the owner's base squads, and
-#: nothing in the reserves. The placeholder deal (:func:`dealt_panels`: one of
-#: each of the first five unit types, on every third hex of all four panels) is
-#: what the panel tests were written against - the walk, the wrap, the
-#: crossing, the blow, the walk home - so they turn this on and keep their
-#: fixtures, and a rule nobody exercises is a rule that rots. With it on, the
-#: placeholder squads stand **instead of** the setup's panel entries, never
-#: beside them.
-#:
-#: ``CPP_DEAL_PANELS=1`` turns it on for one process. That is for the live e2e
-#: scripts, which drive a real server over a real socket and so cannot reach in
-#: and set this the way the unit tests do; a deployment leaves it unset.
+# Test-only deal replaces the setup's panel entries. Socket checks enable it
+# with CPP_DEAL_PANELS=1; ordinary games and deployments leave it unset.
 PANELS_DEALT = os.environ.get('CPP_DEAL_PANELS') == '1'
 
 
@@ -428,19 +393,10 @@ def set_up_panels(
 # ---------------------------------------------------------------------------
 
 def recorded_panel_hp(history: Iterable[Dict[str, Any]]) -> Dict[str, int]:
-    """
-    Each panel unit's last word on its own HP, by uid.
+    """Last recorded panel HP by UID, excluding scheduled healing.
 
-    A blow or an ability that touched a unit standing in a panel writes
-    ``intoPanel`` with the unit and what it had left; that record is the only
-    place a panel unit's HP survives, because no board holds it.
-
-    **Mending is deliberately not applied here.** A base closes an HP a turn,
-    but that is derived from the ply schedule and is the client's display
-    concern; the server wants this for validation - is the unit there, is it
-    alive - and for that the recorded floor is the conservative answer. When
-    the phase schedule lands server-side (stage 3) a mending variant can wrap
-    this. Mirrors the settled half of ``panelHp`` in game-room.component.ts.
+    Used when no ply is available. ``panel_hp`` adds healing through the
+    requested ply; zero-HP records remain casualties in either path.
     """
     left: Dict[str, int] = {}
     for move in history or []:
@@ -454,8 +410,6 @@ def recorded_panel_hp(history: Iterable[Dict[str, Any]]) -> Dict[str, int]:
     return left
 
 
-#: What a base closes on each of its wounded at the end of its side's turn.
-#: The owner's placeholder - "1hp (for now at least)". Mirrors
 def mended_since(color: str, since: Optional[int], now: int, config=None) -> int:
     """
     What a unit in a base has mended between the ply its HP was last written
@@ -511,18 +465,12 @@ def mended_in_base(
     now: int,
     config=None,
 ) -> int:
-    """
-    What a unit mends from the ply its HP was written down (*since*, standing
-    in a base or not) to the ply about to be played - **only for the turns it
-    ended in a base**. Mirrors ``mendedInBase``.
+    """Scheduled healing across panel stays up to, but excluding, *now*.
 
-    A base mends at the end of its owner's turn, so each of the side's own
-    hand-overs counts once if the unit stood in a base when it closed.
-    *stays* is :func:`in_base_after`: where the unit went after that, in order.
-    Without it this is :func:`mended_since` - and taking that for the whole
-    stretch was the bug: a unit wounded in its base and wrapped out into its
-    reserve went on mending there, which the owner's rule says a reserve never
-    does.
+    Each completed owner turn uses the configured rate for that stay's panel.
+    ``stays`` comes from ``in_base_after``; location changes prevent a base
+    wound from retaining the base healing rate after wrapping into reserve.
+    Mirrors ``mendedInBase``.
     """
     if since is None:
         return 0
@@ -547,16 +495,11 @@ def panel_hp(
     orientation: str = 'edge-up',
     config=None,
 ) -> Dict[str, int]:
-    """
-    Each panel unit's HP as of *ply*: its last word, plus whatever a base has
-    mended since. Mirrors ``panelHp`` in game-room.component.ts.
+    """Panel HP at *ply*, reconstructed from wounds and configured healing.
 
-    **A base mends and a reserve does not**, so this reads where the unit was
-    off the record rather than off the unit - the panel the wound was taken
-    in, then every walk it has made since (:func:`mended_in_base`). This is the
-    HP the client draws, and so the HP a blow has to be struck from - striking
-    from the unmended figure instead drops the unit by more than the preview
-    promised.
+    Follow each unit's panel stays when selecting its healing rate. Combat
+    validation must use this healed HP to agree with the browser forecast.
+    Mirrors ``panelHp`` in game-room.component.ts.
     """
     moves = [move for move in (history or []) if isinstance(move, dict)]
     wounds: Dict[str, Dict[str, Any]] = {}

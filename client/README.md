@@ -31,7 +31,10 @@ cmd.exe /c "set CHROME_BIN=C:\Program Files\Google\Chrome\Application\chrome.exe
 After template or stylesheet changes, run the existing layout sweep against a development
 server on a spare port, as described in [AGENTS.md](../AGENTS.md). The project has no Angular
 CLI `e2e` target. Live WebSocket checks are in `server/scripts/e2e/`; browser layout checks
-are in `scripts/layout-sweep.mjs`.
+are in `scripts/layout-sweep.mjs`. CI's server job re-records the frozen scenario in
+`shared/recording/`; the client job downloads it and the rendered integration suite
+compares its complete solo playback with the online result. Local runs use the
+checked-in fixture.
 
 ## Rules and state
 
@@ -41,7 +44,12 @@ both validators together when a config field changes.
 
 `PieceData` and `BoardState` are shared from `game-state.service.ts`. Selected units carry
 numeric attack tiers until display formatting. `ability-rules.ts` contains the existing pure
-solo effect and cooldown calculations; the room owns targeting, staging and persistence.
+solo effect and cooldown calculations. `game-command.ts` separates untrusted imported
+steps from validated semantic commands; `game-history.ts` models the existing history
+variants. `turn-staging.ts` supplies one chronological view for command adapters and
+unit-action budgets. `ReplayController` and `CpuTurnController` own lifecycle state;
+the room supplies input, rendering, persistence and clock adapters. Both ability
+panels use one template parameterized by side and cooldowns.
 The first four pairs use the specified shared catalogue. `history-rules.ts` also applies
 the Phase 3 veteran full heal; the board announces full turns and schedule milestones.
 Solo uses `checkpoint_turn` / `rewind_turn` locally to reopen the previous side's
@@ -111,7 +119,7 @@ rendered 100-ply `fakeAsync` integration spec can hold the browser thread around
 19 seconds on Windows; the old five-second heartbeat intermittently disconnected
 an otherwise passing suite. Jasmine's assertion/async test limits are unchanged.
 
-11 Oct balance follow-up: Sacrifice refreshes one recipient’s temporary stats
+Sacrifice refreshes one recipient’s temporary stats
 without stacking; every cast still promotes and heals. Walking home uses the
 departure rank for its refund, then resets stars; Undo/reload retain that reset.
 Path prices are 5/50/100 CP. Onslaught boosts initiated ATK and existing HEL;
@@ -122,7 +130,8 @@ CPU mode uses `CpuService` and the shared WebSocket address helper. The server
 returns validated semantic commands; the room stages them through the same
 recorded-command interpreter as replay, then uses normal solo End Turn. CPU
 metadata is optional in local saves, and replay viewing never starts CPU jobs.
-Rewind, leave and timeout cancel the request generation; late answers are ignored.
+Rewind, leave and timeout cancel the request generation; obsolete queued work and
+late answers or failures cannot overwrite a newer turn.
 Failed staging or commit restores both engine and UI state before offering recovery.
 Local engine sends return synchronous acceptance; solo batches stop at the first
 refusal, before a following pass can advance an incomplete turn.

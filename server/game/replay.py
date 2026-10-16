@@ -1,4 +1,3 @@
-from .engine.game_rules import rule_of
 """Server-owned clock allowance for the completed turn's automatic replay."""
 import json
 import math
@@ -8,6 +7,7 @@ from django.utils import timezone
 
 from .engine.ability_rules import carries
 from .engine.config_loader import DEFAULT_CONFIG_PATH
+from .engine.game_rules import rule_of
 from .engine.panels import panel_occupancy
 from .engine.phases import overtime_toll_at
 
