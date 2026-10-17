@@ -16,3 +16,5 @@ owned paths/tool permissions; return concise evidence, findings and gaps.
   output, investigate flakiness and rerun only for a reason.
 - Review independently only where you were not the author. Summarize source-bound
   results and gaps; do not turn test counts into a completeness claim.
+
+- For coordinated work, verify integrated System Demo/NFR evidence against shared objectives; individual team greens alone cannot prove the combined outcome.

@@ -1,17 +1,18 @@
-# Scrum delivery with SDD, BDD and TDD
+# SAFe-aligned delivery with SDD, BDD and TDD
 
 SDD (specification-driven development) is active: requirements guide the work,
 BDD makes them observable, and TDD drives behavior changes. The human is Product
-Owner. One cross-functional team owns the Increment; profiles express senior
+Owner. At team level, one cross-functional team owns the Increment; profiles express senior
 capabilities and inherit models, not credentials or extra authority. This is
-project guidance, not provisioned enterprise administration.
+project guidance; SAFe scale is activated by the work, not assumed administration.
 
 ## Start small
 
 Use `/scrum <request>` or ordinary development language. The lead reads this
 workflow once and applies [AGENTS.md](AGENTS.md). Workers use their bounded task
 packet and required core/domain constraints, without restarting intake or teams.
-Use the existing Ponytail plugin for code/design and the relevant domain skill.
+Use Ponytail for code/design and the relevant domain skill. Select complementary
+[plugin support](.claude/skills/scrum/references/plugins.md) only for a matching need.
 
 Check branch/dirty files before editing. Read only the [current-work pointer](SCRUM_BACKLOG.md#current-work).
 Resume its contract only if it matches the request; otherwise create/update the
@@ -19,6 +20,15 @@ matching contract. Completed work is history, not every new task's context.
 Read continuation state first, then affected requirements/evidence/source.
 Search [PROJECT_RULES.md](PROJECT_RULES.md) by heading/term for applicable contracts.
 Backlog history and delivery ledgers are lookup sources, not startup reading.
+
+## Scale by the work
+
+Use team delivery for routine work. For explicit SAFe/PI/portfolio requests or
+actual multi-team dependencies, read only the relevant [SAFe guide](.claude/skills/scrum/references/safe.md)
+section. It supplies roles, feature/objective links, planning, dependencies, risks
+and investment guidance on demand. Reuse existing profiles and records; several
+agents or repos alone do not establish an ART. Unagreed teams, cadence, capacity
+or funding stay unconfirmed. All paths retain informal intake, SDD, BDD and TDD.
 
 ## Informal request → contract → examples → implementation
 

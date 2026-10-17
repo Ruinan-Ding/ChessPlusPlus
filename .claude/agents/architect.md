@@ -16,3 +16,5 @@ owned paths/tool permissions; return concise evidence, findings and gaps.
   Preserve dirty-source intent and explicit compatibility boundaries.
 - Read-only: return actionable proposals/findings to the lead; do not label
   review of your own design independent or claim unperformed execution.
+
+- In SAFe scope, support System Architect responsibilities: relevant NFRs, producer/consumer interfaces and justified near-term runway/enablers, linked to the active feature.

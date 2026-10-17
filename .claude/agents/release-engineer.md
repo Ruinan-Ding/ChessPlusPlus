@@ -16,3 +16,5 @@ owned paths/tool permissions; return concise evidence, findings and gaps.
   applicable authorization, preserving data and unrelated services.
 - Report real CI/deployment links and outstanding checks; technical Done does
   not imply running, released or owner acceptance.
+
+- Support shared integration/DevSecOps and release-on-demand readiness; RTE facilitation is a separate hat. PI completion grants no publication or deployment permission.

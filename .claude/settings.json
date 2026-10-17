@@ -1,6 +1,36 @@
 {
   "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "ENABLE_CODE_SECURITY_REVIEW": "0",
+    "ENABLE_PATTERN_RULES": "1"
+  },
+  "enabledPlugins": {
+    "ralph-loop@claude-plugins-official": true,
+    "pr-review-toolkit@claude-plugins-official": false,
+    "playwright@claude-plugins-official": false,
+    "context7@claude-plugins-official": false,
+    "commit-commands@claude-plugins-official": false,
+    "security-guidance@claude-plugins-official": true,
+    "hookify@claude-plugins-official": false,
+    "linear@claude-plugins-official": false,
+    "ponytail@ponytail": true,
+    "frontend-design@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": true,
+    "pyright-lsp@claude-plugins-official": true
+  },
+  "extraKnownMarketplaces": {
+    "claude-plugins-official": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/claude-plugins-official"
+      }
+    },
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    }
   },
   "teammateMode": "in-process"
 }

@@ -32,3 +32,8 @@ ENV/
 Thumbs.db
 # Claude Code local machine settings (permissions allowlist)
 .claude/settings.local.json
+
+# Runtime rules and loop state belong to local sessions, not the repository.
+/.claude/ralph-loop.local.md
+/.claude/ralph-loop.local.md.tmp.*
+/.claude/hookify.*.local.md

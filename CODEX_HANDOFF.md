@@ -2,7 +2,9 @@
 
 Updated by Codex from Claude Code's 2 Oct handoff, for the next agent.
 Read the short [AGENTS.md](AGENTS.md) first. Current workflow/spec/evidence:
-[WF-004](specs/WF-004-efficient-sdd.md), checkpoint 6.157. SDD/BDD/TDD is active;
+[WF-006](specs/WF-006-workflow-plugins.md) owns plugin setup/evidence;
+[WF-005](specs/WF-005-lean-safe.md), checkpoint 6.158, retains SAFe decisions.
+SDD/BDD/TDD and conditional plugin support are active; no real ART/PI is claimed;
 [PROJECT_RULES.md](PROJECT_RULES.md) holds the preserved detailed technical rules.
 This handoff is a searchable delivery/environment history, not startup context.
 
@@ -14,10 +16,11 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
 - **Repo:** https://github.com/Ruinan-Ding/ChessPlusPlus. It is a hex-grid tactics game: a Django
   Channels server in `server/`, an Angular 19 client in `client/`, and the shared config schema in
   `shared/`.
-- **Current branch:** `feature/dev25`, based on clean `a64634d` after 6.155.
-  Work through 6.157 is covered by the owner's 17 Oct commit/push request.
-  [WF-004](specs/WF-004-efficient-sdd.md#publication-request-17-oct) records publication scope;
-  the branch remote and exact-commit Actions run identify published source/results.
+- **Current branch:** `feature/dev26`, based on `6567be0` after the dev25 merge.
+  Source `38ccf0b` publishes work through 6.157; `6567be0` merges it into main.
+  SAFe guidance and plugin integration in [WF-005](specs/WF-005-lean-safe.md) /
+  [WF-006](specs/WF-006-workflow-plugins.md#publication-request-17-oct) are included
+  in this branch's authorized commit/push scope; its remote tip identifies publication.
   The source branch is retained; it began from synchronized `main` after 6.144
   (12 Oct). Source `feature/configuration` is retained.
   The original rewind/replay/CPU implementation is `64efecd`, "Add solo rewind, portable replay

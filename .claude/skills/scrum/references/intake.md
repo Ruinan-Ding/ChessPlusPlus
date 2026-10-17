@@ -37,3 +37,9 @@ For a later “actually, keep that button”, revise the same contract's scope a
 examples, preserve its requirement IDs where meaning is unchanged, and reassess
 only the affected implementation/checks. Unclear product rules remain questions;
 conflicting accepted rules are surfaced rather than overwritten.
+
+For a strategic or coordinated request, classify team/feature/epic scope before
+expanding the contract. Reuse real parent links; label benefit hypotheses as
+proposed. Read only the relevant [SAFe section](safe.md) for actual planning or
+investment needs. A vague request does not supply a budget, PI date, business-value
+score or reward rule. Small requests keep the team path without new hierarchy.

@@ -320,7 +320,9 @@ The full costs, cooldowns, scopes and interactions are recorded in [PROJECT_RULE
 
 Claude development accepts ordinary requests or `/scrum <task>`. The
 [workflow](SCRUM_WORKFLOW.md) automatically turns informal requirements into a
-concise SDD contract, BDD examples and TDD implementation. You remain Product Owner.
+concise SDD contract, BDD examples and TDD implementation. SAFe-aligned team, ART
+coordination and optional portfolio guidance load only for relevant work; existing
+profiles cover the hats without a permanent role swarm. See the [SAFe guide](.claude/skills/scrum/references/safe.md). You remain Product Owner.
 The [backlog](SCRUM_BACKLOG.md) links to the active contract; [AGENTS.md](AGENTS.md)
 is the short operational core and [PROJECT_RULES.md](PROJECT_RULES.md) preserves
 on-demand game/architecture details.
@@ -331,6 +333,8 @@ Workers receive bounded context and explicit file ownership; model/permission se
 are unchanged. Native teams need an interactive session. Project instructions do
 not provision organization identity, audit or retention controls. Sprint dates
 and goals require agreement; technical completion does not authorize publication.
+[Plugin support](.claude/skills/scrum/references/plugins.md) documents the twelve
+installed capabilities, six lean defaults, optional activation and bounded Ralph use.
 
 ## Running the Application
 

@@ -17,3 +17,5 @@ owned paths/tool permissions; return concise evidence, findings and gaps.
   requirement IDs to meaningful checks without generating every permutation.
 - Propose the single contract/update to the lead, who owns the record. Do not
   create an analyst stage for a request the lead can translate directly.
+
+- Support assigned Product Management/Epic Owner work with benefit hypotheses and traceable features/stories. Human decision makers retain value, funding, priority and risk-acceptance authority.
