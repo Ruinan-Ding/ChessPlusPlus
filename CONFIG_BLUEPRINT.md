@@ -155,6 +155,20 @@ Each flag is under `stageRules.<stage>`, with independent category allowances
 - [ ] Effective unit stats cap at **99** and rank at **3**. **Fixed invariants**.
 - [ ] Panel units cannot initiate ordinary attacks/heals; configured active unit kits do not bypass this. **Fixed source rules**.
 
+## Optional tuning beyond the shipped match values
+
+- `abilities.catalogue.queen-leech.lifestealPercent`: **100**, integer 0–100.
+- `abilities.catalogue.regenerate.healPercent`: **100**, integer 0–100.
+- `abilities.catalogue.recharge.minimumCooldown`: **1**, nonnegative integer.
+- `economy.unitValues`: **{}**. Per-unit `bounty`, `withdrawal`, `wrap` and
+  `attrition` base-value overrides; missing purposes retain the unit's own value.
+- `shared/cpu-tuning.json`: separate CPU profiles, evaluation weights, candidate
+  limits and search-time allocations. These are server policy, not match rules.
+
+Omitted effect fields preserve older behavior, and sparse saved economic maps
+never acquire later preset overrides. See CONFIGURATION.md for rounding,
+precedence, snapshot compatibility and the frozen test balance fixture.
+
 ## Implementation contract
 
 A number edit changes shared defaults only; started matches retain complete snapshots.

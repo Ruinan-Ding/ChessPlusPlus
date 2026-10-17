@@ -46,7 +46,7 @@ change resolved started-game snapshots. See CONFIGURATION.md.
    - The rule between them: **whatever the client accepts, the server must accept.** A client
      default the server rejects breaks the setup screen with an error the user cannot act on.
    - **A refusal both must make goes in `client/src/app/services/config-parity.json`**, which
-     `config.service.spec.ts` and `test_config_parity.py` both run (AGENTS.md invariant 7). So
+     `config.service.spec.ts` and `test_config_parity.py` both run (PROJECT_RULES.md invariant 7). So
      does a key both must accept when absent. Current domain refusals use `format2Refused`;
      legacy cases use `legacy-config-v1.json`. Include migration idempotence and snapshot
      freezing when the shape changes.

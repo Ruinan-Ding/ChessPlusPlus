@@ -30,7 +30,7 @@ def withdrawal_refund(config: Dict[str, Any], unit: Dict[str, Any]) -> int:
     rank = unit.get('vet', 0)
     tiers = settings.get('veterancy', [])
     factors = tiers[rank - 1] if 0 < rank <= len(tiers) else settings
-    return max(settings['minimum'], unit_value(config, unit['unit_id']) * factors['valueMultiplier'] - factors['fee'] - missing * factors['missingHpMultiplier'])
+    return max(settings['minimum'], unit_value(config, unit['unit_id'], 'withdrawal') * factors['valueMultiplier'] - factors['fee'] - missing * factors['missingHpMultiplier'])
 
 
 def withdrawn_unit(config, unit, panel):
@@ -68,8 +68,8 @@ def unit_points_of(color: str, history: Iterable[Dict[str, Any]], config: Dict[s
         if casualty_zone(move) not in section_of(config, 'economy')['killPayZones']:
             continue
         if move.get('defender_eliminated') and move.get('color') == color:
-            points += unit_value(config, move.get('captured')) * section_of(config, 'economy')['killPayMultiplier']
+            points += unit_value(config, move.get('captured'), 'bounty') * section_of(config, 'economy')['killPayMultiplier']
         # The attacker died of the counter: its worth goes to the defender.
         if move.get('attacker_eliminated') and move.get('color') == other:
-            points += unit_value(config, move.get('unit_id')) * section_of(config, 'economy')['killPayMultiplier']
+            points += unit_value(config, move.get('unit_id'), 'bounty') * section_of(config, 'economy')['killPayMultiplier']
     return points

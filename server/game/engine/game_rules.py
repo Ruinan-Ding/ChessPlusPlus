@@ -27,6 +27,11 @@ VALIDATOR = FINITE_SCHEMA(DOMAIN_SCHEMA)
 def fill_missing(value, defaults):
     if isinstance(value, dict) and isinstance(defaults, dict):
         for key, default in defaults.items():
+            # Economic overrides are a sparse, per-match snapshot. Neither missing
+            # maps nor missing unit/purpose entries may inherit a later preset's
+            # overrides; each omission keeps the unit's original base value.
+            if key == 'unitValues':
+                continue
             if key not in value:
                 value[key] = copy.deepcopy(default)
             elif isinstance(default, dict):
@@ -108,6 +113,9 @@ def domain_errors(config):
               for error in sorted(VALIDATOR.iter_errors(config), key=lambda e: str(list(e.absolute_path)))]
     if errors:
         return errors
+    for unit_id in config['economy'].get('unitValues', {}):
+        if unit_id not in config.get('units', {}):
+            errors.append(f'economy.unitValues.{unit_id} names an unknown unit')
     match = config['match']
     count = len(match['phases'])
     for index, phase in enumerate(match['phases']):

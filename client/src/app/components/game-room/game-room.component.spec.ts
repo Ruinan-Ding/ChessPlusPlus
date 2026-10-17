@@ -2,13 +2,14 @@ import { BehaviorSubject, Subject, of } from 'rxjs';
 import { GameRoomComponent } from './game-room.component';
 import { GameStateService } from '../../services/game-state.service';
 import { LocalGameService } from '../../services/local-game.service';
-import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG, DEFAULT_GAME_CONFIG as CURRENT_GAME_CONFIG, ConfigService, ruleOf } from '../../services/config.service';
+import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG, ConfigService, ruleOf } from '../../services/config.service';
 import { advanceBuffs, stackEffect, statSetting, passiveStat } from '../../services/ability-rules';
 import { carries, combatExchange, combatStatuses } from '../../services/unit-combat';
 import { turnHeading } from '../../services/phases';
 import { unitPoints } from '../../services/match-score';
 import { NavigationStateService } from '../../services/navigation-state.service';
 import legacyAbilities from '../../services/legacy-abilities.fixture.json';
+import BALANCE_CONFIG from '../../../../../shared/testing/balance-config.json';
 
 // Earlier saved catalogues keep their targeting, prices and effects.
 const LEGACY_GAME_CONFIG = { ...DEFAULT_GAME_CONFIG,
@@ -67,6 +68,13 @@ describe('GameRoomComponent ability panel', () => {
     c.myPoints = 10;
     return c;
   };
+
+  it('describes captured Leech percentages, including zero and legacy omission', () => {
+    const c = room();
+    for (const [value, expected] of [[undefined, 100], [0, 0], [25, 25]]) {
+      expect(c.effectSummary({ mov: 0, atk: 0, def: 0, effect: 'leech', lifestealPercent: value })).toContain(`${expected}%`);
+    }
+  });
 
   it('caps buffed Unit panel stats before subtracting movement already spent', () => {
     const c = room(); c.gameState.snapshot.config = structuredClone(DEFAULT_GAME_CONFIG);
@@ -397,7 +405,7 @@ describe('GameRoomComponent ability panel', () => {
 
   describe('mechanics reflected in the UI', () => {
     it('shows inactive unit abilities as unavailable while keeping their description readable', () => {
-      const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+      const c = room(); c.gameState.snapshot.config = structuredClone(BALANCE_CONFIG);
       c.canAfford = () => true;
       c.selectedUnit = { key: '0,0', uid: 'pawn', unitId: 'pawn', color: 'white', vet: 3 };
       const active = c.displayUnitAbility;
@@ -418,7 +426,7 @@ describe('GameRoomComponent ability panel', () => {
     });
 
     it('describes each Sacrifice selection and configured Cast reach', () => {
-      const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+      const c = room(); c.gameState.snapshot.config = structuredClone(BALANCE_CONFIG);
       c.pendingUnitCast = { index: c.slotOfAbility('unit-sacrifice'), unit: {} };
       expect(c.unitTargetNote).toContain('another friendly');
       expect(c.unitTargetNote).toContain('green reserve');
@@ -433,34 +441,35 @@ describe('GameRoomComponent ability panel', () => {
     });
 
     it('names unit values in UP and describes configured economy rather than fixed refunds', () => {
-      const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+      const c = room(); c.gameState.snapshot.config = structuredClone(BALANCE_CONFIG);
       c.selectedUnit = { unitId: 'pawn', name: 'Pawn', points: 12 };
       expect(c.unitPanelTitle).toBe('Pawn - 12 UP');
       Object.assign(c.gameState.snapshot.config.economy, { wrapPriceMultiplier: 2, killPayMultiplier: 3,
         killPayZones: ['reserve'], halftimeUpMultiplier: 2 });
       Object.assign(c.gameState.snapshot.config.economy.walkHomeRefund, { fee: 7, minimum: 0,
         valueMultiplier: 2, missingHpMultiplier: 3 });
-      expect(c.cpTitle).toContain('2 × unit value');
-      expect(c.cpTitle).toContain('reserve'); expect(c.cpTitle).toContain('3 × unit value');
+      expect(c.cpTitle).toContain('2 × the configured wrap value');
+      expect(c.cpTitle).toContain('2 × the configured withdrawal value');
+      expect(c.cpTitle).toContain('reserve'); expect(c.cpTitle).toContain('3 × the configured bounty value');
       expect(c.cpTitle).toContain('minimum 0 UP'); expect(c.cpTitle).toContain('minus 7');
       expect(c.cpTitle).toContain('3 × missing HP'); expect(c.cpTitle).toContain('2 × current phase VP');
       expect(c.cpTitle).not.toContain('minimum of 1 UP');
     });
 
     it('describes configured zone values, phase multipliers and death scoring', () => {
-      const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+      const c = room(); c.gameState.snapshot.config = structuredClone(BALANCE_CONFIG);
       c.gameState.snapshot.config.scoring.zones[0].worth = 7;
       c.gameState.snapshot.config.match.phases[1].vpMultiplier = 4;
       c.gameState.snapshot.config.scoring.floorAtZero = false;
       c.gameState.snapshot.config.scoring.deathCostMultiplier = 2;
       c.gameState.snapshot.config.scoring.deathZones = ['reserve'];
       expect(c.scoreTitle).toContain('7 VP per hex'); expect(c.scoreTitle).toContain('Phase 2 ×4');
-      expect(c.scoreTitle).toContain('2 × unit value'); expect(c.scoreTitle).toContain('reserve');
+      expect(c.scoreTitle).toContain('2 × the configured attrition value'); expect(c.scoreTitle).toContain('reserve');
       expect(c.scoreTitle).toContain('Negative VP is allowed'); expect(c.scoreTitle).not.toContain('never below 0');
     });
 
     it('includes HEL modifiers in ability hints and stat feedback', () => {
-      const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+      const c = room(); c.gameState.snapshot.config = structuredClone(BALANCE_CONFIG);
       c.gameState.snapshot.config.abilities.catalogue.bulwark.hel = 3;
       const index = c.slotOfAbility('bulwark');
       expect(c.abilityHint(index)).toContain('+3 HEL');
@@ -471,7 +480,7 @@ describe('GameRoomComponent ability panel', () => {
   });
 
   it('Undo reverses pool and CP picks in order and restores the first-pick wait', () => {
-    const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+    const c = room(); c.gameState.snapshot.config = structuredClone(BALANCE_CONFIG);
     c.gameState.snapshot.turnNumber = 7; fundCp(c, 100);
     c.pickAbility('mine', c.slotOfAbility('warcry'));
     expect(c.poolPairWait('mine')).toBe(3); expect(c.canUndo).toBeTrue();
@@ -485,7 +494,7 @@ describe('GameRoomComponent ability panel', () => {
   });
 
   it('Undo takes a later battlefield action before its earlier CP pick', () => {
-    const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+    const c = room(); c.gameState.snapshot.config = structuredClone(BALANCE_CONFIG);
     c.gameState.snapshot.turnNumber = 7; fundCp(c, 100); c.unlockPath('mine', 0);
     c.stagedActions.push({ at: c.onlineChoices[0].at + 1, from: '0,0', to: '1,0', attack: null, board: {} });
     c.undoMove(); expect(c.myPath).toBe(0); expect(c.myCp).toBe(95);
@@ -493,7 +502,7 @@ describe('GameRoomComponent ability panel', () => {
   });
 
   it('unit abilities end movement while Withdraw reopens it only after attacking', () => {
-    const c = room(); c.gameState.snapshot.config = structuredClone(CURRENT_GAME_CONFIG);
+    const c = room(); c.gameState.snapshot.config = structuredClone(BALANCE_CONFIG);
     delete c.gameState.snapshot.config.abilities.catalogue.quick.freeOrder;
     Object.assign(c.gameState.snapshot, {turnNumber:7,moveHistory:[],boardState:{'0,0':{unit_id:'archer',uid:'a',vet:3,color:'white',hp:6}}});
     const cast = { at:1, from:'', to:'', board:c.gameState.snapshot.boardState, spend:{row:'unit',uid:'a'} };
@@ -512,7 +521,7 @@ describe('GameRoomComponent ability panel', () => {
       const c = room(); c.gameId = 'local'; c.gameState = new GameStateService();
       c.persistLocalUiState = () => {};
       c.gameState.applyGameStarted({ playerWhite: 'me', playerBlack: 'them', currentTurn: 'me',
-        turnNumber: 1, config: structuredClone(CURRENT_GAME_CONFIG), boardState: {} });
+        turnNumber: 1, config: structuredClone(BALANCE_CONFIG), boardState: {} });
       return c;
     };
 
@@ -565,7 +574,7 @@ describe('GameRoomComponent ability panel', () => {
         expect(fresh.poolPairWait('mine')).toBe(3);
         fresh.gameState.snapshot.turnNumber = 7; expect(fresh.canPick('mine', 2)).toBeTrue();
         fresh.handleWebSocketMessage({ type: 'game_started', playerWhite: 'me', playerBlack: 'them',
-          currentTurn: 'me', turnNumber: 1, boardState: {}, config: structuredClone(CURRENT_GAME_CONFIG) });
+          currentTurn: 'me', turnNumber: 1, boardState: {}, config: structuredClone(BALANCE_CONFIG) });
         expect(fresh.myLoadout).toEqual([]);
         fresh.gameState.snapshot.turnNumber = 7; fresh.pickAbility('mine', 0);
         expect(fresh.poolPairWait('mine')).toBe(3);

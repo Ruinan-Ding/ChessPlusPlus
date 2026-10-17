@@ -2,7 +2,8 @@ import recordedMatch from '../../../../../shared/recording/match.json';
 import recordedResult from '../../../../../shared/recording/match.json.expected.json';
 import { CpuService } from '../../services/cpu.service';
 import configuredMatch from '../../services/game-rules-parity.json';
-import { DEFAULT_GAME_CONFIG as CURRENT_GAME_CONFIG, ConfigService } from '../../services/config.service';
+import { ConfigService, DEFAULT_GAME_CONFIG as SHIPPED_GAME_CONFIG } from '../../services/config.service';
+import BALANCE_CONFIG from '../../../../../shared/testing/balance-config.json';
 import { ComponentFixture, TestBed, fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { ActivatedRoute, Router, provideRouter } from '@angular/router';
@@ -54,7 +55,7 @@ describe('Solo game through the rendered room and real services', () => {
     finally { fixture?.destroy(); ws?.disconnect(); tick(100); }
   });
 
-  const configure = (config?: any) => {
+  const configure = (config: any = BALANCE_CONFIG) => {
     TestBed.configureTestingModule({
       imports: [GameRoomComponent],
       providers: [provideRouter([]),
@@ -140,6 +141,14 @@ describe('Solo game through the rendered room and real services', () => {
     expect(error).toBeUndefined(); expect(done).toBeTrue();
   };
 
+  it('starts the actual shipped preset in the rendered room', run(() => {
+    start('White', SHIPPED_GAME_CONFIG);
+    expect(state.snapshot.config.units).toEqual(SHIPPED_GAME_CONFIG.units);
+    expect(state.snapshot.config.economy).toEqual(SHIPPED_GAME_CONFIG.economy);
+    expect(Object.keys(state.snapshot.boardState).length).toBeGreaterThan(0);
+    expect(room.canEndTurn).toBeTrue();
+  }));
+
   it('replays a complete real online recording with the same board, phase bank and ending', run(() => {
     start('White', recordedMatch.config);
     enableReplay(recordedMatch.actions);
@@ -166,7 +175,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('plays CPU commands through solo services and Q retains them for R', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,0': 'king' }, black: { '-8,0': 'king' } };
     configure(config);
     const cpu = TestBed.inject(CpuService);
@@ -249,7 +258,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('restores the complete turn if a CPU batch becomes illegal while staging', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,0': 'king' }, black: { '-8,0': 'king' } };
     configure(config);
     spyOn(TestBed.inject(CpuService), 'think').and.returnValue(Promise.resolve([
@@ -264,7 +273,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('rolls back an accepted panel move when the later CPU commit fails', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,0': 'king', '-12,11': 'pawn' }, black: { '8,0': 'king' } };
     configure(config);
     spyOn(TestBed.inject(CpuService), 'think').and.returnValue(Promise.resolve([
@@ -291,7 +300,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('cancels a late CPU response after rewinding the human turn', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,0': 'king' }, black: { '-8,0': 'king' } };
     configure(config);
     let respond!: (commands: any[]) => void;
@@ -307,7 +316,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('allows unit inspection without staging moves while CPU is thinking', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,0': 'king' }, black: { '-8,0': 'king' } };
     configure(config);
     spyOn(TestBed.inject(CpuService), 'think').and.returnValue(new Promise(() => {}));
@@ -334,7 +343,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('records each accepted solo input and truncates abandoned turns on Q', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config); hex('0,0'); hex('1,0'); hex('2,0'); finish();
     const tape = ws.replayFile!.actions;
@@ -347,7 +356,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('validates playback, branches at completed staging, disables forwards and permits R', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config);
     const normal = localStorage.getItem('cpp.localGame.v1');
@@ -365,7 +374,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('navigates replay steps and completed turns through the controls, pauses autoplay and edits a branch', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king', '4,0': 'pawn' } };
     start('White', config);
     enableReplay([
@@ -408,7 +417,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('skips a corrupt compound action atomically and continues with a valid move', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.stageRules.opening.attack = true;
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config);
@@ -426,7 +435,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('replays a compound walk/attack with its counter as one reversible input', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.stageRules.opening.attack = true;
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king', '2,0': 'pawn' } };
     start('White', config);
@@ -441,7 +450,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('validates picks and derives cast costs/effects without imported bonuses', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.stageRules.opening.poolAbilities = true;
     config.economy.pointsAtStart = 500;
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king' } };
@@ -459,7 +468,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('accepts a non-active side resignation and reconstructs a restored viewer from its config', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config);
     enableReplay([{ ply: 1, color: 'black', command: { type: 'result', reason: 'resign' } }]);
@@ -469,7 +478,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('blocks manual board input during the internal replay executor', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config);
     enableReplay([{ ply: 1, color: 'white', command: { type: 'make_move', from: '0,0', to: '1,0', more: true } }]);
@@ -481,7 +490,7 @@ describe('Solo game through the rendered room and real services', () => {
 
   for (const unit of ['pawn', 'archer', 'shieldman', 'rook', 'knight', 'bishop', 'queen', 'king']) {
     it(`replays the ${unit} unit ability through its ordinary targeting rules`, run(() => {
-      const config: any = structuredClone(CURRENT_GAME_CONFIG);
+      const config: any = structuredClone(BALANCE_CONFIG);
       config.veterancy.startingRank = 3; config.stageRules.opening.unitAbilities = true;
       config.economy.upAtStart = 500;
       config.setup = { white: { ...(unit === 'king' ? {} : { '-3,6': 'king' }), '0,0': unit, '2,0': 'pawn', '4,0': 'knight' },
@@ -500,7 +509,7 @@ describe('Solo game through the rendered room and real services', () => {
   }
 
   it('derives panel crossing prices and restores panel actions during step navigation', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.economy.upAtStart = 50; config.economy.wrapPriceMultiplier = 2; config.stageRules.opening.wrap = true;
     config.setup = { white: { '0,11': 'king', '-12,1': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config);
@@ -515,7 +524,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('treats nullable movement options and either half of a Recharge pair consistently', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.match.cpAtStart = 500;
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config);
@@ -532,7 +541,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('rolls back an expensive replay step instead of retaining its partial position', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config);
     enableReplay([{ ply: 1, color: 'white', command: { type: 'make_move', from: '0,0', to: '1,0', more: true } }]);
@@ -549,7 +558,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('bounds replay frame caching by size and shares the validated config with snapshots', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config); enableReplay([]);
     const base = ws.captureReplayFrame((room as any).localUiState());
@@ -611,7 +620,7 @@ describe('Solo game through the rendered room and real services', () => {
   };
 
   it('Onslaught boosts normal healing and its HEL display through commit and reload', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.match.cpAtStart = 1000; config.stageRules.opening.normalHeal = true;
     config.setup = { white: { '0,11': 'king', '0,0': 'bishop', '1,0': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config); path('Onslaught');
@@ -624,7 +633,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('Onslaught adds attack damage but does not boost the same unit counter on the next turn', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.match.cpAtStart = 1000; config.stageRules.opening.attack = true;
     config.setup = { white: { '0,11': 'king', '0,0': 'pawn' }, black: { '0,-11': 'king', '1,0': 'pawn' } };
     start('White', config); path('Onslaught');
@@ -636,7 +645,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('stages a Vet-3 home refund and reset, restores stars with R, and preserves the committed reset after reload', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.veterancy.startingRank = 3; config.veterancy.kitZones = ['battlefield', 'base'];
     config.panels.baseHealPerTurn = 0;
     config.setup = { white: { '0,11': 'king', '-11,11': 'pawn' }, black: { '0,-11': 'king' } };
@@ -664,7 +673,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('shows and spends Sprint-discounted pool, UP and CP prices, restores them with Undo, and boosts base MOV', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.veterancy.startingRank = 3;
     config.stageRules.opening.poolAbilities = true;
     config.stageRules.opening.unitAbilities = true;
@@ -776,7 +785,7 @@ describe('Solo game through the rendered room and real services', () => {
   }
 
   it('rewinds Black Turn 2 to White Turn 2, discards a draft and restores opening actions and timer', run(() => {
-    const config:any=structuredClone(CURRENT_GAME_CONFIG);config.match.turnTimeLimit=15;
+    const config:any=structuredClone(BALANCE_CONFIG);config.match.turnTimeLimit=15;
     config.setup={white:{'0,11':'king','0,0':'pawn'},black:{'0,-11':'king','4,0':'pawn','5,0':'pawn'}};
     start('Black',config);
     expect(fixture.nativeElement.querySelector('.draw-btn').textContent.trim()).toBe('Rewind Turn (Q)');
@@ -804,7 +813,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('rewinds casts, path purchases, unit stars, panel payments and both income totals together', run(() => {
-    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    const config:any=structuredClone(BALANCE_CONFIG);
     config.economy.upAtStart=24;config.economy.pointsAtStart=500;config.match.cpAtStart=500;
     config.stageRules.opening.poolAbilities=true;
     config.setup={white:{'0,11':'king','0,0':'pawn','-12,1':'pawn'},black:{'0,-11':'king'}};
@@ -840,7 +849,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('reopens panel walks and reserve entries with their chronological R Undo stack', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.economy.upAtStart = 24;
     config.setup = { white: { '0,11': 'king', '-12,1': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config); for (let ply = 1; ply < 7; ply++) finish();
@@ -871,7 +880,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('drops a stale saved panel draft without losing the completed turn available to Q', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,11': 'king', '-12,1': 'pawn' }, black: { '0,-11': 'king' } };
     start('White', config); hex('-12,1');
     const destination = [...board()!.legalTargets].find(key => board()!.cells.find(cell => cell.key === key)!.panel === 'bl')!;
@@ -888,7 +897,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('restores a panel casualty when R undoes the reopened cast after reload', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.match.cpAtStart = 500; config.units.pawn.hp = 1;
     config.setup = { white: { '0,11': 'king' }, black: { '0,-11': 'king', '-11,-1': 'pawn' } };
     start('White', config); for (let ply = 1; ply < 7; ply++) finish();
@@ -907,7 +916,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('rewinds the winning attack after reload and allows the restored unit to win again', run(() => {
-    const config:any=structuredClone(CURRENT_GAME_CONFIG);config.stageRules.opening.attack=true;
+    const config:any=structuredClone(BALANCE_CONFIG);config.stageRules.opening.attack=true;
     config.units.king.hp=1;config.units.king.defense=0;config.units.king.attack=0;
     config.setup={white:{'0,11':'king','0,0':'pawn'},black:{'1,0':'king'}};
     start('White',config);const before=structuredClone(state.snapshot.boardState);
@@ -924,7 +933,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('rewinds across phase awards and halftime without retaining stars, payouts or duplicate grants', run(() => {
-    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    const config:any=structuredClone(BALANCE_CONFIG);
     config.setup={white:{'0,11':'king','-3,6':'pawn'},black:{'0,-11':'king'}};
     start('White',config);for(let ply=1;ply<6;ply++)finish();
     const beforePhase=structuredClone(state.snapshot.boardState);finish();expect(state.snapshot.boardState['-3,6'].vet).toBe(1);
@@ -940,7 +949,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('does not turn an older mid-turn purchase or its animation into a turn-start checkpoint', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.stageRules.opening.poolAbilities = true; config.match.cpAtStart = 500;
     start('White', config);
     click('.abilities-panel .panel-buttons > button', 'Warcry'); click('.abilities-panel .pick-btn', 'Pick');
@@ -971,7 +980,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('ignores Shift+Q without discarding a staged move', run(() => {
-    const config: any = structuredClone(CURRENT_GAME_CONFIG);
+    const config: any = structuredClone(BALANCE_CONFIG);
     config.setup = { white: { '0,11': 'king' }, black: { '0,-11': 'king', '4,0': 'pawn' } };
     start('Black', config); finish(); hex('4,0'); hex('3,0');
     const actions = structuredClone(room.stagedActions);
@@ -1033,7 +1042,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('Undo reverses pool and CP picks through buttons, R and solo reload', run(() => {
-    const config:any=structuredClone(CURRENT_GAME_CONFIG);config.match.cpAtStart=100;
+    const config:any=structuredClone(BALANCE_CONFIG);config.match.cpAtStart=100;
     start('White',config);
     click('.abilities-panel .scaffold-btn','Warcry');click('.abilities-panel .pick-btn','Pick');
     click('.abilities-panel .path-btn','Bastion');click('.abilities-panel .pick-btn','Pick');
@@ -1227,7 +1236,7 @@ describe('Solo game through the rendered room and real services', () => {
       seed('pawn', color, '0,1');
       const g = (engine as any).game;
       g.config = structuredClone(g.config);
-      g.config.abilities.catalogue['unit-sacrifice'] = structuredClone(CURRENT_GAME_CONFIG.abilities.catalogue['unit-sacrifice']);
+      g.config.abilities.catalogue['unit-sacrifice'] = structuredClone(BALANCE_CONFIG.abilities.catalogue['unit-sacrifice']);
       ws.sendMessage({ type: 'request_game_state' }); settle();
       useUnit('Sacrifice'); hex('-1,0');
       expect(room.battlefieldActionBonus).toBe(1);
@@ -1349,7 +1358,7 @@ describe('Solo game through the rendered room and real services', () => {
       seed('knight', color);
       const game = (engine as any).game;
       game.config = structuredClone(game.config);
-      game.config.abilities.catalogue['knight-charge'] = structuredClone(CURRENT_GAME_CONFIG.abilities.catalogue['knight-charge']);
+      game.config.abilities.catalogue['knight-charge'] = structuredClone(BALANCE_CONFIG.abilities.catalogue['knight-charge']);
       game.boardState['0,0'].hp = 10;
       game.boardState['1,0'] = { unit_id: 'knight', color: color === 'white' ? 'black' : 'white', uid: 'enemy', vet: 3, hp: 20, max_hp: 20, veterancyHpActive: true };
       ws.sendMessage({ type: 'request_game_state' }); settle();
@@ -1375,7 +1384,7 @@ describe('Solo game through the rendered room and real services', () => {
       seed('archer', color, '3,0');
       const game = (engine as any).game;
       game.config = structuredClone(game.config);
-      game.config.abilities.catalogue.quick = structuredClone(CURRENT_GAME_CONFIG.abilities.catalogue.quick);
+      game.config.abilities.catalogue.quick = structuredClone(BALANCE_CONFIG.abilities.catalogue.quick);
       game.boardState['3,0'].vet = 0; game.boardState['3,0'].hp = game.boardState['3,0'].max_hp = 12;
       ws.sendMessage({ type: 'request_game_state' }); settle();
       hex('0,0'); hex('0,1'); hex('3,0'); hex('0,2');
@@ -1614,7 +1623,7 @@ describe('Solo game through the rendered room and real services', () => {
 
   for (const color of ['white', 'black'] as const) {
     it(`Convert funds a same-turn ${color} Initialization wrap through Undo, commit and reload`, run(() => {
-      const config: any = structuredClone(CURRENT_GAME_CONFIG);
+      const config: any = structuredClone(BALANCE_CONFIG);
       config.match.cpAtStart = 500; config.match.turnTimeLimit = 0;
       const source = color === 'white' ? '-12,1' : '12,-1', destination = color === 'white' ? '11,1' : '-11,-1';
       config.setup = { white: { '-8,0': 'king' }, black: { '8,0': 'king' } };
@@ -1633,7 +1642,7 @@ describe('Solo game through the rendered room and real services', () => {
       expect(board()!.cells.find(cell => cell.key === destination)!.piece!.uid).toBe(color[0] + source);
     }));
     it(`Convert grants UP on Onslaught for ${color} through Undo, staging reload and commit`, run(() => {
-      const config: any = structuredClone(CURRENT_GAME_CONFIG);
+      const config: any = structuredClone(BALANCE_CONFIG);
       config.match.cpAtStart = 500; config.match.turnTimeLimit = 0;
       start(color === 'white' ? 'White' : 'Black', config);
       if (color === 'black') finish();
@@ -1654,7 +1663,7 @@ describe('Solo game through the rendered room and real services', () => {
   for (const color of ['white', 'black'] as const) {
     for (const [ability, name, partner, target] of [['mend', 'Mend', 'Strike', '-1,0'], ['weakening', 'Weakening', 'Bulwark', '1,0']]) {
       it(`${color} Recharge pays full point worth for used 1-CD ${name}; Undo, reload and commit preserve cooldowns`, run(() => {
-        seed('pawn', color, '1,0', 500, CURRENT_GAME_CONFIG); path('Sprint');
+        seed('pawn', color, '1,0', 500, BALANCE_CONFIG); path('Sprint');
         click('.abilities-panel .scaffold-btn', name); click('.abilities-panel .pick-btn', 'Pick');
         const i = room.slotOfAbility(ability), other = room.slotOfAbility(partner.toLowerCase());
         const baseCost = room.abilityCosts[i], price = room.abilityCost(i), points = room.myPoints;
@@ -1678,7 +1687,7 @@ describe('Solo game through the rendered room and real services', () => {
       }));
     }
     it(`${color} Recharge pays ready members without changing their normal cast price`, run(() => {
-      seed('pawn', color, '1,0', 500, CURRENT_GAME_CONFIG); path('Sprint');
+      seed('pawn', color, '1,0', 500, BALANCE_CONFIG); path('Sprint');
       click('.abilities-panel .scaffold-btn', 'Warcry'); click('.abilities-panel .pick-btn', 'Pick');
       const first = room.slotOfAbility('warcry'), second = room.slotOfAbility('sap');
       const points = room.myPoints, payout = room.abilityCosts[first] + room.abilityCosts[second];
@@ -1689,7 +1698,7 @@ describe('Solo game through the rendered room and real services', () => {
       click('.undo-btn'); click('.undo-btn'); expect(room.myPoints).toBe(points);
     }));
     it(`${color} Bastion carries Strengthen with its existing promotion and Undo`, run(() => {
-      const config = structuredClone(CURRENT_GAME_CONFIG);
+      const config = structuredClone(BALANCE_CONFIG);
       config.veterancy.firstPhaseStartAward = false; config.veterancy.postmatchAwards = false;
       seed('pawn', color, '1,0', 500, config); path('Bastion');
       expect(room.abilityPaths.find(p => p.id === 'bastion')!.utility).toBe(room.slotOfAbility('strengthen'));
@@ -1722,6 +1731,26 @@ describe('Solo game through the rendered room and real services', () => {
     finish(); reload();
     expect([room.myCooldowns[warcry], room.myCooldowns[sap], room.myCp]).toEqual([2, 4, 125]);
     expect(room.myCooldowns[room.slotOfAbility('recharge')]).toBe(1);
+  }));
+
+  it('custom Recharge can refresh to zero through rendered controls, Undo and saved-turn reload', run(() => {
+    const config: any = structuredClone(BALANCE_CONFIG);
+    config.abilities.catalogue.recharge.minimumCooldown = 0;
+    config.abilities.catalogue.recharge.recharge = 10;
+    seed('pawn', 'white', '1,0', 500, config); path('Sprint');
+    click('.abilities-panel button', 'Warcry'); click('.abilities-panel .pick-btn', 'Pick');
+    cast('Warcry'); hex('-1,0'); cast('Sap'); hex('1,0');
+    const warcry = room.slotOfAbility('warcry'), sap = room.slotOfAbility('sap');
+    expect([room.myCooldowns[warcry], room.myCooldowns[sap]]).toEqual([3, 5]);
+    cast('Recharge'); click('.abilities-panel .panel-buttons > button', 'Warcry');
+    expect([room.myCooldowns[warcry], room.myCooldowns[sap]]).toEqual([0, 0]);
+    expect(room.abilityHint(room.slotOfAbility('recharge'))).toContain('stopping at 0');
+    reload(); expect([room.myCooldowns[warcry], room.myCooldowns[sap]]).toEqual([0, 0]);
+    click('.undo-btn'); expect([room.myCooldowns[warcry], room.myCooldowns[sap]]).toEqual([3, 5]);
+    cast('Recharge'); click('.abilities-panel .panel-buttons > button', 'Sap');
+    finish(); reload();
+    expect([room.myCooldowns[warcry], room.myCooldowns[sap]]).toEqual([0, 0]);
+    expect(state.snapshot.config.abilities.catalogue.recharge.minimumCooldown).toBe(0);
   }));
 
   it('Ruin applies damage before healing survivors, and its single use stays spent across reload', run(() => {
@@ -1905,7 +1934,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('keeps wounded enabled panel HP exact through inspection and reload', run(() => {
-    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    const config:any=structuredClone(BALANCE_CONFIG);
     config.veterancy.startingRank=1;config.veterancy.kitZones=['battlefield','base','reserve'];
     config.panels.baseHealPerTurn=0;
     config.setup={white:{'0,11':'king','-12,11':'pawn','11,1':'pawn'},black:{'0,-11':'king'}};
@@ -1926,7 +1955,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('keeps multiplied wrap payments exact through staging, commit and reload', run(() => {
-    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    const config:any=structuredClone(BALANCE_CONFIG);
     config.economy.upAtStart=24;config.economy.wrapPriceMultiplier=2;
     config.setup={white:{'0,11':'king','-12,1':'pawn'},black:{'0,-11':'king'}};
     start('White',config);
@@ -1940,7 +1969,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('commits a zero-refund homecoming as a withdrawal, including restored online commands', run(() => {
-    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    const config:any=structuredClone(BALANCE_CONFIG);
     config.economy.walkHomeRefund={valueMultiplier:1,fee:100,missingHpMultiplier:1,minimum:0};
     config.panels.baseHealPerTurn=0;
     config.setup={white:{'0,11':'king','-11,11':'pawn'},black:{'0,-11':'king'}};
@@ -1956,7 +1985,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   for(const baseEnabled of [false,true])it(`keeps wounded withdrawal HP when base kits are ${baseEnabled?'enabled':'disabled'}`, run(() => {
-    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    const config:any=structuredClone(BALANCE_CONFIG);
     config.veterancy.startingRank=1;config.veterancy.kitZones=baseEnabled?['battlefield','base']:['battlefield'];
     delete config.economy.walkHomeRefund.veterancy; config.economy.walkHomeRefund.resetVeterancy=false;
     config.panels.baseHealPerTurn=0;
@@ -1975,7 +2004,7 @@ describe('Solo game through the rendered room and real services', () => {
   }));
 
   it('uses base healing amounts when battlefield veterancy kits are disabled', run(() => {
-    const config:any=structuredClone(CURRENT_GAME_CONFIG);
+    const config:any=structuredClone(BALANCE_CONFIG);
     config.veterancy.startingRank=1;config.veterancy.kitZones=[];
     config.stageRules.opening.normalHeal=true;
     config.units.bishop.veterancy.heal=[20,20,20,20];config.units.pawn.hp=30;

@@ -67,7 +67,7 @@ Older servers keep the existing command path. Current servers advertise
 `abilitiesSupported` and resolve pool, unit and CP abilities authoritatively from
 configured IDs and targets. Automatic replay and the 900 ms nonblocking turn notice
 consume no turn time; manual Replay counts. The [handoff](../CODEX_HANDOFF.md) records
-current branch, verification and outstanding work; [AGENTS.md](../AGENTS.md) is the workflow and game-rule
+current branch, verification and outstanding work; [PROJECT_RULES.md](../PROJECT_RULES.md) is the detailed game-rule
 source of truth.
 
 Unit actions follow move → UP ability → attack; steps are optional. A unit ability
@@ -89,7 +89,7 @@ overtime. Missing scope keeps a match budget. The room saves counts by holder,
 ability id and phase, and Undo restores the originating budget. CP utilities are
 allowed during initialization; ordinary casts remain blocked. ATK/HEL capability
 checks use the configured profile and unlocked passive, distinguishing absent stats
-from temporary numeric zero. See [AGENTS.md](../AGENTS.md) for current game rules.
+from temporary numeric zero. See [PROJECT_RULES.md](../PROJECT_RULES.md) for current game rules.
 
 Match rules resolve through `game-rules.ts` and the shared draft-07 schema (`ajv`),
 mirroring Python `game_rules.py` (`jsonschema`). Format-1 imports use frozen compatibility

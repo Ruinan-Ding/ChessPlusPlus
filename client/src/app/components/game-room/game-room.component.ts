@@ -70,7 +70,7 @@ interface AbilityEntry extends HexEffectArea {
   testing?: boolean;
   effect?: string;
   up?: number; enemyDamage?: number; enemyAtk?: number; enemyDef?: number; enemyMov?: number; radius?: number;
-  minVet?: number; stars?: number; battlefieldActions?: number; secondCounter?: boolean; freeOrder?: boolean; recharge?: number; refundMultiplier?: number; splashDamage?: number;
+  minVet?: number; stars?: number; battlefieldActions?: number; secondCounter?: boolean; freeOrder?: boolean; recharge?: number; refundMultiplier?: number; minimumCooldown?: number; lifestealPercent?: number; healPercent?: number; splashDamage?: number;
   splashAtk?: number; splashMov?: number; setAtk?: number; enemyDefSet?: number;
   scope?: 'field-reserve' | 'all';
   hel?: number; setHel?: number; splashHel?: number;
@@ -120,7 +120,7 @@ interface AbilityEffect extends HexEffectArea {
   testing?: boolean;
   effect?: string;
   up?: number; enemyDamage?: number; enemyAtk?: number; enemyDef?: number; enemyMov?: number; radius?: number;
-  minVet?: number; stars?: number; battlefieldActions?: number; secondCounter?: boolean; freeOrder?: boolean; recharge?: number; refundMultiplier?: number; splashDamage?: number;
+  minVet?: number; stars?: number; battlefieldActions?: number; secondCounter?: boolean; freeOrder?: boolean; recharge?: number; refundMultiplier?: number; minimumCooldown?: number; lifestealPercent?: number; healPercent?: number; splashDamage?: number;
   splashAtk?: number; splashMov?: number; setAtk?: number; enemyDefSet?: number;
   scope?: 'field-reserve' | 'all';
   hel?: number; setHel?: number; splashHel?: number;
@@ -2236,7 +2236,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   }
 
   /** "+2 ATK, -1 MOV" for one effect, or '' when it moves no stat. */
-  private effectSummary(effect: { mov: number; atk: number; def: number; hel?: number; effect?: string; setAtk?: number; setDef?: number; setHel?: number }): string {
+  private effectSummary(effect: { mov: number; atk: number; def: number; hel?: number; effect?: string; lifestealPercent?: number; setAtk?: number; setDef?: number; setHel?: number }): string {
     const parts: string[] = [];
     if (effect.mov) parts.push(`${this.signed(effect.mov)} MOV`);
     if (effect.atk) parts.push(`${this.signed(effect.atk)} ATK`);
@@ -2247,7 +2247,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     if (effect.setHel !== undefined) parts.push(`HEL ${effect.setHel}`);
     const status: Record<string, string> = { control: 'Controlled by the caster', taunt: 'Reachable attacks must target this unit',
       cleave: 'Attacks also hit adjacent enemies', charge: 'Second strike after a counter',
-      nullify: 'Attacked enemies cannot counter', leech: 'Normal attacks heal by actual damage dealt', 'attack-drain': 'Attacks reduce the target’s MOV' };
+      nullify: 'Attacked enemies cannot counter', leech: `Normal attacks heal ${effect.lifestealPercent ?? 100}% of actual damage dealt (rounded down)`, 'attack-drain': 'Attacks reduce the target’s MOV' };
     if (effect.effect && status[effect.effect]) parts.push(status[effect.effect]);
     if (effect.effect === 'invulnerable') parts.push('No damage');
     if (effect.effect === 'action-lock') parts.push('Movement, attacks, healing and unit abilities blocked');
@@ -2825,11 +2825,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       + `${match.phases.map((phase: any) => phase.cpAward).join('/')} fixed CP, plus `
       + `${economy.cpOwnScoreMultiplier} × your phase VP + ${economy.cpOpponentScoreMultiplier} × opponent phase VP `
       + `+ ${economy.cpBehindGapMultiplier} × the gap when behind. `
-      + `UP - unit points: ${ruleOf(config, 'upAtStart')} to start; base-to-reserve crossings cost ${economy.wrapPriceMultiplier} × unit value. `
-      + `Attack/counter kills in ${economy.killPayZones.join(', ') || 'no zones'} pay ${economy.killPayMultiplier} × unit value; ability kills pay none. `
-      + `Walking home refunds ${refund.valueMultiplier} × unit value minus ${refund.fee} minus ${refund.missingHpMultiplier} × missing HP, minimum ${refund.minimum} UP. `
+      + `UP - unit points: ${ruleOf(config, 'upAtStart')} to start; base-to-reserve crossings cost ${economy.wrapPriceMultiplier} × the configured wrap value (unit value unless overridden). `
+      + `Attack/counter kills in ${economy.killPayZones.join(', ') || 'no zones'} pay ${economy.killPayMultiplier} × the configured bounty value (unit value unless overridden); ability kills pay none. `
+      + `Walking home refunds ${refund.valueMultiplier} × the configured withdrawal value (unit value unless overridden) minus ${refund.fee} minus ${refund.missingHpMultiplier} × missing HP, minimum ${refund.minimum} UP. `
       + (refund.veterancy?.length ? refund.veterancy.map((tier: any, index: number) =>
-        `Vet ${index + 1}: ${tier.valueMultiplier} × unit value minus ${tier.fee} minus ${tier.missingHpMultiplier} × missing HP. `).join('') : '')
+        `Vet ${index + 1}: ${tier.valueMultiplier} × the configured withdrawal value minus ${tier.fee} minus ${tier.missingHpMultiplier} × missing HP. `).join('') : '')
       + (refund.resetVeterancy ? 'Walking home resets Vet to 0. ' : '')
       + `Each halftime adds ${economy.halftimeUpMultiplier} × current phase VP once.`;
   }
@@ -2917,8 +2917,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
       spend.priorPairCooldowns = pair.map(i => ({ index: i, turns: cooldowns[i] ?? 0 }));
       for (const i of pair) {
         const cd = cooldowns[i] ?? 0;
-        if (cd <= 1) spend.gain = (spend.gain ?? 0) + (effect.refundMultiplier ?? 0) * this.abilityCosts[i];
-        cooldowns[i] = cd > 0 ? Math.max(1, cd - (effect.recharge ?? 0)) : 0;
+        const floor = effect.minimumCooldown ?? 1;
+        if (cd <= floor) spend.gain = (spend.gain ?? 0) + (effect.refundMultiplier ?? 0) * this.abilityCosts[i];
+        cooldowns[i] = cd > floor ? Math.max(floor, cd - (effect.recharge ?? 0)) : cd;
       }
       this.grantPoints(side, spend.gain ?? 0);
     }
@@ -3671,9 +3672,11 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const e = this.abilityEffects[index];
     if (!e) return '';
     if (e.effect === 'recharge') {
-      const payout = e.refundMultiplier ? ` Each member already at 0 or 1 CD grants ${e.refundMultiplier} times its full configured regular-point cost before Sprint discounts, keeping its cooldown.`
+      const floor = e.minimumCooldown ?? 1;
+      const ready = floor === 1 ? '0 or 1' : `or below ${floor}`;
+      const payout = e.refundMultiplier ? ` Each member already at ${ready} CD grants ${e.refundMultiplier} times its full configured regular-point cost before Sprint discounts, keeping its cooldown.`
         : ' Already-ready abilities stay at 0.';
-      return `Choose a carried pool pair: reduce cooldowns above 1 by ${e.recharge ?? 0}, stopping at 1.${payout} `
+      return `Choose a carried pool pair: reduce cooldowns above ${floor} by ${e.recharge ?? 0}, stopping at ${floor}.${payout} `
         + `Costs ${this.abilityCost(index, side)} CP; cooldown ${this.cooldownOf(index)}; ${e.uses} uses per phase.`;
     }
     if (e.effect) return abilityDescription({ ...this.abilityConfig.catalogue?.[e.id], ...e,
@@ -5101,7 +5104,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         uses: a.uses ?? (ultimates.has(id) ? 1 : null),
         ...(a.testing ? { testing: true } : {}),
         ...(a.effect ? { effect: a.effect } : {}),
-        ...Object.fromEntries(['up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius', 'minVet', 'stars', 'battlefieldActions', 'secondCounter', 'freeOrder', 'recharge', 'refundMultiplier', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'baseMov', 'costReduction', 'minimumCost', 'usesScope', 'hel', 'setHel', 'splashHel', 'area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov'].filter(key => (a as any)[key] !== undefined).map(key => [key, (a as any)[key]])),
+        ...Object.fromEntries(['up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius', 'minVet', 'stars', 'battlefieldActions', 'secondCounter', 'freeOrder', 'recharge', 'refundMultiplier', 'minimumCooldown', 'lifestealPercent', 'healPercent', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'baseMov', 'costReduction', 'minimumCost', 'usesScope', 'hel', 'setHel', 'splashHel', 'area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov'].filter(key => (a as any)[key] !== undefined).map(key => [key, (a as any)[key]])),
       };
     });
     const slotOf = (id: string) => ids.indexOf(id);
@@ -7076,7 +7079,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const config = this.gameState.snapshot.config, scoring = sectionOf(config, 'scoring');
     const zones = scoring.zones.map((zone: any) => `${zone.kind}${zone.owner ? ` (${zone.owner})` : ''}: ${zone.worth} VP per hex`).join('; ');
     const phases = sectionOf(config, 'match').phases.map((phase: any, i: number) => `Phase ${i + 1} ×${phase.vpMultiplier}`).join(', ');
-    return `Victory points: held capture hexes (${zones}), minus ${scoring.deathCostMultiplier} × unit value for losses in `
+    return `Victory points: held capture hexes (${zones}), minus ${scoring.deathCostMultiplier} × the configured attrition value (unit value unless overridden) for losses in `
       + `${scoring.deathZones.join(', ') || 'no zones'}. ${scoring.floorAtZero ? 'The result never falls below 0' : 'Negative VP is allowed'}; `
       + `${phases}. Initialization shows holdings without banking VP.`;
   }

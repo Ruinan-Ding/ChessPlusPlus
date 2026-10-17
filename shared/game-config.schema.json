@@ -577,7 +577,25 @@
               "refundMultiplier": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Recharge only: for each carried pair member already at cooldown 0 or 1 before the cast, grant this multiple of its configured base regular-point cost, without changing that cooldown. Higher cooldowns only decrease. Omitted or zero preserves cooldown-only Recharge; Sprint discounts do not reduce the payout."
+                "description": "Recharge only: for each carried pair member already at or below the configured minimumCooldown before the cast, grant this multiple of its configured base regular-point cost, without changing that cooldown. Higher cooldowns only decrease. Omitted or zero preserves cooldown-only Recharge; Sprint discounts do not reduce the payout."
+              },
+              "lifestealPercent": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Leech healing as an integer percentage of actual HP damage dealt, rounded down separately per normal strike. Omitted is 100. Stored with the cast effect; later catalogue changes do not reprice it."
+              },
+              "healPercent": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Regeneration healing each own turn end as an integer percentage of maximum HP, rounded down and capped at maximum. Omitted is 100; zero disables healing without removing the passive."
+              },
+              "minimumCooldown": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Lowest cooldown Recharge can reduce a pair member to; omitted is 1. Members already at or below this floor retain their cooldown and receive the configured refund. Zero permits fully refreshing a cooling ability."
               }
             },
             "additionalProperties": false,
@@ -782,6 +800,57 @@
                       "const": "recharge"
                     }
                   }
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "lifestealPercent"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "effect": {
+                      "const": "leech"
+                    }
+                  },
+                  "required": [
+                    "effect"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "healPercent"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "effect": {
+                      "const": "regenerate"
+                    }
+                  },
+                  "required": [
+                    "effect"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "minimumCooldown"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "effect": {
+                      "const": "recharge"
+                    }
+                  },
+                  "required": [
+                    "effect"
+                  ]
                 }
               }
             ]
@@ -1774,6 +1843,40 @@
           "minimum": 0,
           "maximum": 9007199254740991,
           "description": "Additional CP per VP of the deficit, only for the trailing side."
+        },
+        "unitValues": {
+          "type": "object",
+          "description": "Optional per-unit economic values. Each omitted purpose falls back to units.<id>.value, preserving existing matches. Keys must name configured unit IDs. Global economy/scoring multipliers still apply.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "bounty": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Base ordinary-combat kill reward."
+              },
+              "withdrawal": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Base value for the homecoming refund formula."
+              },
+              "wrap": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Base UP value for base-to-reserve crossings."
+              },
+              "attrition": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "Base VP loss for a casualty."
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "required": [

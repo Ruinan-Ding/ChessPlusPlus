@@ -5,7 +5,7 @@ from django.test import SimpleTestCase
 
 from game.engine.ability_rules import initial_state
 from game.engine.board import HexBoard
-from game.engine.config_loader import DEFAULT_CONFIG
+from game.testsuite.balance_fixtures import balance_config
 from game.engine.economy import unit_points_of
 from game.engine.game_logic import resolve_heal, strike_damage
 from game.engine.move_validator import get_legal_moves
@@ -16,7 +16,7 @@ from game.engine.unit_stats import cap_unit, ranked_unit, unit_stats
 
 class UnitStatLimitTests(SimpleTestCase):
     def setUp(self):
-        self.config = copy.deepcopy(DEFAULT_CONFIG)
+        self.config = balance_config()
         self.config['setup'] = {'white': {}, 'black': {}}
         self.config['units']['capped'] = {
             'hp': 98, 'move': 95, 'attack': [98, 150], 'attackRange': 2,

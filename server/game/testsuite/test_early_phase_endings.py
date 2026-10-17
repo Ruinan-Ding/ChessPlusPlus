@@ -1,10 +1,9 @@
-import copy
 from types import SimpleNamespace
 
 from django.test import SimpleTestCase
 
 from game.consumers import _settle_hand_over
-from game.engine.config_loader import DEFAULT_CONFIG
+from game.testsuite.balance_fixtures import balance_config
 from game.engine.board import HexBoard
 from game.engine.game_logic import defeated_sides
 from game.engine.scoring import bank_ended_phases, capture_zones, schedule_ending
@@ -12,9 +11,9 @@ from game.engine.scoring import bank_ended_phases, capture_zones, schedule_endin
 
 class EarlyPhaseEndingsTests(SimpleTestCase):
     def setUp(self):
-        self.config = copy.deepcopy(DEFAULT_CONFIG)
-        self.home = next(z['center'] for z in capture_zones(11) if z['owner'] == 'white')
-        self.enemy_home = next(z['center'] for z in capture_zones(11) if z['owner'] == 'black')
+        self.config = balance_config()
+        self.home = next(z['center'] for z in capture_zones(11, self.config) if z['owner'] == 'white')
+        self.enemy_home = next(z['center'] for z in capture_zones(11, self.config) if z['owner'] == 'black')
 
     def unit(self, id, color, hp=12):
         return {'unit_id': id, 'color': color, 'hp': hp, 'max_hp': hp}

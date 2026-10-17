@@ -130,7 +130,7 @@ UNIT_EFFECT_FIELDS = {
     'hop': [],
     'deflect': ['atk'],
     'on-hit-drain': ['atk', 'def', 'turns'],
-    'regenerate': [],
+    'regenerate': ['healPercent'],
     'intimidate': ['atk', 'def', 'mov', 'turns', 'radius'],
     'persuade': ['atk', 'def', 'mov', 'turns', 'radius'],
     'capture': [],
@@ -147,7 +147,7 @@ UNIT_EFFECT_FIELDS.update({
     'charge': ['cost', 'cooldown', 'turns'],
     'control': ['cost', 'cooldown', 'turns', 'radius'],
     'nullify': ['cost', 'cooldown', 'turns'],
-    'leech': ['cost', 'cooldown', 'turns', 'atk', 'def'],
+    'leech': ['cost', 'cooldown', 'turns', 'atk', 'def', 'lifestealPercent'],
     'call': ['cost', 'cooldown', 'turns', 'heal', 'atk', 'def', 'mov', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius'],
 })
 
@@ -157,7 +157,7 @@ PATH_EFFECT_FIELDS = {
     'offensive-power': ['atk', 'hel', 'minVet'],
     'mobility-economy': ['mov', 'baseMov', 'costReduction', 'minimumCost', 'minVet'],
     'promote': ['cost', 'cooldown', 'uses', 'stars'],
-    'recharge': ['cost', 'cooldown', 'uses', 'recharge', 'refundMultiplier'],
+    'recharge': ['cost', 'cooldown', 'uses', 'recharge', 'refundMultiplier', 'minimumCooldown'],
     'hex-sap': ['cost', 'cooldown', 'uses', 'turns', 'setAtk', 'splashAtk', 'setHel', 'splashHel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel'],
     'hex-cleave': ['cost', 'cooldown', 'uses', 'damage', 'splashDamage', 'splashRange', 'heal'],
     'hex-trap': ['cost', 'cooldown', 'uses', 'turns', 'splashMov', 'splashRange', 'outerMov'],
@@ -175,6 +175,7 @@ PATH_TARGETS = {
 
 ABILITY_NUMBERS = (
     ('baseMov', 0), ('costReduction', 0), ('minimumCost', 1),
+    ('lifestealPercent', 0), ('healPercent', 0), ('minimumCooldown', 0),
     ('cost', 0), ('cooldown', 0), ('turns', 1), ('uses', 1),
     ('mov', None), ('atk', None), ('def', None), ('damage', 0), ('heal', 0), ('points', 0),
     ('up', 0), ('enemyDamage', 0), ('enemyAtk', None), ('enemyDef', None), ('enemyMov', None), ('radius', 1), ('minVet', 0),
@@ -258,13 +259,18 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                     errors.append(f'{at}.effect is unknown')
                 if entry.get('target') != PATH_TARGETS.get(entry.get('effect') if isinstance(entry.get('effect'), str) else '', 'enemy' if entry.get('effect') == 'control' else 'friendly'):
                     errors.append(f'{at}.target must be friendly for a unit passive')
-                for field in ('cost', 'cooldown', 'turns', 'uses', 'mov', 'atk', 'def', 'damage', 'heal', 'points', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius', 'minVet', 'stars', 'recharge', 'refundMultiplier', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'hel', 'setHel', 'splashHel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov', 'baseMov', 'costReduction', 'minimumCost', 'battlefieldActions'):
+                for field in ('cost', 'cooldown', 'turns', 'uses', 'mov', 'atk', 'def', 'damage', 'heal', 'points', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius', 'minVet', 'stars', 'recharge', 'refundMultiplier', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'hel', 'setHel', 'splashHel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov', 'baseMov', 'costReduction', 'minimumCost', 'battlefieldActions', 'lifestealPercent', 'healPercent', 'minimumCooldown'):
                     if field in entry:
                         if field not in (EFFECT_FIELDS.get(entry['effect'], ()) if isinstance(entry['effect'], str) else ()):
                             errors.append(f'{at}.{field} does nothing on a unit passive')
-                        elif type(entry[field]) is not int or (field in ('cost', 'cooldown', 'damage', 'heal', 'up', 'enemyDamage', 'minVet', 'recharge', 'refundMultiplier', 'splashDamage', 'setAtk', 'enemyDefSet', 'setHel', 'outerAtk', 'outerHel', 'outerMov', 'battlefieldActions') and entry[field] < 0) or (field in ('turns', 'uses', 'stars', 'splashRange', 'outerRange', 'radius') and entry[field] < 1):
+                        elif type(entry[field]) is not int or (field in ('cost', 'cooldown', 'damage', 'heal', 'up', 'enemyDamage', 'minVet', 'recharge', 'refundMultiplier', 'splashDamage', 'setAtk', 'enemyDefSet', 'setHel', 'outerAtk', 'outerHel', 'outerMov', 'battlefieldActions', 'lifestealPercent', 'healPercent', 'minimumCooldown') and entry[field] < 0) or (field in ('turns', 'uses', 'stars', 'splashRange', 'outerRange', 'radius') and entry[field] < 1):
                             errors.append(f'{at}.{field} must be an integer')
             effect = entry.get('effect') if isinstance(entry.get('effect'), str) else ''
+            for field, required in (('lifestealPercent', 'leech'), ('healPercent', 'regenerate'), ('minimumCooldown', 'recharge')):
+                if field in entry and effect != required:
+                    errors.append(f'{at}.{field} requires {required}')
+                if field in ('lifestealPercent', 'healPercent') and type(entry.get(field)) is int and entry[field] > 100:
+                    errors.append(f'{at}.{field} must be between 0 and 100')
             if 'refundMultiplier' in entry and effect != 'recharge':
                 errors.append(f'{at}.refundMultiplier requires Recharge')
             if any(field in entry for field in ('baseMov', 'costReduction', 'minimumCost')) and effect != 'mobility-economy':

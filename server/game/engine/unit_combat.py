@@ -43,14 +43,15 @@ def exchange(attacker, defender, distance, config, abilities, counters=True, tar
     countered = counters and section_of(config, 'combat')['counterattacks'] and target_hp > 0 and not carries(buffs.get(attacker.get('uid')), 'nullify') and attack_allowed(
         defender, distance, config, abilities, True, target_key)
     counter = strike(defender, attacker, distance, config, abilities, True, source_key=target_key, target_key=source_key) if countered else 0
-    leech = carries(buffs.get(attacker.get('uid')), 'leech')
-    healed_hp = min(attacker.get('max_hp', 99), attacker['hp'] + min(defender['hp'], damage)) if leech else attacker['hp']
+    leech = next((e.get('lifestealPercent', 100) for e in reversed(buffs.get(attacker.get('uid'), {}).get('effects', []))
+                  if e.get('effect') == 'leech'), 0)
+    healed_hp = min(attacker.get('max_hp', 99), attacker['hp'] + min(defender['hp'], damage) * leech // 100)
     leech_heal = healed_hp - attacker['hp']
     attacker_hp = max(0, healed_hp - counter)
     second_strike = bool(countered and attacker_hp > 0 and carries(buffs.get(attacker.get('uid')), 'charge'))
     second = strike(attacker, defender, distance, config, abilities, target_base=target_base, source_key=source_key, target_key=target_key) if second_strike else 0
     if leech and second_strike:
-        healed = min(attacker.get('max_hp', 99), attacker_hp + min(target_hp, second)) - attacker_hp
+        healed = min(attacker.get('max_hp', 99), attacker_hp + min(target_hp, second) * leech // 100) - attacker_hp
         attacker_hp += healed
         leech_heal += healed
     target_hp = max(0, target_hp - second)

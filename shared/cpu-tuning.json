@@ -1,0 +1,113 @@
+{
+  "profiles": {
+    "easy": {
+      "seconds": 0.5,
+      "beam": 8,
+      "depth": 1
+    },
+    "normal": {
+      "seconds": 2.0,
+      "beam": 16,
+      "depth": 2
+    },
+    "hard": {
+      "seconds": 5.0,
+      "beam": 32,
+      "depth": 4
+    }
+  },
+  "position": {
+    "reserveDeployment": 0.65,
+    "baseDeployment": 0.25,
+    "unitValue": 0.45,
+    "healthValue": 0.55,
+    "attack": 1.4,
+    "defense": 0.45,
+    "movement": 0.4,
+    "healing": 1.4,
+    "veterancy": 3,
+    "overtimeRetreat": 2,
+    "overtimeAttack": 12,
+    "overtimeDefense": 2,
+    "goalDistance": 15,
+    "goalApproach": 1.2,
+    "enemyApproach": 1.2,
+    "panelDistanceCap": 25,
+    "panelDistance": 0.3,
+    "cleaveDamage": 1,
+    "chargeDamage": 1,
+    "attackDrain": 4,
+    "tauntRadius": 2,
+    "tauntProtection": 15,
+    "commanderThreat": 10000000.0,
+    "unitThreatValue": 8,
+    "unitThreatAttack": 2,
+    "commanderIncomingDamage": 8,
+    "commanderCriticalHealth": 0.55,
+    "commanderCriticalPenalty": 2000,
+    "enemyIncomingDamage": 0.5,
+    "commanderHealth": 500,
+    "commanderImmediateDeath": 10000,
+    "phasePoints": 7,
+    "abilityMovement": 2,
+    "abilityHealing": 2,
+    "abilityDamage": 3,
+    "abilityBase": 1,
+    "abilityEfficiency": 8,
+    "cp": 0.025,
+    "pathUnit": 3,
+    "points": 0.025,
+    "unitPoints": 0.1,
+    "bankPoints": 5,
+    "pendingResult": 1000000.0
+  },
+  "movement": {
+    "goalDistance": 1,
+    "attackTarget": 3,
+    "commanderTarget": 10
+  },
+  "candidate": {
+    "targetMissingHp": 1,
+    "targetAttack": 1,
+    "targetVeterancy": 2,
+    "targetEnemyDistance": 1,
+    "areaCentre": 3,
+    "areaOuter": 1,
+    "panelWrap": 20,
+    "panelDistance": 1,
+    "boardEntry": 30,
+    "attackDamage": 2,
+    "counterDamage": 1,
+    "commanderKill": 100000,
+    "healMissingHp": 1,
+    "commanderAttack": 1000,
+    "withdrawalRefund": 1,
+    "searchAttackDamage": 3,
+    "searchCounterDamage": 1,
+    "captureGain": 10
+  },
+  "limits": {
+    "abilityTargets": 3,
+    "areaCentres": 4,
+    "panelMoves": 3,
+    "boardEntries": 4,
+    "destinations": 4,
+    "commanderSafeDestinations": 2,
+    "withdrawals": 2,
+    "commanderMoves": 6,
+    "minimumGroupCandidates": 4,
+    "maxSteps": 12,
+    "finishedTurns": 4,
+    "replyTurns": 3,
+    "deepReplyTurns": 4
+  },
+  "search": {
+    "ownTurnFraction": 0.6,
+    "preparationFraction": 0.25,
+    "replySeconds": 0.5,
+    "deepReplyDivisor": 2,
+    "continuationSeconds": 0.3,
+    "minimumReplySeconds": 0.01,
+    "minimumContinuationSeconds": 0.08
+  }
+}

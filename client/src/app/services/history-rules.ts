@@ -14,7 +14,7 @@ import { sectionOf } from './game-rules';
  * there; these keep a solo game honest about the same rules.
  */
 
-import { activeVet, kitActive, capStat, capUnit, rankedUnit, unitPassive } from './unit-stats';
+import { activeVet, kitActive, capStat, capUnit, rankedUnit, unitPassive, unitStats } from './unit-stats';
 import { controlledUnit, controlsAt } from './unit-control';
 import { BASE_PANELS, isInsideBoard, panelOfHex } from './hex-rules';
 import { phasesOf, PLIES_PER_TURN, scoringPhases, phaseStartTurn, movesPerTurn, isInitialization } from './phases';
@@ -309,17 +309,25 @@ export function regenerationHeals(config: any, board: Record<string, any>, histo
   return healVeterans(config, board, history, ply, unit => {
     return unit.color === color
     && unitPassive(unit.unit_id, config, activeVet(unit, unit.panel, config))?.effect === 'regenerate';
-  }, 'regenerationHeal');
+  }, 'regenerationHeal', unit => Math.floor(healingMaximum(unit, config)
+    * (unitPassive(unit.unit_id, config, activeVet(unit, unit.panel, config))?.healPercent ?? 100) / 100));
+}
+
+// Older records can omit max_hp; both engines recover the active kit's capped
+// configured maximum rather than treating a wounded current HP as that maximum.
+function healingMaximum(unit: any, config: any): number {
+  return capStat(unit.max_hp ?? unitStats(unit.unit_id, config, activeVet(unit, unit.panel, config)).hp ?? unit.hp);
 }
 
 function healVeterans(config: any, board: Record<string, any>, history: Move[], ply: number,
-  eligible: (unit: any, at: string) => boolean, mark: string): Move[] {
+  eligible: (unit: any, at: string) => boolean, mark: string, amount?: (unit: any) => number): Move[] {
   const radius = config?.board?.radius ?? 11;
   const orientation = config?.board?.orientation ?? 'edge-up';
   for (const [at, raw] of Object.entries(board)) {
     const unit = capUnit(raw); board[at] = unit;
     if (unit.hp > 0 && eligible(unit, at)) {
-      board[at] = { ...unit, hp: capStat(unit.max_hp ?? config?.units?.[unit.unit_id]?.hp ?? unit.hp) };
+      const maximum = healingMaximum(unit, config);
+      board[at] = { ...unit, hp: Math.min(maximum, unit.hp + (amount ? amount(unit) : maximum)) };
     }
   }
   const panels = new Map<string, { at: string; unit: any; panel: string }>();
@@ -351,14 +359,16 @@ function healVeterans(config: any, board: Record<string, any>, history: Move[], 
   for (const { at, unit: snapshot, panel } of panels.values()) {
     const unit = controlledUnit(rankedUnit({ ...snapshot, panel }, config,
       unitVeterancy(snapshot.uid, at || '0,0', history, ply, radius, orientation, config), kitActive({ ...snapshot, panel }, config)), controlsAt(history, ply), ply);
-    const full = unit.max_hp ?? config?.units?.[unit.unit_id]?.hp ?? unit.hp;
+    const full = healingMaximum(unit, config);
     if (!panel || unit.hp <= 0 || unit.hp >= full
         || !eligible(unit, at || '0,0')) continue;
+    const hp = Math.min(full, unit.hp + (amount ? amount(unit) : full));
+    if (hp === unit.hp) continue;
     heals.push({
       from: '', to: '', unit_id: unit.unit_id, color: unit.color, turn: ply,
       captured: null, attacked: false, damage_dealt: 0, moved: false,
       defender_eliminated: false, intoPanel: true, panelEffect: true,
-      [mark]: true, unit, defenderHp: full, panel,
+      [mark]: true, unit, defenderHp: hp, panel,
     });
   }
   return heals;

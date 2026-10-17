@@ -150,17 +150,18 @@ def capture_score(claims: Dict[str, str], color: str, radius: int, config=None) 
     return sum(worth.get(key, 0) for key, owner in claims.items() if owner == color)
 
 
-def unit_value(config: Optional[Dict[str, Any]], unit_id: Any) -> int:
+def unit_value(config: Optional[Dict[str, Any]], unit_id: Any, purpose: Optional[str] = None) -> int:
     """
-    What a unit is worth, by its config ``value``; 0 for no unit, or one the
-    config has no value for. The one reading of it - a kill's pay, a death's
-    cost and a walk home's refund all go through here. Mirrors ``unitValue``
-    in match-score.ts.
+    Read the base material value or an independent economy value for a purpose.
+    Missing overrides retain the unit's value; an explicit zero remains zero.
+    All transaction consumers share this lookup so custom match values reach
+    kill pay, attrition, withdrawal and wrap prices alike. Mirrors unitValue.
     """
     if not unit_id:
         return 0
     units = (config or {}).get('units') or {}
-    return int((units.get(unit_id) or {}).get('value') or 0)
+    overrides = section_of(config, 'economy').get('unitValues', {}).get(unit_id, {}) if purpose else {}
+    return int(overrides.get(purpose, (units.get(unit_id) or {}).get('value', 0)) or 0)
 
 
 def phase_total(cap: int, deaths: int, multiplier: int, config=None) -> int:
@@ -194,8 +195,8 @@ def casualty_zone(move):
 def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
               color: str, phase: Optional[int] = None) -> int:
     """
-    What *color*'s losses have cost it: the ``value`` of every unit of its that
-    died, in *phase* alone when one is named. A loss counts against the phase
+    What *color*'s losses have cost it: each dead unit's configured attrition
+    value, in *phase* alone when one is named. A loss counts against the phase
     it happened in and no other, so summing the phases never charges one twice.
     The defender belongs to whoever was not moving; a counter-attack kills the
     mover's own unit.
@@ -213,11 +214,11 @@ def deaths_of(config: Dict[str, Any], history: Iterable[Dict[str, Any]],
             if not isinstance(turn, int) or phase_index_at(turn, config=config) != phase:
                 continue
         if casualty_zone(move) in settings['deathZones'] and (move.get('abilityDeath') or {}).get('color') == color:
-            total += unit_value(config, move['abilityDeath'].get('unit_id'))
+            total += unit_value(config, move['abilityDeath'].get('unit_id'), 'attrition')
         if casualty_zone(move) in settings['deathZones'] and move.get('defender_eliminated') and move.get('color') != color:
-            total += unit_value(config, move.get('captured'))
+            total += unit_value(config, move.get('captured'), 'attrition')
         if 'battlefield' in settings['deathZones'] and move.get('attacker_eliminated') and move.get('color') == color:
-            total += unit_value(config, move.get('unit_id'))
+            total += unit_value(config, move.get('unit_id'), 'attrition')
     return total * settings['deathCostMultiplier']
 
 

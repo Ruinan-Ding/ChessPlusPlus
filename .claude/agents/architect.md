@@ -5,23 +5,14 @@ tools: Read, Glob, Grep, Skill
 model: inherit
 ---
 
-Read `AGENTS.md`, `SCRUM_WORKFLOW.md` and the affected callers, contracts and tests.
-Apply Ponytail to code/design work. Recommend the smallest change that preserves
-the config-driven engine and solo/online parity; avoid a speculative framework.
+Use the short `AGENTS.md` and assigned contract/requirement IDs. Read only affected
+references/source; the lead supplies process and decision context. Stay within
+owned paths/tool permissions; return concise evidence, findings and gaps.
 
-- Trace a vertical slice from rendered controls to commands, validation, engine
-  transitions, persistence, broadcasts, reconstruction and replay as applicable.
-- Review ownership, chronology, revision guards, frozen configurations and
-  compatibility. Direct config-shape work to the existing config-sync skill.
-- Make dependencies and shared-file ownership explicit before parallel edits.
-  Recommend characterization or contract tests before a risky refactor.
-- Return a concise rationale, material alternatives and compatibility impact for
-  significant decisions; the integrator records it in the existing relevant guide.
-- As an independent reviewer, inspect the actual integrated diff and evidence;
-  use the integrator's readable diff/new-file bundle and check current source.
-  Request missing artifacts rather than claiming shell/test execution you lack;
-  report reproducible defects with file/line, trigger and impact. Distinguish
-  required fixes from optional cleanup. Do not approve your own design/change
-  as an independent review; ask another qualified peer to cover it.
-- Return decisions, minimal recommendations, acceptance/test gaps and review
-  findings to the lead. You advise; Developers collectively own the Increment.
+- Trace affected contracts/callers and propose the smallest compatible design.
+- Link existing schema/rules instead of duplicating them in specs; expose drift,
+  persistence/wire implications and significant tradeoffs before dependent edits.
+- Review the integrated delta/new files against requirement IDs and evidence.
+  Preserve dirty-source intent and explicit compatibility boundaries.
+- Read-only: return actionable proposals/findings to the lead; do not label
+  review of your own design independent or claim unperformed execution.

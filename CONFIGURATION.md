@@ -159,6 +159,50 @@ magnitude, `{scope}` describes recipients and `{counterProfile}` formats counter
 rings. Shipped descriptions and recognized old default descriptions reflect edited
 values. A custom literal description remains the author's text.
 
+## Additional balance controls
+
+The shipped preset explicitly keeps `lifestealPercent: 100` on Leech,
+`healPercent: 100` on Regenerate, and `minimumCooldown: 1` on Recharge. These
+optional fields preserve those values when absent from an older saved catalogue.
+Percentages are integers from 0 to 100. Leech rounds down the percentage of actual
+HP damage separately for each normal strike; it captures the percentage in the
+cast effect, and the latest active Leech determines it until expiry. Regenerate
+rounds down its percentage of maximum HP on each own turn end, without reviving
+a casualty. Zero disables that healing. Recharge reduces only cooldowns above its
+floor, never increases one already below it, and pays its configured refund for
+members already at or below the floor. A zero floor permits a complete refresh.
+
+`economy.unitValues` holds optional per-unit overrides so related economic effects
+can be balanced independently without duplicating every unit's base value:
+
+```json
+"unitValues": {
+  "pawn": { "bounty": 2, "withdrawal": 8, "wrap": 0, "attrition": 5 }
+}
+```
+
+These are base values before the existing global multipliers and refund formula.
+Each omitted purpose uses that match's `units.<id>.value`; explicit zero is valid.
+Keys must name configured units. The shipped map is empty, preserving the current
+balance. Saved missing, empty and sparse maps stay unchanged when a later preset
+adds overrides. They never inherit a later game's values.
+
+CPU policy is separate in `shared/cpu-tuning.json`: `profiles` controls time, beam
+width and search depth, `position`/`movement` control evaluation, `candidate`
+controls ordering, `limits` controls shortlists, and `search` controls time sharing.
+Existing `CPP_CPU_<DIFFICULTY>_SECONDS` and `_BEAM` overrides still win; `_DEPTH`
+is also supported. The loader rejects missing/unknown keys and invalid numeric bounds; network/request safety
+limits remain fixed. CPU workers load this file at startup, so edits take effect
+on their next normal restart. The CPU's withdrawal ordering and beam shortlist
+use the actual configured refund, including wounds, fees and per-unit overrides.
+Changing CPU policy never changes a saved match's legality or balance snapshot.
+
+Hand-calculated behavior examples use the frozen test-only
+`shared/testing/balance-config.json`; do not regenerate it for routine balance
+edits. Dedicated tests still validate the actual shipped preset. Adjust expected
+behavior and the fixture deliberately when changing a rule, rather than deriving
+expected answers from the implementation or weakening a test after a rebalance.
+
 ## What stays structural
 
 The configuration exposes existing rules and effect numbers, rather than an ability

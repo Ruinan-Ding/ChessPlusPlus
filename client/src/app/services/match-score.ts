@@ -41,8 +41,10 @@ export type ScheduleEndReason = 'points' | 'overtime' | 'phase_result' | 'draw_o
  * cost and a walk home's refund all go through here - mirrored by
  * `unit_value` in scoring.py.
  */
-export function unitValue(config: any, unitId: string | null | undefined): number {
-  return (unitId ? Number(config?.units?.[unitId]?.value) : 0) || 0;
+export function unitValue(config: any, unitId: string | null | undefined, purpose?: 'bounty' | 'withdrawal' | 'wrap' | 'attrition'): number {
+  const values = sectionOf(config, 'economy').unitValues;
+  const override = unitId && purpose && values && Object.hasOwn(values, unitId) ? values[unitId]?.[purpose] : undefined;
+  return override !== undefined ? override : (unitId ? Number(config?.units?.[unitId]?.value) : 0) || 0;
 }
 
 /**
@@ -88,9 +90,9 @@ export function deathsOf(config: any, history: readonly any[] | null | undefined
   for (const move of history ?? []) {
     if (!move) continue;
     if (phase !== undefined && phaseIndexAt(move.turn, config) !== phase) continue;
-    if (settings.deathZones.includes(casualtyZone(move)) && move.abilityDeath?.color === color) total += unitValue(config, move.abilityDeath.unit_id);
-    if (settings.deathZones.includes(casualtyZone(move)) && move.defender_eliminated && move.color !== color) total += unitValue(config, move.captured);
-    if (settings.deathZones.includes('battlefield') && move.attacker_eliminated && move.color === color) total += unitValue(config, move.unit_id);
+    if (settings.deathZones.includes(casualtyZone(move)) && move.abilityDeath?.color === color) total += unitValue(config, move.abilityDeath.unit_id, 'attrition');
+    if (settings.deathZones.includes(casualtyZone(move)) && move.defender_eliminated && move.color !== color) total += unitValue(config, move.captured, 'attrition');
+    if (settings.deathZones.includes('battlefield') && move.attacker_eliminated && move.color === color) total += unitValue(config, move.unit_id, 'attrition');
   }
   return total * settings.deathCostMultiplier;
 }
@@ -211,7 +213,7 @@ export function withdrawalRefund(config: any, unit: any): number {
   const settings = sectionOf(config, 'economy').walkHomeRefund;
   const tiers = settings.veterancy ?? [], rank = unit.vet ?? 0;
   const factors = rank > 0 && rank <= tiers.length ? tiers[rank - 1] : settings;
-  return Math.max(settings.minimum, unitValue(config, unit.unit_id) * factors.valueMultiplier - factors.fee - missingHp * factors.missingHpMultiplier);
+  return Math.max(settings.minimum, unitValue(config, unit.unit_id, 'withdrawal') * factors.valueMultiplier - factors.fee - missingHp * factors.missingHpMultiplier);
 }
 
 /** Price the refund before resolving the destination's rank and HP. */
@@ -236,8 +238,8 @@ export function unitPoints(config: any, history: readonly any[], side: Side): nu
     }
     if (move.withdrawn && (move.refundColor ?? move.color) === side) points += move.refund ?? withdrawalRefund(config, { unit_id: move.unit_id, ...move.unit });
     if (sectionOf(config, 'economy').killPayZones.includes(casualtyZone(move))) {
-      if (move.defender_eliminated && move.color === side) points += unitValue(config, move.captured) * sectionOf(config, 'economy').killPayMultiplier;
-      if (move.attacker_eliminated && move.color === other) points += unitValue(config, move.unit_id) * sectionOf(config, 'economy').killPayMultiplier;
+      if (move.defender_eliminated && move.color === side) points += unitValue(config, move.captured, 'bounty') * sectionOf(config, 'economy').killPayMultiplier;
+      if (move.attacker_eliminated && move.color === other) points += unitValue(config, move.unit_id, 'bounty') * sectionOf(config, 'economy').killPayMultiplier;
     }
   }
   return points;

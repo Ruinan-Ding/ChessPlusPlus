@@ -1,9 +1,10 @@
-# Handoff: ChessPlusPlus, 15 Oct 2026
+# Handoff: ChessPlusPlus, 17 Oct 2026
 
 Updated by Codex from Claude Code's 2 Oct handoff, for the next agent.
-**AGENTS.md is the source of truth** for how this repo works: architecture, the rules the owner
-has decided, and why. Read it first. This note covers only what AGENTS.md does not: where the
-work stands, how this owner likes to work, the machine, and what is open.
+Read the short [AGENTS.md](AGENTS.md) first. Current workflow/spec/evidence:
+[WF-004](specs/WF-004-efficient-sdd.md), checkpoint 6.157. SDD/BDD/TDD is active;
+[PROJECT_RULES.md](PROJECT_RULES.md) holds the preserved detailed technical rules.
+This handoff is a searchable delivery/environment history, not startup context.
 
 This replaces the 2 Oct snapshot of `main`. That note is in the history:
 `git show 7658bb3:CODEX_HANDOFF.md`. The older dev18 note is at `4d5e99f`.
@@ -13,7 +14,10 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
 - **Repo:** https://github.com/Ruinan-Ding/ChessPlusPlus. It is a hex-grid tactics game: a Django
   Channels server in `server/`, an Angular 19 client in `client/`, and the shared config schema in
   `shared/`.
-- **Current branch:** `main`, after the authorized 6.155 merge of `feature/dev24`.
+- **Current branch:** `feature/dev25`, based on clean `a64634d` after 6.155.
+  Work through 6.157 is covered by the owner's 17 Oct commit/push request.
+  [WF-004](specs/WF-004-efficient-sdd.md#publication-request-17-oct) records publication scope;
+  the branch remote and exact-commit Actions run identify published source/results.
   The source branch is retained; it began from synchronized `main` after 6.144
   (12 Oct). Source `feature/configuration` is retained.
   The original rewind/replay/CPU implementation is `64efecd`, "Add solo rewind, portable replay
@@ -38,7 +42,39 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
   and frontend 4200 (PID 23616) stayed running; these are historical process IDs. Backup: `server/backups/db-before-0015-20261011T031130Z.sqlite3`.
   Earlier 0014 migration/backup remains recorded under 6.111. The later 6.139
   backend gameplay/default changes, including 6.140-6.143, are on disk and await its next normal restart.
-  - **Current publication (6.155), 15 Oct:** the owner requested git push/merge.
+  - **Balance configurability (6.156), 16 Oct:** the owner asked to fix the
+    parameterization audit. The shared game config now exposes Leech and
+    regeneration percentages, Recharge's minimum cooldown and sparse per-unit
+    bounty/withdrawal/wrap/attrition values. Defaults preserve the existing
+    balance; omissions retain legacy behavior and saved sparse maps do not
+    inherit later preset overrides. Both engines, validators and displayed rules
+    agree. CPU weights, shortlists, profiles and time sharing live separately in
+    `shared/cpu-tuning.json`, loaded on worker startup. Missing or misspelled keys
+    fail immediately. Both CPU withdrawal ranking stages use actual refunds.
+    Hand-calculated rule examples use `shared/testing/balance-config.json`;
+    actual shipped-preset validation remains in the suites.
+    **593 canonical backend tests, 1,082 client specs, production build, schema/
+    default round-trip and migration drift checks pass.** Altering the shipped
+    pawn's value/HP/veteran HP to 13/17/5 also passes 1,082 client specs and 592
+    backend tests; only the intentional disk-versus-memory equality check is
+    excluded from that backend experiment, never from the normal suite.
+    Rendered controls cover custom Recharge, Undo and reload; two actual ASGI
+    connections verify a free wrap, frozen rules and reconnect. Native Chrome
+    covers real JSON editing/saving, solo start/reload and 320/360/390/1280px.
+    No new layout faults versus `a64634d`; baseline phone detail-panel scrolling
+    and two touching unit-face labels at 320px persist. No template/style changed,
+    so the full layout sweep was not rerun. This is not physical-phone or owner
+    acceptance. Independent implementation reviews found and resolved refund
+    sorting, sparse-map, legacy max-HP and tooltip issues. The final CPU key
+    validation delta and final test-only cleanup received lead review; reviewer
+    usage limits prevented the requested independent follow-up.
+    Evidence: Windows Temp `cpp-balance-20261016-y1q2tb46/RESULTS.md`, source
+    manifest, logs and paired baseline/current screenshots. See CONFIGURATION's
+    additional controls and SCRUM_BACKLOG's BAL-001. Private 4201/4202 test servers
+    were stopped; owner services and application database were untouched. No
+    migration, dependency, CI job, commit/push/merge, deployment or numbered
+    balance release. Stat/rank caps stay 99/3; revision stays null; WRITTEN.
+  - **Last publication (6.155), 15 Oct:** the owner requested git push/merge.
     Commit `3df74dc` ("Refactor game orchestration and add Claude Scrum workflow")
     publishes all verified work through 6.154 on `feature/dev24`. Both jobs pass
     in [source CI](https://github.com/Ruinan-Ding/ChessPlusPlus/actions/runs/38826276661),

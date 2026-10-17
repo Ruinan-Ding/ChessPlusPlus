@@ -1179,14 +1179,16 @@ def panel_move_targets(
     A walk stays inside the unit's own panel. A **base** unit may also take the
     wrap - out over its base's tip and onto its reserve's tip across the board -
     while the schedule has it open. The wrap costs one step on top of reaching
-    the tip, and the unit's `value` in points; every hex reached by making it
-    carries that price, because the price is for the crossing, not the hex.
+    the tip, and its configured wrap value times the global price multiplier;
+    every hex reached by making it carries that price, because the price is
+    for the crossing, not the hex.
 
     Out of MOV is judged before out of money, as the client judges it: telling
     someone to save up for a crossing they could not have reached anyway points
     at the wrong thing.
     """
     from .phases import is_wrap_open
+    from .scoring import unit_value
 
     moves = list(history or [])
     occupancy = panel_occupancy(config, radius, moves, orientation, ply=ply, ability_state=ability_state)
@@ -1234,8 +1236,7 @@ def panel_move_targets(
     left = budget - spent
     if left < 0:
         return out
-    price = ((config.get('units') or {}).get(unit.get('unit_id')) or {}).get('value', 0) or 0
-    price = int(price * section_of(config, 'economy')['wrapPriceMultiplier'])
+    price = unit_value(config, unit.get('unit_id'), 'wrap') * section_of(config, 'economy')['wrapPriceMultiplier']
     if price > points:
         return out
     if not far:

@@ -8,6 +8,7 @@ from game.engine.config_loader import DEFAULT_CONFIG, build_initial_board, load_
 from game.engine.game_rules import PREVIOUS_CONFIG, section_of, migrate_config
 from game.engine import phases, scoring, economy, panels, game_logic
 from game.engine.unit_stats import active_vet, ranked_unit, unit_stats
+from game.testsuite.balance_fixtures import balance_config
 
 FIXTURES = Path(__file__).resolve().parents[3] / 'client/src/app/services'
 
@@ -100,10 +101,11 @@ class GameRulesTests(SimpleTestCase):
         del raw['abilities']
         saved = load_config(raw)
         self.assertEqual(saved['abilities'], DEFAULT_CONFIG['abilities'])
-        with patch.dict(DEFAULT_CONFIG['abilities']['catalogue']['warcry'], atk=99):
-            self.assertEqual(load_config(saved)['abilities']['catalogue']['warcry']['atk'], 8)
+        original_atk = saved['abilities']['catalogue']['warcry']['atk']
+        with patch.dict(DEFAULT_CONFIG['abilities']['catalogue']['warcry'], atk=original_atk + 1):
+            self.assertEqual(load_config(saved)['abilities']['catalogue']['warcry']['atk'], original_atk)
         self.assertEqual(load_config(raw)['combat'], DEFAULT_CONFIG['combat'])
-        self.assertEqual(load_config(raw)['economy']['pointsAtStart'], 10)
+        self.assertEqual(load_config(raw)['economy']['pointsAtStart'], DEFAULT_CONFIG['economy']['pointsAtStart'])
         raw['ruleset']['revision']=1
         self.assertEqual(load_config(raw)['ruleset']['revision'],1)
 
@@ -131,7 +133,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual([phases.moves_per_turn(17,z,config) for z in ('battlefield','reserve','base')],[3,4,5])
 
     def test_four_phases_and_four_overtime_stages_have_no_three_phase_assumption(self):
-        config = copy.deepcopy(DEFAULT_CONFIG)
+        config = balance_config()
         config['match']['phases'].append(copy.deepcopy(config['match']['phases'][-1]))
         config['match']['overtime']['stages'].append(copy.deepcopy(config['match']['overtime']['stages'][-1]))
         config = load_config(config)
@@ -143,7 +145,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual(scoring.schedule_ending(bank,125,config),('black','overtime'))
 
     def test_per_match_capture_layout_and_empty_zones_do_not_share_answers(self):
-        one = copy.deepcopy(DEFAULT_CONFIG);two=copy.deepcopy(DEFAULT_CONFIG)
+        one = balance_config();two=balance_config()
         one['scoring']['zones']=[{'kind':'middle','owner':'','center':[0,0],'radius':0,'worth':9}]
         two['scoring']['zones']=[]
         self.assertEqual(scoring.capture_zone_values(11,one),{'0,0':9})
@@ -151,7 +153,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual(scoring.capture_zone_values(11,one),{'0,0':9})
 
     def test_veteran_refunds_price_original_hp_then_reset_rank_and_kit(self):
-        config = copy.deepcopy(DEFAULT_CONFIG)
+        config = balance_config()
         for rank, healthy, wounded in [(0, 11, 6), (1, 12, 7), (2, 12, 12), (3, 36, 36)]:
             unit = {'unit_id': 'pawn', 'color': 'white', 'uid': 'p', 'hp': 12, 'max_hp': 12, 'vet': rank}
             self.assertEqual(economy.withdrawal_refund(config, unit), healthy)
@@ -167,7 +169,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual(economy.withdrawal_refund(config, unit), 48)
 
     def test_withdrawal_reset_discards_old_promotions_and_earns_only_later_awards(self):
-        config = copy.deepcopy(DEFAULT_CONFIG)
+        config = balance_config()
         history = [{'turn': 9, 'promotion': {'uid': 'p', 'vet': 3}},
                    {'turn': 28, 'from': '3,8', 'to': '-12,9', 'withdrawn': True,
                     'veterancyReset': True, 'unit': {'uid': 'p', 'vet': 0}},
@@ -179,7 +181,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual(panels.unit_veterancy('p', '11,1', history, 71, 11, config=config), 3)
 
     def test_old_refund_config_migration_retains_its_tiers_and_stars(self):
-        config = copy.deepcopy(DEFAULT_CONFIG)
+        config = balance_config()
         del config['economy']['walkHomeRefund']['veterancy']
         del config['economy']['walkHomeRefund']['resetVeterancy']
         saved = migrate_config(config)
@@ -190,7 +192,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual(economy.withdrawn_unit(saved, unit, 'bl')['vet'], 3)
 
     def test_configured_refund_fees_damage_and_price_multiplier(self):
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         config['economy']['walkHomeRefund']={'valueMultiplier':2,'fee':3,'missingHpMultiplier':2,'minimum':2}
         unit={'unit_id':'pawn','color':'white','hp':7,'max_hp':12}
         self.assertEqual(economy.withdrawal_refund(config,unit),11)
@@ -198,7 +200,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual(economy.withdrawal_refund(config,unit),2)
 
     def test_configured_counter_and_ranged_floor(self):
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         config['combat'].update(counterattacks=False,minRangedDamage=3)
         self.assertEqual(game_logic.ranged_damage(4,4,config),3)
         board=build_initial_board(config)
@@ -209,7 +211,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual(board.get(0,0)['hp'],12)
 
     def test_configured_veterancy_awards_and_zero_star_unlock(self):
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         config['veterancy'].update(startingRank=1,award=2,statUnlock=0,passiveUnlock=1,abilityUnlock=2,kitZones=['reserve'])
         self.assertEqual(panels.unit_veterancy('p','0,0',[],7,11,config=config),3)
         unit={'unit_id':'pawn','color':'white','uid':'p','hp':12,'max_hp':12,'vet':1,'panel':'br','veterancyHpActive':False}
@@ -223,7 +225,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual(panels.unit_veterancy('p','0,0',[],71,11,config=config),1)
 
     def test_disabled_halftime_and_postmatch_use_the_next_phase_boundary(self):
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         config['match']['opening']['turns']=1
         config['stageRules']['opening']['moves']={z:[1] for z in ('battlefield','reserve','base')}
         config['match']['phases']=[dict(config['match']['phases'][0],turns=2,halftimeAfter=0,postmatchTurns=0)]
@@ -241,7 +243,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertEqual(panels.unit_veterancy('p','0,0',[],7,11,config=config),1)
 
     def test_each_panel_healing_rate_and_battlefield_exclusion(self):
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         config['panels'].update(baseHealPerTurn=2,reserveHealPerTurn=3)
         self.assertEqual(panels.mended_in_base('white',1,True,[(5,False),(7,None)],9,config),5)
         self.assertEqual(panels.mended_since('white',1,5,config),2)
@@ -250,7 +252,7 @@ class GameRulesTests(SimpleTestCase):
         from types import SimpleNamespace
         from game.engine.ability_rules import AbilityContext, initial_state, actions_used
         from game.engine.board import parse_coord, coord_key, HEX_DIRECTIONS
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         config['veterancy'].update(startingRank=3,kitZones=['battlefield','reserve','base'])
         config['economy']['upAtStart']=100
         config['units']['bishop']['move']=0
@@ -274,7 +276,7 @@ class GameRulesTests(SimpleTestCase):
     def test_early_unlock_and_panel_source_apply_aura_with_configured_radius(self):
         from types import SimpleNamespace
         from game.engine.ability_rules import AbilityContext, initial_state
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         config['veterancy'].update(passiveUnlock=0,kitZones=['battlefield','base','reserve'])
         config['setup']={'white':{'0,11':'king','-12,11':'queen','-10,11':'pawn'},'black':{'0,-11':'king'}}
         config['abilities']['catalogue']['persuade']['radius']=2
@@ -290,7 +292,7 @@ class GameRulesTests(SimpleTestCase):
         self.assertNotIn('w-10,11',context.data['buffs'])
 
     def test_phase_income_rates_are_independent_of_neighboring_phases(self):
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         phase=config['match']['phases'][0]
         phase.update(pointsBeforeHalftime=4,pointsPerTurn=7,postmatchPointsPerTurn=9,grant=0)
         before=phases.turn_points_by('white',6,config)
@@ -300,7 +302,7 @@ class GameRulesTests(SimpleTestCase):
 
     def test_non_finite_numbers_are_refused_before_geometry_or_economy(self):
         for value in (float('nan'),float('inf'),float('-inf')):
-            config=copy.deepcopy(DEFAULT_CONFIG);config['scoring']['layout']['columnRatio']=value
+            config=balance_config();config['scoring']['layout']['columnRatio']=value
             with self.subTest(value=value),self.assertRaises(ValueError):load_config(config)
 
 
@@ -330,8 +332,62 @@ class ConfiguredMatchLiveTests(TransactionTestCase):
         self.assertEqual(reply,await _receive_until(black,'game_state_update'))
         return await GameState.objects.aget(game_id=game.game_id)
 
+    async def test_optional_balance_snapshot_and_free_wrap_survive_commit_and_reconnect(self):
+        from channels.routing import URLRouter
+        from channels.testing import WebsocketCommunicator
+        from game.engine.game_rules import DEFAULT
+        from game.routing import websocket_urlpatterns
+
+        config = balance_config()
+        config['abilities']['catalogue']['queen-leech']['lifestealPercent'] = 25
+        config['abilities']['catalogue']['regenerate']['healPercent'] = 0
+        config['abilities']['catalogue']['recharge']['minimumCooldown'] = 0
+        config['economy'].update(upAtStart=0, unitValues={'pawn': {'wrap': 0, 'withdrawal': 7}})
+        config['setup'] = {'white': {'0,11': 'king', '-12,1': 'pawn'}, 'black': {'0,-11': 'king'}}
+        game, white, black, snapshot = await self._start_custom_review_match(config)
+        try:
+            self.assertEqual(snapshot['config'], config)
+            # A running room keeps its complete accepted rules when the shipped
+            # balance changes. Sparse entries must not inherit new purposes or
+            # units, and zero must still buy a real crossing with no UP available.
+            later = copy.deepcopy(DEFAULT_CONFIG)
+            later['abilities']['catalogue']['queen-leech']['lifestealPercent'] = 100
+            later['abilities']['catalogue']['regenerate']['healPercent'] = 100
+            later['abilities']['catalogue']['recharge']['minimumCooldown'] = 3
+            later['economy']['unitValues'] = {'pawn': {'wrap': 99, 'bounty': 41}, 'rook': {'attrition': 23}}
+            with patch.dict(DEFAULT_CONFIG, later), patch.dict(DEFAULT, later):
+                state = await self._commit_review_turn(game, white, black, snapshot,
+                    {'type': 'panel_move', 'from': '-12,1', 'to': '11,1'})
+                self.assertEqual(state.config_snapshot, config)
+                crossing = next(move for move in state.move_history if move.get('panelMove'))
+                self.assertEqual((crossing['from'], crossing['to'], crossing['price']), ('-12,1', '11,1', 0))
+                self.assertEqual(economy.unit_points_of('white', state.move_history, state.config_snapshot), 0)
+                await black.send_json_to({'type': 'request_game_state'})
+                peer = await _receive_until(black, 'game_state_update')
+                self.assertEqual(peer['config'], config)
+
+                await white.disconnect()
+                white = WebsocketCommunicator(URLRouter(websocket_urlpatterns), f'/ws/game/{game.game_id}/')
+                await white.connect()
+                await white.send_json_to({'type': 'join_game_room', 'username': 'alice',
+                    'gameId': game.game_id, 'token': 'host-tok'})
+                await _receive_until(white, 'join_game_room_success')
+                await white.send_json_to({'type': 'request_game_state'})
+                restored = await _receive_until(white, 'game_state_update')
+                self.assertEqual(restored['config'], config)
+                self.assertEqual(restored['revision'], state.revision)
+                self.assertEqual(restored['moveHistory'], state.move_history)
+                reserve = panels.panel_occupancy(restored['config'], 11, restored['moveHistory'], ply=restored['turnNumber'])
+                self.assertEqual(reserve['11,1']['unit_id'], 'pawn')
+                self.assertNotIn('-12,1', reserve)
+                saved = await GameState.objects.aget(game_id=game.game_id)
+                self.assertEqual(saved.config_snapshot, config)
+        finally:
+            await white.disconnect()
+            await black.disconnect()
+
     async def test_wounded_withdrawal_retains_activation_in_an_enabled_base(self):
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         config['veterancy'].update(startingRank=1,kitZones=['battlefield','base'])
         config['economy']['walkHomeRefund'].pop('veterancy')
         config['economy']['walkHomeRefund']['resetVeterancy']=False
@@ -353,7 +409,7 @@ class ConfiguredMatchLiveTests(TransactionTestCase):
             await white.disconnect();await black.disconnect()
 
     async def test_zero_refund_withdrawal_commits_and_remains_zero_after_rejoin(self):
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         config['economy']['walkHomeRefund'].update(minimum=0,fee=100)
         config['panels']['baseHealPerTurn']=0
         config['setup']={'white':{'0,11':'king','-11,11':'pawn'},'black':{'0,-11':'king'}}
@@ -374,7 +430,7 @@ class ConfiguredMatchLiveTests(TransactionTestCase):
     async def test_multiplied_wrap_price_is_recorded_and_cannot_be_underfunded(self):
         for available in (24,23):
             with self.subTest(available=available):
-                config=copy.deepcopy(DEFAULT_CONFIG)
+                config=balance_config()
                 config['economy'].update(upAtStart=available,wrapPriceMultiplier=2)
                 config['setup']={'white':{'0,11':'king','-12,1':'pawn'},'black':{'0,-11':'king'}}
                 game,white,black,snapshot=await self._start_custom_review_match(config)
@@ -398,7 +454,7 @@ class ConfiguredMatchLiveTests(TransactionTestCase):
                     await white.disconnect();await black.disconnect()
 
     async def test_normal_heal_uses_base_profile_when_battlefield_kit_is_disabled(self):
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         config['veterancy'].update(startingRank=1,kitZones=[])
         config['stageRules']['opening']['normalHeal']=True
         config['units']['bishop']['veterancy']['heal']=[20,20,20,20]
@@ -416,7 +472,7 @@ class ConfiguredMatchLiveTests(TransactionTestCase):
             await white.disconnect();await black.disconnect()
 
     async def test_start_snapshot_includes_configured_zero_star_panel_aura(self):
-        config=copy.deepcopy(DEFAULT_CONFIG)
+        config=balance_config()
         config['veterancy'].update(passiveUnlock=0,kitZones=['battlefield','base'])
         config['setup']={'white':{'0,11':'king','-12,11':'queen','-11,11':'pawn'},'black':{'0,-11':'king'}}
         game,white,black=await live.CustomConfigLiveIntegrationTests._join_room(self)

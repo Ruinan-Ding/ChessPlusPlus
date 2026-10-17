@@ -9,7 +9,7 @@ import { CommonModule } from '@angular/common';
 import { positionalBonus, attackTiers, captureClaims, captureZones, captureZoneValues, computeAttackZone, computeMoveCosts, canAttack, healingAmount, hexDistanceKeys, hexEffectBand, inHomeRows, isInsideBoard, panelOfHex, BASE_PANELS, HEX_DIRS, PANELS_DEALT } from '../../services/hex-rules';
 import { attacksAllowed, boardMovesPerTurn, movesPerTurn, overtimeTollAt, overtimeTollOver, isEntryOpen, isHomecomingOpen, isInitialization, isOvertime, isWrapOpen, sideOfPly, stageAt, stageRules, turnOf } from '../../services/phases';
 import { passiveStat, statSetting, PathPassive } from '../../services/ability-rules';
-import { withdrawalRefund } from '../../services/match-score';
+import { withdrawalRefund, unitValue } from '../../services/match-score';
 import { kitActive, activeVet, capStat, capUnit, rankedUnit, canReceiveBoost, unitPassive, unitStats } from '../../services/unit-stats';
 import { AudioService } from '../../services/audio.service';
 import { boardMoveUids, panelMoversAt, unitVeterancy } from '../../services/history-rules';
@@ -4137,7 +4137,7 @@ export class GameBoardComponent implements OnChanges, OnInit, OnDestroy, AfterVi
 
   /** Configured UP value charged on a base-to-reserve crossing. */
   private wrapCost(cell: HexCell): number {
-    return (this.config?.units?.[cell.piece?.unit_id ?? '']?.value ?? 0) * sectionOf(this.config, 'economy').wrapPriceMultiplier;
+    return unitValue(this.config, cell.piece?.unit_id, 'wrap') * sectionOf(this.config, 'economy').wrapPriceMultiplier;
   }
 
   /**

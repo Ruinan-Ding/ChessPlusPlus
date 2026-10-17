@@ -1,11 +1,32 @@
-import {
-  isEntryOpen, isHomecomingOpen, isInitialization, isOvertime,
-  isPostmatch, isSetupTurn, isWrapOpen, MILESTONES, noAttackMessage,
-  OVERTIME_FIRST_PLY, OVERTIME_FIRST_TURN, OVERTIME_LAST_TURN, OVERTIME_STAGES,
-  overtimeTollAt, overtimeTollOver, PHASES, phaseAt, phaseIndexAt,
-  stageAt, turnHeading, turnOf, turnPointsBy, phasesOf, overtimeStages,
-} from './phases';
+import * as schedule from './phases';
+import { phasesOf, overtimeStages, turnOf } from './phases';
 import { DEFAULT_GAME_CONFIG } from './config.service';
+import BALANCE_CONFIG from '../../../../shared/testing/balance-config.json';
+
+// The schedule examples pin boundary arithmetic against fixed saved inputs.
+// Production's exported default views are checked separately against the actual
+// shipped preset, so rebalance edits still exercise that public fallback path.
+const PHASES = phasesOf(BALANCE_CONFIG);
+const MILESTONES = schedule.milestones(BALANCE_CONFIG);
+const OVERTIME_STAGES = overtimeStages(BALANCE_CONFIG);
+const OVERTIME_FIRST_PLY = schedule.overtimeFirstPly(BALANCE_CONFIG);
+const OVERTIME_FIRST_TURN = turnOf(OVERTIME_FIRST_PLY);
+const OVERTIME_LAST_TURN = schedule.overtimeLastTurn(BALANCE_CONFIG);
+const isEntryOpen = (ply: number) => schedule.isEntryOpen(ply, BALANCE_CONFIG);
+const isHomecomingOpen = (ply: number) => schedule.isHomecomingOpen(ply, BALANCE_CONFIG);
+const isInitialization = (ply: number) => schedule.isInitialization(ply, BALANCE_CONFIG);
+const isOvertime = (ply: number) => schedule.isOvertime(ply, BALANCE_CONFIG);
+const isPostmatch = (ply: number) => schedule.isPostmatch(ply, BALANCE_CONFIG);
+const isSetupTurn = (ply: number) => schedule.isSetupTurn(ply, BALANCE_CONFIG);
+const isWrapOpen = (ply: number) => schedule.isWrapOpen(ply, BALANCE_CONFIG);
+const noAttackMessage = (ply: number) => schedule.noAttackMessage(ply, BALANCE_CONFIG);
+const overtimeTollAt = (ply: number) => schedule.overtimeTollAt(ply, BALANCE_CONFIG);
+const phaseAt = (ply: number) => schedule.phaseAt(ply, BALANCE_CONFIG);
+const phaseIndexAt = (ply: number) => schedule.phaseIndexAt(ply, BALANCE_CONFIG);
+const stageAt = (ply: number) => schedule.stageAt(ply, BALANCE_CONFIG);
+const turnHeading = (ply: number) => schedule.turnHeading(ply, BALANCE_CONFIG);
+const overtimeTollOver = (ply: number, turns: number) => schedule.overtimeTollOver(ply, turns, BALANCE_CONFIG);
+const turnPointsBy = (color: 'white' | 'black', ply: number) => schedule.turnPointsBy(color, ply, BALANCE_CONFIG);
 
 /**
  * A full turn is white's hand-over and black's. The engine counts one per
@@ -24,8 +45,16 @@ const turnsWhere = (open: (ply: number) => boolean) =>
  * pinning: change a phase's length and every countdown after it moves.
  */
 describe('the match schedule', () => {
+  it('exports views of the actual shipped schedule', () => {
+    expect(schedule.PHASES).toEqual(phasesOf(DEFAULT_GAME_CONFIG));
+    expect(schedule.MILESTONES).toEqual(schedule.milestones(DEFAULT_GAME_CONFIG));
+    expect(schedule.OVERTIME_STAGES).toEqual(overtimeStages(DEFAULT_GAME_CONFIG));
+    expect(schedule.OVERTIME_FIRST_PLY).toBe(schedule.overtimeFirstPly(DEFAULT_GAME_CONFIG));
+    expect(schedule.OVERTIME_LAST_TURN).toBe(schedule.overtimeLastTurn(DEFAULT_GAME_CONFIG));
+  });
+
   it('reuses derived schedules and rebuilds them for a new configuration', () => {
-    const config = structuredClone(DEFAULT_GAME_CONFIG);
+    const config = structuredClone(BALANCE_CONFIG);
     const phases = phasesOf(config), overtime = overtimeStages(config);
     expect(phasesOf(config)).toBe(phases); expect(overtimeStages(config)).toBe(overtime);
     const changed = structuredClone(config); changed.match.opening.turns = 1;

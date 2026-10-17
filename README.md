@@ -14,7 +14,7 @@ with the JSON Schema beside it; each side checks a custom config by the same rul
 
 This is the outline. **Every match rule, with its number, is in
 [CONFIG_BLUEPRINT.md](CONFIG_BLUEPRINT.md)** - the owner's checklist - and the reasoning behind
-each one is in [AGENTS.md](AGENTS.md).
+each one is in [PROJECT_RULES.md](PROJECT_RULES.md).
 
 **The board** is a hexagon of radius 11 (397 hexes), squared off with four corner panels: each
 player's **base** and **reserve**. Coordinates are axial `q,r`; a hex is on the battlefield when
@@ -145,7 +145,7 @@ the caster's turn and the opponent's, expiring at the caster's next turn. Sap, W
 Mire each require one selected enemy on the battlefield or in green reserve. Red-base
 units are ineligible; only the selected unit receives the effect and keeps it if it
 returns to base before expiry.
-Costs, cooldowns and amounts are in [AGENTS.md](AGENTS.md#ability-panels). Effects on
+Costs, cooldowns and amounts are in [PROJECT_RULES.md](PROJECT_RULES.md#ability-panels). Effects on
 multiple recipients animate together as one cast, including in the turn recap.
 Exhausted abilities turn grey; clicking still shows their description and "Used up" status.
 
@@ -267,7 +267,7 @@ rows and cannot attack on the same turn.
 
 The owner's current roster and first-star numbers
 are in [shared/default-config.json](shared/default-config.json), with the earned-star schedule
-and specified kits in [AGENTS.md](AGENTS.md). Vet 2 passives and Vet 3 UP abilities run in
+and specified kits in [PROJECT_RULES.md](PROJECT_RULES.md). Vet 2 passives and Vet 3 UP abilities run in
 solo and authoritative multiplayer, with Undo, cooldowns and reload support;
 Bastion (5 CP) adds +1 DEF while under attack. Onslaught (50 CP) adds +2 ATK
 on initiated strikes, excluding counters, and +2 HEL for existing healers. Sprint
@@ -314,26 +314,23 @@ Mire/Mend 10 regular points. Convert spends 25 CP for 50 UP. CP skill/ultimate c
 are Drain 50/Fortress 250, Cleave 50/Ruin 250 and Trap 50/Blitz 250; Strengthen and
 Recharge each cost 25 CP. The shared configuration supplies these prices; path purchases,
 cooldowns, effects and use limits are unchanged.
-The full costs, cooldowns, scopes and interactions are recorded in [AGENTS.md](AGENTS.md).
+The full costs, cooldowns, scopes and interactions are recorded in [PROJECT_RULES.md](PROJECT_RULES.md).
 
 ## Development workflow
 
-Claude development uses a cross-functional Scrum team with you as Product Owner.
-[SCRUM_WORKFLOW.md](SCRUM_WORKFLOW.md) defines the roles, events, BDD examples,
-TDD cycle, shared Definition of Done and optional future SDD. The
-[backlog](SCRUM_BACKLOG.md) tracks goals and current work without duplicating
-[AGENTS.md](AGENTS.md)'s game rules or the handoff's implementation history.
+Claude development accepts ordinary requests or `/scrum <task>`. The
+[workflow](SCRUM_WORKFLOW.md) automatically turns informal requirements into a
+concise SDD contract, BDD examples and TDD implementation. You remain Product Owner.
+The [backlog](SCRUM_BACKLOG.md) links to the active contract; [AGENTS.md](AGENTS.md)
+is the short operational core and [PROJECT_RULES.md](PROJECT_RULES.md) preserves
+on-demand game/architecture details.
 
-Start a fresh Claude Code session in the repository and run `/scrum <task>`.
-The project supplies nine specialist profiles and enables native experimental
-agent teams in-process; no model or permission override is added. The lead
-selects relevant roles, using subagents or sequential work when appropriate.
-Interactive team support is required for native teammates; non-interactive runs
-use ordinary subagents. This is the project's enterprise-style delivery process;
-organization identity, managed policies and audit retention remain a separate
-administrative setup. See the workflow for source ownership, integration and
-honest verification when a capability is unavailable. Sprint dates and the next
-product priority remain for first planning; no Sprint is claimed as completed.
+All nine senior profiles remain available. The lead handles small tasks; relevant
+specialists and independent review are used where useful and runtime policy permits.
+Workers receive bounded context and explicit file ownership; model/permission settings
+are unchanged. Native teams need an interactive session. Project instructions do
+not provision organization identity, audit or retention controls. Sprint dates
+and goals require agreement; technical completion does not authorize publication.
 
 ## Running the Application
 

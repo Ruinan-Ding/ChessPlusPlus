@@ -12,7 +12,7 @@ from django.utils import timezone
 from game.consumers import GameConsumer, _pending_turn_timers
 from game.engine import panels
 from game.engine.board import HEX_DIRECTIONS
-from game.engine.config_loader import DEFAULT_CONFIG
+from game.testsuite.balance_fixtures import balance_config
 from game.engine.economy import unit_points_of
 from game.models import GameRoom, GameState, PlayerConnection, TurnDraft
 from game.routing import websocket_urlpatterns
@@ -23,7 +23,7 @@ from game.validators import ValidationError
 class TurnDraftTests(TransactionTestCase):
     def setUp(self):
         self.game = GameRoom.objects.create(host='alice', opponent='bob', status='started')
-        config = copy.deepcopy(DEFAULT_CONFIG)
+        config = balance_config()
         config['match']['turnTimeLimit'] = 0
         self.state = GameState.objects.create(
             game=self.game, player_white='alice', player_black='bob', current_turn='alice',
@@ -399,7 +399,7 @@ class TurnDraftProtocolTests(TransactionTestCase):
     async def position(self, board=None, ply=7):
         self.game, self.host, self.opponent, self.white, self.black = await _start_seated_game()
         state = await GameState.objects.aget(pk=self.game.game_id)
-        config = copy.deepcopy(state.config_snapshot)
+        config = balance_config()
         config['match']['turnTimeLimit'] = 0
         config['setup'] = {'white': {'0,1':'king'}, 'black': {'0,-1':'king'}}
         pieces = {

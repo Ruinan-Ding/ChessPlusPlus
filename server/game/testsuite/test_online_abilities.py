@@ -11,7 +11,7 @@ from game.consumers import GameConsumer, _pending_turn_timers
 from game.engine import panels
 from game.engine.ability_rules import AbilityContext, battlefield_action_bonus, bonus, carries, initial_state, setting
 from game.engine.board import HexBoard, HEX_DIRECTIONS
-from game.engine.config_loader import DEFAULT_CONFIG
+from game.testsuite.balance_fixtures import balance_config
 from game.engine.economy import unit_points_of
 from game.engine.game_logic import board_moves_at, defeated_sides, overtime_toll, resolve_panel_attack
 from game.engine.scoring import deaths_of
@@ -25,7 +25,7 @@ from game.testsuite import test_turn_drafts as draft_tests
 
 class OnlineAbilityRulesTests(SimpleTestCase):
     def setUp(self):
-        self.config = copy.deepcopy(DEFAULT_CONFIG)
+        self.config = balance_config()
         self.config['setup'] = {'white': {'0,1': 'king'}, 'black': {'0,-1': 'king'}}
         self.config['match'].update(cpAtStart=1000, turnTimeLimit=0)
         self.config['economy']['upAtStart'] = 1000
