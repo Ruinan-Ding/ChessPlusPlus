@@ -1,7 +1,9 @@
 # Handoff: ChessPlusPlus, 17 Oct 2026
 
 Updated by Codex from Claude Code's 2 Oct handoff, for the next agent.
-Read the short [AGENTS.md](AGENTS.md) first. Current workflow/spec/evidence:
+Read the short [AGENTS.md](AGENTS.md) first. Current task: [REL-003](specs/REL-003-student-deployment.md)
+records the checked student hosting/domain plan; implementation/deployment remain pending.
+Workflow/spec/evidence:
 [WF-006](specs/WF-006-workflow-plugins.md) owns plugin setup/evidence;
 [WF-005](specs/WF-005-lean-safe.md), checkpoint 6.158, retains SAFe decisions.
 SDD/BDD/TDD and conditional plugin support are active; no real ART/PI is claimed;
@@ -16,13 +18,14 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
 - **Repo:** https://github.com/Ruinan-Ding/ChessPlusPlus. It is a hex-grid tactics game: a Django
   Channels server in `server/`, an Angular 19 client in `client/`, and the shared config schema in
   `shared/`.
-- **Current branch:** `feature/dev26`, based on `6567be0` after the dev25 merge.
-  Source `38ccf0b` publishes work through 6.157; `6567be0` merges it into main.
-  SAFe guidance and plugin integration in [WF-005](specs/WF-005-lean-safe.md) /
-  [WF-006](specs/WF-006-workflow-plugins.md#publication-request-17-oct) are included
-  in this branch's authorized commit/push scope; its remote tip identifies publication.
-  The source branch is retained; it began from synchronized `main` after 6.144
-  (12 Oct). Source `feature/configuration` is retained.
+- **Current branch:** `feature/student-deployment-plan`, based on synchronized
+  `main` at `489d8b9`. Source `344a9f6` and merge `489d8b9` publish the prior SAFe/
+  plugin work; application source is unchanged by that merge. The owner now
+  authorizes committing/pushing the reviewed plan; [REL-003](specs/REL-003-student-deployment.md#publication-follow-up)
+  owns the five-document publication scope. `DEPLOYMENT.md` supersedes the old Pages/Fly
+  proposal with a conditional student-funded VM/domain plan; actual hosting,
+  account/domain eligibility and production checks remain pending.
+  Earlier source branches and `feature/configuration` are retained.
   The original rewind/replay/CPU implementation is `64efecd`, "Add solo rewind, portable replay
   and CPU opponents". It includes 6.135-6.137 and 6.139-6.143; the earlier config
   checkpoint `69d6e36` and dev23 checkpoint `fcb263b` are merged into `main` too.
@@ -95,7 +98,7 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
     This publishes code, not a numbered balance release or deployment. Revision
     stays null; production security/persistence/hosting work in 6.154 remains.
     Owner services/database and migrations are untouched. WRITTEN, not owner-SEEN.
-  - **Current pre-publication readiness review (6.154), 15 Oct:** all 57 entries
+  - **Historical pre-publication readiness review (6.154), 15 Oct:** all 57 entries
     in 6.150's final manifest match except the five workflow-updated root docs;
     application/CI/test source and expected deletions retain that verification:
     576 backend tests, 1,069 client specs and production/type/system/migration

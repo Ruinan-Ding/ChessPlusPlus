@@ -336,6 +336,11 @@ and goals require agreement; technical completion does not authorize publication
 [Plugin support](.claude/skills/scrum/references/plugins.md) documents the twelve
 installed capabilities, six lean defaults, optional activation and bounded Ralph use.
 
+The [student deployment plan](DEPLOYMENT.md) proposes one Azure VM and a student
+or existing-domain address, targeting $0 personal spending while benefits last.
+It compares Azure options, records expiry/renewal limits and lists the remaining
+implementation and production checks. Hosting is not yet implemented or deployed.
+
 ## Running the Application
 
 Both at once, restarting whichever is already running:

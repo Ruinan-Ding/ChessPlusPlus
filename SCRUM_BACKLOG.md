@@ -8,11 +8,12 @@ their historical fixes here or treat this file as a second game specification.
 
 ## Current work
 
-**WF-006 — Claude plugin integration: Done for installation/guidance/checks; unscheduled.**
-Owner request17 Oct: add relevant plugins, including Ralph, while keeping the
-SAFe/SDD/BDD/TDD workflow efficient. [Contract and evidence](specs/WF-006-workflow-plugins.md)
-are canonical. Prior [SAFe configuration](specs/WF-005-lean-safe.md) remains complete
-for configured guidance/checks. Resume only the contract matching the request.
+**REL-003 — Student deployment plan: Done for plan/checks; deployment pending; unscheduled.**
+Owner request17 Oct: update the existing hosting plan for $0 personal spending
+with student benefits and a domain. [Contract/evidence](specs/REL-003-student-deployment.md)
+owns scope/status; [DEPLOYMENT.md](DEPLOYMENT.md) owns the plan. Account eligibility,
+resource creation, domain redemption and deployment remain pending. WF-005/WF-006
+are completed workflow history, not this task's implementation scope.
 
 ## Product Goal
 
@@ -103,7 +104,8 @@ Windows Temp `cpp-scrum-20261015-c8c0osf_/RESULTS.md`; implementation checkpoint
 - **Remaining delivery work:** implement the selected hosting configuration/
   persistence, resolve production checks and
   smoke-test real solo/CPU/two-player HTTPS/WSS behavior. Publication/deployment
-  was not performed by this review. Hosting scope and target are still to be set.
+  was not performed by this review. [REL-003](specs/REL-003-student-deployment.md)
+  now owns the student hosting proposal; the actual target remains unprovisioned.
 - **Record:** PUNCHLIST 6.154 and Windows Temp
   `cpp-release-readiness-20261015-nquio_3b/RESULTS.md`.
 
