@@ -530,7 +530,8 @@
         "name": "Regenerate",
         "target": "friendly",
         "effect": "regenerate",
-        "description": "At rank {passiveUnlock}, fully heal at the end of your turn in an active unit-kit zone, even without acting."
+        "description": "At rank {passiveUnlock}, heal {healPercent}% of maximum HP (rounded down and capped at maximum) at the end of your turn in an active unit-kit zone, even without acting.",
+        "healPercent": 100
       },
       "intimidate": {
         "id": "intimidate",
@@ -629,14 +630,15 @@
       "queen-leech": {
         "id": "queen-leech",
         "name": "Leech",
-        "description": "Gain {sign:atk} ATK/{sign:def} DEF for {duration}. Normal attacks immediately heal this unit by the actual HP damage dealt, capped at max HP, before a possible counterattack. Counters do not heal. Costs {cost} UP; cooldown {cooldown}.",
+        "description": "Gain {sign:atk} ATK/{sign:def} DEF for {duration}. Normal attacks immediately heal this unit by {lifestealPercent}% of actual HP damage dealt (rounded down), capped at max HP, before a possible counterattack. Counters do not heal. Costs {cost} UP; cooldown {cooldown}.",
         "target": "friendly",
         "effect": "leech",
         "cost": 8,
         "cooldown": 3,
         "turns": 1,
         "atk": 4,
-        "def": 2
+        "def": 2,
+        "lifestealPercent": 100
       },
       "queen-nullify": {
         "id": "queen-nullify",
@@ -699,10 +701,11 @@
         "cost": 25,
         "cooldown": 1,
         "recharge": 1,
-        "description": "Choose a carried pool pair. Each cooldown above 1 decreases by {recharge}, stopping at 1. Each ability already at 0 or 1 CD instead grants {refundMultiplier} times its full configured regular-point cost, before Sprint discounts; its cooldown stays unchanged. Costs {cost} CP; cooldown {cooldown}; {uses} uses per phase.",
+        "description": "Choose a carried pool pair. Each cooldown above {minimumCooldown} decreases by {recharge}, stopping at {minimumCooldown}. Each ability already at or below {minimumCooldown} CD instead grants {refundMultiplier} times its full configured regular-point cost, before Sprint discounts; its cooldown stays unchanged. Costs {cost} CP; cooldown {cooldown}; {uses} uses per phase.",
         "uses": 5,
         "usesScope": "phase",
-        "refundMultiplier": 1
+        "refundMultiplier": 1,
+        "minimumCooldown": 1
       },
       "capture": {
         "id": "capture",
@@ -1059,7 +1062,8 @@
     "overtimeVpToPointsMultiplier": 1,
     "cpOwnScoreMultiplier": 1,
     "cpOpponentScoreMultiplier": 1,
-    "cpBehindGapMultiplier": 1
+    "cpBehindGapMultiplier": 1,
+    "unitValues": {}
   },
   "scoring": {
     "layout": {

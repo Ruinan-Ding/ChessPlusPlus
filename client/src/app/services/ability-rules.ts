@@ -32,6 +32,7 @@ interface UnitEffect {
   expiresAt?: number;
   effect?: string;
   secondCounter?: boolean;
+  lifestealPercent?: number;
   setAtk?: number;
   setDef?: number;
   setHel?: number;
@@ -61,7 +62,7 @@ function summed(effects: UnitEffect[]): UnitBuff {
 
 export function stackEffect(
   held: UnitBuff | undefined,
-  effect: { name: string; mov: number; atk: number; def: number; hel?: number; turns?: number; effect?: string; secondCounter?: boolean; setAtk?: number; setDef?: number; setHel?: number },
+  effect: { name: string; mov: number; atk: number; def: number; hel?: number; turns?: number; effect?: string; secondCounter?: boolean; lifestealPercent?: number; setAtk?: number; setDef?: number; setHel?: number },
   caster: string,
   hostile = false,
   expiresAt?: number,
@@ -73,6 +74,7 @@ export function stackEffect(
       turns: Math.max(1, effect.turns ?? 1), caster, hostile,
       ...(effect.effect ? { effect: effect.effect } : {}),
       ...(effect.secondCounter !== undefined ? { secondCounter: effect.secondCounter } : {}),
+      ...(effect.lifestealPercent !== undefined ? { lifestealPercent: effect.lifestealPercent } : {}),
       ...(effect.setAtk !== undefined ? { setAtk: effect.setAtk } : {}),
       ...(effect.setDef !== undefined ? { setDef: effect.setDef } : {}),
       ...(effect.setHel !== undefined ? { setHel: effect.setHel } : {}),
@@ -135,7 +137,7 @@ export function discountedAbilityCost(cost: number, passive: PathPassive | null 
   return passive?.costReduction ? Math.max(passive.minimumCost ?? 1, cost - passive.costReduction) : cost;
 }
 
-export interface EffectView { effects?: Array<{ effect?: string; secondCounter?: boolean; setAtk?: number; setDef?: number; setHel?: number; atk?: number; hel?: number }> }
+export interface EffectView { effects?: Array<{ effect?: string; secondCounter?: boolean; lifestealPercent?: number; setAtk?: number; setDef?: number; setHel?: number; atk?: number; hel?: number }> }
 
 export function statSetting(buff: EffectView | undefined | null, stat: 'atk' | 'def' | 'hel'): number | undefined {
   const field = stat === 'atk' ? 'setAtk' : stat === 'hel' ? 'setHel' : 'setDef';

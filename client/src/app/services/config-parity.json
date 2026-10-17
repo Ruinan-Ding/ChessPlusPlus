@@ -5947,6 +5947,176 @@
         "refundMultiplier"
       ],
       "value": 1
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "queen-leech",
+        "lifestealPercent"
+      ],
+      "value": -1
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "queen-leech",
+        "lifestealPercent"
+      ],
+      "value": 101
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "queen-leech",
+        "lifestealPercent"
+      ],
+      "value": 0.5
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "queen-leech",
+        "lifestealPercent"
+      ],
+      "value": null
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "queen-leech",
+        "lifestealPercent"
+      ],
+      "value": true
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "regenerate",
+        "healPercent"
+      ],
+      "value": -1
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "regenerate",
+        "healPercent"
+      ],
+      "value": 101
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "regenerate",
+        "healPercent"
+      ],
+      "value": 0.5
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "regenerate",
+        "healPercent"
+      ],
+      "value": null
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "regenerate",
+        "healPercent"
+      ],
+      "value": true
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "recharge",
+        "minimumCooldown"
+      ],
+      "value": -1
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "recharge",
+        "minimumCooldown"
+      ],
+      "value": 0.5
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "recharge",
+        "minimumCooldown"
+      ],
+      "value": null
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "recharge",
+        "minimumCooldown"
+      ],
+      "value": true
+    },
+    {
+      "path": [
+        "economy",
+        "unitValues"
+      ],
+      "value": {
+        "unknown": {
+          "bounty": 1
+        }
+      }
+    },
+    {
+      "path": [
+        "economy",
+        "unitValues"
+      ],
+      "value": {
+        "pawn": {
+          "bounty": -1
+        }
+      }
+    },
+    {
+      "path": [
+        "economy",
+        "unitValues"
+      ],
+      "value": {
+        "pawn": {
+          "wrap": null
+        }
+      }
+    },
+    {
+      "path": [
+        "economy",
+        "unitValues"
+      ],
+      "value": {
+        "pawn": {
+          "other": 1
+        }
+      }
     }
   ]
 }

@@ -240,7 +240,7 @@ class AbilityContext:
                   'hostile': hostile, 'turns': entry.get('turns', 1),
                   'expiresAt': self.ply + 2 * entry.get('turns', 1),
                   **{s: stats.get(s, 0) for s in ('mov', 'atk', 'def', 'hel')},
-                  **{s: stats[s] for s in ('effect', 'secondCounter', 'setAtk', 'setDef', 'setHel') if s in stats}}
+                  **{s: stats[s] for s in ('effect', 'secondCounter', 'lifestealPercent', 'setAtk', 'setDef', 'setHel') if s in stats}}
         if not any(effect.get(s) for s in ('mov', 'atk', 'def', 'hel', 'effect')) and not any(
                 s in effect for s in ('setAtk', 'setDef', 'setHel')):
             return
@@ -350,11 +350,12 @@ class AbilityContext:
             if not isinstance(pair_id, str) or pair_id not in pool or pair_id not in self.data['loadouts'][self.color]:
                 raise ValueError('Select a carried pair')
             index = pool.index(pair_id)
+            floor = entry.get('minimumCooldown', 1)
             for i in pool[index - index % 2:index - index % 2 + 2]:
                 cd = self.data['cooldowns'][self.color].get(i, 0)
-                if cd <= 1:
+                if cd <= floor:
                     self.data['pointDelta'][self.color] += entry.get('refundMultiplier', 0) * self.catalogue[i].get('cost', 0)
-                self.data['cooldowns'][self.color][i] = max(1, cd - entry.get('recharge', 0)) if cd > 0 else 0
+                self.data['cooldowns'][self.color][i] = max(floor, cd - entry.get('recharge', 0)) if cd > floor else cd
             recipients = {}
         elif mode == 'control':
             if not chosen or chosen_key not in self.recipients('field-reserve') or chosen['color'] == self.color or not 1 <= hex_distance(parse_coord(source_key), parse_coord(chosen_key)) <= entry.get('radius', 1):
@@ -481,7 +482,7 @@ class AbilityContext:
                     'mov': entry.get('mov', 0) if friendly else entry.get('enemyMov', 0),
                     'atk': entry.get('atk', 0) if friendly else entry.get('enemyAtk', 0),
                     'def': entry.get('def', 0) if friendly else entry.get('enemyDef', 0)}, not friendly)
-            elif mode in ('attack-drain', 'taunt', 'cleave', 'charge', 'nullify'):
+            elif mode in ('attack-drain', 'taunt', 'cleave', 'charge', 'nullify', 'leech'):
                 self.add_buff(unit, entry, {**entry, 'mov': 0} if mode == 'attack-drain' else None)
             else:
                 delta = self.change_hp(key, unit, entry.get('heal', 0) if friendly else -entry.get('damage', 0))
@@ -504,8 +505,10 @@ class AbilityContext:
 
     def end_turn(self):
         for key, unit in self.recipients('all').items():
-            if unit['color'] == self.color and passive(unit, self.config).get('effect') == 'regenerate':
-                self.change_hp(key, unit, unit.get('max_hp', unit['hp']) - unit['hp'])
+            trait = passive(unit, self.config)
+            if unit['color'] == self.color and trait.get('effect') == 'regenerate':
+                maximum = unit.get('max_hp', unit_stats(unit['unit_id'], self.config, active_vet(unit, self.config)).get('hp', unit['hp']))
+                self.change_hp(key, unit, maximum * trait.get('healPercent', 100) // 100)
         self.state.board_state = self.board
 
     def begin_turn(self, color, ply):

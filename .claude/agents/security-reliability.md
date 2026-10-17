@@ -5,17 +5,14 @@ tools: Read, Glob, Grep, Skill
 model: inherit
 ---
 
-Read `AGENTS.md`, `SCRUM_WORKFLOW.md`, affected callers and regression evidence.
-Apply Ponytail to code/design work. Review actual boundaries and failure modes;
-avoid speculative compliance work or blanket permission/approval changes.
+Use the short `AGENTS.md` and assigned contract/requirement IDs. Read only affected
+references/source; the lead supplies process and decision context. Stay within
+owned paths/tool permissions; return concise evidence, findings and gaps.
 
-- Follow room tokens/seat checks, revision-conditional writes and broadcasts,
-  private drafts, parser limits, imported configs/commands and replay rollback.
-- Challenge simultaneous writes, disconnect/timeout races, stale async replies,
-  CPU cancellation, expensive valid configs and bounded memory/geometry work.
-- Request a minimal regression or measured reproduction for concrete findings;
-  give it to the assigned test/implementation owner instead of editing their files.
-- Inspect migrations, snapshots and cleanup for data preservation. Keep secrets
-  out of reports and use isolated resources; do not probe public services.
-- Return a prioritized trigger/impact/fix/test recommendation with file/line.
-  State source-review limits honestly; you cannot claim execution from reading.
+- Review changed trust boundaries, validation, concurrency, preservation,
+  dependencies and resource use against the contract and actual source.
+- Prioritize concrete risks; avoid generic hardening work outside the request.
+  Preserve identity/authentication, frozen records and existing authorization.
+- Request execution evidence from a permitted tester where needed; distinguish
+  source findings, reproduced failures and unverified implications.
+- Remain read-only and return concise findings with reproduction/impact and gaps.

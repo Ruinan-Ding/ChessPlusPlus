@@ -4,7 +4,8 @@ import { TestBed } from '@angular/core/testing';
 import { LocalGameService, LOCAL_OPPONENT } from './local-game.service';
 import { unitPoints } from './match-score';
 import { unitStats } from './unit-stats';
-import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG, DEFAULT_GAME_CONFIG as CURRENT_GAME_CONFIG, ConfigService } from './config.service';
+import { PREVIOUS_GAME_CONFIG as DEFAULT_GAME_CONFIG, DEFAULT_GAME_CONFIG as SHIPPED_GAME_CONFIG, ConfigService } from './config.service';
+import BALANCE_CONFIG from '../../../../shared/testing/balance-config.json';
 
 /**
  * The offline engine is the only thing standing between the player and the
@@ -21,6 +22,7 @@ describe('LocalGameService', () => {
   beforeEach(async () => {
     localStorage.removeItem('cpp.localGame.v1');
     TestBed.configureTestingModule({});
+    expect(TestBed.inject(ConfigService).updateConfig(JSON.stringify(BALANCE_CONFIG)).valid).toBeTrue();
     service = TestBed.inject(LocalGameService);
     replies = [];
     service.messages$.subscribe(m => replies.push(m));
@@ -68,7 +70,7 @@ describe('LocalGameService', () => {
     for (const color of ['white', 'black'] as const) {
       for (const fault of ['none', 'amount', 'side', 'slot', 'hp', 'disabled']) {
         const game = (service as any).game;
-        game.config = structuredClone(CURRENT_GAME_CONFIG);
+        game.config = structuredClone(BALANCE_CONFIG);
         Object.assign(game, { turnNumber: color === 'white' ? 1 : 2, currentTurn: color === 'white' ? 'Solo' : LOCAL_OPPONENT,
           moveHistory: [], endReason: '', winner: '' });
         const reward: any = { castId: 'up-test', color, abilityCast: { id: 'convert', row: 'path', up: 50 } };
@@ -298,7 +300,7 @@ describe('LocalGameService', () => {
   it('awards halftime UP before Cast expires, preserving the award through reload', async () => {
     for (const [phase, ply] of [[1, 17], [2, 39], [3, 61]]) {
       const g = (service as any).game;
-      g.config = structuredClone(CURRENT_GAME_CONFIG);
+      g.config = structuredClone(BALANCE_CONFIG);
       const control = { uid: 'bk', owner: 'black', color: 'white', controlledUntil: ply, controlTurn: ply - 2 };
       Object.assign(g, { turnNumber: ply - 1, currentTurn: LOCAL_OPPONENT, phaseBank: {}, endReason: '', winner: '',
         moveHistory: [{ turn: ply - 2, color: 'white', control }],
@@ -318,7 +320,7 @@ describe('LocalGameService', () => {
   it('banks the finished phase before Cast expires and settles its frozen points after postmatch', async () => {
     for (const [phase, ply] of [[1, 27], [2, 49], [3, 71]]) {
       const g = (service as any).game;
-      g.config = structuredClone(CURRENT_GAME_CONFIG);
+      g.config = structuredClone(BALANCE_CONFIG);
       const control = { uid: 'bk', owner: 'black', color: 'white', controlledUntil: ply, controlTurn: ply - 2 };
       const earlier = Object.fromEntries(Array.from({ length: phase - 1 }, (_, i) => [String(i + 1), { white: 57 * (i + 1), black: 57 * (i + 1) }]));
       Object.assign(g, { turnNumber: ply - 1, currentTurn: LOCAL_OPPONENT, phaseBank: earlier, endReason: '', winner: '',
@@ -723,6 +725,20 @@ describe('LocalGameService', () => {
     await flush();
     expect(last('invalid_move').message).toBe('Illegal move');
     expect(JSON.stringify((service as any).game)).toBe(before);
+  });
+
+  it('starts the actual shipped preset through configuration and the normal engine', async () => {
+    service.send({ type: 'resign' }); await flush();
+    expect(TestBed.inject(ConfigService).updateConfig(JSON.stringify(SHIPPED_GAME_CONFIG)).valid).toBeTrue();
+    service.send({ type: 'start_game', hostColor: 'white' }); await flush();
+    const started = last('game_started');
+    expect(started.config).toEqual(SHIPPED_GAME_CONFIG);
+    expect(started.currentTurn).toBe('Solo');
+    expect(Object.keys(started.boardState).length).toBeGreaterThan(0);
+    for (const piece of Object.values(started.boardState) as any[]) {
+      expect(Object.hasOwn(SHIPPED_GAME_CONFIG.units, piece.unit_id)).toBeTrue();
+      expect(piece.hp).toBeGreaterThan(0);
+    }
   });
 
   it('starts a game with both setups placed and white to move', () => {

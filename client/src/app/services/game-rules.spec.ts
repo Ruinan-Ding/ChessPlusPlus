@@ -9,9 +9,13 @@ import { abilityDescription } from './ability-description';
 import parity from './config-parity.json';
 const invalid = parity.format2Refused;
 import expected from './game-rules-parity.json';
+import BALANCE_CONFIG from '../../../../shared/testing/balance-config.json';
 
 describe('Versioned gameplay configuration', () => {
-  const fresh = (): any => structuredClone(DEFAULT_GAME_CONFIG);
+  // Numerical examples use the same saved rules as the server so edits to the
+  // shipped preset do not silently change their hand-calculated input values.
+  const fresh = (): any => migrateConfig(BALANCE_CONFIG);
+  const shipped = (): any => structuredClone(DEFAULT_GAME_CONFIG);
   it('renders omitted Sprint knobs with their runtime defaults', () => {
     const config = fresh(), entry = config.abilities.catalogue.tempo;
     delete entry.baseMov; delete entry.costReduction; delete entry.minimumCost;
@@ -94,7 +98,9 @@ describe('Versioned gameplay configuration', () => {
     delete saved.abilities.catalogue.convert.up; saved.abilities.catalogue.convert.points = 50;
     expect(service.validateGameRules(saved).valid).toBeTrue();
     expect(migrateConfig(migrateConfig(saved))).toEqual(saved);
-    expect(abilityDescription(DEFAULT_GAME_CONFIG.abilities.catalogue.mend)).toContain('grants 10 regular points');
+    expect(abilityDescription(BALANCE_CONFIG.abilities.catalogue.mend, BALANCE_CONFIG)).toContain('grants 10 regular points');
+    expect(abilityDescription(DEFAULT_GAME_CONFIG.abilities.catalogue.mend))
+      .toBe(abilityDescription(DEFAULT_GAME_CONFIG.abilities.catalogue.mend, DEFAULT_GAME_CONFIG));
     const olderConvert = PREVIOUS_GAME_CONFIG.abilities.catalogue.convert;
     expect(abilityDescription(olderConvert, saved)).toContain('points');
     expect(abilityDescription(olderConvert, saved)).not.toContain('{');
@@ -124,14 +130,14 @@ describe('Versioned gameplay configuration', () => {
     TestBed.configureTestingModule({});
     const service = TestBed.inject(ConfigService);
     for (const edit of invalid) {
-      const config = fresh(); let node = config;
+      const config = shipped(); let node = config;
       for (const key of edit.path.slice(0,-1)) node = node[key];
       node[edit.path.at(-1)!] = edit.value;
       expect(service.validateGameRules(config).valid).withContext(edit.path.join('.')).toBeFalse();
     }
   });
   it('fills missing current fields while preserving explicit releases and zero', () => {
-    const raw = fresh(); delete raw.combat; delete raw.abilities; raw.ruleset.revision = 1; raw.economy.pointsAtStart = 0;
+    const raw = shipped(); delete raw.combat; delete raw.abilities; raw.ruleset.revision = 1; raw.economy.pointsAtStart = 0;
     const saved = migrateConfig(raw);
     expect(saved.combat).toEqual(DEFAULT_GAME_CONFIG.combat);
     expect(saved.abilities).toEqual(DEFAULT_GAME_CONFIG.abilities);

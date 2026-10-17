@@ -1,4 +1,11 @@
 import copy
+import json
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock, patch
+
+from game import cpu
 
 from channels.testing import WebsocketCommunicator
 from django.test import SimpleTestCase
@@ -6,7 +13,7 @@ from django.test import SimpleTestCase
 from game.cpu import CpuConsumer, analyse, candidate_commands, position_value, search_turn, movement_priority
 from game.consumers import GameConsumer
 from game.engine.ability_rules import initial_state
-from game.engine.config_loader import DEFAULT_CONFIG, build_initial_board
+from game.engine.config_loader import DEFAULT_CONFIG, build_initial_board, load_config
 from game.engine.unit_stats import ranked_unit
 from game.models import GameState
 from game.validators import ValidationError
@@ -14,7 +21,7 @@ from game.validators import ValidationError
 
 class CpuTests(SimpleTestCase):
     def state(self):
-        config = copy.deepcopy(DEFAULT_CONFIG)
+        config = load_config(json.loads((Path(__file__).resolve().parents[3] / 'shared' / 'testing' / 'balance-config.json').read_text(encoding='utf-8')))
         config['setup'] = {'white': {'-5,0': 'king', '0,0': 'queen'}, 'black': {'1,0': 'king'}}
         return GameState(game_id='cpu-test', config_snapshot=config, board_state=build_initial_board(config).to_dict(),
             player_white='white', player_black='black', current_turn='white', turn_number=55, revision=1,
@@ -107,6 +114,115 @@ class CpuTests(SimpleTestCase):
         self.assertTrue({'warcry', 'sap', 'mend', 'strike', 'queen-leech'} <= ids)
         path = next(p for p in state.config_snapshot['abilities']['paths'] if p['id'] == 'bastion')
         self.assertTrue({path['utility'], path['skill'], path['ultimate']} <= ids)
+
+    def test_withdrawal_order_uses_configured_refunds_including_zero_and_wounds(self):
+        import time
+        for rank, multiplier, fee, missing, override, expected in ((0, 3, 4, 4, None, 132), (3, 0, 0, 0, None, 0), (3, 1, 30, 4, None, 10), (3, 3, 0, 0, 0, 0)):
+            with self.subTest(rank=rank, refund=expected):
+                state = self.state()
+                unit = state.board_state['0,0']
+                unit.update(vet=rank, hp=32 - missing, max_hp=32)
+                settings = state.config_snapshot['economy']['walkHomeRefund']
+                settings.update(minimum=0, valueMultiplier=multiplier, fee=fee, missingHpMultiplier=2)
+                settings['veterancy'] = [dict(valueMultiplier=multiplier, fee=fee, missingHpMultiplier=2) for _ in range(3)]
+                if override is not None:
+                    state.config_snapshot['economy']['unitValues'] = {'queen': {'withdrawal': override}}
+                self.assertEqual(cpu.withdrawal_refund(state.config_snapshot, unit), expected)
+                with patch.object(cpu, 'is_homecoming_open', return_value=True), patch.object(cpu.panels, 'homecoming_targets', return_value={'-10,9'}), patch.object(cpu, 'movement_priority', return_value=20):
+                    commands = [c for c in candidate_commands(state, time.monotonic() + 2)
+                                if c.get('from') == '0,0' and c.get('to') != '0,0'
+                                and not c.get('attack') and not c.get('heal')]
+                self.assertTrue(any(c.get('withdraw') for c in commands))
+                self.assertTrue(any(not c.get('withdraw') for c in commands))
+                self.assertEqual(bool(commands[0].get('withdraw')), expected > 20)
+
+    async def test_search_shortlist_retains_configured_withdrawal_priority(self):
+        state = self.state()
+        state.config_snapshot['economy']['walkHomeRefund'].update(valueMultiplier=3, fee=0, missingHpMultiplier=0)
+        walk = {'type': 'make_move', 'from': '0,0', 'to': '0,1', 'more': True}
+        withdraw = {'type': 'make_move', 'from': '0,0', 'to': '-10,9', 'withdraw': True, 'more': True}
+        tuning = cpu.load_cpu_tuning()
+        tuning['limits']['maxSteps'] = 1
+        preview = AsyncMock(return_value=state)
+        with patch.object(cpu, 'TUNING', tuning), patch.object(cpu.GameConsumer, '_preview_turn', preview), patch.object(cpu, 'position_value', return_value=0), patch.object(cpu, 'movement_priority', return_value=0), patch.object(cpu, 'candidate_commands', return_value=(walk, withdraw)), patch.object(cpu.time, 'monotonic', return_value=0):
+            await search_turn(state, 'easy')
+        first_action = next(call.args[1][0] for call in preview.await_args_list if call.args[1])
+        self.assertEqual(first_action, withdraw)
+
+    def test_cpu_tuning_file_controls_weights_and_profiles_with_environment_precedence(self):
+        tuning = cpu.load_cpu_tuning()
+        state = self.state()
+        state.phase_bank['1'] = {'white': 4, 'black': 1}
+        with patch.object(cpu, 'TUNING', tuning):
+            before = position_value(state, 'white')
+            tuning['position']['bankPoints'] += 6
+            self.assertAlmostEqual(position_value(state, 'white') - before, 18)
+            move_before = movement_priority('0,0', state.board_state['0,0'], state, state.board_state)
+            tuning['movement']['attackTarget'] += 7
+            self.assertAlmostEqual(movement_priority('0,0', state.board_state['0,0'], state, state.board_state) - move_before, 7)
+        tuning['profiles']['normal'] = {'seconds': 1.25, 'beam': 7, 'depth': 1}
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(cpu.cpu_profiles(tuning)['normal'], (1.25, 7, 1))
+            with patch.dict(os.environ, {'CPP_CPU_NORMAL_SECONDS': '3', 'CPP_CPU_NORMAL_BEAM': '12', 'CPP_CPU_NORMAL_DEPTH': '3'}):
+                self.assertEqual(cpu.cpu_profiles(tuning)['normal'], (3, 12, 3))
+            with patch.dict(os.environ, {'CPP_CPU_NORMAL_SECONDS': '100', 'CPP_CPU_NORMAL_BEAM': '999', 'CPP_CPU_NORMAL_DEPTH': '99'}):
+                self.assertEqual(cpu.cpu_profiles(tuning)['normal'], (5, 64, 4))
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'cpu-tuning.json'
+            path.write_text(json.dumps(tuning), encoding='utf-8')
+            self.assertEqual(cpu.load_cpu_tuning(path), tuning)
+            tuning['position']['bankPoints'] = float('nan')
+            path.write_text(json.dumps(tuning), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'finite'):
+                cpu.load_cpu_tuning(path)
+
+    def test_cpu_tuning_rejects_missing_and_unknown_fields_before_search(self):
+        fields = [((), 'position'), (('profiles',), 'normal'), (('profiles', 'normal'), 'seconds'),
+                  (('position',), 'attack'), (('movement',), 'attackTarget'),
+                  (('candidate',), 'attackDamage'), (('limits',), 'maxSteps'), (('search',), 'replySeconds')]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'cpu-tuning.json'
+            for parts, key in fields:
+                for edit in ('missing', 'unknown', 'renamed'):
+                    with self.subTest(group=parts, key=key, edit=edit):
+                        tuning = cpu.load_cpu_tuning()
+                        node = tuning
+                        for part in parts:
+                            node = node[part]
+                        value = node[key]
+                        if edit != 'unknown':
+                            del node[key]
+                        if edit != 'missing':
+                            node[key + 'Typo'] = value
+                        path.write_text(json.dumps(tuning), encoding='utf-8')
+                        with self.assertRaises(ValueError) as failure:
+                            cpu.load_cpu_tuning(path)
+                        error = str(failure.exception)
+                        self.assertIn('CPU tuning ' + ('.'.join(parts) or 'config'), error)
+                        if edit != 'unknown':
+                            self.assertIn('missing keys: ' + key, error)
+                        if edit != 'missing':
+                            self.assertIn('unknown keys: ' + key + 'Typo', error)
+
+    async def test_profile_depth_overrides_do_not_recursively_reuse_the_easy_profile(self):
+        state = self.state()
+        preview = AsyncMock(return_value=state)
+        with patch.object(cpu, 'PROFILES', {'easy': (0.5, 8, 3), 'normal': (2, 16, 4)}), patch.object(cpu.GameConsumer, '_preview_turn', preview), patch.object(cpu, 'position_value', return_value=0), patch.object(cpu, 'candidate_commands', return_value=()), patch.object(cpu.time, 'monotonic', return_value=0):
+            self.assertEqual(await search_turn(state, 'normal'), [{'type': 'pass_turn'}])
+        self.assertLess(preview.await_count, 20)
+
+    def test_cpu_candidate_target_limit_is_configurable(self):
+        import time
+        state = self.state()
+        state.config_snapshot['economy']['upAtStart'] = 1000
+        state.ability_state['loadouts']['white'] = ['mend', 'strike']
+        for index in range(4):
+            state.board_state[f'{index},2'] = {'unit_id': 'pawn', 'color': 'white', 'uid': f'p{index}', 'hp': 1, 'max_hp': 12, 'vet': 0}
+        tuning = cpu.load_cpu_tuning()
+        tuning['limits']['abilityTargets'] = 1
+        with patch.object(cpu, 'TUNING', tuning):
+            commands = list(candidate_commands(state, time.monotonic() + 2))
+        self.assertEqual(len([c for c in commands if c.get('id') == 'mend']), 1)
 
     def test_large_configured_prices_never_outweigh_a_completed_win(self):
         state = self.state()

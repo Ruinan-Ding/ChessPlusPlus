@@ -15,6 +15,7 @@ from game.engine import economy, panels, phases
 from game.engine.board import HexBoard, coord_key, parse_coord, hex_distance
 from game.engine.config_loader import _validate_config, load_config, build_initial_board
 from game.engine.game_rules import PREVIOUS_CONFIG as DEFAULT_CONFIG, rule_of
+from game.testsuite.balance_fixtures import balance_config
 from game.engine.move_validator import (
     get_legal_moves,
     is_legal_move,
@@ -313,7 +314,7 @@ class ConfigLoaderTestCase(TestCase):
             load_config(bad)
 
     def test_ranged_damage_falls_off_past_the_first_ring(self):
-        config = load_config(None)
+        config = balance_config()
         # falloff 0.25: full damage adjacent, then -25% of the stat per ring,
         # floored, and a hit that lands always takes off at least 1.
         self.assertEqual(ranged_damage(8, 1, config), 8)
@@ -636,7 +637,7 @@ class GameLogicTestCase(TestCase):
     """Tests for combat resolution, is_attacked, and elimination detection."""
 
     def _cfg(self) -> Dict[str, Any]:
-        return load_config(None)
+        return balance_config()
 
     # -- Combat resolution -------------------------------------------------
 
@@ -1175,7 +1176,7 @@ class PanelsTestCase(DealtPanels, TestCase):
     """
 
     def _cfg(self):
-        return load_config(None)
+        return balance_config()
 
     def test_the_panels_join_the_board_where_the_client_says(self):
         """Gateways, base doorways and wrap tips, on the shipped radius 11."""
@@ -1726,7 +1727,7 @@ class PanelAttackTestCase(DealtPanels, TestCase):
     BASE_ROOK = '12,-4'
 
     def _cfg(self):
-        return load_config(None)
+        return balance_config()
 
     def _board_with_pawn(self, config, at, color='white'):
         board = build_initial_board(config)
@@ -2106,7 +2107,7 @@ class OvertimeTollTestCase(TestCase):
         return board
 
     def _cfg(self):
-        return load_config(None)
+        return balance_config()
 
     def test_nothing_is_taken_before_overtime(self):
         board = self._board(10)
@@ -2222,7 +2223,7 @@ class PanelMoveTestCase(DealtPanels, TestCase):
     """
 
     def _cfg(self):
-        return load_config(None)
+        return balance_config()
 
     def _setup(self):
         config = self._cfg()
@@ -2450,7 +2451,7 @@ class PointsTestCase(TestCase):
     """Regular points follow the schedule; UP follows unit transactions."""
 
     def _cfg(self):
-        return load_config(None)
+        return balance_config()
 
     def test_starting_points_are_added_once_and_explicit_zero_is_preserved(self):
         config = self._cfg()
@@ -2517,8 +2518,8 @@ class PointsTestCase(TestCase):
         # And what one of white's turns pays: the sum at its ply less the sum
         # before it - the rate, and on a phase's first turn its grant too.
         def pay(turn):
-            return (phases.turn_points_by('white', 2 * turn - 1)
-                    - phases.turn_points_by('white', 2 * turn - 2))
+            return (phases.turn_points_by('white', 2 * turn - 1, config)
+                    - phases.turn_points_by('white', 2 * turn - 2, config))
         self.assertEqual([pay(t) for t in (1, 8, 9, 16, 19, 20, 30, 31, 36, 37, 50, 500)],
                          [1, 1, 1, 1, 1, 2, 2, 3, 3, 0, 0, 0])
         self.assertEqual([pay(t) for t in (4, 15, 26)], [1 + 20, 1 + 20, 2 + 20])

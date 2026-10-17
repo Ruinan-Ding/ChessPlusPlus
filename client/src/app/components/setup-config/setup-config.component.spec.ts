@@ -104,7 +104,9 @@ describe('SetupConfigComponent', () => {
     const service = new ConfigService(), c = editor(service);
     try {
       const edited = JSON.parse(c.jsonConfig);
-      edited.units.pawn.hp = 17;
+      // This must be a real edit even when the shipped pawn already has the
+      // value a previous version of this scenario used for its example.
+      edited.units.pawn.hp = edited.units.pawn.hp === 99 ? 98 : edited.units.pawn.hp + 1;
       c.jsonConfig = JSON.stringify(edited);
       c.onBack(); c.leaveChoice('save');
       expect(c.saving).toBeTrue();

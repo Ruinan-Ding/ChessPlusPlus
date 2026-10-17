@@ -1,14 +1,15 @@
 import { sectionOf } from './game-rules';
 import { combatStatuses, combatExchange, carries, tauntAllows } from './unit-combat';
 import { controlsAt, controlledUnit } from './unit-control';
-import { PREVIOUS_GAME_CONFIG as config, DEFAULT_GAME_CONFIG as CURRENT_GAME_CONFIG } from './config.service';
+import { PREVIOUS_GAME_CONFIG as config } from './config.service';
+import BALANCE_CONFIG from '../../../../shared/testing/balance-config.json';
 import { stackEffect } from './ability-rules';
 
 const piece = (unit_id: string, color = 'white', hp = 20): any => ({ unit_id, color, uid: unit_id + color, hp, vet: 3, max_hp: hp });
 const bonuses = { atk: 0, def: 0, targetAtk: 0, targetDef: 0 };
 describe('unit combat effects', () => {
   it('Leech heals actual attack damage before the counter, with overkill and max-HP caps', () => {
-    const config = structuredClone(CURRENT_GAME_CONFIG);
+    const config = structuredClone(BALANCE_CONFIG);
     config.units.rook.attack = 20;
     const queen = { unit_id: 'queen', color: 'white', uid: 'q', vet: 3, hp: 4, max_hp: 34 };
     const rook = { unit_id: 'rook', color: 'black', uid: 'r', vet: 0, hp: 24, max_hp: 24 };
@@ -23,7 +24,7 @@ describe('unit combat effects', () => {
   });
 
   it('Leech on a defender does not heal from its counterattack', () => {
-    const config = structuredClone(CURRENT_GAME_CONFIG);
+    const config = structuredClone(BALANCE_CONFIG);
     const pawn = { unit_id: 'pawn', color: 'white', uid: 'p', vet: 0, hp: 12, max_hp: 12 };
     const queen = { unit_id: 'queen', color: 'black', uid: 'q', vet: 3, hp: 10, max_hp: 34 };
     const buff = stackEffect(undefined, { name: 'Leech', effect: 'leech', mov: 0, atk: 4, def: 2 }, 'black');
@@ -45,7 +46,7 @@ describe('unit combat effects', () => {
   });
 
   it('resolves two charged units as attack, counter, attack, counter with no further chain', () => {
-    const config = structuredClone(CURRENT_GAME_CONFIG);
+    const config = structuredClone(BALANCE_CONFIG);
     const attacker = piece('knight'), defender = piece('knight', 'black');
     const buff = stackEffect(undefined, { ...config.abilities.catalogue['knight-charge'], mov: 0, atk: 0, def: 0 }, 'black');
     const modifiers = { ...bonuses, charge: true, ...combatStatuses(undefined, buff) };

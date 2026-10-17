@@ -1,10 +1,20 @@
 # Scrum backlog
 
-Updated 15 Oct 2026. The human owner orders this backlog and owns product/game
+Updated 17 Oct 2026. The human owner orders this backlog and owns product/game
 decisions. [SCRUM_WORKFLOW.md](SCRUM_WORKFLOW.md) defines the process;
 [CODEX_HANDOFF.md](CODEX_HANDOFF.md) records current source/environment and
 [PUNCHLIST.md](PUNCHLIST.md) retains implementation checkpoints. Do not duplicate
 their historical fixes here or treat this file as a second game specification.
+
+## Current work
+
+**WF-004 — Efficient SDD delivery: Done for scoped implementation/checks; unscheduled.** The owner requested
+cheaper context loading and automatic informal-request → SDD → BDD → TDD delivery.
+[Contract, acceptance and evidence](specs/WF-004-efficient-sdd.md) are canonical.
+All existing dirty product work is preserved. Resume this contract only for
+matching workflow work; new requests use their own contract. Read completed
+entries below only for a concrete historical question.
+SDD is active now; earlier “optional/future SDD” entries describe their dated state.
 
 ## Product Goal
 
@@ -111,6 +121,50 @@ Windows Temp `cpp-scrum-20261015-c8c0osf_/RESULTS.md`; implementation checkpoint
 - **Boundary:** hosting, production hardening and target smoke checks from REL-001
   remain outstanding. No deployment or balance release is performed here.
 
+### BAL-001 — Make balance adjustments data-driven
+
+- **Source/outcome:** owner's 16 Oct request to fix the parameterization audit.
+  Preserve shipped gameplay while exposing useful tuning controls and removing
+  test/CPU assumptions that force code edits during ordinary rebalancing.
+- **Status:** Done for the authorized implementation and verification scope;
+  unscheduled work, with no Sprint dates or owner acceptance invented.
+- **Source/ownership:** clean `feature/dev25`, base `a64634d`; lead owns the shared
+  schema/defaults, domain loaders, client implementation and durable records.
+  Backend and CPU specialists own disjoint implementations/tests; quality owns
+  existing fixture decoupling and reviews. One writer per file, handoffs recorded.
+- **Scope:** CPU JSON policy and authoritative refund ranking, frozen behavior
+  test inputs, Leech/regeneration percentages, Recharge floor, independent unit
+  economic values, matching validators/readers/UI and compatibility checks.
+  Existing 99-stat/three-star invariants and draft balance identity stay intact.
+- **Acceptance:** BAL-A: custom refunds affect both CPU candidate and beam order.
+  BAL-B: shipped numeric changes do not alter fixed behavior-test arrangements;
+  actual-default validation remains. BAL-C: zero/partial/omitted healing and
+  cooldown fields agree across client/server and survive Undo/reload. BAL-D:
+  bounty/withdrawal/wrap/attrition overrides are independent and explicit zero
+  works. BAL-E: missing/empty/sparse saved maps and cast ratios retain their own
+  values when the shipped preset changes. BAL-F: real controls, displayed rules,
+  full suites, build, schema and migration checks cover the integrated source.
+- **Verification:** initial client/backend/CPU behavioral Red preceded fixes.
+  Full 593 backend and 1,082 client checks, build, schema/default round-trip and
+  migration drift checks pass. Perturbed pawn value/HP/veteran HP 13/17/5 passes
+  1,082 client and 592 backend checks; only the intentionally contradicted
+  disk-memory equality check is excluded from that experiment. Rendered controls
+  cover Recharge floor0/Undo/reload; a real two-ASGI-connection free wrap/rejoin
+  retains every new field while defaults are changed. Native JSON editor/save,
+  solo start/reload and four widths show no new layout fault versus base `a64634d`.
+  Existing phone panel scrolling/320px unit-face collisions remain; full layout
+  sweep and physical-phone/owner acceptance are not claimed.
+- **Review:** backend, CPU and quality specialists reviewed disjoint integrated
+  changes. Findings on sparse-map defaults, actual refund beam ordering, legacy
+  max HP, tooltip accuracy and CPU misspelled keys were fixed. Reviewer usage
+  limits prevented independent re-review of the final CPU-key delta; the lead
+  reviewed it and reproduced six fail-fast cases. Final test-only cleanup was
+  lead-reviewed. No unresolved implementation finding remains in this scope.
+- **Evidence/next action:** checkpoint 6.156 and Windows Temp
+  `cpp-balance-20261016-y1q2tb46/RESULTS.md` preserve commands, results and source
+  identity. Ready for owner review; no publication requested for this new change.
+  Earlier Ruinan-Ding publication authorization was scoped to that repository.
+
 No further product priorities have been assigned through this workflow yet.
 Append owner-requested stories in their actual priority order during refinement.
 
@@ -124,4 +178,6 @@ Append owner-requested stories in their actual priority order during refinement.
   accepted example through Red/Green, relevant integration and independent review where permitted,
   checks that evidence is complete and records avoidable handoff delays or missing
   capabilities. Review at the first actual retrospective and select a correction
-  from observed friction. No development story has been selected or trial run.
+  from observed friction. BAL-001 exercised this delivery flow with real
+  delegation, TDD/BDD and reviews; final reviewer usage limits required an honest
+  lead-review fallback. No Sprint events or retrospective are claimed.

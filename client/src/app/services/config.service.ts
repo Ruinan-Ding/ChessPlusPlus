@@ -50,12 +50,13 @@ const UNIT_NUMBERS: ReadonlyArray<readonly [string, number]> = [
 const ABILITY_FIELDS = new Set([
   'id', 'name', 'description', 'target', 'cost', 'cooldown', 'turns', 'uses', 'usesScope',
   'mov', 'atk', 'def', 'damage', 'heal', 'points', 'testing', 'effect', 'counterAttack', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius',
-  'minVet', 'stars', 'battlefieldActions', 'secondCounter', 'freeOrder', 'recharge', 'refundMultiplier', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'baseMov', 'costReduction', 'minimumCost', 'hel', 'setHel', 'splashHel', 'area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov',
+  'minVet', 'stars', 'battlefieldActions', 'secondCounter', 'freeOrder', 'recharge', 'refundMultiplier', 'lifestealPercent', 'healPercent', 'minimumCooldown', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'baseMov', 'costReduction', 'minimumCost', 'hel', 'setHel', 'splashHel', 'area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov',
 ]);
 
 /** A catalogue entry's whole numbers, and the least of each - null for none. */
 const ABILITY_NUMBERS: ReadonlyArray<readonly [string, number | null]> = [
   ['baseMov', 0], ['costReduction', 0], ['minimumCost', 1],
+  ['lifestealPercent', 0], ['healPercent', 0], ['minimumCooldown', 0],
   ['cost', 0], ['cooldown', 0], ['turns', 1], ['uses', 1],
   ['mov', null], ['atk', null], ['def', null], ['damage', 0], ['heal', 0], ['points', 0],
   ['up', 0], ['enemyDamage', 0], ['enemyAtk', null], ['enemyDef', null], ['enemyMov', null], ['radius', 1],
@@ -85,7 +86,7 @@ export const UNIT_EFFECT_FIELDS: Record<string, string[]> = {
   'hop': [],
   'deflect': ['atk'],
   'on-hit-drain': ['atk', 'def', 'turns'],
-  'regenerate': [],
+  'regenerate': ['healPercent'],
   'intimidate': ['atk', 'def', 'mov', 'turns', 'radius'],
   'persuade': ['atk', 'def', 'mov', 'turns', 'radius'],
   'capture': [],
@@ -102,7 +103,7 @@ Object.assign(UNIT_EFFECT_FIELDS, {
   'charge': ['cost', 'cooldown', 'turns'],
   'control': ['cost', 'cooldown', 'turns', 'radius'],
   'nullify': ['cost', 'cooldown', 'turns'],
-  'leech': ['cost', 'cooldown', 'turns', 'atk', 'def'],
+  'leech': ['cost', 'cooldown', 'turns', 'atk', 'def', 'lifestealPercent'],
   'call': ['cost', 'cooldown', 'turns', 'heal', 'atk', 'def', 'mov', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius'],
 });
 
@@ -111,7 +112,7 @@ const PATH_EFFECT_FIELDS: Record<string, string[]> = {
   'offensive-power': ['atk', 'hel', 'minVet'],
   'mobility-economy': ['mov', 'baseMov', 'costReduction', 'minimumCost', 'minVet'],
   'promote': ['cost', 'cooldown', 'uses', 'stars'],
-  'recharge': ['cost', 'cooldown', 'uses', 'recharge', 'refundMultiplier'],
+  'recharge': ['cost', 'cooldown', 'uses', 'recharge', 'refundMultiplier', 'minimumCooldown'],
   'hex-sap': ['cost', 'cooldown', 'uses', 'turns', 'setAtk', 'splashAtk', 'setHel', 'splashHel', 'splashRange', 'outerRange', 'outerAtk', 'outerHel'],
   'hex-cleave': ['cost', 'cooldown', 'uses', 'damage', 'splashDamage', 'splashRange', 'heal'],
   'hex-trap': ['cost', 'cooldown', 'uses', 'turns', 'splashMov', 'splashRange', 'outerMov'],
@@ -190,6 +191,9 @@ function abilityNumberErrors(abilities: any): string[] {
         }
       }
       if (a.target !== (PATH_TARGETS[a.effect] ?? (a.effect === 'control' ? 'enemy' : 'friendly'))) errors.push(`${at}.target does not match the configured effect`);
+    }
+    for (const [field, effect] of [['lifestealPercent', 'leech'], ['healPercent', 'regenerate'], ['minimumCooldown', 'recharge']]) {
+      if (a[field] !== undefined && (a.effect !== effect || (field !== 'minimumCooldown' && a[field] > 100))) errors.push(`${at}.${field} is invalid for ${a.effect}`);
     }
     if (a.refundMultiplier !== undefined && a.effect !== 'recharge') errors.push(`${at}.refundMultiplier requires Recharge`);
     if (['baseMov', 'costReduction', 'minimumCost'].some(field => a[field] !== undefined) && a.effect !== 'mobility-economy') errors.push(`${at}: Sprint-only fields require mobility-economy`);

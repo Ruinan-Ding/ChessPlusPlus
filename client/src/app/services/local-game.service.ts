@@ -11,7 +11,7 @@ import type { BoardState } from './game-state.service';
 import { BASE_PANELS, computeLegalMoves, computeMoveCosts, canAttack, healingAmount, hexDistanceKeys, inHomeRows, isInsideBoard, panelOfHex } from './hex-rules';
 import { boardMoveLandings, boardMoveUids, boardMovesAt, unitActionActor, unitActionUids, finishedUnitUids, battlefieldActionBonus, extraActionUids, lockedPanelUnits, openingMovedHexes, panelMoverAllowed, unitVeterancy, promotionHeals, regenerationHeals } from './history-rules';
 import { attacksAllowed, boardMovesPerTurn, movesPerTurn, stageRules, overtimeTollAt, isEntryOpen, isHomecomingOpen, isInitialization, isSetupTurn, isWrapOpen, noAttackMessage } from './phases';
-import { PhaseBank, bankEndedPhases, halftimeUpAwards, scheduleEnding, withdrawalRefund, withdrawnUnit, unitPoints } from './match-score';
+import { PhaseBank, bankEndedPhases, halftimeUpAwards, scheduleEnding, withdrawalRefund, withdrawnUnit, unitPoints, unitValue } from './match-score';
 
 /**
  * Offline single-player engine.
@@ -690,7 +690,7 @@ export class LocalGameService {
     const before = this.landEffects({ ...g.boardState }, effectsBefore);
     const history = [...g.moveHistory, ...before.records];
     // Geometry remains the room's; the price and UP affordability are derived here.
-    const worth = Math.max(0, Math.trunc(Number(g.config?.units?.[unit.unit_id]?.value) || 0))
+    const worth = unitValue(g.config, unit.unit_id, 'wrap')
       * sectionOf(g.config, 'economy').wrapPriceMultiplier;
     if (wrap && unitPoints(g.config, history, unit.color) < worth) {
       this.emit({ type: 'invalid_move', message: 'Not enough UP for the crossing' });

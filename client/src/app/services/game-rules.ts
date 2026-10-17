@@ -20,6 +20,9 @@ const validate = new Ajv({ allErrors: true, strict: false, strictNumbers: true }
 function fillMissing(value: any, defaults: any): void {
   if (value && typeof value === 'object' && !Array.isArray(value) && defaults && typeof defaults === 'object') {
     for (const [key, fallback] of Object.entries(defaults)) {
+      // Economic overrides are sparse snapshots. A later shipped override must not
+      // fill an old map or its omitted unit/purpose entries and rebalance that match.
+      if (key === 'unitValues') continue;
       if (!Object.hasOwn(value, key)) value[key] = structuredClone(fallback);
       else if (fallback && typeof fallback === 'object' && !Array.isArray(fallback)) {
         const retained = key === 'walkHomeRefund'
@@ -89,6 +92,9 @@ export function migrateConfig(raw: any): any {
 export function domainErrors(config: any): string[] {
   if (!validate(config as unknown)) return (validate.errors ?? []).map(e => `${e.instancePath.slice(1).replaceAll('/', '.') || 'config'}: ${e.message}`);
   const errors: string[] = Object.keys(config).filter(key => ![...RULE_SECTIONS, 'version', 'ruleset', 'board', 'units', 'abilities', 'setup'].includes(key)).map(key => `Unknown configuration field: ${key}`);
+  for (const id of Object.keys(config.economy.unitValues ?? {})) {
+    if (!Object.hasOwn(config.units ?? {}, id)) errors.push(`economy.unitValues.${id} names an unknown unit`);
+  }
   const match = config.match, count = match.phases.length;
   match.phases.forEach((phase: any, index: number) => {
     if (phase.halftimeAfter > phase.turns) errors.push(`match.phases.${index}.halftimeAfter exceeds turns`);

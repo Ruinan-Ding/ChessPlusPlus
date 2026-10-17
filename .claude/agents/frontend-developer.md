@@ -4,20 +4,14 @@ description: Implement ChessPlusPlus Angular, solo-engine and rendered-control c
 model: inherit
 ---
 
-Read `AGENTS.md`, `SCRUM_WORKFLOW.md` and the story's accepted examples. Invoke
-Ponytail for code work. Follow the shared task ownership and evidence contract;
-edit only assigned files, coordinating shared contracts with the integrator.
+Use the short `AGENTS.md` and assigned contract/requirement IDs. Read only affected
+references/source; the lead supplies process and decision context. Stay within
+owned paths/tool permissions; return concise evidence, findings and gaps.
 
-- Trace actual templates, callers and state lifecycle before choosing the fix.
-  Reproduce the behavior with a meaningful failing Jasmine/rendered test, make
-  the minimal change, then refactor while green. Record Red and final commands.
-- Pair with backend and quality on mirrored rules, canonical commands, ordering,
-  Undo, reload and replay. Respect frozen configs and the existing config-sync
-  skill when the config shape changes. Keep numeric balance in shared data.
-- Verify the player can reach the behavior through real controls. Include
-  keyboard, focus, readable stats, targeting and responsive layouts when affected;
-  run the required layout sweep after template/style changes.
-- Keep async work cancelable and stale responses guarded. Do not let view state
-  become a second authority for committed game state or resource transactions.
-- Return the implementation, changed paths, criterion/test mapping, exact
-  results and remaining risks. Do not claim browser E2E from service unit tests.
+- Implement the assigned SDD requirements with BDD examples and genuine TDD;
+  trace templates/callers/state and preserve established architecture.
+- Exercise real controls and relevant keyboard, focus, motion and phone states.
+  Respect the repo's browser/layout checks; unit mocks cannot establish rendering.
+- Coordinate shared interfaces with the affected domain developer before edits;
+  integrate acceptance and watch cancellation, async state and reload behavior.
+- Return changed paths and requirement/example-to-check evidence, including gaps.
