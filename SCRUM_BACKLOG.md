@@ -8,13 +8,11 @@ their historical fixes here or treat this file as a second game specification.
 
 ## Current work
 
-**WF-004 — Efficient SDD delivery: Done for scoped implementation/checks; unscheduled.** The owner requested
-cheaper context loading and automatic informal-request → SDD → BDD → TDD delivery.
-[Contract, acceptance and evidence](specs/WF-004-efficient-sdd.md) are canonical.
-All existing dirty product work is preserved. Resume this contract only for
-matching workflow work; new requests use their own contract. Read completed
-entries below only for a concrete historical question.
-SDD is active now; earlier “optional/future SDD” entries describe their dated state.
+**WF-006 — Claude plugin integration: Done for installation/guidance/checks; unscheduled.**
+Owner request17 Oct: add relevant plugins, including Ralph, while keeping the
+SAFe/SDD/BDD/TDD workflow efficient. [Contract and evidence](specs/WF-006-workflow-plugins.md)
+are canonical. Prior [SAFe configuration](specs/WF-005-lean-safe.md) remains complete
+for configured guidance/checks. Resume only the contract matching the request.
 
 ## Product Goal
 

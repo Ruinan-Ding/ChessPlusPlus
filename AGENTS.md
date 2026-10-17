@@ -3,7 +3,7 @@
 ChessPlusPlus is a config-driven hex tactics game: Angular19 in `client/`,
 Django Channels in `server/`, shared contracts in `shared/`. Read this core once.
 Ordinary development requests and `/scrum` use [.claude/skills/scrum/SKILL.md](.claude/skills/scrum/SKILL.md):
-active SDD → BDD → TDD with the human Product Owner and senior roles on demand.
+SAFe-aligned SDD → BDD → TDD with the human Product Owner and roles on demand.
 
 ## Owner constraints
 

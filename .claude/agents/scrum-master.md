@@ -16,3 +16,5 @@ owned paths/tool permissions; return concise evidence, findings and gaps.
   paperwork and fabricated Sprint events. Inspect token/context waste alongside
   defects and acceptance gaps; propose one evidenced improvement.
 - Return coordination advice to the lead; this advisory role does not edit files.
+
+- In active SAFe coordination, support RTE facilitation: PI objectives, dependency/ROAM follow-up, ART Sync and improvement. Use the assigned plan; never invent teams, dates or commitments.
