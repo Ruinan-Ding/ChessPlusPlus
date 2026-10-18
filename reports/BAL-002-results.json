@@ -1,0 +1,3091 @@
+{
+  "source": {
+    "branch": "feature/deployment-scaffold",
+    "head": "16ae570",
+    "ruleset_revision": null,
+    "config_sha256": "bc468cd593022ab9095f1a2e130bb794e8d97c400ee126e7f0a81e9457f36af8",
+    "simulator_sha256": "bf448947479b13836db176dbe76c3fb147cd0027afadd2eed96bd49b292c30c5"
+  },
+  "scope": "520 full matches plus 28 overtime continuations; focused probes excluded from win rates",
+  "cohorts": {
+    "tournament": {
+      "games": 448,
+      "plies": 16781,
+      "endings": {
+        "regicide": 367,
+        "phase_result": 62,
+        "points": 18,
+        "overtime": 1
+      },
+      "winner": {
+        "black": 213,
+        "white": 235
+      },
+      "length": {
+        "n": 448,
+        "mean": 37.46,
+        "p10": 20,
+        "median": 35.0,
+        "p90": 50,
+        "min": 14,
+        "max": 100
+      },
+      "styles": {
+        "control": {
+          "n": 128,
+          "losses": 65,
+          "white_losses": 30,
+          "wins": 63,
+          "black_wins": 29,
+          "black_losses": 35,
+          "white_wins": 34
+        },
+        "adaptive": {
+          "n": 128,
+          "losses": 53,
+          "white_losses": 28,
+          "wins": 75,
+          "black_wins": 39,
+          "black_losses": 25,
+          "white_wins": 36
+        },
+        "defend": {
+          "n": 128,
+          "wins": 78,
+          "black_wins": 28,
+          "losses": 50,
+          "black_losses": 36,
+          "white_wins": 50,
+          "white_losses": 14
+        },
+        "rush": {
+          "n": 128,
+          "losses": 62,
+          "white_losses": 32,
+          "black_losses": 30,
+          "wins": 66,
+          "white_wins": 32,
+          "black_wins": 34
+        },
+        "attrition": {
+          "n": 128,
+          "losses": 76,
+          "white_losses": 42,
+          "wins": 52,
+          "black_wins": 30,
+          "white_wins": 22,
+          "black_losses": 34
+        },
+        "capture": {
+          "n": 128,
+          "wins": 47,
+          "white_wins": 26,
+          "losses": 81,
+          "black_losses": 43,
+          "white_losses": 38,
+          "black_wins": 21
+        },
+        "economy": {
+          "n": 128,
+          "wins": 67,
+          "black_wins": 32,
+          "losses": 61,
+          "white_losses": 29,
+          "white_wins": 35,
+          "black_losses": 32
+        }
+      },
+      "paired": {
+        "control": {
+          "nonmirror_games": 96,
+          "paired_seed_clusters": 48,
+          "score": 0.4896,
+          "bootstrap95": [
+            0.3958,
+            0.5938
+          ]
+        },
+        "adaptive": {
+          "nonmirror_games": 96,
+          "paired_seed_clusters": 48,
+          "score": 0.6146,
+          "bootstrap95": [
+            0.5,
+            0.7188
+          ]
+        },
+        "defend": {
+          "nonmirror_games": 96,
+          "paired_seed_clusters": 48,
+          "score": 0.6458,
+          "bootstrap95": [
+            0.5521,
+            0.7292
+          ]
+        },
+        "rush": {
+          "nonmirror_games": 96,
+          "paired_seed_clusters": 48,
+          "score": 0.5208,
+          "bootstrap95": [
+            0.4271,
+            0.625
+          ]
+        },
+        "attrition": {
+          "nonmirror_games": 96,
+          "paired_seed_clusters": 48,
+          "score": 0.375,
+          "bootstrap95": [
+            0.2708,
+            0.4792
+          ]
+        },
+        "capture": {
+          "nonmirror_games": 96,
+          "paired_seed_clusters": 48,
+          "score": 0.3229,
+          "bootstrap95": [
+            0.2292,
+            0.4167
+          ]
+        },
+        "economy": {
+          "nonmirror_games": 96,
+          "paired_seed_clusters": 48,
+          "score": 0.5312,
+          "bootstrap95": [
+            0.4271,
+            0.6458
+          ]
+        }
+      },
+      "matchups": {
+        "control|control": {
+          "n": 32,
+          "losses": 16,
+          "wins": 16
+        },
+        "adaptive|defend": {
+          "n": 16,
+          "losses": 11,
+          "wins": 5
+        },
+        "defend|adaptive": {
+          "n": 16,
+          "wins": 11,
+          "losses": 5
+        },
+        "rush|adaptive": {
+          "n": 16,
+          "losses": 13,
+          "wins": 3
+        },
+        "adaptive|rush": {
+          "n": 16,
+          "wins": 13,
+          "losses": 3
+        },
+        "attrition|defend": {
+          "n": 16,
+          "losses": 12,
+          "wins": 4
+        },
+        "defend|attrition": {
+          "n": 16,
+          "wins": 12,
+          "losses": 4
+        },
+        "capture|capture": {
+          "n": 32,
+          "wins": 16,
+          "losses": 16
+        },
+        "capture|attrition": {
+          "n": 16,
+          "losses": 10,
+          "wins": 6
+        },
+        "attrition|capture": {
+          "n": 16,
+          "wins": 10,
+          "losses": 6
+        },
+        "defend|capture": {
+          "n": 16,
+          "wins": 10,
+          "losses": 6
+        },
+        "capture|defend": {
+          "n": 16,
+          "losses": 10,
+          "wins": 6
+        },
+        "defend|economy": {
+          "n": 16,
+          "losses": 6,
+          "wins": 10
+        },
+        "economy|defend": {
+          "n": 16,
+          "wins": 6,
+          "losses": 10
+        },
+        "defend|rush": {
+          "n": 16,
+          "wins": 9,
+          "losses": 7
+        },
+        "rush|defend": {
+          "n": 16,
+          "losses": 9,
+          "wins": 7
+        },
+        "rush|control": {
+          "n": 16,
+          "wins": 9,
+          "losses": 7
+        },
+        "control|rush": {
+          "n": 16,
+          "losses": 9,
+          "wins": 7
+        },
+        "control|adaptive": {
+          "n": 16,
+          "wins": 9,
+          "losses": 7
+        },
+        "adaptive|control": {
+          "n": 16,
+          "losses": 9,
+          "wins": 7
+        },
+        "control|attrition": {
+          "n": 16,
+          "losses": 7,
+          "wins": 9
+        },
+        "attrition|control": {
+          "n": 16,
+          "wins": 7,
+          "losses": 9
+        },
+        "capture|rush": {
+          "n": 16,
+          "losses": 11,
+          "wins": 5
+        },
+        "rush|capture": {
+          "n": 16,
+          "wins": 11,
+          "losses": 5
+        },
+        "control|defend": {
+          "n": 16,
+          "losses": 10,
+          "wins": 6
+        },
+        "defend|control": {
+          "n": 16,
+          "wins": 10,
+          "losses": 6
+        },
+        "capture|control": {
+          "n": 16,
+          "losses": 9,
+          "wins": 7
+        },
+        "control|capture": {
+          "n": 16,
+          "wins": 9,
+          "losses": 7
+        },
+        "economy|economy": {
+          "n": 32,
+          "wins": 16,
+          "losses": 16
+        },
+        "rush|rush": {
+          "n": 32,
+          "losses": 16,
+          "wins": 16
+        },
+        "attrition|rush": {
+          "n": 16,
+          "losses": 13,
+          "wins": 3
+        },
+        "rush|attrition": {
+          "n": 16,
+          "wins": 13,
+          "losses": 3
+        },
+        "capture|adaptive": {
+          "n": 16,
+          "losses": 11,
+          "wins": 5
+        },
+        "adaptive|capture": {
+          "n": 16,
+          "wins": 11,
+          "losses": 5
+        },
+        "adaptive|adaptive": {
+          "n": 32,
+          "wins": 16,
+          "losses": 16
+        },
+        "rush|economy": {
+          "n": 16,
+          "losses": 9,
+          "wins": 7
+        },
+        "economy|rush": {
+          "n": 16,
+          "wins": 9,
+          "losses": 7
+        },
+        "attrition|adaptive": {
+          "n": 16,
+          "losses": 12,
+          "wins": 4
+        },
+        "adaptive|attrition": {
+          "n": 16,
+          "wins": 12,
+          "losses": 4
+        },
+        "defend|defend": {
+          "n": 32,
+          "wins": 16,
+          "losses": 16
+        },
+        "economy|control": {
+          "n": 16,
+          "wins": 9,
+          "losses": 7
+        },
+        "control|economy": {
+          "n": 16,
+          "losses": 9,
+          "wins": 7
+        },
+        "adaptive|economy": {
+          "n": 16,
+          "wins": 11,
+          "losses": 5
+        },
+        "economy|adaptive": {
+          "n": 16,
+          "losses": 11,
+          "wins": 5
+        },
+        "attrition|economy": {
+          "n": 16,
+          "losses": 8,
+          "wins": 8
+        },
+        "economy|attrition": {
+          "n": 16,
+          "wins": 8,
+          "losses": 8
+        },
+        "economy|capture": {
+          "n": 16,
+          "wins": 14,
+          "losses": 2
+        },
+        "capture|economy": {
+          "n": 16,
+          "losses": 14,
+          "wins": 2
+        },
+        "attrition|attrition": {
+          "n": 32,
+          "losses": 16,
+          "wins": 16
+        }
+      },
+      "builds": {
+        "control|tempo": {
+          "n": 42,
+          "losses": 26,
+          "wins": 16
+        },
+        "control|bastion": {
+          "n": 48,
+          "wins": 23,
+          "losses": 25
+        },
+        "adaptive|onslaught": {
+          "n": 44,
+          "losses": 17,
+          "wins": 27
+        },
+        "defend|bastion": {
+          "n": 34,
+          "wins": 27,
+          "losses": 7
+        },
+        "rush|onslaught": {
+          "n": 44,
+          "losses": 19,
+          "wins": 25
+        },
+        "adaptive|bastion": {
+          "n": 48,
+          "wins": 33,
+          "losses": 15
+        },
+        "attrition|onslaught": {
+          "n": 38,
+          "losses": 23,
+          "wins": 15
+        },
+        "defend|onslaught": {
+          "n": 48,
+          "wins": 29,
+          "losses": 19
+        },
+        "capture|tempo": {
+          "n": 34,
+          "wins": 11,
+          "losses": 23
+        },
+        "capture|onslaught": {
+          "n": 48,
+          "losses": 38,
+          "wins": 10
+        },
+        "attrition|bastion": {
+          "n": 42,
+          "wins": 23,
+          "losses": 19
+        },
+        "economy|tempo": {
+          "n": 40,
+          "wins": 17,
+          "losses": 23
+        },
+        "rush|tempo": {
+          "n": 48,
+          "wins": 17,
+          "losses": 31
+        },
+        "control|onslaught": {
+          "n": 38,
+          "losses": 14,
+          "wins": 24
+        },
+        "adaptive|tempo": {
+          "n": 36,
+          "losses": 21,
+          "wins": 15
+        },
+        "economy|onslaught": {
+          "n": 48,
+          "losses": 23,
+          "wins": 25
+        },
+        "defend|tempo": {
+          "n": 46,
+          "wins": 22,
+          "losses": 24
+        },
+        "capture|bastion": {
+          "n": 46,
+          "losses": 20,
+          "wins": 26
+        },
+        "attrition|tempo": {
+          "n": 48,
+          "losses": 34,
+          "wins": 14
+        },
+        "rush|bastion": {
+          "n": 36,
+          "losses": 12,
+          "wins": 24
+        },
+        "economy|bastion": {
+          "n": 40,
+          "wins": 25,
+          "losses": 15
+        }
+      },
+      "selections": {
+        "path|not_purchased": 400,
+        "pool|warcry": 452,
+        "pool|sap": 452,
+        "pool|mend": 440,
+        "pool|strike": 440,
+        "path|bastion": 294,
+        "pool|bulwark": 478,
+        "pool|weakening": 478,
+        "path|onslaught": 134,
+        "pool|dash": 422,
+        "pool|mire": 422,
+        "path|tempo": 68
+      },
+      "uses": {
+        "warcry": 667,
+        "mend": 1085,
+        "strike": 448,
+        "weakening": 1034,
+        "convert": 138,
+        "bulwark": 231,
+        "king-call": 314,
+        "anchor": 115,
+        "strengthen": 69,
+        "bishop-cast": 73,
+        "recharge": 145,
+        "sap": 82,
+        "unit-sacrifice": 323,
+        "queen-leech": 106,
+        "cleave": 72,
+        "knight-charge": 35,
+        "fortress": 8,
+        "dash": 5,
+        "blitz": 10,
+        "ruin": 9,
+        "rook-cleave": 1,
+        "archer-bog": 1
+      },
+      "ability_games": {
+        "warcry": 409,
+        "mend": 425,
+        "strike": 263,
+        "weakening": 429,
+        "convert": 80,
+        "bulwark": 182,
+        "king-call": 103,
+        "anchor": 73,
+        "strengthen": 38,
+        "bishop-cast": 51,
+        "recharge": 48,
+        "sap": 64,
+        "unit-sacrifice": 128,
+        "queen-leech": 63,
+        "cleave": 52,
+        "knight-charge": 26,
+        "fortress": 8,
+        "dash": 5,
+        "blitz": 10,
+        "ruin": 9,
+        "rook-cleave": 1,
+        "archer-bog": 1
+      },
+      "considered_legal_turns": {
+        "mend": 2365,
+        "strike": 935,
+        "warcry": 896,
+        "bulwark": 882,
+        "weakening": 1502,
+        "dash": 1146,
+        "mire": 4015,
+        "convert": 183,
+        "bishop-cast": 91,
+        "strengthen": 802,
+        "sap": 193,
+        "archer-bog": 673,
+        "king-call": 928,
+        "queen-leech": 372,
+        "shield-taunt": 876,
+        "unit-sacrifice": 644,
+        "anchor": 377,
+        "recharge": 171,
+        "surge": 135,
+        "cleave": 113,
+        "knight-charge": 195,
+        "rook-cleave": 78,
+        "fortress": 12,
+        "blitz": 11,
+        "ruin": 14
+      },
+      "actors_per_side": {
+        "n": 896,
+        "mean": 22.07,
+        "p10": 16,
+        "median": 22.0,
+        "p90": 28,
+        "min": 11,
+        "max": 37
+      },
+      "casts_per_side": {
+        "n": 896,
+        "mean": 5.55,
+        "p10": 2,
+        "median": 4.0,
+        "p90": 10,
+        "min": 1,
+        "max": 68
+      },
+      "checkpoints": {
+        "0": {
+          "cp": {
+            "n": 896,
+            "mean": 5,
+            "p10": 5,
+            "median": 5.0,
+            "p90": 5,
+            "min": 5,
+            "max": 5
+          },
+          "points": {
+            "n": 896,
+            "mean": 10.5,
+            "p10": 10,
+            "median": 10.5,
+            "p90": 11,
+            "min": 10,
+            "max": 11
+          },
+          "up": {
+            "n": 896,
+            "mean": 10,
+            "p10": 10,
+            "median": 10.0,
+            "p90": 10,
+            "min": 10,
+            "max": 10
+          },
+          "capture": {
+            "n": 896,
+            "mean": 0,
+            "p10": 0,
+            "median": 0.0,
+            "p90": 0,
+            "min": 0,
+            "max": 0
+          },
+          "field": {
+            "n": 896,
+            "mean": 24,
+            "p10": 24,
+            "median": 24.0,
+            "p90": 24,
+            "min": 24,
+            "max": 24
+          },
+          "living": {
+            "n": 896,
+            "mean": 40,
+            "p10": 40,
+            "median": 40.0,
+            "p90": 40,
+            "min": 40,
+            "max": 40
+          }
+        },
+        "1": {
+          "cp": {
+            "n": 896,
+            "mean": 3.36,
+            "p10": 0,
+            "median": 5.0,
+            "p90": 5,
+            "min": 0,
+            "max": 5
+          },
+          "points": {
+            "n": 896,
+            "mean": 23.5,
+            "p10": 13,
+            "median": 23.5,
+            "p90": 34,
+            "min": 13,
+            "max": 34
+          },
+          "up": {
+            "n": 896,
+            "mean": 10,
+            "p10": 10,
+            "median": 10.0,
+            "p90": 10,
+            "min": 10,
+            "max": 10
+          },
+          "capture": {
+            "n": 896,
+            "mean": 40.34,
+            "p10": 7,
+            "median": 43.0,
+            "p90": 60,
+            "min": 2,
+            "max": 61
+          },
+          "field": {
+            "n": 896,
+            "mean": 24,
+            "p10": 24,
+            "median": 24.0,
+            "p90": 24,
+            "min": 24,
+            "max": 24
+          },
+          "living": {
+            "n": 896,
+            "mean": 40,
+            "p10": 40,
+            "median": 40.0,
+            "p90": 40,
+            "min": 40,
+            "max": 40
+          }
+        },
+        "2": {
+          "cp": {
+            "n": 676,
+            "mean": 28.16,
+            "p10": 10,
+            "median": 15.0,
+            "p90": 64,
+            "min": 0,
+            "max": 158
+          },
+          "points": {
+            "n": 676,
+            "mean": 19.59,
+            "p10": 4,
+            "median": 24.0,
+            "p90": 35,
+            "min": 2,
+            "max": 48
+          },
+          "up": {
+            "n": 676,
+            "mean": 56.24,
+            "p10": 8,
+            "median": 49.0,
+            "p90": 116,
+            "min": 0,
+            "max": 222
+          },
+          "capture": {
+            "n": 676,
+            "mean": 44.65,
+            "p10": 9,
+            "median": 42.5,
+            "p90": 76,
+            "min": 0,
+            "max": 133
+          },
+          "field": {
+            "n": 676,
+            "mean": 21.41,
+            "p10": 18,
+            "median": 22.0,
+            "p90": 24,
+            "min": 14,
+            "max": 27
+          },
+          "living": {
+            "n": 676,
+            "mean": 36.82,
+            "p10": 34,
+            "median": 37.0,
+            "p90": 40,
+            "min": 30,
+            "max": 41
+          }
+        },
+        "3": {
+          "cp": {
+            "n": 88,
+            "mean": 86.51,
+            "p10": 13,
+            "median": 71.0,
+            "p90": 169,
+            "min": 0,
+            "max": 457
+          },
+          "points": {
+            "n": 88,
+            "mean": 18.78,
+            "p10": 1,
+            "median": 22.0,
+            "p90": 34,
+            "min": 0,
+            "max": 67
+          },
+          "up": {
+            "n": 88,
+            "mean": 106.56,
+            "p10": 5,
+            "median": 84.5,
+            "p90": 253,
+            "min": 0,
+            "max": 333
+          },
+          "capture": {
+            "n": 88,
+            "mean": 52.44,
+            "p10": 15,
+            "median": 57.0,
+            "p90": 95,
+            "min": 3,
+            "max": 133
+          },
+          "field": {
+            "n": 88,
+            "mean": 20.56,
+            "p10": 15,
+            "median": 21.0,
+            "p90": 24,
+            "min": 11,
+            "max": 27
+          },
+          "living": {
+            "n": 88,
+            "mean": 35.02,
+            "p10": 30,
+            "median": 36.0,
+            "p90": 39,
+            "min": 27,
+            "max": 40
+          }
+        },
+        "4": {
+          "cp": {
+            "n": 8,
+            "mean": 60.38,
+            "p10": 19,
+            "median": 45.5,
+            "p90": 112,
+            "min": 11,
+            "max": 133
+          },
+          "points": {
+            "n": 8,
+            "mean": 72.62,
+            "p10": 9,
+            "median": 32.0,
+            "p90": 181,
+            "min": 2,
+            "max": 204
+          },
+          "up": {
+            "n": 8,
+            "mean": 125.75,
+            "p10": 8,
+            "median": 81.5,
+            "p90": 225,
+            "min": 3,
+            "max": 375
+          },
+          "capture": {
+            "n": 8,
+            "mean": 49.5,
+            "p10": 24,
+            "median": 59.0,
+            "p90": 66,
+            "min": 4,
+            "max": 77
+          },
+          "field": {
+            "n": 8,
+            "mean": 17.12,
+            "p10": 16,
+            "median": 17.5,
+            "p90": 19,
+            "min": 12,
+            "max": 20
+          },
+          "living": {
+            "n": 8,
+            "mean": 30,
+            "p10": 26,
+            "median": 31.0,
+            "p90": 32,
+            "min": 26,
+            "max": 33
+          }
+        }
+      },
+      "reached_plies": {
+        "7": 448,
+        "17": 440,
+        "27": 341,
+        "29": 338,
+        "39": 185,
+        "49": 103,
+        "51": 44,
+        "61": 35,
+        "71": 22,
+        "73": 4,
+        "89": 1,
+        "99": 1
+      },
+      "previews": 293203,
+      "tactical_bundles": 9628
+    },
+    "macros": {
+      "games": 48,
+      "plies": 2555,
+      "endings": {
+        "regicide": 21,
+        "phase_result": 19,
+        "points": 8
+      },
+      "winner": {
+        "black": 24,
+        "white": 24
+      },
+      "length": {
+        "n": 48,
+        "mean": 53.23,
+        "p10": 28,
+        "median": 50.0,
+        "p90": 72,
+        "min": 28,
+        "max": 72
+      },
+      "styles": {
+        "script_king_hold": {
+          "n": 24,
+          "losses": 24,
+          "white_losses": 12,
+          "black_losses": 12
+        },
+        "adaptive": {
+          "n": 16,
+          "wins": 16,
+          "black_wins": 8,
+          "white_wins": 8
+        },
+        "control": {
+          "n": 16,
+          "wins": 16,
+          "white_wins": 8,
+          "black_wins": 8
+        },
+        "script_bishop_tally": {
+          "n": 24,
+          "losses": 24,
+          "black_losses": 12,
+          "white_losses": 12
+        },
+        "capture": {
+          "n": 16,
+          "wins": 16,
+          "black_wins": 8,
+          "white_wins": 8
+        }
+      },
+      "paired": {
+        "script_king_hold": {
+          "nonmirror_games": 24,
+          "paired_seed_clusters": 12,
+          "score": 0,
+          "bootstrap95": [
+            0,
+            0
+          ]
+        },
+        "adaptive": {
+          "nonmirror_games": 16,
+          "paired_seed_clusters": 8,
+          "score": 1,
+          "bootstrap95": [
+            1,
+            1
+          ]
+        },
+        "control": {
+          "nonmirror_games": 16,
+          "paired_seed_clusters": 8,
+          "score": 1,
+          "bootstrap95": [
+            1,
+            1
+          ]
+        },
+        "script_bishop_tally": {
+          "nonmirror_games": 24,
+          "paired_seed_clusters": 12,
+          "score": 0,
+          "bootstrap95": [
+            0,
+            0
+          ]
+        },
+        "capture": {
+          "nonmirror_games": 16,
+          "paired_seed_clusters": 8,
+          "score": 1,
+          "bootstrap95": [
+            1,
+            1
+          ]
+        }
+      },
+      "matchups": {
+        "script_king_hold|adaptive": {
+          "n": 8,
+          "losses": 8
+        },
+        "adaptive|script_king_hold": {
+          "n": 8,
+          "wins": 8
+        },
+        "control|script_bishop_tally": {
+          "n": 8,
+          "wins": 8
+        },
+        "script_bishop_tally|control": {
+          "n": 8,
+          "losses": 8
+        },
+        "script_king_hold|capture": {
+          "n": 8,
+          "losses": 8
+        },
+        "capture|script_king_hold": {
+          "n": 8,
+          "wins": 8
+        },
+        "script_bishop_tally|capture": {
+          "n": 8,
+          "losses": 8
+        },
+        "capture|script_bishop_tally": {
+          "n": 8,
+          "wins": 8
+        },
+        "adaptive|script_bishop_tally": {
+          "n": 8,
+          "wins": 8
+        },
+        "script_bishop_tally|adaptive": {
+          "n": 8,
+          "losses": 8
+        },
+        "control|script_king_hold": {
+          "n": 8,
+          "wins": 8
+        },
+        "script_king_hold|control": {
+          "n": 8,
+          "losses": 8
+        }
+      },
+      "builds": {
+        "script_king_hold|bastion": {
+          "n": 24,
+          "losses": 24
+        },
+        "adaptive|bastion": {
+          "n": 8,
+          "wins": 8
+        },
+        "control|tempo": {
+          "n": 4,
+          "wins": 4
+        },
+        "script_bishop_tally|bastion": {
+          "n": 24,
+          "losses": 24
+        },
+        "capture|tempo": {
+          "n": 4,
+          "wins": 4
+        },
+        "capture|onslaught": {
+          "n": 4,
+          "wins": 4
+        },
+        "control|onslaught": {
+          "n": 4,
+          "wins": 4
+        },
+        "capture|bastion": {
+          "n": 8,
+          "wins": 8
+        },
+        "adaptive|onslaught": {
+          "n": 4,
+          "wins": 4
+        },
+        "adaptive|tempo": {
+          "n": 4,
+          "wins": 4
+        },
+        "control|bastion": {
+          "n": 8,
+          "wins": 8
+        }
+      },
+      "selections": {
+        "path|bastion": 72,
+        "pool|mend": 76,
+        "pool|strike": 76,
+        "pool|warcry": 20,
+        "pool|sap": 20,
+        "path|tempo": 10,
+        "path|onslaught": 12,
+        "pool|dash": 36,
+        "pool|mire": 36,
+        "pool|bulwark": 12,
+        "pool|weakening": 12,
+        "path|not_purchased": 2
+      },
+      "uses": {
+        "mend": 410,
+        "warcry": 59,
+        "fortress": 16,
+        "unit-sacrifice": 100,
+        "knight-charge": 21,
+        "strike": 64,
+        "recharge": 14,
+        "sap": 9,
+        "queen-leech": 15,
+        "weakening": 57,
+        "bulwark": 3,
+        "cleave": 7,
+        "convert": 20,
+        "ruin": 6,
+        "king-call": 27,
+        "dash": 5,
+        "bishop-cast": 14,
+        "strengthen": 2,
+        "blitz": 3,
+        "archer-bog": 1
+      },
+      "ability_games": {
+        "mend": 66,
+        "warcry": 18,
+        "fortress": 16,
+        "unit-sacrifice": 34,
+        "knight-charge": 13,
+        "strike": 22,
+        "recharge": 7,
+        "sap": 5,
+        "queen-leech": 9,
+        "weakening": 12,
+        "bulwark": 3,
+        "cleave": 6,
+        "convert": 11,
+        "ruin": 6,
+        "king-call": 15,
+        "dash": 5,
+        "bishop-cast": 5,
+        "strengthen": 1,
+        "blitz": 3,
+        "archer-bog": 1
+      },
+      "considered_legal_turns": {
+        "mend": 362,
+        "strike": 85,
+        "warcry": 65,
+        "anchor": 272,
+        "strengthen": 321,
+        "sap": 20,
+        "archer-bog": 186,
+        "fortress": 16,
+        "king-call": 206,
+        "knight-charge": 82,
+        "shield-taunt": 198,
+        "unit-sacrifice": 147,
+        "queen-leech": 29,
+        "recharge": 19,
+        "surge": 12,
+        "dash": 172,
+        "mire": 552,
+        "cleave": 22,
+        "convert": 30,
+        "bulwark": 27,
+        "weakening": 62,
+        "ruin": 6,
+        "bishop-cast": 18,
+        "blitz": 3
+      },
+      "actors_per_side": {
+        "n": 96,
+        "mean": 13.2,
+        "p10": 1,
+        "median": 8.0,
+        "p90": 29,
+        "min": 1,
+        "max": 36
+      },
+      "casts_per_side": {
+        "n": 96,
+        "mean": 8.89,
+        "p10": 2,
+        "median": 9.0,
+        "p90": 17,
+        "min": 0,
+        "max": 31
+      },
+      "checkpoints": {
+        "0": {
+          "cp": {
+            "n": 96,
+            "mean": 5,
+            "p10": 5,
+            "median": 5.0,
+            "p90": 5,
+            "min": 5,
+            "max": 5
+          },
+          "points": {
+            "n": 96,
+            "mean": 10.5,
+            "p10": 10,
+            "median": 10.5,
+            "p90": 11,
+            "min": 10,
+            "max": 11
+          },
+          "up": {
+            "n": 96,
+            "mean": 10,
+            "p10": 10,
+            "median": 10.0,
+            "p90": 10,
+            "min": 10,
+            "max": 10
+          },
+          "capture": {
+            "n": 96,
+            "mean": 0,
+            "p10": 0,
+            "median": 0.0,
+            "p90": 0,
+            "min": 0,
+            "max": 0
+          },
+          "field": {
+            "n": 96,
+            "mean": 24,
+            "p10": 24,
+            "median": 24.0,
+            "p90": 24,
+            "min": 24,
+            "max": 24
+          },
+          "living": {
+            "n": 96,
+            "mean": 40,
+            "p10": 40,
+            "median": 40.0,
+            "p90": 40,
+            "min": 40,
+            "max": 40
+          }
+        },
+        "1": {
+          "cp": {
+            "n": 96,
+            "mean": 1.25,
+            "p10": 0,
+            "median": 0.0,
+            "p90": 5,
+            "min": 0,
+            "max": 5
+          },
+          "points": {
+            "n": 96,
+            "mean": 23.5,
+            "p10": 13,
+            "median": 23.5,
+            "p90": 34,
+            "min": 13,
+            "max": 34
+          },
+          "up": {
+            "n": 96,
+            "mean": 10,
+            "p10": 10,
+            "median": 10.0,
+            "p90": 10,
+            "min": 10,
+            "max": 10
+          },
+          "capture": {
+            "n": 96,
+            "mean": 49.41,
+            "p10": 28,
+            "median": 57.0,
+            "p90": 59,
+            "min": 9,
+            "max": 59
+          },
+          "field": {
+            "n": 96,
+            "mean": 24,
+            "p10": 24,
+            "median": 24.0,
+            "p90": 24,
+            "min": 24,
+            "max": 24
+          },
+          "living": {
+            "n": 96,
+            "mean": 40,
+            "p10": 40,
+            "median": 40.0,
+            "p90": 40,
+            "min": 40,
+            "max": 40
+          }
+        },
+        "2": {
+          "cp": {
+            "n": 84,
+            "mean": 102.64,
+            "p10": 17,
+            "median": 106.0,
+            "p90": 174,
+            "min": 2,
+            "max": 244
+          },
+          "points": {
+            "n": 84,
+            "mean": 25.94,
+            "p10": 4,
+            "median": 25.0,
+            "p90": 44,
+            "min": 4,
+            "max": 65
+          },
+          "up": {
+            "n": 84,
+            "mean": 45.32,
+            "p10": 10,
+            "median": 36.5,
+            "p90": 90,
+            "min": 5,
+            "max": 132
+          },
+          "capture": {
+            "n": 84,
+            "mean": 45.52,
+            "p10": 0,
+            "median": 57.0,
+            "p90": 95,
+            "min": 0,
+            "max": 128
+          },
+          "field": {
+            "n": 84,
+            "mean": 23.45,
+            "p10": 22,
+            "median": 24.0,
+            "p90": 24,
+            "min": 19,
+            "max": 26
+          },
+          "living": {
+            "n": 84,
+            "mean": 39.35,
+            "p10": 38,
+            "median": 40.0,
+            "p90": 40,
+            "min": 35,
+            "max": 40
+          }
+        },
+        "3": {
+          "cp": {
+            "n": 46,
+            "mean": 238.09,
+            "p10": 12,
+            "median": 158.5,
+            "p90": 522,
+            "min": 6,
+            "max": 656
+          },
+          "points": {
+            "n": 46,
+            "mean": 23.37,
+            "p10": 1,
+            "median": 17.0,
+            "p90": 43,
+            "min": 0,
+            "max": 103
+          },
+          "up": {
+            "n": 46,
+            "mean": 102.28,
+            "p10": 16,
+            "median": 69.5,
+            "p90": 211,
+            "min": 2,
+            "max": 391
+          },
+          "capture": {
+            "n": 46,
+            "mean": 47.24,
+            "p10": 3,
+            "median": 57.0,
+            "p90": 85,
+            "min": 0,
+            "max": 171
+          },
+          "field": {
+            "n": 46,
+            "mean": 23,
+            "p10": 19,
+            "median": 23.0,
+            "p90": 24,
+            "min": 16,
+            "max": 28
+          },
+          "living": {
+            "n": 46,
+            "mean": 38.37,
+            "p10": 35,
+            "median": 39.0,
+            "p90": 40,
+            "min": 32,
+            "max": 40
+          }
+        }
+      },
+      "reached_plies": {
+        "7": 48,
+        "17": 48,
+        "27": 48,
+        "29": 42,
+        "39": 40,
+        "49": 36,
+        "51": 23,
+        "61": 17,
+        "71": 8,
+        "73": 0,
+        "89": 0,
+        "99": 0
+      },
+      "previews": 31118,
+      "tactical_bundles": 1039
+    },
+    "cpu": {
+      "games": 24,
+      "plies": 1080,
+      "endings": {
+        "regicide": 18,
+        "phase_result": 5,
+        "points": 1
+      },
+      "winner": {
+        "black": 10,
+        "white": 14
+      },
+      "length": {
+        "n": 24,
+        "mean": 45,
+        "p10": 32,
+        "median": 46.0,
+        "p90": 61,
+        "min": 26,
+        "max": 72
+      },
+      "styles": {
+        "cpu_normal": {
+          "n": 16,
+          "losses": 15,
+          "white_losses": 8,
+          "black_losses": 7,
+          "wins": 1,
+          "black_wins": 1
+        },
+        "rush": {
+          "n": 6,
+          "wins": 5,
+          "black_wins": 2,
+          "white_wins": 3,
+          "losses": 1,
+          "black_losses": 1
+        },
+        "control": {
+          "n": 6,
+          "wins": 5,
+          "black_wins": 2,
+          "white_wins": 3,
+          "losses": 1,
+          "black_losses": 1
+        },
+        "capture": {
+          "n": 6,
+          "wins": 5,
+          "black_wins": 2,
+          "white_wins": 3,
+          "losses": 1,
+          "black_losses": 1
+        },
+        "adaptive": {
+          "n": 6,
+          "wins": 5,
+          "black_wins": 3,
+          "losses": 1,
+          "white_losses": 1,
+          "white_wins": 2
+        },
+        "cpu_hard": {
+          "n": 8,
+          "losses": 5,
+          "black_losses": 4,
+          "wins": 3,
+          "white_wins": 3,
+          "white_losses": 1
+        }
+      },
+      "paired": {
+        "cpu_normal": {
+          "nonmirror_games": 16,
+          "paired_seed_clusters": 8,
+          "score": 0.0625,
+          "bootstrap95": [
+            0,
+            0.1875
+          ]
+        },
+        "rush": {
+          "nonmirror_games": 6,
+          "paired_seed_clusters": 3,
+          "score": 0.8333,
+          "bootstrap95": [
+            0.5,
+            1
+          ]
+        },
+        "control": {
+          "nonmirror_games": 6,
+          "paired_seed_clusters": 3,
+          "score": 0.8333,
+          "bootstrap95": [
+            0.5,
+            1
+          ]
+        },
+        "capture": {
+          "nonmirror_games": 6,
+          "paired_seed_clusters": 3,
+          "score": 0.8333,
+          "bootstrap95": [
+            0.5,
+            1
+          ]
+        },
+        "adaptive": {
+          "nonmirror_games": 6,
+          "paired_seed_clusters": 3,
+          "score": 0.8333,
+          "bootstrap95": [
+            0.5,
+            1
+          ]
+        },
+        "cpu_hard": {
+          "nonmirror_games": 8,
+          "paired_seed_clusters": 4,
+          "score": 0.375,
+          "bootstrap95": [
+            0.125,
+            0.5
+          ]
+        }
+      },
+      "matchups": {
+        "cpu_normal|rush": {
+          "n": 4,
+          "losses": 4
+        },
+        "rush|cpu_normal": {
+          "n": 4,
+          "wins": 4
+        },
+        "cpu_normal|control": {
+          "n": 4,
+          "losses": 4
+        },
+        "control|cpu_normal": {
+          "n": 4,
+          "wins": 4
+        },
+        "cpu_normal|capture": {
+          "n": 4,
+          "losses": 4
+        },
+        "capture|cpu_normal": {
+          "n": 4,
+          "wins": 4
+        },
+        "cpu_normal|adaptive": {
+          "n": 4,
+          "losses": 3,
+          "wins": 1
+        },
+        "adaptive|cpu_normal": {
+          "n": 4,
+          "wins": 3,
+          "losses": 1
+        },
+        "rush|cpu_hard": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        },
+        "cpu_hard|rush": {
+          "n": 2,
+          "losses": 1,
+          "wins": 1
+        },
+        "control|cpu_hard": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        },
+        "cpu_hard|control": {
+          "n": 2,
+          "losses": 1,
+          "wins": 1
+        },
+        "capture|cpu_hard": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        },
+        "cpu_hard|capture": {
+          "n": 2,
+          "losses": 1,
+          "wins": 1
+        },
+        "adaptive|cpu_hard": {
+          "n": 2,
+          "wins": 2
+        },
+        "cpu_hard|adaptive": {
+          "n": 2,
+          "losses": 2
+        }
+      },
+      "builds": {
+        "cpu_normal|bastion": {
+          "n": 8,
+          "losses": 8
+        },
+        "rush|bastion": {
+          "n": 4,
+          "wins": 3,
+          "losses": 1
+        },
+        "cpu_normal|onslaught": {
+          "n": 8,
+          "losses": 7,
+          "wins": 1
+        },
+        "control|onslaught": {
+          "n": 2,
+          "wins": 2
+        },
+        "capture|onslaught": {
+          "n": 2,
+          "wins": 2
+        },
+        "control|bastion": {
+          "n": 4,
+          "wins": 3,
+          "losses": 1
+        },
+        "adaptive|onslaught": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        },
+        "cpu_hard|bastion": {
+          "n": 8,
+          "losses": 5,
+          "wins": 3
+        },
+        "capture|bastion": {
+          "n": 4,
+          "wins": 3,
+          "losses": 1
+        },
+        "rush|onslaught": {
+          "n": 2,
+          "wins": 2
+        },
+        "adaptive|bastion": {
+          "n": 4,
+          "wins": 4
+        }
+      },
+      "selections": {
+        "path|not_purchased": 21,
+        "path|bastion": 20,
+        "pool|dash": 18,
+        "pool|mire": 18,
+        "pool|mend": 18,
+        "pool|strike": 18,
+        "path|onslaught": 7,
+        "pool|bulwark": 6,
+        "pool|weakening": 6,
+        "pool|warcry": 6,
+        "pool|sap": 6
+      },
+      "uses": {
+        "strike": 39,
+        "mend": 24,
+        "weakening": 24,
+        "convert": 10,
+        "bulwark": 4,
+        "unit-sacrifice": 14,
+        "cleave": 5,
+        "warcry": 10,
+        "ruin": 1,
+        "king-call": 11,
+        "dash": 3,
+        "bishop-cast": 6,
+        "knight-charge": 3,
+        "queen-leech": 3,
+        "fortress": 3,
+        "strengthen": 7,
+        "anchor": 1
+      },
+      "ability_games": {
+        "strike": 13,
+        "mend": 16,
+        "weakening": 6,
+        "convert": 7,
+        "bulwark": 3,
+        "unit-sacrifice": 10,
+        "cleave": 3,
+        "warcry": 6,
+        "ruin": 1,
+        "king-call": 5,
+        "dash": 3,
+        "bishop-cast": 4,
+        "knight-charge": 3,
+        "queen-leech": 3,
+        "fortress": 3,
+        "strengthen": 2,
+        "anchor": 1
+      },
+      "considered_legal_turns": {
+        "dash": 62,
+        "mend": 161,
+        "mire": 217,
+        "strike": 50,
+        "strengthen": 116,
+        "bulwark": 14,
+        "weakening": 29,
+        "convert": 13,
+        "archer-bog": 28,
+        "cleave": 7,
+        "king-call": 39,
+        "queen-leech": 12,
+        "shield-taunt": 30,
+        "unit-sacrifice": 26,
+        "bishop-cast": 10,
+        "knight-charge": 16,
+        "anchor": 65,
+        "warcry": 11,
+        "ruin": 1,
+        "fortress": 4
+      },
+      "actors_per_side": {
+        "n": 48,
+        "mean": 14.98,
+        "p10": 3,
+        "median": 16.0,
+        "p90": 27,
+        "min": 2,
+        "max": 29
+      },
+      "casts_per_side": {
+        "n": 48,
+        "mean": 3.5,
+        "p10": 0,
+        "median": 1.5,
+        "p90": 10,
+        "min": 0,
+        "max": 21
+      },
+      "checkpoints": {
+        "0": {
+          "cp": {
+            "n": 48,
+            "mean": 5,
+            "p10": 5,
+            "median": 5.0,
+            "p90": 5,
+            "min": 5,
+            "max": 5
+          },
+          "points": {
+            "n": 48,
+            "mean": 10.5,
+            "p10": 10,
+            "median": 10.5,
+            "p90": 11,
+            "min": 10,
+            "max": 11
+          },
+          "up": {
+            "n": 48,
+            "mean": 10,
+            "p10": 10,
+            "median": 10.0,
+            "p90": 10,
+            "min": 10,
+            "max": 10
+          },
+          "capture": {
+            "n": 48,
+            "mean": 0,
+            "p10": 0,
+            "median": 0.0,
+            "p90": 0,
+            "min": 0,
+            "max": 0
+          },
+          "field": {
+            "n": 48,
+            "mean": 24,
+            "p10": 24,
+            "median": 24.0,
+            "p90": 24,
+            "min": 24,
+            "max": 24
+          },
+          "living": {
+            "n": 48,
+            "mean": 40,
+            "p10": 40,
+            "median": 40.0,
+            "p90": 40,
+            "min": 40,
+            "max": 40
+          }
+        },
+        "1": {
+          "cp": {
+            "n": 48,
+            "mean": 2.92,
+            "p10": 0,
+            "median": 5.0,
+            "p90": 5,
+            "min": 0,
+            "max": 5
+          },
+          "points": {
+            "n": 48,
+            "mean": 23.5,
+            "p10": 13,
+            "median": 23.5,
+            "p90": 34,
+            "min": 13,
+            "max": 34
+          },
+          "up": {
+            "n": 48,
+            "mean": 10,
+            "p10": 10,
+            "median": 10.0,
+            "p90": 10,
+            "min": 10,
+            "max": 10
+          },
+          "capture": {
+            "n": 48,
+            "mean": 48.46,
+            "p10": 25,
+            "median": 59.0,
+            "p90": 61,
+            "min": 2,
+            "max": 61
+          },
+          "field": {
+            "n": 48,
+            "mean": 24,
+            "p10": 24,
+            "median": 24.0,
+            "p90": 24,
+            "min": 24,
+            "max": 24
+          },
+          "living": {
+            "n": 48,
+            "mean": 40,
+            "p10": 40,
+            "median": 40.0,
+            "p90": 40,
+            "min": 40,
+            "max": 40
+          }
+        },
+        "2": {
+          "cp": {
+            "n": 46,
+            "mean": 59.8,
+            "p10": 10,
+            "median": 44.5,
+            "p90": 135,
+            "min": 0,
+            "max": 223
+          },
+          "points": {
+            "n": 46,
+            "mean": 36.02,
+            "p10": 4,
+            "median": 39.5,
+            "p90": 65,
+            "min": 4,
+            "max": 65
+          },
+          "up": {
+            "n": 46,
+            "mean": 74.13,
+            "p10": 10,
+            "median": 71.5,
+            "p90": 139,
+            "min": 6,
+            "max": 176
+          },
+          "capture": {
+            "n": 46,
+            "mean": 50.96,
+            "p10": 18,
+            "median": 59.0,
+            "p90": 71,
+            "min": 6,
+            "max": 104
+          },
+          "field": {
+            "n": 46,
+            "mean": 22,
+            "p10": 19,
+            "median": 22.5,
+            "p90": 24,
+            "min": 16,
+            "max": 26
+          },
+          "living": {
+            "n": 46,
+            "mean": 37.57,
+            "p10": 34,
+            "median": 38.0,
+            "p90": 40,
+            "min": 32,
+            "max": 40
+          }
+        },
+        "3": {
+          "cp": {
+            "n": 12,
+            "mean": 207.83,
+            "p10": 40,
+            "median": 198.0,
+            "p90": 409,
+            "min": 25,
+            "max": 445
+          },
+          "points": {
+            "n": 12,
+            "mean": 54.08,
+            "p10": 1,
+            "median": 54.5,
+            "p90": 103,
+            "min": 1,
+            "max": 103
+          },
+          "up": {
+            "n": 12,
+            "mean": 120.83,
+            "p10": 22,
+            "median": 97.0,
+            "p90": 213,
+            "min": 10,
+            "max": 217
+          },
+          "capture": {
+            "n": 12,
+            "mean": 35.33,
+            "p10": 13,
+            "median": 24.0,
+            "p90": 67,
+            "min": 13,
+            "max": 72
+          },
+          "field": {
+            "n": 12,
+            "mean": 21.58,
+            "p10": 19,
+            "median": 22.0,
+            "p90": 24,
+            "min": 14,
+            "max": 26
+          },
+          "living": {
+            "n": 12,
+            "mean": 36.83,
+            "p10": 35,
+            "median": 37.0,
+            "p90": 39,
+            "min": 30,
+            "max": 39
+          }
+        }
+      },
+      "reached_plies": {
+        "7": 24,
+        "17": 24,
+        "27": 23,
+        "29": 23,
+        "39": 16,
+        "49": 11,
+        "51": 6,
+        "61": 3,
+        "71": 1,
+        "73": 0,
+        "89": 0,
+        "99": 0
+      },
+      "previews": 11451,
+      "tactical_bundles": 248
+    },
+    "late": {
+      "games": 28,
+      "plies": 538,
+      "endings": {
+        "regicide": 24,
+        "overtime": 4
+      },
+      "winner": {
+        "black": 26,
+        "white": 2
+      },
+      "length": {
+        "n": 28,
+        "mean": 19.21,
+        "p10": 13,
+        "median": 18.0,
+        "p90": 28,
+        "min": 10,
+        "max": 28
+      },
+      "styles": {
+        "adaptive": {
+          "n": 32,
+          "losses": 16,
+          "white_losses": 15,
+          "wins": 16,
+          "black_wins": 15,
+          "black_losses": 1,
+          "white_wins": 1
+        },
+        "defend": {
+          "n": 4,
+          "wins": 2,
+          "black_wins": 2,
+          "losses": 2,
+          "white_losses": 2
+        },
+        "rush": {
+          "n": 4,
+          "losses": 3,
+          "white_losses": 2,
+          "wins": 1,
+          "black_wins": 1,
+          "black_losses": 1
+        },
+        "economy": {
+          "n": 4,
+          "wins": 2,
+          "black_wins": 2,
+          "losses": 2,
+          "white_losses": 2
+        },
+        "control": {
+          "n": 4,
+          "losses": 2,
+          "white_losses": 2,
+          "wins": 2,
+          "black_wins": 2
+        },
+        "attrition": {
+          "n": 4,
+          "wins": 3,
+          "black_wins": 2,
+          "white_wins": 1,
+          "losses": 1,
+          "white_losses": 1
+        },
+        "capture": {
+          "n": 4,
+          "wins": 2,
+          "black_wins": 2,
+          "losses": 2,
+          "white_losses": 2
+        }
+      },
+      "paired": {
+        "adaptive": {
+          "nonmirror_games": 24,
+          "paired_seed_clusters": 12,
+          "score": 0.5,
+          "bootstrap95": [
+            0.375,
+            0.625
+          ]
+        },
+        "defend": {
+          "nonmirror_games": 4,
+          "paired_seed_clusters": 2,
+          "score": 0.5,
+          "bootstrap95": [
+            0.5,
+            0.5
+          ]
+        },
+        "rush": {
+          "nonmirror_games": 4,
+          "paired_seed_clusters": 2,
+          "score": 0.25,
+          "bootstrap95": [
+            0,
+            0.5
+          ]
+        },
+        "economy": {
+          "nonmirror_games": 4,
+          "paired_seed_clusters": 2,
+          "score": 0.5,
+          "bootstrap95": [
+            0.5,
+            0.5
+          ]
+        },
+        "control": {
+          "nonmirror_games": 4,
+          "paired_seed_clusters": 2,
+          "score": 0.5,
+          "bootstrap95": [
+            0.5,
+            0.5
+          ]
+        },
+        "attrition": {
+          "nonmirror_games": 4,
+          "paired_seed_clusters": 2,
+          "score": 0.75,
+          "bootstrap95": [
+            0.5,
+            1
+          ]
+        },
+        "capture": {
+          "nonmirror_games": 4,
+          "paired_seed_clusters": 2,
+          "score": 0.5,
+          "bootstrap95": [
+            0.5,
+            0.5
+          ]
+        }
+      },
+      "matchups": {
+        "adaptive|defend": {
+          "n": 4,
+          "losses": 2,
+          "wins": 2
+        },
+        "defend|adaptive": {
+          "n": 4,
+          "wins": 2,
+          "losses": 2
+        },
+        "rush|adaptive": {
+          "n": 4,
+          "losses": 3,
+          "wins": 1
+        },
+        "adaptive|rush": {
+          "n": 4,
+          "wins": 3,
+          "losses": 1
+        },
+        "adaptive|economy": {
+          "n": 4,
+          "losses": 2,
+          "wins": 2
+        },
+        "economy|adaptive": {
+          "n": 4,
+          "wins": 2,
+          "losses": 2
+        },
+        "control|adaptive": {
+          "n": 4,
+          "losses": 2,
+          "wins": 2
+        },
+        "adaptive|control": {
+          "n": 4,
+          "wins": 2,
+          "losses": 2
+        },
+        "adaptive|adaptive": {
+          "n": 8,
+          "losses": 4,
+          "wins": 4
+        },
+        "adaptive|attrition": {
+          "n": 4,
+          "losses": 3,
+          "wins": 1
+        },
+        "attrition|adaptive": {
+          "n": 4,
+          "wins": 3,
+          "losses": 1
+        },
+        "adaptive|capture": {
+          "n": 4,
+          "losses": 2,
+          "wins": 2
+        },
+        "capture|adaptive": {
+          "n": 4,
+          "wins": 2,
+          "losses": 2
+        }
+      },
+      "builds": {
+        "adaptive|tempo": {
+          "n": 12,
+          "losses": 7,
+          "wins": 5
+        },
+        "defend|onslaught": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        },
+        "rush|onslaught": {
+          "n": 2,
+          "losses": 1,
+          "wins": 1
+        },
+        "economy|onslaught": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        },
+        "control|bastion": {
+          "n": 2,
+          "losses": 1,
+          "wins": 1
+        },
+        "adaptive|onslaught": {
+          "n": 10,
+          "wins": 5,
+          "losses": 5
+        },
+        "adaptive|bastion": {
+          "n": 10,
+          "losses": 4,
+          "wins": 6
+        },
+        "control|tempo": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        },
+        "attrition|onslaught": {
+          "n": 2,
+          "wins": 2
+        },
+        "capture|onslaught": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        },
+        "defend|bastion": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        },
+        "attrition|tempo": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        },
+        "capture|bastion": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        },
+        "rush|tempo": {
+          "n": 2,
+          "losses": 2
+        },
+        "economy|bastion": {
+          "n": 2,
+          "wins": 1,
+          "losses": 1
+        }
+      },
+      "selections": {
+        "path|tempo": 18,
+        "pool|warcry": 30,
+        "pool|sap": 30,
+        "pool|dash": 24,
+        "pool|mire": 24,
+        "path|onslaught": 20,
+        "pool|bulwark": 32,
+        "pool|weakening": 32,
+        "pool|mend": 26,
+        "pool|strike": 26,
+        "path|bastion": 18
+      },
+      "uses": {
+        "recharge": 88,
+        "unit-sacrifice": 361,
+        "warcry": 78,
+        "sap": 54,
+        "blitz": 18,
+        "king-call": 86,
+        "ruin": 20,
+        "bulwark": 86,
+        "weakening": 220,
+        "convert": 99,
+        "bishop-cast": 39,
+        "cleave": 40,
+        "strike": 58,
+        "mend": 147,
+        "knight-charge": 23,
+        "queen-leech": 32,
+        "anchor": 19,
+        "fortress": 18,
+        "dash": 7,
+        "rook-cleave": 1
+      },
+      "ability_games": {
+        "recharge": 18,
+        "unit-sacrifice": 56,
+        "warcry": 30,
+        "sap": 30,
+        "blitz": 18,
+        "king-call": 37,
+        "ruin": 20,
+        "bulwark": 32,
+        "weakening": 32,
+        "convert": 20,
+        "bishop-cast": 24,
+        "cleave": 18,
+        "strike": 26,
+        "mend": 26,
+        "knight-charge": 21,
+        "queen-leech": 26,
+        "anchor": 10,
+        "fortress": 18,
+        "dash": 5,
+        "rook-cleave": 1
+      },
+      "considered_legal_turns": {
+        "archer-bog": 454,
+        "blitz": 19,
+        "king-call": 489,
+        "recharge": 97,
+        "sap": 88,
+        "shield-taunt": 520,
+        "surge": 167,
+        "unit-sacrifice": 328,
+        "warcry": 113,
+        "dash": 173,
+        "mire": 187,
+        "bulwark": 141,
+        "cleave": 150,
+        "convert": 100,
+        "ruin": 20,
+        "weakening": 279,
+        "bishop-cast": 42,
+        "knight-charge": 157,
+        "queen-leech": 145,
+        "rook-cleave": 119,
+        "mend": 203,
+        "strike": 64,
+        "anchor": 174,
+        "fortress": 41,
+        "strengthen": 185
+      },
+      "actors_per_side": {
+        "n": 56,
+        "mean": 18.5,
+        "p10": 12,
+        "median": 18.0,
+        "p90": 28,
+        "min": 8,
+        "max": 34
+      },
+      "casts_per_side": {
+        "n": 56,
+        "mean": 26.68,
+        "p10": 17,
+        "median": 26.0,
+        "p90": 39,
+        "min": 11,
+        "max": 46
+      },
+      "checkpoints": {
+        "4": {
+          "cp": {
+            "n": 56,
+            "mean": 749,
+            "p10": 749,
+            "median": 749.0,
+            "p90": 749,
+            "min": 749,
+            "max": 749
+          },
+          "points": {
+            "n": 56,
+            "mean": 300,
+            "p10": 129,
+            "median": 300.0,
+            "p90": 471,
+            "min": 129,
+            "max": 471
+          },
+          "up": {
+            "n": 56,
+            "mean": 352,
+            "p10": 352,
+            "median": 352.0,
+            "p90": 352,
+            "min": 352,
+            "max": 352
+          },
+          "capture": {
+            "n": 56,
+            "mean": 57,
+            "p10": 57,
+            "median": 57.0,
+            "p90": 57,
+            "min": 57,
+            "max": 57
+          },
+          "field": {
+            "n": 56,
+            "mean": 24,
+            "p10": 24,
+            "median": 24.0,
+            "p90": 24,
+            "min": 24,
+            "max": 24
+          },
+          "living": {
+            "n": 56,
+            "mean": 40,
+            "p10": 40,
+            "median": 40.0,
+            "p90": 40,
+            "min": 40,
+            "max": 40
+          }
+        }
+      },
+      "previews": 36524,
+      "tactical_bundles": 3746,
+      "branch_length_at_least": {
+        "7": 28,
+        "17": 18,
+        "27": 5,
+        "29": 0,
+        "39": 0,
+        "49": 0,
+        "51": 0,
+        "61": 0,
+        "71": 0,
+        "73": 0,
+        "89": 0,
+        "99": 0
+      }
+    }
+  },
+  "own_turn_arrival_resources": {
+    "0": {
+      "points": {
+        "n": 896,
+        "mean": 11,
+        "p10": 11,
+        "median": 11.0,
+        "p90": 11,
+        "min": 11,
+        "max": 11
+      },
+      "up": {
+        "n": 896,
+        "mean": 10,
+        "p10": 10,
+        "median": 10.0,
+        "p90": 10,
+        "min": 10,
+        "max": 10
+      },
+      "cp": {
+        "n": 896,
+        "mean": 5,
+        "p10": 5,
+        "median": 5.0,
+        "p90": 5,
+        "min": 5,
+        "max": 5
+      }
+    },
+    "1": {
+      "points": {
+        "n": 896,
+        "mean": 34,
+        "p10": 34,
+        "median": 34.0,
+        "p90": 34,
+        "min": 34,
+        "max": 34
+      },
+      "up": {
+        "n": 896,
+        "mean": 10,
+        "p10": 10,
+        "median": 10.0,
+        "p90": 10,
+        "min": 10,
+        "max": 10
+      },
+      "cp": {
+        "n": 896,
+        "mean": 3.36,
+        "p10": 0,
+        "median": 5.0,
+        "p90": 5,
+        "min": 0,
+        "max": 5
+      }
+    },
+    "2": {
+      "points": {
+        "n": 656,
+        "mean": 30.09,
+        "p10": 25,
+        "median": 30.0,
+        "p90": 40,
+        "min": 23,
+        "max": 48
+      },
+      "up": {
+        "n": 656,
+        "mean": 55.89,
+        "p10": 8,
+        "median": 49.0,
+        "p90": 116,
+        "min": 0,
+        "max": 222
+      },
+      "cp": {
+        "n": 656,
+        "mean": 28.12,
+        "p10": 10,
+        "median": 15.0,
+        "p90": 64,
+        "min": 0,
+        "max": 158
+      }
+    },
+    "3": {
+      "points": {
+        "n": 88,
+        "mean": 29.78,
+        "p10": 23,
+        "median": 28.0,
+        "p90": 42,
+        "min": 22,
+        "max": 67
+      },
+      "up": {
+        "n": 88,
+        "mean": 106.56,
+        "p10": 5,
+        "median": 84.5,
+        "p90": 253,
+        "min": 0,
+        "max": 333
+      },
+      "cp": {
+        "n": 88,
+        "mean": 86.51,
+        "p10": 13,
+        "median": 71.0,
+        "p90": 169,
+        "min": 0,
+        "max": 457
+      }
+    },
+    "4": {
+      "points": {
+        "n": 8,
+        "mean": 129.38,
+        "p10": 49,
+        "median": 142.5,
+        "p90": 186,
+        "min": 21,
+        "max": 204
+      },
+      "up": {
+        "n": 8,
+        "mean": 125.75,
+        "p10": 8,
+        "median": 81.5,
+        "p90": 225,
+        "min": 3,
+        "max": 375
+      },
+      "cp": {
+        "n": 8,
+        "mean": 60.38,
+        "p10": 19,
+        "median": 45.5,
+        "p90": 112,
+        "min": 11,
+        "max": 133
+      }
+    }
+  },
+  "original_unit_activity": {
+    "battlefield": {
+      "n": 896,
+      "mean": 10.27,
+      "p10": 7,
+      "median": 10.0,
+      "p90": 14,
+      "min": 5,
+      "max": 22
+    },
+    "panel": {
+      "n": 896,
+      "mean": 11.76,
+      "p10": 8,
+      "median": 12.0,
+      "p90": 15,
+      "min": 6,
+      "max": 16
+    }
+  },
+  "late_final_balances": {
+    "points": {
+      "n": 56,
+      "mean": 315.5,
+      "p10": 161,
+      "median": 306.0,
+      "p90": 512,
+      "min": 36,
+      "max": 539
+    },
+    "up": {
+      "n": 56,
+      "mean": 343.73,
+      "p10": 184,
+      "median": 292.5,
+      "p90": 554,
+      "min": 68,
+      "max": 610
+    },
+    "cp": {
+      "n": 56,
+      "mean": 316.91,
+      "p10": 174,
+      "median": 292.0,
+      "p90": 494,
+      "min": 174,
+      "max": 494
+    }
+  },
+  "checks": {
+    "full_game_replay": {
+      "status": "pass",
+      "files": [
+        "/analysis/tournament.jsonl",
+        "/analysis/macros.jsonl",
+        "/analysis/cpu.jsonl"
+      ],
+      "verified": {
+        "games": 520,
+        "plies": 20416,
+        "commands": 52363
+      },
+      "config_sha256": "bc468cd593022ab9095f1a2e130bb794e8d97c400ee126e7f0a81e9457f36af8"
+    },
+    "arrival_replay": {
+      "status": "pass",
+      "files": [
+        "/analysis/tournament.jsonl"
+      ],
+      "verified": {
+        "games": 448,
+        "plies": 16781,
+        "commands": 46377
+      },
+      "config_sha256": "bc468cd593022ab9095f1a2e130bb794e8d97c400ee126e7f0a81e9457f36af8"
+    },
+    "late_replay": {
+      "status": "pass",
+      "files": [
+        "/analysis/late.jsonl"
+      ],
+      "verified": {
+        "games": 28,
+        "plies": 538,
+        "commands": 2900
+      },
+      "config_sha256": "bc468cd593022ab9095f1a2e130bb794e8d97c400ee126e7f0a81e9457f36af8"
+    }
+  },
+  "cp_overtime_spending_ceiling": {
+    "Bastion": {
+      "max_cp_spend": 530,
+      "unspendable_from_749": 219
+    },
+    "Onslaught": {
+      "max_cp_spend": 575,
+      "unspendable_from_749": 174
+    },
+    "Sprint": {
+      "max_cp_spend": 598,
+      "unspendable_from_749": 151
+    }
+  },
+  "focused": {
+    "tactical-results": {
+      "config_sha256": "bc468cd593022ab9095f1a2e130bb794e8d97c400ee126e7f0a81e9457f36af8",
+      "arranged_position": true,
+      "checks": {
+        "unprotected": {
+          "accepted": true,
+          "winner": "black",
+          "reason": "regicide",
+          "king": 0
+        },
+        "mire_blocks_unassisted": {
+          "accepted": false,
+          "reason": "Illegal move for this piece"
+        },
+        "dash_counters_mire": {
+          "accepted": true,
+          "winner": "black",
+          "reason": "regicide",
+          "king": 0
+        },
+        "trap_blocks_attacker": {
+          "accepted": false,
+          "reason": "That unit cannot take another action"
+        },
+        "taunt_blocks_king_target": {
+          "accepted": false,
+          "reason": "Attack a reachable taunting unit"
+        },
+        "taunt_allows_guard_target": {
+          "accepted": true,
+          "winner": "",
+          "reason": "",
+          "king": 6
+        },
+        "snare_blocks_following_queen_rush": {
+          "accepted": false,
+          "reason": "Illegal move for this piece"
+        },
+        "extra_zone_beats_passive_black_hold": {
+          "winner": "white",
+          "reason": "points",
+          "bank": {
+            "1": {
+              "white": 76,
+              "black": 57
+            },
+            "2": {
+              "white": 152,
+              "black": 114
+            },
+            "3": {
+              "white": 228,
+              "black": 171
+            }
+          }
+        }
+      }
+    },
+    "postmatch-results": {
+      "arranged_position": true,
+      "ply": 71,
+      "commands": [
+        {
+          "type": "pick_path",
+          "id": "onslaught"
+        },
+        {
+          "type": "pick_pair",
+          "id": "mend"
+        },
+        {
+          "type": "cast_ability",
+          "id": "cleave",
+          "hex": "2,-1"
+        },
+        {
+          "type": "cast_ability",
+          "id": "ruin"
+        },
+        {
+          "type": "cast_ability",
+          "id": "strike",
+          "targetUid": "b5,-11"
+        },
+        {
+          "type": "cast_ability",
+          "id": "king-call",
+          "unitUid": "w-5,11"
+        }
+      ],
+      "king_hp_before": 60,
+      "king_hp_after": 47,
+      "damage": 13,
+      "finished": false
+    },
+    "cast-blitz-results": {
+      "arranged_position": false,
+      "source_ply": 69,
+      "combo": [
+        {
+          "type": "pick_path",
+          "id": "tempo"
+        },
+        {
+          "type": "cast_ability",
+          "id": "bishop-cast",
+          "unitUid": "w-6,10",
+          "targetUid": "b5,-11"
+        },
+        {
+          "type": "cast_ability",
+          "id": "blitz"
+        }
+      ],
+      "normal_responses_refused": {
+        "normal_attack": "That unit cannot take another action",
+        "counter_cast": "That unit cannot take another action"
+      },
+      "cleave_centres_tested": 541,
+      "best_immediate_damage_response": {
+        "lead": 150,
+        "bank": {
+          "1": {
+            "white": 57,
+            "black": 57
+          },
+          "2": {
+            "white": 114,
+            "black": 114
+          },
+          "3": {
+            "white": 150,
+            "black": 0
+          }
+        },
+        "centre": "-15,11",
+        "strike": [
+          {
+            "type": "cast_ability",
+            "id": "strike",
+            "targetUid": "w-14,11"
+          }
+        ],
+        "white_losses": 64
+      },
+      "preemptive_black_blitz_blocks_cast": "This unit cannot use that ability",
+      "preempted_bank": {
+        "1": {
+          "white": 57,
+          "black": 57
+        },
+        "2": {
+          "white": 114,
+          "black": 114
+        },
+        "3": {
+          "white": 171,
+          "black": 171
+        }
+      },
+      "limits": "Delivery was cooperative. Cleave/Ruin/Strike response order uses healthy-unit damage thresholds; this is not an exhaustive game solver. Earlier denial remains possible."
+    },
+    "remote-vp-results": {
+      "cheap_tied": {
+        "zone": "home",
+        "fortress": false,
+        "strong_burst": false,
+        "commands": [
+          {
+            "type": "pick_path",
+            "id": "onslaught"
+          },
+          {
+            "type": "cast_ability",
+            "id": "cleave",
+            "hex": "-15,10"
+          },
+          {
+            "type": "cast_ability",
+            "id": "strike",
+            "targetUid": "w-15,10"
+          }
+        ],
+        "bank": {
+          "1": {
+            "white": 57,
+            "black": 57
+          },
+          "2": {
+            "white": 114,
+            "black": 114
+          },
+          "3": {
+            "white": 135,
+            "black": 171
+          }
+        },
+        "winner": "black",
+        "reason": "points"
+      },
+      "fortress_counter": {
+        "zone": "home",
+        "fortress": true,
+        "strong_burst": false,
+        "commands": [
+          {
+            "type": "pick_path",
+            "id": "onslaught"
+          },
+          {
+            "type": "cast_ability",
+            "id": "cleave",
+            "hex": "-15,10"
+          },
+          {
+            "type": "cast_ability",
+            "id": "strike",
+            "targetUid": "w-15,10"
+          }
+        ],
+        "bank": {
+          "1": {
+            "white": 57,
+            "black": 57
+          },
+          "2": {
+            "white": 114,
+            "black": 114
+          },
+          "3": {
+            "white": 171,
+            "black": 171
+          }
+        },
+        "winner": "black",
+        "reason": "overtime"
+      },
+      "side_zone_counter": {
+        "zone": "side",
+        "fortress": false,
+        "strong_burst": false,
+        "commands": [
+          {
+            "type": "pick_path",
+            "id": "onslaught"
+          },
+          {
+            "type": "cast_ability",
+            "id": "cleave",
+            "hex": "-15,10"
+          },
+          {
+            "type": "cast_ability",
+            "id": "strike",
+            "targetUid": "w-15,10"
+          }
+        ],
+        "bank": {
+          "1": {
+            "white": 76,
+            "black": 57
+          },
+          "2": {
+            "white": 152,
+            "black": 114
+          },
+          "3": {
+            "white": 192,
+            "black": 171
+          }
+        },
+        "winner": "white",
+        "reason": "points"
+      },
+      "central_lead_erased": {
+        "zone": "middle",
+        "fortress": false,
+        "strong_burst": true,
+        "commands": [
+          {
+            "type": "pick_path",
+            "id": "onslaught"
+          },
+          {
+            "type": "cast_ability",
+            "id": "ruin"
+          },
+          {
+            "type": "cast_ability",
+            "id": "cleave",
+            "hex": "-15,11"
+          },
+          {
+            "type": "cast_ability",
+            "id": "strike",
+            "targetUid": "w-14,11"
+          }
+        ],
+        "bank": {
+          "1": {
+            "white": 95,
+            "black": 57
+          },
+          "2": {
+            "white": 190,
+            "black": 114
+          },
+          "3": {
+            "white": 93,
+            "black": 171
+          }
+        },
+        "winner": "black",
+        "reason": "overtime"
+      }
+    }
+  },
+  "limitations": [
+    "Assigned builds are not organic picks.",
+    "Heuristic players share candidate-generation blind spots, especially movement/action denial and withdrawals.",
+    "CPU thinking is wall-clock and hardware/load dependent.",
+    "No human playtest, fresh browser verification or independent agent review."
+  ],
+  "metric_notes": {
+    "ability_games": "Counts participant appearances with a cast, out of 2 \u00d7 cohort matches; not distinct matches.",
+    "checkpoints": "First White-turn snapshot in the phase includes both sides; new-phase income may not yet be paid to Black. Use own_turn_arrival_resources for comparisons.",
+    "opportunities": "Turns where a considered candidate passed legality, not exhaustive target coverage.",
+    "late": "Continuations begin on ply 73; their length/plies count only continuation side-turns."
+  }
+}
