@@ -1,8 +1,10 @@
 import copy
 import json
 import os
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from game import cpu
@@ -46,12 +48,14 @@ class CpuTests(SimpleTestCase):
         for index in range(4):
             state.board_state[f'{index},2'] = {'unit_id': 'pawn', 'color': 'white', 'uid': f'p{index}', 'hp': 12, 'max_hp': 12, 'vet': 0}
         state.board_state = {key: ranked_unit(unit, state.config_snapshot, 3) for key, unit in state.board_state.items()}
-        commands = await search_turn(state, 'normal', 2)
-        self.assertTrue(any(command.get('from') == '0,0' and command.get('to') != '0,0' for command in commands))
-        after = await GameConsumer()._preview_turn(state, commands)
-        enemy = await search_turn(after, 'easy', 0.5)
-        reply = await GameConsumer()._preview_turn(after, enemy)
-        self.assertNotEqual(reply.winner, 'black')
+        # Tactical quality gets CPU time; unrelated host load must not spend its budget.
+        with patch.object(cpu, 'time', SimpleNamespace(monotonic=time.process_time)):
+            commands = await search_turn(state, 'normal', 2)
+            self.assertTrue(any(command.get('from') == '0,0' and command.get('to') != '0,0' for command in commands))
+            after = await GameConsumer()._preview_turn(state, commands)
+            enemy = await search_turn(after, 'easy', 0.5)
+            reply = await GameConsumer()._preview_turn(after, enemy)
+            self.assertNotEqual(reply.winner, 'black')
 
     async def test_numeric_attack_changes_change_the_best_action(self):
         state = self.state()

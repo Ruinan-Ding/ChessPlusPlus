@@ -1,24 +1,33 @@
 """A minimal WebSocket client and a pass/fail tally, shared by the e2e scripts."""
-import base64, json, os, socket, struct, time
+import base64, json, os, socket, ssl, struct, time
 
 # E2E_PORT points the scripts at a server other than the dev one on 8000 - a
 # fresh daphne carrying code the long-running dev server predates, say.
-HOST, PORT = '127.0.0.1', int(os.environ.get('E2E_PORT', '8000'))
+HOST, PORT = os.environ.get('E2E_HOST', '127.0.0.1'), int(os.environ.get('E2E_PORT', '8000'))
+ORIGIN = os.environ.get('E2E_ORIGIN', 'http://127.0.0.1:4200')
 results = []
 
 
 class WS:
-    def __init__(self, path, origin='http://127.0.0.1:4200'):
+    def __init__(self, path, origin=ORIGIN):
         self.s = socket.create_connection((HOST, PORT), timeout=8)
+        if certificate := os.environ.get('E2E_TLS_CA'):
+            self.s = ssl.create_default_context(cafile=certificate).wrap_socket(self.s, server_hostname=HOST)
         key = base64.b64encode(os.urandom(16)).decode()
         self.s.sendall((f'GET {path} HTTP/1.1\r\nHost: {HOST}:{PORT}\r\nUpgrade: websocket\r\n'
                         f'Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n'
                         f'Sec-WebSocket-Version: 13\r\nOrigin: {origin}\r\n\r\n').encode())
         buf = b''
         while b'\r\n\r\n' not in buf:
-            buf += self.s.recv(4096)
+            chunk = self.s.recv(4096)
+            if not chunk:
+                self.s.close()
+                raise ConnectionError('closed during WebSocket handshake')
+            buf += chunk
         head, self.buf = buf.split(b'\r\n\r\n', 1)
-        assert b' 101 ' in head.split(b'\r\n')[0], head.split(b'\r\n')[0]
+        if b' 101 ' not in head.split(b'\r\n')[0]:
+            self.s.close()
+            raise AssertionError(head.split(b'\r\n')[0])
         self.seen = []
 
     def _frame(self, opcode, payload):

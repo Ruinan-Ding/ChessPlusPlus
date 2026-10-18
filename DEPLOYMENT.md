@@ -1,6 +1,8 @@
 # Student deployment plan for ChessPlusPlus
 
-Updated 17 Oct 2026. **Plan only: nothing has been provisioned or deployed.**
+Updated 17 Oct 2026. **Local scaffold added; no cloud resources or domain provisioned.**
+[Deployment foundation](deploy/README.md) provides the operator steps;
+[REL-004](specs/REL-004-deployment-foundation.md) owns implementation/check status.
 This replaces the unimplemented GitHub Pages/Fly.io proposal; its original text
 remains in Git history at `489d8b9:DEPLOYMENT.md`. The owner requires **$0 personal
 spending**, including a domain. [REL-003](specs/REL-003-student-deployment.md) owns
@@ -151,7 +153,8 @@ proxying; confirm reconnect behavior across proxy/backend updates.
 
 ## Implementation sequence and release gates
 
-These are **future implementation steps**, not instructions already applied.
+These are **launch gates**. The local foundation implements packaging, configuration
+and recovery tooling; account setup, dependency remediation and target launch are pending.
 Changes stay in ChessPlusPlus, with one writer per file. Preserve local ports
 4200/8000, the owner's database and unrelated repositories.
 
@@ -168,9 +171,9 @@ Changes stay in ChessPlusPlus, with one writer per file. Preserve local ports
    SQLite mounted outside it. Exclude `.git`, local settings, secrets, venvs,
    node_modules and local databases from release contents. No paid registry is
    required; choose distribution only after its free allowance is verified.
-3. **Production configuration.** Implement a configurable database path (proposed
-   `DJANGO_DB_PATH`; currently absent), persistent storage, static assets and
-   health checks. Set production DEBUG false, a unique stable secret, exact hosts,
+3. **Production configuration.** The local foundation provides `DJANGO_DB_PATH`,
+   persistent Compose volumes, static assets, `core.production` and health probes.
+   Verify them with the actual deployment inputs before launch. Set production DEBUG false, a unique stable secret, exact hosts,
    trusted proxy handling, secure cookies and HTTPS policy. Keep `REDIS_URL`
    unset and `CPP_CPU_WORKERS=1` for this design. Run Django's deployment checks
    against the actual production settings; all local `manage.py` checks retain

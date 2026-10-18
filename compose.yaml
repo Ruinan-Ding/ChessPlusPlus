@@ -1,0 +1,77 @@
+services:
+  backend:
+    image: chessplusplus-backend:${CPP_IMAGE_TAG:-local}
+    pull_policy: never
+    build:
+      context: .
+      target: backend
+    environment:
+      DJANGO_SETTINGS_MODULE: core.production
+      DJANGO_DEBUG: "false"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set a unique production secret in .env}
+      DJANGO_ALLOWED_HOSTS: ${CPP_DOMAIN:?Set the exact public hostname in .env}
+      DJANGO_DB_PATH: ${DJANGO_DB_PATH:-/data/game.sqlite3}
+      DJANGO_SECURE_HSTS_SECONDS: ${DJANGO_SECURE_HSTS_SECONDS:-3600}
+      CPP_CPU_WORKERS: "1"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - game-data:/data
+      - game-backups:/backups
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${CPP_BACKEND_MEMORY:-512m}
+    cpus: ${CPP_BACKEND_CPUS:-1.0}
+    pids_limit: 128
+    stop_grace_period: 30s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    image: chessplusplus-web:${CPP_IMAGE_TAG:-local}
+    pull_policy: never
+    build:
+      context: .
+      target: web
+    environment:
+      CPP_DOMAIN: ${CPP_DOMAIN:?Set the exact public hostname in .env}
+      CPP_HTTPS_PORT: ${CPP_HTTPS_PORT:-8443}
+      DJANGO_SECURE_HSTS_SECONDS: ${DJANGO_SECURE_HSTS_SECONDS:-3600}
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "${CPP_BIND_ADDRESS:-127.0.0.1}:${CPP_HTTP_PORT:-8080}:80"
+      - "${CPP_BIND_ADDRESS:-127.0.0.1}:${CPP_HTTPS_PORT:-8443}:443"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    pids_limit: 128
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  game-data:
+  game-backups:
+  caddy-data:
+  caddy-config:

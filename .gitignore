@@ -20,6 +20,9 @@ venv/
 ENV/
 *.sqlite3
 .env
+.env.*
+!.env.example
+server/staticfiles/
 
 # IDE
 .idea/
