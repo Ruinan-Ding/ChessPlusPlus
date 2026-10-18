@@ -50,7 +50,7 @@ const UNIT_NUMBERS: ReadonlyArray<readonly [string, number]> = [
 const ABILITY_FIELDS = new Set([
   'id', 'name', 'description', 'target', 'cost', 'cooldown', 'turns', 'uses', 'usesScope',
   'mov', 'atk', 'def', 'damage', 'heal', 'points', 'testing', 'effect', 'counterAttack', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius',
-  'minVet', 'stars', 'battlefieldActions', 'secondCounter', 'freeOrder', 'recharge', 'refundMultiplier', 'lifestealPercent', 'healPercent', 'minimumCooldown', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'baseMov', 'costReduction', 'minimumCost', 'hel', 'setHel', 'splashHel', 'area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov',
+  'minVet', 'stars', 'battlefieldActions', 'secondCounter', 'freeOrder', 'allowCommanders', 'recharge', 'refundMultiplier', 'lifestealPercent', 'healPercent', 'minimumCooldown', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'baseMov', 'costReduction', 'minimumCost', 'hel', 'setHel', 'splashHel', 'area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov',
 ]);
 
 /** A catalogue entry's whole numbers, and the least of each - null for none. */
@@ -207,6 +207,7 @@ function abilityNumberErrors(abilities: any): string[] {
         || a.effect === 'recharge' || !(passives.has(id) || PATH_EFFECT_FIELDS[a.effect]
           || (a.effect === undefined && ['friendly', 'enemy'].includes(a.target))))) errors.push(`${at}.scope is invalid`);
     if (a.freeOrder !== undefined && (typeof a.freeOrder !== 'boolean' || a.effect !== 'rapid-movement')) errors.push(`${at}.freeOrder requires a boolean on rapid movement`);
+    if (a.allowCommanders !== undefined && (typeof a.allowCommanders !== 'boolean' || a.effect !== 'control')) errors.push(`${at}.allowCommanders requires a boolean on control`);
     if (a.secondCounter !== undefined && (typeof a.secondCounter !== 'boolean' || a.effect !== 'charge')) errors.push(`${at}.secondCounter requires a boolean on Charge`);
     if (a.battlefieldActions !== undefined && a.stars === undefined) errors.push(`${at}.battlefieldActions requires selected Sacrifice`);
     if (a.radius !== undefined && !['call', 'control', 'cleave', 'persuade', 'intimidate'].includes(a.effect)) errors.push(`${at}.radius requires a range-aware unit effect`);

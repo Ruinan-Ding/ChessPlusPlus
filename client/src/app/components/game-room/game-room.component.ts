@@ -8,7 +8,7 @@ import { abilityDescription, rechargeRefundNote } from '../../services/ability-d
 import { sectionOf } from '../../services/game-rules';
 
 import { actionTime } from '../../services/action-time';
-import { controlsAt } from '../../services/unit-control';
+import { controlsAt, controlTargetAllowed } from '../../services/unit-control';
 import { carries, combatExchange, tauntAllows, CombatBonuses, attackStats, combatStatuses } from '../../services/unit-combat';
 import { AfterViewChecked, Component, DoCheck, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, ElementRef, HostListener, NgZone, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
@@ -69,6 +69,7 @@ interface AbilityEntry extends HexEffectArea {
   /** The owner's bench rather than a balanced ability - kept out of networked play. */
   testing?: boolean;
   effect?: string;
+  allowCommanders?: boolean;
   up?: number; enemyDamage?: number; enemyAtk?: number; enemyDef?: number; enemyMov?: number; radius?: number;
   minVet?: number; stars?: number; battlefieldActions?: number; secondCounter?: boolean; freeOrder?: boolean; recharge?: number; refundMultiplier?: number; minimumCooldown?: number; lifestealPercent?: number; healPercent?: number; splashDamage?: number;
   splashAtk?: number; splashMov?: number; setAtk?: number; enemyDefSet?: number;
@@ -119,6 +120,7 @@ interface AbilityEffect extends HexEffectArea {
   usesScope?: 'match' | 'phase';
   testing?: boolean;
   effect?: string;
+  allowCommanders?: boolean;
   up?: number; enemyDamage?: number; enemyAtk?: number; enemyDef?: number; enemyMov?: number; radius?: number;
   minVet?: number; stars?: number; battlefieldActions?: number; secondCounter?: boolean; freeOrder?: boolean; recharge?: number; refundMultiplier?: number; minimumCooldown?: number; lifestealPercent?: number; healPercent?: number; splashDamage?: number;
   splashAtk?: number; splashMov?: number; setAtk?: number; enemyDefSet?: number;
@@ -3750,11 +3752,17 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
   activeBoardAbilityEffect(): (AbilityEffect & { targetUids?: string[] }) | null {
     if (this.pendingSacrificeAction) return { ...this.abilityEffects[this.pendingSacrificeAction.spend!.index],
       targetUids: Object.values(this.stagedBoard ?? this.gameState.snapshot.boardState).filter(piece => this.sacrificeActorAllowed(piece.uid!)).map(piece => piece.uid!) };
-    if (this.pendingUnitCast && this.abilityEffects[this.pendingUnitCast.index].effect === 'sacrifice') return {
-      ...this.abilityEffects[this.pendingUnitCast.index], scope: 'field-reserve',
-      targetUids: this.abilityRecipients('field-reserve').filter(cell => cell.piece?.color === this.pendingUnitCast!.unit.color
-        && cell.piece.uid !== this.pendingUnitCast!.unit.uid).map(cell => cell.piece!.uid!),
-    };
+    if (this.pendingUnitCast) {
+      const { unit, index } = this.pendingUnitCast;
+      const effect = this.abilityEffects[index];
+      return { ...effect, scope: 'field-reserve',
+        targetUids: this.abilityRecipients('field-reserve').filter(cell => effect.effect === 'sacrifice'
+          ? cell.piece?.color === unit.color && cell.piece.uid !== unit.uid
+          : cell.piece?.color !== unit.color && controlTargetAllowed(cell.piece!, effect, this.gameState.snapshot.config)
+            && hexDistanceKeys(unit.key, cell.key) >= 1 && hexDistanceKeys(unit.key, cell.key) <= (effect.radius ?? 1))
+          .map(cell => cell.piece!.uid!),
+      };
+    }
     return this.pendingAbility ? this.abilityEffects[this.pendingAbility.index] : null;
   }
 
@@ -3792,7 +3800,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const effect = this.abilityEffects[cast.index];
     return effect.effect === 'sacrifice'
       ? 'Choose another friendly unit on the battlefield or in green reserve.'
-      : `Choose an enemy within ${effect.radius ?? 1} hex(es) on the battlefield or in green reserve.`;
+      : `Choose an enemy within ${effect.radius ?? 1} hex(es) on the battlefield or in green reserve.${effect.allowCommanders === false ? ' Cannot target commanders (kings).' : ''}`;
   }
 
   activateUnitAbility(): void {
@@ -3853,7 +3861,9 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
     const chosen = target ? (target.panel ? this.boardRef?.cells.find(cell => cell.key === target.key)?.piece
       : (this.stagedBoard ?? this.gameState.snapshot.boardState)[target.key]) : undefined;
     if (effect.effect === 'control' && (!chosen || chosen.hp <= 0 || chosen.color === standing.color
-        || !this.canTakeUnitAction(unit))) return;
+        || !controlTargetAllowed(chosen, effect, this.gameState.snapshot.config)
+        || !target || BASE_PANELS.has(target.panel ?? '') || hexDistanceKeys(unit.key, target.key) < 1
+        || hexDistanceKeys(unit.key, target.key) > (effect.radius ?? 1) || !this.canTakeUnitAction(unit))) return;
     const selectedSacrifice = effect.effect === 'sacrifice' && effect.stars !== undefined;
     if (selectedSacrifice && (!target || !chosen || chosen.hp <= 0 || chosen.color !== standing.color
         || chosen.uid === standing.uid || BASE_PANELS.has(target.panel ?? ''))) return;
@@ -5104,7 +5114,7 @@ export class GameRoomComponent implements OnInit, OnDestroy, AfterViewChecked, D
         uses: a.uses ?? (ultimates.has(id) ? 1 : null),
         ...(a.testing ? { testing: true } : {}),
         ...(a.effect ? { effect: a.effect } : {}),
-        ...Object.fromEntries(['up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius', 'minVet', 'stars', 'battlefieldActions', 'secondCounter', 'freeOrder', 'recharge', 'refundMultiplier', 'minimumCooldown', 'lifestealPercent', 'healPercent', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'baseMov', 'costReduction', 'minimumCost', 'usesScope', 'hel', 'setHel', 'splashHel', 'area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov'].filter(key => (a as any)[key] !== undefined).map(key => [key, (a as any)[key]])),
+        ...Object.fromEntries(['allowCommanders', 'up', 'enemyDamage', 'enemyAtk', 'enemyDef', 'enemyMov', 'radius', 'minVet', 'stars', 'battlefieldActions', 'secondCounter', 'freeOrder', 'recharge', 'refundMultiplier', 'minimumCooldown', 'lifestealPercent', 'healPercent', 'splashDamage', 'splashAtk', 'splashMov', 'setAtk', 'enemyDefSet', 'scope', 'baseMov', 'costReduction', 'minimumCost', 'usesScope', 'hel', 'setHel', 'splashHel', 'area', 'splashRange', 'outerRange', 'outerAtk', 'outerHel', 'outerMov'].filter(key => (a as any)[key] !== undefined).map(key => [key, (a as any)[key]])),
       };
     });
     const slotOf = (id: string) => ids.indexOf(id);

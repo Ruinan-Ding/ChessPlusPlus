@@ -338,6 +338,23 @@ describe('LocalGameService', () => {
     }
   });
 
+  it('refuses a commander Cast under current rules without committing effects, costs or movement', async () => {
+    const g = (service as any).game;
+    g.config.abilities.catalogue['bishop-cast'].allowCommanders = false;
+    g.turnNumber = 55; g.currentTurn = 'Solo'; g.moveHistory = [];
+    const king = { ...fullUnit('king', 'black', 'bk'), vet: 3 };
+    g.boardState = { '-8,0': fullUnit('king', 'white', 'wk'), '1,0': king,
+      '0,0': { ...fullUnit('bishop', 'white', 'wb'), vet: 3 } };
+    const before = JSON.stringify(g);
+    for (const unit_id of ['king', 'pawn']) {
+      service.send({ type: 'make_move', from: '0,0', to: '0,0', unitAction: true, more: true,
+        effectsBefore: [{ unitCast: { uid: 'wb', at: '0,0', id: 'bishop-cast', color: 'white', cost: 32, gain: 0 } },
+          { at: '1,0', controlSource: 'wb', control: { ...king, unit_id, color: 'white', owner: 'black', controlledUntil: 57 } }] });
+      await flush();
+      expect(last('invalid_move')?.message).toBe('Cast cannot target a commander'); expect(JSON.stringify(g)).toBe(before);
+    }
+  });
+
   it('commits Cast with its extra action, preserves king ownership and returns control at the next caster turn', async () => {
     const g = (service as any).game; g.turnNumber = 55; g.currentTurn = 'Solo'; g.moveHistory = [];
     const target = { ...fullUnit('king', 'black', 'bk'), vet: 3, owner: 'black', color: 'white', controlledUntil: 57, controlTurn: 55 };

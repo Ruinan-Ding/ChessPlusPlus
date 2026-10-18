@@ -157,6 +157,8 @@ Each flag is under `stageRules.<stage>`, with independent category allowances
 
 ## Optional tuning beyond the shipped match values
 
+- `abilities.catalogue.bishop-cast.allowCommanders`: **false**; control-only boolean.
+  Omission/true preserves legacy commander targets.
 - `abilities.catalogue.queen-leech.lifestealPercent`: **100**, integer 0–100.
 - `abilities.catalogue.regenerate.healPercent`: **100**, integer 0–100.
 - `abilities.catalogue.recharge.minimumCooldown`: **1**, nonnegative integer.

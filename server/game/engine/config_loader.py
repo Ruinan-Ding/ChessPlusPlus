@@ -296,6 +296,8 @@ def _validate_config(config: Dict[str, Any]) -> List[str]:
                 errors.append(f'{at}.scope is invalid')
             if 'freeOrder' in entry and (type(entry['freeOrder']) is not bool or effect != 'rapid-movement'):
                 errors.append(f'{at}.freeOrder requires a boolean on rapid movement')
+            if 'allowCommanders' in entry and (type(entry['allowCommanders']) is not bool or effect != 'control'):
+                errors.append(f'{at}.allowCommanders requires a boolean on control')
             if 'secondCounter' in entry and (type(entry['secondCounter']) is not bool or effect != 'charge'):
                 errors.append(f'{at}.secondCounter requires a boolean on Charge')
             if 'battlefieldActions' in entry and 'stars' not in entry:

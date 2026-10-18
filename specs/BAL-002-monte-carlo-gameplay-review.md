@@ -60,3 +60,9 @@ and preservation checks pass. The repository-wide diff check still reports the
 pre-existing PUNCHLIST.md foundation-row trailing whitespace; it was preserved.
 Task-owned containers exited and the analysis image tag was removed; Docker
 Desktop and unrelated workloads remain untouched.
+
+Publication follow-up, 18 Oct 2026: the owner authorized commit/push. Analysis
+source, reports and immutable evidence are committed in `a4fd964` on
+`feature/deployment-scaffold`. The earlier no-publication statement describes
+the analysis checkpoint. No simulations, balance release or deployment were
+added by publication.

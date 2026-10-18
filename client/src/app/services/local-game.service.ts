@@ -1,7 +1,7 @@
 import { RecordedAction, ReplayFile, ReplayFrame } from './replay-session.service';
 import { migrateConfig, sectionOf } from './game-rules';
 import { advanceBuffs, UnitBuff } from './ability-rules';
-import { controlsAt, controlledUnit } from './unit-control';
+import { controlsAt, controlledUnit, controlTargetAllowed } from './unit-control';
 import { combatExchange, CombatBonuses, attackStats, carries } from './unit-combat';
 import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
@@ -510,23 +510,25 @@ export class LocalGameService {
     return null;
   }
 
-  /**
-   * Whether a message brought an ability onto a turn that forbids one.
-   *
-   * The opening permits CP utilities; every postmatch permits casts. The engine
-   * checks this window without needing to resolve the solo catalogue.
-   *
-   * A zero is not a use. The room sends `moveBonus: 0` and an all-zero
-   * `bonuses` on ordinary turns, and refusing those would refuse every move.
+  /** Reject forbidden targets and stage-disallowed effects before mutating the turn.
+   * Ordinary moves carry zero bonuses; those do not count as ability use.
    */
   private abilityFault(
     moveBonus?: number, bonuses?: any, effects?: any[], effectsBefore?: any[], effectsAfterAttack?: any[],
-  ): boolean {
+  ): string | null {
     const g = this.game!;
-    if (!isInitialization(g.turnNumber, g.config) || ['poolAbilities', 'unitAbilities', 'cpSkills', 'cpUltimates'].some(key => stageRules(g.turnNumber, g.config)[key])) return false;
-    const stage = stageRules(g.turnNumber, g.config);
     const casts = [...(effects ?? []), ...(effectsBefore ?? []), ...(effectsAfterAttack ?? [])];
-    if (casts.length && !stage.cpUtilities) return true;
+    if (casts.some(e => {
+      if (!e.control) return false;
+      const cast = [...g.moveHistory, ...casts].filter(record => record.unitCast?.uid === e.controlSource).pop()?.unitCast;
+      const source = Object.values(g.boardState).find(piece => piece.uid === e.controlSource);
+      const target = Object.values(g.boardState).find(piece => piece.uid === e.control.uid) ?? e.control;
+      const entry = g.config.abilities?.catalogue?.[source ? g.config.units[source.unit_id]?.ability : cast?.id];
+      return entry && !controlTargetAllowed(target, entry, g.config);
+    })) return 'Cast cannot target a commander';
+    if (!isInitialization(g.turnNumber, g.config) || ['poolAbilities', 'unitAbilities', 'cpSkills', 'cpUltimates'].some(key => stageRules(g.turnNumber, g.config)[key])) return null;
+    const stage = stageRules(g.turnNumber, g.config);
+    if (casts.length && !stage.cpUtilities) return 'No ability fires while a side is setting out';
     if (casts.some(e => {
       if (e.abilityCast) {
         const cast = e.abilityCast, entry = g.config.abilities?.catalogue?.[cast.id];
@@ -538,16 +540,16 @@ export class LocalGameService {
       return !e.promotion?.uid || e.hp !== e.promotion.hp
         || !Number.isInteger(e.promotion.vet) || e.promotion.vet < 1 || e.promotion.vet > 3
         || Object.keys(e).some(key => !['promotion', 'at', 'uid', 'hp', 'unit', 'panel'].includes(key));
-    })) return true;
+    })) return 'No ability fires while a side is setting out';
     // **Sent at all, and not a zero.** `Number(x) || 0` read as a guard let
     // `moveBonus: 'x'` through as though no ability had come: NaN is falsy, so
     // nonsense was indistinguishable from nothing. Asked this way round the
     // missing case is the only one that passes, so NaN and Infinity are both
     // read as what they are - a bonus that arrived and is not zero.
-    if (sent(moveBonus)) return true;
+    if (sent(moveBonus)) return 'No ability fires while a side is setting out';
     return Object.entries(bonuses ?? {}).some(([stat, value]) => sent(value)
       && !(stage.attack && ['atk', 'def', 'targetAtk', 'targetDef'].includes(stat))
-      && !(stage.normalHeal && stat === 'hel'));
+      && !(stage.normalHeal && stat === 'hel')) ? 'No ability fires while a side is setting out' : null;
   }
 
   /**
@@ -1053,8 +1055,9 @@ export class LocalGameService {
     if (!g || !g.started || g.endReason) return;
     // Before `landEffects`, which would otherwise write the cast onto the
     // board on its way to being refused.
-    if (this.abilityFault(pathMov ? Number(moveBonus) - pathMov : moveBonus, bonuses, effects, effectsBefore, effectsAfterAttack)) {
-      this.emit({ type: 'invalid_move', message: 'No ability fires while a side is setting out' });
+    const abilityFault = this.abilityFault(pathMov ? Number(moveBonus) - pathMov : moveBonus, bonuses, effects, effectsBefore, effectsAfterAttack);
+    if (abilityFault) {
+      this.emit({ type: 'invalid_move', message: abilityFault });
       return;
     }
 
@@ -1481,8 +1484,9 @@ export class LocalGameService {
     // A pass is the other way a cast reaches the engine, so it is the other
     // place the opening has to refuse one. Postmatch casts can arrive on
     // a pass or a move, while normal attacks remain forbidden.
-    if (this.abilityFault(0, null, undefined, effectsBefore)) {
-      this.emit({ type: 'invalid_move', message: 'No ability fires while a side is setting out' });
+    const abilityFault = this.abilityFault(0, null, undefined, effectsBefore);
+    if (abilityFault) {
+      this.emit({ type: 'invalid_move', message: abilityFault });
       return;
     }
     const passedBy = g.currentTurn;

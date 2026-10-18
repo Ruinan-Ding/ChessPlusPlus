@@ -134,6 +134,11 @@ Charge second strike, subject to ordinary survival/counter eligibility. Omission
 false retains the single-counter exchange. Neither optional field is inserted
 into frozen started-game configurations.
 
+Cast's control-only `allowCommanders` flag is false in the shipped preset: any
+unit marked `commander` is ineligible, including kings. Omission/true retains older
+match eligibility. Normalization never inserts this optional flag into an existing
+catalogue. The `{commanderRule}` description token reflects the configured rule.
+
 Bastion's utility reference now names `strengthen`; Onslaught's names `convert`.
 Frozen configurations retain their own path references. A non-unit universal
 cast may grant configured `up` independently of its CP/point cost; Convert grants

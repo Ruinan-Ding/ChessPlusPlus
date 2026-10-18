@@ -9,6 +9,7 @@ export function abilityDescription(entry: any, config?: any): string {
     && (shipped?.battlefieldActions === undefined || entry.battlefieldActions !== undefined)
     && (shipped?.secondCounter === undefined || entry.secondCounter !== undefined)
     && (shipped?.freeOrder === undefined || entry.freeOrder !== undefined)
+    && (shipped?.allowCommanders === undefined || entry.allowCommanders === shipped.allowCommanders)
     && (shipped?.refundMultiplier === undefined || entry.refundMultiplier !== undefined)
     && (shipped?.up === undefined || entry.up !== undefined)
     ? shipped?.description ?? entry.description : entry.description;
@@ -17,6 +18,7 @@ export function abilityDescription(entry: any, config?: any): string {
     lifestealPercent: entry.lifestealPercent ?? 100, healPercent: entry.healPercent ?? 100, minimumCooldown: entry.minimumCooldown ?? 1,
     refundMultiplier: entry.refundMultiplier ?? 0, costReduction: entry.costReduction ?? 0, minimumCost: entry.minimumCost ?? 1, hel: entry.hel ?? 0, radius: entry.radius ?? (entry.effect === 'call' ? 'unlimited' : 1),
     movementOrder: entry.freeOrder ? 'Move, use the unit ability and attack in any order, splitting movement before or after either action.' : 'After attacking, move with the remaining movement budget.',
+    commanderRule: entry.allowCommanders === false ? 'Cannot target commanders (kings). ' : '',
     chargeCounterRule: entry.secondCounter ? 'Also counter a Charged opponent’s second strike if still alive; no further strikes follow.' : 'This effect does not grant a second counter.',
     passiveUnlock: sectionOf(config, 'veterancy').passiveUnlock,
     homeRows: sectionOf(config, 'panels').homeRows,

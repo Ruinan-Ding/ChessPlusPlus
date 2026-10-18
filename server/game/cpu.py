@@ -18,7 +18,7 @@ from .consumers import GameConsumer
 from .models import GameState
 from .validators import ValidationError
 from .engine import panels
-from .engine.ability_rules import AbilityContext, ability_config, bonus, combat_stats, initial_state, passive, setting, path_passive, carries, actions_used, battlefield_action_bonus
+from .engine.ability_rules import control_target_allowed, AbilityContext, ability_config, bonus, combat_stats, initial_state, passive, setting, path_passive, carries, actions_used, battlefield_action_bonus
 from .engine.board import HexBoard, coord_key, hex_distance, parse_coord
 from .engine.config_loader import load_config, build_initial_board, UNIT_ACTIVES
 from .engine.economy import points_of, unit_points_of, withdrawal_refund
@@ -353,7 +353,7 @@ def candidate_commands(state, deadline):
             out.extend({**base, 'pairId': i} for i in abilities['loadouts'][color][::2])
         elif mode == 'control' or (source and mode == 'sacrifice' and 'stars' in entry):
             targets = [(k, u) for k, u in (valid_enemies if mode == 'control' else valid_friends)
-                       if (not source or u['uid'] != source['uid']) and (mode != 'control' or distance(source_key, k) <= entry.get('radius', 1))]
+                       if (not source or u['uid'] != source['uid']) and (mode != 'control' or (control_target_allowed(u, entry, config) and 1 <= distance(source_key, k) <= entry.get('radius', 1) and not panels.is_base(u.get('panel'))))]
             out.extend({**base, 'targetUid': u['uid']} for k, u in targets[:limits['abilityTargets']])
             if mode == 'sacrifice' and 'battlefieldActions' not in entry:
                 extras = [(k, u) for k, u in friends if k in state.board_state and u['uid'] != source['uid']]

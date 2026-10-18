@@ -258,7 +258,9 @@ Shieldman’s Vet 2 Counter replaces Shove and does not grant a normal attack.
 King’s Call affects only adjacent battlefield/green-reserve units, excluding the
 king: allies heal 1 and gain +1 ATK/DEF/MOV; enemies take 1 damage and lose
 1 ATK/DEF/MOV for one full turn. It costs 4 UP with cooldown 1.
-Bishop’s Regenerate heals only on the battlefield. Red-base deaths now count
+Bishop’s Cast cannot target kings or other configured commanders in new games;
+ordinary adjacent battlefield/green-reserve enemies remain eligible. Older saved
+matches keep their own targeting rules. Regenerate heals only on the battlefield. Red-base deaths now count
 for attrition VP, while panel kills still grant no UP bounty. Knight costs 30 UP.
 
 Units move only once through Initialization. Walking home spends a battlefield
@@ -339,7 +341,8 @@ installed capabilities, six lean defaults, optional activation and bounded Ralph
 The [student deployment plan](DEPLOYMENT.md) proposes one Azure VM and a student
 or existing-domain address, targeting $0 personal spending while benefits last.
 It compares Azure options, records expiry/renewal limits and lists the remaining
-implementation and production checks. Hosting is not yet implemented or deployed.
+implementation and production checks. The [local deployment foundation](deploy/README.md)
+adds packaging, production settings and recovery tools; cloud hosting is not deployed.
 
 ## Running the Application
 

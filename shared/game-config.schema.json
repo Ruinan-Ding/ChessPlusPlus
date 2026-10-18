@@ -312,7 +312,7 @@
               },
               "description": {
                 "type": "string",
-                "description": "Displayed explanation. Numeric templates resolve from this entry: {cost}, {sign:atk}, {abs:mov}, {duration}, {scope}, {radius}, {passiveUnlock}, {homeRows}, {counterProfile}. Custom literal text is kept."
+                "description": "Displayed explanation. Numeric templates resolve from this entry: {cost}, {sign:atk}, {abs:mov}, {duration}, {scope}, {radius}, {passiveUnlock}, {homeRows}, {counterProfile}, {commanderRule}. Custom literal text is kept."
               },
               "target": {
                 "enum": [
@@ -596,6 +596,10 @@
                 "minimum": 0,
                 "maximum": 9007199254740991,
                 "description": "Lowest cooldown Recharge can reduce a pair member to; omitted is 1. Members already at or below this floor retain their cooldown and receive the configured refund. Zero permits fully refreshing a cooling ability."
+              },
+              "allowCommanders": {
+                "type": "boolean",
+                "description": "Whether control may target units marked commander. False excludes them; omission or true preserves legacy eligibility. Only valid for control effects."
               }
             },
             "additionalProperties": false,

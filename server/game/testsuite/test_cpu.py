@@ -274,6 +274,19 @@ class CpuTests(SimpleTestCase):
         result = await GameConsumer()._preview_turn(state, casts, finish=False)
         self.assertEqual(result.board_state['1,0']['color'], 'white')
 
+    def test_cast_candidates_exclude_commanders_before_target_shortlisting(self):
+        state = self.state()
+        state.config_snapshot['economy']['upAtStart'] = 1000
+        state.config_snapshot['abilities']['catalogue']['bishop-cast']['allowCommanders'] = False
+        state.board_state = {'0,0': ranked_unit({'unit_id': 'bishop', 'color': 'white',
+            'uid': 'caster', 'hp': 8, 'max_hp': 8, 'vet': 0}, state.config_snapshot, 3),
+            '1,0': {'unit_id': 'king', 'color': 'black', 'uid': 'king', 'hp': 60, 'max_hp': 60},
+            '0,1': {'unit_id': 'pawn', 'color': 'black', 'uid': 'pawn', 'hp': 12, 'max_hp': 12},
+            '-8,0': {'unit_id': 'king', 'color': 'white', 'uid': 'wk', 'hp': 60, 'max_hp': 60}}
+        casts = [command for command in candidate_commands(state, time.monotonic() + 2)
+                 if command.get('id') == 'bishop-cast']
+        self.assertEqual([command['targetUid'] for command in casts], ['pawn'])
+
     def test_every_configured_unit_ability_has_a_candidate(self):
         import time
         state = self.state()

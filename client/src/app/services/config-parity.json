@@ -3258,6 +3258,69 @@
         "scope"
       ],
       "value": "all"
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "bishop-cast",
+        "allowCommanders"
+      ],
+      "value": null
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "bishop-cast",
+        "allowCommanders"
+      ],
+      "value": 0
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "bishop-cast",
+        "allowCommanders"
+      ],
+      "value": 1
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "bishop-cast",
+        "allowCommanders"
+      ],
+      "value": "false"
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "bishop-cast",
+        "allowCommanders"
+      ],
+      "value": []
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "bishop-cast",
+        "allowCommanders"
+      ],
+      "value": {}
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "warcry",
+        "allowCommanders"
+      ],
+      "value": false
     }
   ],
   "accepted": [
@@ -3509,6 +3572,12 @@
       "catalogue",
       "recharge",
       "refundMultiplier"
+    ],
+    [
+      "abilities",
+      "catalogue",
+      "bishop-cast",
+      "allowCommanders"
     ]
   ],
   "format2Refused": [
@@ -6117,6 +6186,26 @@
           "other": 1
         }
       }
+    }
+  ],
+  "acceptedControlTargets": [
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "bishop-cast",
+        "allowCommanders"
+      ],
+      "value": false
+    },
+    {
+      "path": [
+        "abilities",
+        "catalogue",
+        "bishop-cast",
+        "allowCommanders"
+      ],
+      "value": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 # Scrum backlog
 
-Updated 17 Oct 2026. The human owner orders this backlog and owns product/game
+Updated 18 Oct 2026. The human owner orders this backlog and owns product/game
 decisions. [SCRUM_WORKFLOW.md](SCRUM_WORKFLOW.md) defines the process;
 [CODEX_HANDOFF.md](CODEX_HANDOFF.md) records current source/environment and
 [PUNCHLIST.md](PUNCHLIST.md) retains implementation checkpoints. Do not duplicate
@@ -8,12 +8,14 @@ their historical fixes here or treat this file as a second game specification.
 
 ## Current work
 
-**REL-003 — Student deployment plan: Done for plan/checks; deployment pending; unscheduled.**
-Owner request17 Oct: update the existing hosting plan for $0 personal spending
-with student benefits and a domain. [Contract/evidence](specs/REL-003-student-deployment.md)
-owns scope/status; [DEPLOYMENT.md](DEPLOYMENT.md) owns the plan. Account eligibility,
-resource creation, domain redemption and deployment remain pending. WF-005/WF-006
-are completed workflow history, not this task's implementation scope.
+**BAL-003 — Cast commander immunity and updated assessment: Done; owner review pending.**
+Owner requested king immunity to Cast in new games and a revised heuristic report.
+[Contract/evidence](specs/BAL-003-cast-commander-immunity.md) owns acceptance/checks.
+[BAL-002](specs/BAL-002-monte-carlo-gameplay-review.md) retains the completed
+pre-change simulations; their numeric outcomes are historical.
+[REL-004](specs/REL-004-deployment-foundation.md) retains completed local foundation
+and recovery verification. The owner authorized branch publication on 18 Oct;
+public deployment remains separately gated.
 
 ## Product Goal
 

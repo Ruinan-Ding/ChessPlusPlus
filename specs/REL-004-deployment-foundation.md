@@ -1,6 +1,6 @@
 # REL-004: Local deployment foundation
 
-Status: Done locally after recovery review fix; uncommitted; unscheduled. Source: owner asks to add all six proposed
+Status: Done locally after recovery review fix; implementation committed in `1011146`; unscheduled. Source: owner asks to add all six proposed
 repository additions after the reviewed [student plan](../DEPLOYMENT.md).
 Scope: reproducible images, Compose/Caddy, production settings/env template,
 health endpoints, SQLite backup/restore tooling and build-only CI. No game/balance
@@ -61,7 +61,8 @@ a new full gameplay browser/layout sweep. No UI template/style changed.
 
 Lead source/security/compatibility review and structural/link/whitespace checks
 complete the local evidence. No independent implementation review was available.
-WRITTEN, not owner-SEEN, published or deployed. Full logs/source manifest:
+WRITTEN; owner authorized branch publication on 18 Oct 2026. Implementation is
+committed in `1011146`; owner-SEEN and deployed are not claimed. Full logs/source manifest:
 Windows Temp `cpp-deployment-scaffold-e6r03edw/RESULTS.md`.
 
 Remaining launch work: dependency remediation, actual student/account/domain

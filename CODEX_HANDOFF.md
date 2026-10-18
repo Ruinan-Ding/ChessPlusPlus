@@ -1,8 +1,11 @@
 # Handoff: ChessPlusPlus, 17 Oct 2026
 
 Updated by Codex from Claude Code's 2 Oct handoff, for the next agent.
-Read the short [AGENTS.md](AGENTS.md) first. Current task: [REL-003](specs/REL-003-student-deployment.md)
-records the checked student hosting/domain plan; implementation/deployment remain pending.
+Read the short [AGENTS.md](AGENTS.md) first. Latest gameplay work:
+[BAL-003](specs/BAL-003-cast-commander-immunity.md) owns the owner's Cast restriction,
+updated assessment and checks. [BAL-002](specs/BAL-002-monte-carlo-gameplay-review.md)
+retains pre-change simulation evidence. [REL-004](specs/REL-004-deployment-foundation.md)
+records local deployment tooling and verification; cloud/domain deployment remains pending.
 Workflow/spec/evidence:
 [WF-006](specs/WF-006-workflow-plugins.md) owns plugin setup/evidence;
 [WF-005](specs/WF-005-lean-safe.md), checkpoint 6.158, retains SAFe decisions.
@@ -18,13 +21,17 @@ This replaces the 2 Oct snapshot of `main`. That note is in the history:
 - **Repo:** https://github.com/Ruinan-Ding/ChessPlusPlus. It is a hex-grid tactics game: a Django
   Channels server in `server/`, an Angular 19 client in `client/`, and the shared config schema in
   `shared/`.
-- **Current branch:** `feature/student-deployment-plan`, based on synchronized
-  `main` at `489d8b9`. Source `344a9f6` and merge `489d8b9` publish the prior SAFe/
-  plugin work; application source is unchanged by that merge. The owner now
-  authorizes committing/pushing the reviewed plan; [REL-003](specs/REL-003-student-deployment.md#publication-follow-up)
-  owns the five-document publication scope. `DEPLOYMENT.md` supersedes the old Pages/Fly
-  proposal with a conditional student-funded VM/domain plan; actual hosting,
-  account/domain eligibility and production checks remain pending.
+- **Current branch:** `feature/deployment-scaffold`, based on the published plan
+  `16ae570`; main remains `489d8b9`. The owner requested all six local foundation
+  additions; [REL-004](specs/REL-004-deployment-foundation.md) owns implementation,
+  checks and continuation. [deploy/README.md](deploy/README.md) owns commands.
+  The owner authorized commit/push on 18 Oct: foundation `1011146`, analysis
+  `a4fd964`, followed by Cast immunity and current metadata in this branch. Git history
+  records the final delivery revision. Docker Desktop was started with explicit owner
+  approval for disposable checks; owner application services/data stay intact.
+  Cloud resources, domain registration and owner application service/database operations
+  remain outside this publication. Dependency remediation and target verification
+  from [DEPLOYMENT.md](DEPLOYMENT.md) remain launch work.
   Earlier source branches and `feature/configuration` are retained.
   The original rewind/replay/CPU implementation is `64efecd`, "Add solo rewind, portable replay
   and CPU opponents". It includes 6.135-6.137 and 6.139-6.143; the earlier config

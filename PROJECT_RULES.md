@@ -18,7 +18,7 @@ combat deals damage rather than capturing outright.
 # Server (from server/)
 DJANGO_DEBUG=true daphne core.asgi:application        # serve on :8000
 DJANGO_DEBUG=true python manage.py test               # everything
-DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (593 tests, 16 Oct 2026)
+DJANGO_DEBUG=true python manage.py test game.testsuite  # engine + consumers + models (615 tests, 18 Oct 2026)
 python scripts/make_scoring_parity.py                  # rewrite the scoring parity fixtures - rules changed on purpose, in BOTH engines, only
 
 # Live network checks - real sockets against the server above, in a second shell
@@ -76,6 +76,20 @@ start. That is deliberate — don't "fix" it.
 `server/requirements.txt`. Once it exists, either activate it (`source venv/Scripts/activate`)
 or call the binaries by path without activating: `venv/Scripts/python.exe`,
 `venv/Scripts/daphne.exe`. Client tooling is the same story — `ng` is not global, use `npx ng`.
+
+## Deployment foundation
+
+[deploy/README.md](deploy/README.md) owns operational commands; [REL-004](specs/REL-004-deployment-foundation.md)
+records source-bound checks. Root Compose starts one private Daphne application
+process and Caddy, with persistent SQLite and certificate volumes. Production uses
+core.production, exact hosts, a strong secret, an absolute DJANGO_DB_PATH and a
+trusted private proxy. Development settings remain the local default. Migrations
+are explicit; no image entrypoint applies them. Health readiness requires an
+available database with no pending migrations. Backup/restore uses SQLite's API
+and never replaces an existing file. Both commands reject SQLite sidecars at the
+resolved destination before publication; restore selects a new path while offline.
+The build-only container check owns disposable volumes/spare ports, and publishes
+nothing. It does not replace public HTTPS/WSS, student-funding or capacity checks.
 
 ## Architecture invariants
 
@@ -839,13 +853,20 @@ Decided so far:
   | Shieldman | +2 DEF, +2 HP | **Counter:** counter only at range 1 with ATK 4 before DEF; no initiating attack | **Taunt:** attacking stays optional, but an attack must target a reachable taunting shieldman; cost 6 UP, cooldown 1 |
   | Rook | +2 DEF, +2 ATK | **Bog:** after an exchange in which an enemy attacks the rook or the rook attacks/counters, reduce that enemy's ATK and DEF by 1 for one full turn; stacks on subsequent exchanges without a cap | **Bash:** when attacking, damage every adjacent enemy around the rook with its normal ATK against each DEF; only the directly attacked unit counters; cost 16 UP, cooldown 5 |
   | Knight | +2 ATK, +2 HP | **Hop:** pass through multiple consecutive enemies, paying one MOV per hex, ending on an empty hex; an open panel crossing may also be traversed despite enemy blockers | **Charge:** a second strike only after an actual counter, if the knight survived; an opposing active Charge permits one final counter to that second strike; cost 16 UP, cooldown 5 |
-  | Bishop | +2 HP; add healing 4 at range 3 and 2 at range 4 | **Regenerate:** every living Vet 2+ bishop on the battlefield fully heals at the end of its owner's turn, even if it did not act | **Cast:** control a selected adjacent enemy, immediately end the bishop's action and grant the controlled unit an extra move/attack; cost 32 UP, cooldown 5 |
+  | Bishop | +2 HP; add healing 4 at range 3 and 2 at range 4 | **Regenerate:** every living Vet 2+ bishop on the battlefield fully heals at the end of its owner's turn, even if it did not act | **Cast:** control a selected adjacent non-commander enemy, immediately end the bishop's action and grant the controlled unit an extra move/attack; cost 32 UP, cooldown 5 |
   | Queen | +1 MOV, +2 HP | **Persuade:** adjacent battlefield allies gain 1 MOV, 1 DEF and 1 ATK at the owner's turn start, until that owner's next turn | **Leech:** +4 ATK/+2 DEF for one full turn; normal attacks heal actual HP damage immediately before counters, capped at max HP; counters never heal; cost 8 UP, cooldown 3 |
   | King | Add ATK 20 at range 2, +2 MOV | **Capture:** from anywhere inside an eligible zone, hold it entirely except eligible enemy occupants' own hexes; opposing active Capture in that zone restores normal rules, with no Vet 3 priority | **Call:** adjacent friendly battlefield/green-reserve units heal 1 and gain +1 ATK/DEF/MOV; adjacent enemies take 1 HP damage and lose 1 ATK/DEF/MOV for one full turn; excludes the king; cost 4 UP, cooldown 1 |
 
-  **Cast clarifications confirmed:** the owner answered *"Yes, it acts immediately as an
+  **Cast update, 18 Oct 2026:** the owner requested *"make cast not work on king"*.
+  New games set the control entry's `allowCommanders: false`, excluding all units
+  configured as commanders, regardless of ID. Both engines, targeting and CPU agree.
+  Omission/true preserves older started/saved match eligibility; ownership and death
+  handling below remain necessary for those legacy matches. [BAL-003](specs/BAL-003-cast-commander-immunity.md)
+  owns implementation/check evidence and the updated heuristic report.
+
+  **Earlier Cast clarifications:** the owner answered *"Yes, it acts immediately as an
   extra unit"*, *"Through the opponent's next turn; returns at my next turn"*, and
-  *"Yes, kings can be controlled"*. Cast is an explicit exception to the usual battlefield
+  *"Yes, kings can be controlled"* (superseded above for new games). Cast is an explicit exception to the usual battlefield
   action allowance. The controlled unit can receive the caster's buffs. Its original side
   cannot drive it during its next turn but may attack or debuff it. A controlled unit's
   death counts as an attrition loss against the caster, confirmed by *"1 costs at the

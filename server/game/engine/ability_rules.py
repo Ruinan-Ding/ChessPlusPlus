@@ -17,6 +17,10 @@ def ability_config(config):
     return config.get('abilities', DEFAULT_CONFIG['abilities'])
 
 
+def control_target_allowed(unit, entry, config):
+    return entry.get('allowCommanders', True) or not config['units'][unit['unit_id']].get('commander', False)
+
+
 def initial_state():
     return {
         'version': 1, 'loadouts': {c: [] for c in COLORS},
@@ -358,6 +362,8 @@ class AbilityContext:
                 self.data['cooldowns'][self.color][i] = max(floor, cd - entry.get('recharge', 0)) if cd > floor else cd
             recipients = {}
         elif mode == 'control':
+            if chosen and not control_target_allowed(chosen, entry, self.config):
+                raise ValueError('Cast cannot target a commander')
             if not chosen or chosen_key not in self.recipients('field-reserve') or chosen['color'] == self.color or not 1 <= hex_distance(parse_coord(source_key), parse_coord(chosen_key)) <= entry.get('radius', 1):
                 raise ValueError('Cast needs an adjacent battlefield or reserve enemy')
             recipients = {chosen_key: chosen}

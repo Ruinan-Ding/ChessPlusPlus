@@ -619,13 +619,14 @@
       "bishop-cast": {
         "id": "bishop-cast",
         "name": "Cast",
-        "description": "Choose an enemy within {radius} hex(es) on the battlefield or in green reserve. End the caster action and immediately grant that unit an extra action. Control lasts {duration}.",
+        "description": "Choose an enemy within {radius} hex(es) on the battlefield or in green reserve. {commanderRule}End the caster action and immediately grant that unit an extra action. Control lasts {duration}.",
         "target": "enemy",
         "effect": "control",
         "cost": 32,
         "cooldown": 5,
         "turns": 1,
-        "radius": 1
+        "radius": 1,
+        "allowCommanders": false
       },
       "queen-leech": {
         "id": "queen-leech",

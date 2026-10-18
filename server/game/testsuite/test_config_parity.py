@@ -93,6 +93,15 @@ class ConfigParityTestCase(SimpleTestCase):
                 with self.assertRaises(ValueError):
                     load_config(_edited(case['path'], case['value']))
 
+    def test_control_commander_options_preserve_legacy_migration(self):
+        for edit in self.fixtures['acceptedControlTargets']:
+            raw = _edited(edit['path'], edit['value'])
+            config = load_config(raw)
+            self.assertIs(config['abilities']['catalogue']['bishop-cast']['allowCommanders'], edit['value'])
+            self.assertEqual(load_config(config), config)
+        raw = _edited(['abilities', 'catalogue', 'bishop-cast', 'allowCommanders'], delete=True)
+        self.assertNotIn('allowCommanders', load_config(raw)['abilities']['catalogue']['bishop-cast'])
+
     def test_every_absent_field_takes_its_default(self):
         for path in self.fixtures['absent']:
             with self.subTest(path=path):

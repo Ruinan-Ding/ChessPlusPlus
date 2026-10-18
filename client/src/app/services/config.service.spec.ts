@@ -112,6 +112,16 @@ describe('ConfigService validation, against the server\'s', () => {
     }
   });
 
+  it('accepts explicit control options and preserves omitted legacy eligibility', () => {
+    for (const { path, value } of parity.acceptedControlTargets) {
+      const config = edited(path, value);
+      expect(service.validateGameRules(config).valid).withContext(String(value)).toBeTrue();
+    }
+    const config = edited(['abilities', 'catalogue', 'bishop-cast', 'allowCommanders'], undefined, true);
+    expect(service.updateConfig(JSON.stringify(config)).valid).toBeTrue();
+    expect((service.getConfig().abilities.catalogue['bishop-cast'] as any).allowCommanders).toBeUndefined();
+  });
+
   it('accepts integer-valued JSON floats in the same shared cases as the backend', () => {
     for (const { path, value } of parity.accepted) {
       expect(service.validateGameRules(edited(path, value)).valid)

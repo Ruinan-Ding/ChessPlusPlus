@@ -46,8 +46,8 @@ class OnlineAbilityRulesTests(SimpleTestCase):
         self.state.board_state[key] = unit
         return unit
 
-    def panel(self, panel, kind='pawn', uid=None, vet=3, hp=None):
-        key = panels.panel_zones(11)[panel][0]
+    def panel(self, panel, kind='pawn', uid=None, vet=3, hp=None, key=None):
+        key = key or panels.panel_zones(11)[panel][0]
         color = panels.color_of_panel(panel)
         self.config['setup'][color][key] = kind
         # Use a withdrawal to preserve arranged rank/HP through normal panel reconstruction.
@@ -1207,6 +1207,50 @@ class OnlineAbilityRulesTests(SimpleTestCase):
         self.assertNotIn('enemy', self.ctx.data['buffs'])
         self.assertNotIn('king-neighbor', self.ctx.data['buffs'])
         self.assertEqual(self.ctx.data['buffs']['ally']['mov'], 1)
+
+    def test_cast_rejects_configured_commanders_atomically_without_spending(self):
+        self.config['abilities']['catalogue']['bishop-cast']['allowCommanders'] = False
+        self.config['units']['royal'] = self.config['units'].pop('king')
+        for piece in self.state.board_state.values():
+            if piece['unit_id'] == 'king': piece['unit_id'] = 'royal'
+        self.put('7,0', 'bishop', uid='bishop')
+        before = copy.deepcopy(self.state.__dict__)
+        with self.assertRaisesRegex(ValueError, 'commander'):
+            self.cast('bishop-cast', unitUid='bishop', targetUid='bk')
+        self.assertEqual(self.state.__dict__, before)
+
+    async def test_atomic_cast_rejects_king_and_keeps_other_commands_uncommitted(self):
+        self.config['abilities']['catalogue']['bishop-cast']['allowCommanders'] = False
+        self.put('7,0', 'bishop', uid='bishop')
+        self.carry('mend')
+        before = copy.deepcopy(self.state.__dict__)
+        with self.assertRaises(ValidationError):
+            await GameConsumer()._preview_turn(self.state, [
+                {'type': 'cast_ability', 'id': 'mend', 'targetUid': 'bishop'},
+                {'type': 'cast_ability', 'id': 'bishop-cast', 'unitUid': 'bishop', 'targetUid': 'bk'}])
+        self.assertEqual(self.state.__dict__, before)
+
+    def test_cast_commander_restriction_keeps_field_and_reserve_targets(self):
+        for reserve in (False, True):
+            with self.subTest(reserve=reserve):
+                self.setUp()
+                self.config['abilities']['catalogue']['bishop-cast']['allowCommanders'] = False
+                key = '1,0'
+                if reserve:
+                    key = next(at for at in panels.panel_zones(11)['tl']
+                               if any(panels.on_battlefield(q+dq, r+dr, 11)
+                                      for q, r in [tuple(map(int, at.split(',')))]
+                                      for dq, dr in HEX_DIRECTIONS.values()))
+                    self.panel('tl', uid='enemy', key=key)
+                    q, r = map(int, key.split(','))
+                    source = next(f'{q+dq},{r+dr}' for dq, dr in HEX_DIRECTIONS.values()
+                                  if panels.on_battlefield(q+dq, r+dr, 11))
+                else:
+                    self.put(key, color='black', uid='enemy')
+                    source = '0,0'
+                self.put(source, 'bishop', uid='bishop')
+                self.cast('bishop-cast', unitUid='bishop', targetUid='enemy')
+                self.assertEqual(self.ctx.find('enemy')[1]['color'], 'white')
 
     def test_cast_preserves_king_owner_and_returns_at_casters_next_turn(self):
         self.put('7,0', 'bishop', uid='bishop')

@@ -141,6 +141,37 @@ describe('Solo game through the rendered room and real services', () => {
     expect(error).toBeUndefined(); expect(done).toBeTrue();
   };
 
+  it('excludes kings from Cast targets without charging, then casts a legal enemy through Undo and reload', run(() => {
+    const config: any = structuredClone(SHIPPED_GAME_CONFIG);
+    config.veterancy.startingRank = 3;
+    config.stageRules.opening.unitAbilities = true;
+    config.economy.upAtStart = 100;
+    config.setup = { white: { '-8,0': 'king', '0,0': 'bishop' },
+      black: { '1,0': 'king', '0,1': 'pawn' } };
+    start('White', config);
+    const arm = () => {
+      hex('0,0'); click('.stats-panel .unit-ability-row button', 'Cast');
+      expect(fixture.nativeElement.querySelector('.stats-panel').textContent).toContain('Cannot target commanders');
+      click('.stats-panel .ability-detail-actions button', 'Use');
+    };
+    arm();
+    const cell = (key: string) => board()!.cells.find(cell => cell.key === key)!;
+    expect(board()!.isAbilityTarget(cell('1,0'), 'enemy')).toBeFalse();
+    expect(board()!.isAbilityTarget(cell('0,1'), 'enemy')).toBeTrue();
+    hex('1,0');
+    expect(room.stagedActions.length).toBe(0); expect(room.myUnitPoints).toBe(100);
+    expect(state.snapshot.boardState['1,0'].color).toBe('black');
+    arm(); hex('0,1');
+    expect(room.myUnitPoints).toBe(68); expect(room.stagedBoard!['0,1'].color).toBe('white');
+    reload();
+    expect(room.stagedBoard!['0,1'].color).toBe('white');
+    click('.undo-btn'); expect(room.myUnitPoints).toBe(100);
+    arm(); hex('0,1'); finish(); reload();
+    expect(state.snapshot.boardState['0,1'].color).toBe('white');
+    expect(state.snapshot.boardState['0,1'].owner).toBe('black');
+    expect(state.snapshot.boardState['1,0'].color).toBe('black');
+  }));
+
   it('starts the actual shipped preset in the rendered room', run(() => {
     start('White', SHIPPED_GAME_CONFIG);
     expect(state.snapshot.config.units).toEqual(SHIPPED_GAME_CONFIG.units);

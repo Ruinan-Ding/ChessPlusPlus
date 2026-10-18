@@ -1,5 +1,9 @@
 import type { PieceData } from './game-state.service';
 
+export function controlTargetAllowed(unit: Pick<PieceData, 'unit_id'>, entry: { allowCommanders?: boolean }, config: any): boolean {
+  return entry.allowCommanders !== false || !config?.units?.[unit.unit_id]?.commander;
+}
+
 export function controlsAt(history: readonly any[], ply: number): Record<string, PieceData> {
   const controls: Record<string, PieceData> = {};
   for (const record of history ?? []) {
